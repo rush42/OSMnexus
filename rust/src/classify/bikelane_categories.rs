@@ -33,9 +33,9 @@ pub struct CategoryDef {
 }
 
 #[derive(Debug, Deserialize)]
-struct CategoriesFile {
-    macros: HashMap<String, Filter>,
-    categories: Vec<CategoryDef>,
+pub struct CategoriesFile {
+    pub macros: HashMap<String, Filter>,
+    pub categories: Vec<CategoryDef>,
 }
 
 /// Filter expression. Variants are tried in declaration order by serde's untagged deserializer,
@@ -79,7 +79,7 @@ pub enum Filter {
 
 static CATEGORIES_FILE: OnceLock<CategoriesFile> = OnceLock::new();
 
-fn categories() -> &'static CategoriesFile {
+pub fn get_categories() -> &'static CategoriesFile {
     CATEGORIES_FILE.get_or_init(|| {
         serde_json::from_str(include_str!("categories.json"))
             .expect("categories.json failed to parse")
@@ -260,6 +260,6 @@ fn is_advisory_or_exclusive(ctx: &CategoryContext) -> bool {
 
 /// Find the first matching category for the given context.
 pub fn categorize_bikelane(ctx: &CategoryContext) -> Option<&'static CategoryDef> {
-    let cats = categories();
+    let cats = get_categories();
     cats.categories.iter().find(|cat| eval(&cat.condition, ctx, &cats.macros))
 }

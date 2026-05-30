@@ -11,3 +11,5 @@
 
 /node_modules
 processing/node_modules
+
+rust/target
