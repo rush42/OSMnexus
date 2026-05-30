@@ -53,6 +53,10 @@ fn sign_starts_with(sign: Option<&str>, prefix: &str) -> bool {
 
 /// Port of `IsSidepath` from IsSidepath.lua.
 fn is_sidepath(ctx: &CategoryContext) -> bool {
+    // Explicit override: is_sidepath=no beats everything, including parent_highway.
+    if tag_is(ctx, "is_sidepath", "no") {
+        return false;
+    }
     tag_is(ctx, "is_sidepath", "yes")
         || ctx.parent_highway.is_some()
         || tag_is(ctx, "footway", "sidewalk")
@@ -156,6 +160,23 @@ fn is_foot_and_cycleway_segregated_base(ctx: &CategoryContext) -> bool {
             return true;
         }
     }
+
+    // Edge case: separate geometry with foot traffic on the right side but no segregated tag.
+    // Lua reads tags['traffic_mode:right'] via SANITIZE_ROAD_TAGS.traffic_mode(tags, 'right').
+    // See https://www.openstreetmap.org/way/1319011143
+    if hw == "cycleway" {
+        let tm_right = tag(ctx, "traffic_mode:right")
+            .or_else(|| tag(ctx, "traffic_mode:both"));
+        if tm_right.map(|v| matches!(v, "foot" | "foot;bicycle")).unwrap_or(false) {
+            let sep_right = tag(ctx, "separation:right")
+                .or_else(|| tag(ctx, "separation:both"));
+            let separation_ok = sep_right.is_none() || sep_right == Some("no");
+            if separation_ok {
+                return true;
+            }
+        }
+    }
+
     false
 }
 

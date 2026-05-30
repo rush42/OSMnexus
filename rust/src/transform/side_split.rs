@@ -9,6 +9,9 @@ pub struct TransformedObject {
     pub side: Side,
     /// The prefix that produced this object, e.g. "cycleway". None for the self object.
     pub prefix: Option<&'static str>,
+    /// The infix that matched: "" = bare prefix, "both", "left", or "right".
+    /// None for the self object.
+    pub infix: Option<&'static str>,
     /// Original highway value of the parent way (for left/right objects).
     pub parent_highway: Option<String>,
     /// The effective highway value for this object.
@@ -23,8 +26,6 @@ pub struct CenterLineTransformation {
     pub highway: &'static str,
     /// The tag prefix to look for (e.g. "cycleway").
     pub prefix: &'static str,
-    /// Whether to produce a side object when only the bare prefix exists (no side suffix).
-    pub allow_bare_prefix: bool,
 }
 
 const META_PREFIXES: &[&str] = &["source:", "note:"];
@@ -41,6 +42,7 @@ pub fn get_transformed_objects(
 
     // Self object — always included.
     let mut center = tags.clone();
+
     // For sidepath highways, unnest bare cycleway tags onto the self object.
     if sidepath_classes.contains(highway.as_str()) {
         unnest_prefixed_tags(tags, "cycleway", "", &mut center);
@@ -60,6 +62,7 @@ pub fn get_transformed_objects(
         return vec![TransformedObject {
             side: Side::Self_,
             prefix: None,
+            infix: None,
             parent_highway: None,
             highway,
             tags: center,
@@ -69,6 +72,7 @@ pub fn get_transformed_objects(
     let mut results = vec![TransformedObject {
         side: Side::Self_,
         prefix: None,
+        infix: None,
         parent_highway: None,
         highway: highway.clone(),
         tags: center,
@@ -81,7 +85,7 @@ pub fn get_transformed_objects(
         }
 
         for side in [Side::Left, Side::Right] {
-            let side_str = match side {
+            let side_str: &'static str = match side {
                 Side::Left => "left",
                 Side::Right => "right",
                 Side::Self_ => unreachable!(),
@@ -89,19 +93,41 @@ pub fn get_transformed_objects(
 
             let mut obj: HashMap<String, String> = HashMap::new();
 
-            // Priority: prefix:'' < prefix:both < prefix:side
-            // Each call overwrites earlier results.
-            if transformation.allow_bare_prefix {
+            // Priority (lowest to highest): bare < both < side-specific.
+            // Track the highest-priority infix that contributed any data.
+            // Mirrors Lua: unnestPrefixedTags called with '', ':both', ':side' in order.
+            let mut matched_infix: &'static str = "";
+
+            let bare_had_data = {
+                let before = obj.len();
                 unnest_prefixed_tags(tags, transformation.prefix, "", &mut obj);
+                obj.len() > before
+            };
+            if bare_had_data {
+                matched_infix = "";
             }
-            unnest_prefixed_tags(tags, transformation.prefix, "both", &mut obj);
-            unnest_prefixed_tags(tags, transformation.prefix, side_str, &mut obj);
+
+            let both_had_data = {
+                let before = obj.len();
+                unnest_prefixed_tags(tags, transformation.prefix, "both", &mut obj);
+                obj.len() > before
+            };
+            if both_had_data {
+                matched_infix = "both";
+            }
+
+            let side_had_data = {
+                let before = obj.len();
+                unnest_prefixed_tags(tags, transformation.prefix, side_str, &mut obj);
+                obj.len() > before
+            };
+            if side_had_data {
+                matched_infix = side_str;
+            }
 
             // Meta-prefixed tags (source:, note:) — processed after, overwrite.
             for meta in META_PREFIXES {
-                if transformation.allow_bare_prefix {
-                    unnest_prefixed_tags_meta(tags, transformation.prefix, "", meta, &mut obj);
-                }
+                unnest_prefixed_tags_meta(tags, transformation.prefix, "", meta, &mut obj);
                 unnest_prefixed_tags_meta(tags, transformation.prefix, "both", meta, &mut obj);
                 unnest_prefixed_tags_meta(tags, transformation.prefix, side_str, meta, &mut obj);
             }
@@ -111,12 +137,17 @@ pub fn get_transformed_objects(
                 continue;
             }
 
+            // Inject the effective highway value into tags so category conditions can read it.
+            // In Lua the transformed object is a full tag table including highway=cycleway.
+            obj.insert("highway".into(), transformation.highway.to_owned());
+
             // Directed tag projection (traffic_sign:forward/backward → traffic_sign).
             convert_directed_tags(&mut obj, tags, side);
 
             results.push(TransformedObject {
                 side,
                 prefix: Some(transformation.prefix),
+                infix: Some(matched_infix),
                 parent_highway: Some(highway.clone()),
                 highway: transformation.highway.to_owned(),
                 tags: obj,
@@ -247,15 +278,7 @@ fn convert_directed_tags(obj: &mut RawTags, parent: &RawTags, side: Side) {
 /// The two center-line transformations used for roads (cycleway and sidewalk).
 pub fn default_transformations() -> Vec<CenterLineTransformation> {
     vec![
-        CenterLineTransformation {
-            highway: "cycleway",
-            prefix: "cycleway",
-            allow_bare_prefix: false, // Don't split on bare `cycleway=*` (that's a road-level tag)
-        },
-        CenterLineTransformation {
-            highway: "footway",
-            prefix: "sidewalk",
-            allow_bare_prefix: false,
-        },
+        CenterLineTransformation { highway: "cycleway", prefix: "cycleway" },
+        CenterLineTransformation { highway: "footway",  prefix: "sidewalk" },
     ]
 }

@@ -143,13 +143,14 @@ async fn main() -> anyhow::Result<()> {
         let transformed = get_transformed_objects(&tags, &transformations);
 
         for obj in &transformed {
+            let parent_tags = obj.parent_highway.as_ref().map(|_| &tags);
             let ctx = CategoryContext {
                 tags: &obj.tags,
                 side: obj.side,
                 prefix: obj.prefix,
                 parent_highway: obj.parent_highway.as_deref(),
-                parent_tags: if obj.parent_highway.is_some() { Some(&tags) } else { None },
-                infix: None, // simplified: full infix tracking would require storing it in TransformedObject
+                parent_tags,
+                infix: obj.infix,
                 length_m,
             };
 
@@ -167,10 +168,18 @@ async fn main() -> anyhow::Result<()> {
                 Side::Right => format!("way/{}/{}/right", way.id, obj.prefix.unwrap_or("cycleway")),
             };
 
+            // For categories with copySurfaceSmoothnessFromParent, fall back to parent tags.
+            let surface = obj.tags.get("surface")
+                .or_else(|| if category.copy_surface_smoothness_from_parent { tags.get("surface") } else { None })
+                .cloned();
+            let smoothness = obj.tags.get("smoothness")
+                .or_else(|| if category.copy_surface_smoothness_from_parent { tags.get("smoothness") } else { None })
+                .cloned();
+
             let osm_tags = BikelaneOsmTags {
                 name: obj.tags.get("name").or_else(|| tags.get("name")).cloned(),
-                surface: obj.tags.get("surface").or_else(|| tags.get("surface")).cloned(),
-                smoothness: obj.tags.get("smoothness").or_else(|| tags.get("smoothness")).cloned(),
+                surface,
+                smoothness,
                 width: obj
                     .tags
                     .get("width")
