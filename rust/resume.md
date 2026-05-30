@@ -118,3 +118,113 @@ CREATE TABLE bikelanes (
 | `chrono` | Timestamp-Formatierung |
 | `hex` | EWKB-Hex-Encoding |
 | `bytes` + `futures` | COPY-Sink-API |
+
+---
+
+## OSM-Datendateien
+
+| Datei | Größe | Ort |
+|---|---|---|
+| Berlin (aktuell) | 94 MB | `/tmp/berlin-latest.osm.pbf` |
+| Berlin (kleiner Testausschnitt, Prenzlauer Berg) | 3 MB | `/tmp/berlin-small.osm.pbf` |
+| Deutschland | 4.5 GB | `/home/rush42/Documents/tilda-geo/rust/germany-latest.osm.pbf` |
+
+Download-Quelle: https://download.geofabrik.de
+
+---
+
+## Martin Tile Server starten
+
+Martin ist als statisch gelinktes Binary unter `/tmp/martin` vorhanden (v1.10.1).
+
+```bash
+# Starten (Unix-Socket, Web UI aktiviert)
+/tmp/martin \
+  --listen-addresses 0.0.0.0:3000 \
+  --webui enable-for-all \
+  "postgresql://rush42@%2Fvar%2Frun%2Fpostgresql/osm?sslmode=disable"
+
+# Web UI im Browser
+open http://localhost:3000
+
+# Tile-URLs
+# http://localhost:3000/bikelanes/{z}/{x}/{y}
+# http://localhost:3000/roads/{z}/{x}/{y}
+
+# Neustart nach Pipeline-Run
+pkill martin; sleep 1 && /tmp/martin ...
+```
+
+Martin erkennt alle Tabellen mit einer `geometry`-Spalte automatisch.
+
+---
+
+## Alte Lua/osm2pgsql-Pipeline
+
+Voraussetzungen: `osm2pgsql` installiert (`sudo apt-get install -y osm2pgsql`), Lua-Dependencies gepatcht (s.u.).
+
+### Einmalig: Dependencies patchen
+
+```bash
+REPO=/home/rush42/Documents/tilda-geo
+
+# inspect.lua (Lua debug-Lib)
+curl -sL https://raw.githubusercontent.com/kikito/inspect.lua/master/inspect.lua \
+  -o $REPO/processing/inspect.lua
+
+# ftcsv + penlight stubs (CSV-Loader, Dateien fehlen sowieso)
+echo 'local ftcsv={}; function ftcsv.parse() return {} end; return ftcsv' \
+  > $REPO/processing/ftcsv.lua
+mkdir -p $REPO/processing/pl
+echo 'return { exists = function() return false end }' > $REPO/processing/pl/path.lua
+echo 'return { size = function() return 0 end }'      > $REPO/processing/pl/tablex.lua
+
+# init.lua: absolute Pfade statt /processing/
+sed "s|/processing/|$REPO/processing/|g" $REPO/processing/init.lua > /tmp/init_local.lua
+
+# Lua-Datei patchen: require('init') → dofile mit absolutem Pfad
+sed 's|require.*init.*|dofile("/tmp/init_local.lua")|' \
+  $REPO/processing/topics/roads_bikelanes/roads_bikelanes.lua \
+  > /tmp/roads_bikelanes_patched.lua
+```
+
+### Datenbank vorbereiten
+
+```bash
+psql -d osm -c "CREATE DATABASE osm_lua;"
+psql -d osm_lua -c "CREATE EXTENSION postgis;"
+psql -d osm_lua -c "CREATE EXTENSION btree_gist;"  # für (minzoom, geom) GiST-Index
+```
+
+### Pipeline ausführen
+
+```bash
+osm2pgsql \
+  --create \
+  --output=flex \
+  --extra-attributes \
+  --style=/tmp/roads_bikelanes_patched.lua \
+  -H /var/run/postgresql \
+  -d osm_lua \
+  -U rush42 \
+  /tmp/berlin-latest.osm.pbf
+```
+
+Berlin: ~71 Sekunden. Ergebnis in DB `osm_lua`: Tabellen `bikelanes`, `roads`, `bikelanesPresence`, `roadsPathClasses`, `bikeSuitability`, `todos_lines`.
+
+---
+
+## PostgreSQL
+
+```bash
+# Verbindung (Unix-Socket, kein Passwort)
+psql -d osm -U rush42
+
+# Wichtige Datenbanken
+# osm       → Rust-Pipeline-Output (bikelanes + roads)
+# osm_lua   → Lua-Pipeline-Output (alle 6 Tabellen)
+
+# Kategorien vergleichen
+psql -d osm     -c "SELECT derived->>'category', COUNT(*) FROM bikelanes GROUP BY 1 ORDER BY 2 DESC LIMIT 10;"
+psql -d osm_lua -c "SELECT tags->>'category',    COUNT(*) FROM bikelanes GROUP BY 1 ORDER BY 2 DESC LIMIT 10;"
+```
