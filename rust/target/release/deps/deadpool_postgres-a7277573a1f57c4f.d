@@ -1,0 +1,10 @@
+/home/rush42/Documents/tilda-geo/rust/target/release/deps/deadpool_postgres-a7277573a1f57c4f.d: /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/lib.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/config.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/generic_client.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/../README.md
+
+/home/rush42/Documents/tilda-geo/rust/target/release/deps/libdeadpool_postgres-a7277573a1f57c4f.rlib: /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/lib.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/config.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/generic_client.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/../README.md
+
+/home/rush42/Documents/tilda-geo/rust/target/release/deps/libdeadpool_postgres-a7277573a1f57c4f.rmeta: /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/lib.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/config.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/generic_client.rs /home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/../README.md
+
+/home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/lib.rs:
+/home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/config.rs:
+/home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/generic_client.rs:
+/home/rush42/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deadpool-postgres-0.14.1/src/../README.md:
