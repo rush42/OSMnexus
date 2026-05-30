@@ -1,0 +1,55 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": false,
+  "implicit_oneway_confidence": "high",
+  "copy_surface_smoothness_from_parent": true,
+  "condition": {
+    "and": [
+      {
+        "macro": "is_bicycle_road"
+      },
+      {
+        "or": [
+          {
+            "tag": "traffic_sign",
+            "contains": "1020-30"
+          },
+          {
+            "tag": "traffic_sign",
+            "contains": "Kraftfahrzeuge-frei"
+          },
+          {
+            "tag": "traffic_sign",
+            "contains": "Kfz-Verkehr frei"
+          },
+          {
+            "tag": "traffic_sign",
+            "contains": "KFZ frei"
+          },
+          {
+            "tag": "vehicle",
+            "in": [
+              "destination",
+              "yes"
+            ]
+          },
+          {
+            "tag": "motor_vehicle",
+            "in": [
+              "destination",
+              "yes"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "crossing",
+    "cyclewayLink",
+    "cyclewayOnHighwayProtected",
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ]
+}

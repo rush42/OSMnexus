@@ -1,4 +1,4 @@
-use osm_bikelanes::{classify, config, db, error, osm, output, transform};
+use osm_bikelanes::{classify, config, db, osm, output, transform};
 
 use anyhow::Context;
 use clap::Parser;

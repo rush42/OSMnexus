@@ -1,0 +1,30 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": false,
+  "implicit_oneway_confidence": "high",
+  "copy_surface_smoothness_from_parent": false,
+  "condition": {
+    "and": [
+      {
+        "tag": "highway",
+        "eq": "pedestrian"
+      },
+      {
+        "tag": "bicycle",
+        "in": [
+          "yes",
+          "designated"
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "crossing",
+    "cyclewayOnHighwayProtected",
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ]
+}

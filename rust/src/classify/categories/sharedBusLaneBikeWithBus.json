@@ -1,0 +1,76 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": true,
+  "implicit_oneway_confidence": "high",
+  "copy_surface_smoothness_from_parent": true,
+  "condition": {
+    "and": [
+      {
+        "not": {
+          "macro": "is_crossing_pattern"
+        }
+      },
+      {
+        "tag": "highway",
+        "eq": "cycleway"
+      },
+      {
+        "or": [
+          {
+            "tag": "lane",
+            "eq": "share_busway"
+          },
+          {
+            "and": [
+              {
+                "tag": "traffic_sign",
+                "starts_with": "DE:237"
+              },
+              {
+                "or": [
+                  {
+                    "tag": "traffic_sign",
+                    "contains": "1024-14"
+                  },
+                  {
+                    "tag": "traffic_sign",
+                    "contains": "1026-32"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "and": [
+              {
+                "parent_tag": "traffic_sign",
+                "starts_with": "DE:237"
+              },
+              {
+                "or": [
+                  {
+                    "parent_tag": "traffic_sign",
+                    "contains": "1024-14"
+                  },
+                  {
+                    "parent_tag": "traffic_sign",
+                    "contains": "1026-32"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "cyclewayLink",
+    "cyclewayOnHighwayProtected",
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ]
+}

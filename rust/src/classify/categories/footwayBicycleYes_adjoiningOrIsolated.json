@@ -1,0 +1,36 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": true,
+  "implicit_oneway_confidence": "low",
+  "copy_surface_smoothness_from_parent": false,
+  "condition": {
+    "and": [
+      {
+        "macro": "is_footway_bicycle_yes_base"
+      },
+      {
+        "macro": "sidepath_unknown"
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "crossing",
+    "cyclewayLink",
+    "cyclewayOnHighwayBetweenLanes",
+    "cyclewayOnHighway_advisory",
+    "cyclewayOnHighway_advisoryOrExclusive",
+    "cyclewayOnHighway_exclusive",
+    "cyclewaySeparated_adjoiningOrIsolated",
+    "data_no",
+    "footAndCyclewaySegregated_adjoiningOrIsolated",
+    "footAndCyclewayShared_adjoiningOrIsolated",
+    "not_expected",
+    "pedestrianAreaBicycleYes",
+    "separate_geometry",
+    "sharedBusLaneBikeWithBus",
+    "sharedBusLaneBusWithBike",
+    "sharedMotorVehicleLane"
+  ]
+}

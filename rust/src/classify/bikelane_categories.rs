@@ -30,6 +30,7 @@ pub struct CategoryDef {
     pub implicit_oneway_confidence: String,
     pub copy_surface_smoothness_from_parent: bool,
     pub condition: Filter,
+    pub excludes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,8 +82,8 @@ static CATEGORIES_FILE: OnceLock<CategoriesFile> = OnceLock::new();
 
 pub fn get_categories() -> &'static CategoriesFile {
     CATEGORIES_FILE.get_or_init(|| {
-        serde_json::from_str(include_str!("categories.json"))
-            .expect("categories.json failed to parse")
+        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/categories_compiled.json")))
+            .expect("categories_compiled.json failed to parse")
     })
 }
 
@@ -261,5 +262,22 @@ fn is_advisory_or_exclusive(ctx: &CategoryContext) -> bool {
 /// Find the first matching category for the given context.
 pub fn categorize_bikelane(ctx: &CategoryContext) -> Option<&'static CategoryDef> {
     let cats = get_categories();
-    cats.categories.iter().find(|cat| eval(&cat.condition, ctx, &cats.macros))
+    cats.categories.iter().find(|cat| {
+        if !eval(&cat.condition, ctx, &cats.macros) {
+            return false;
+        }
+
+        // If this category explicitly excludes others, ensure none of them match
+        if let Some(excludes) = &cat.excludes {
+            for excluded_id in excludes {
+                if let Some(excluded_cat) = cats.categories.iter().find(|c| c.id == *excluded_id) {
+                    if eval(&excluded_cat.condition, ctx, &cats.macros) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    })
 }

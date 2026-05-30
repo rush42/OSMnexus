@@ -1,0 +1,33 @@
+{
+  "infrastructure_exists": false,
+  "implicit_oneway": false,
+  "implicit_oneway_confidence": "not_applicable",
+  "copy_surface_smoothness_from_parent": false,
+  "condition": {
+    "and": [
+      {
+        "prefix": "cycleway"
+      },
+      {
+        "infix": ""
+      },
+      {
+        "side": "left"
+      },
+      {
+        "parent_tag": "oneway",
+        "eq": "yes"
+      },
+      {
+        "not": {
+          "parent_tag": "oneway:bicycle",
+          "eq": "no"
+        }
+      }
+    ]
+  },
+  "excludes": [
+    "data_no",
+    "separate_geometry"
+  ]
+}

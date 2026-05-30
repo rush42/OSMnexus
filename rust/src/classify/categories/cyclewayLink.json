@@ -1,0 +1,22 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": true,
+  "implicit_oneway_confidence": "low",
+  "copy_surface_smoothness_from_parent": false,
+  "condition": {
+    "and": [
+      {
+        "tag": "highway",
+        "eq": "cycleway"
+      },
+      {
+        "tag": "cycleway",
+        "eq": "link"
+      }
+    ]
+  },
+  "excludes": [
+    "cyclewayOnHighwayProtected",
+    "not_expected"
+  ]
+}

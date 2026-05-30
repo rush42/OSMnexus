@@ -1,0 +1,124 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": false,
+  "implicit_oneway_confidence": "low",
+  "copy_surface_smoothness_from_parent": false,
+  "condition": {
+    "and": [
+      {
+        "not": {
+          "macro": "has_between_lanes_conditions"
+        }
+      },
+      {
+        "not": {
+          "tag": "cycleway",
+          "eq": "shared"
+        }
+      },
+      {
+        "or": [
+          {
+            "tag": "highway",
+            "eq": "cycleway"
+          },
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "eq": "path"
+              },
+              {
+                "tag": "bicycle",
+                "eq": "designated"
+              },
+              {
+                "or": [
+                  {
+                    "not": {
+                      "tag": "foot",
+                      "eq": "no"
+                    }
+                  },
+                  {
+                    "and": [
+                      {
+                        "tag": "foot",
+                        "eq": "no"
+                      },
+                      {
+                        "not": {
+                          "has_key_prefix": "mtb:"
+                        }
+                      },
+                      {
+                        "not": {
+                          "tag": "mtb",
+                          "eq": "yes"
+                        }
+                      },
+                      {
+                        "not": {
+                          "tag": "surface",
+                          "in": [
+                            "ground",
+                            "dirt",
+                            "fine_gravel",
+                            "gravel",
+                            "pebblestone",
+                            "earth"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "eq": "footway"
+              },
+              {
+                "tag": "bicycle",
+                "eq": "designated"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "crossing",
+    "cyclewayLink",
+    "cyclewayOnHighwayBetweenLanes",
+    "cyclewayOnHighwayProtected",
+    "cyclewayOnHighway_advisory",
+    "cyclewayOnHighway_advisoryOrExclusive",
+    "cyclewayOnHighway_exclusive",
+    "cyclewaySeparated_adjoining",
+    "cyclewaySeparated_adjoiningOrIsolated",
+    "cyclewaySeparated_isolated",
+    "data_no",
+    "footAndCyclewaySegregated_adjoining",
+    "footAndCyclewaySegregated_adjoiningOrIsolated",
+    "footAndCyclewaySegregated_isolated",
+    "footAndCyclewayShared_adjoining",
+    "footAndCyclewayShared_adjoiningOrIsolated",
+    "footAndCyclewayShared_isolated",
+    "footwayBicycleYes_adjoining",
+    "footwayBicycleYes_adjoiningOrIsolated",
+    "footwayBicycleYes_isolated",
+    "not_expected",
+    "separate_geometry",
+    "sharedBusLaneBikeWithBus",
+    "sharedBusLaneBusWithBike",
+    "sharedMotorVehicleLane"
+  ]
+}

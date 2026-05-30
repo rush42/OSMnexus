@@ -1,0 +1,85 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": true,
+  "implicit_oneway_confidence": "medium",
+  "copy_surface_smoothness_from_parent": true,
+  "condition": {
+    "and": [
+      {
+        "not": {
+          "macro": "is_crossing_pattern"
+        }
+      },
+      {
+        "macro": "is_sidepath"
+      },
+      {
+        "not": {
+          "tag": "lane",
+          "eq": "advisory"
+        }
+      },
+      {
+        "not": {
+          "tag": "cycleway",
+          "in": [
+            "share_busway",
+            "opposite_share_busway"
+          ]
+        }
+      },
+      {
+        "or": [
+          {
+            "and": [
+              {
+                "first_tag": [
+                  "separation:left",
+                  "separation:both",
+                  "separation"
+                ],
+                "in": [
+                  "bollard",
+                  "flex_post",
+                  "vertical_panel",
+                  "studs",
+                  "bump",
+                  "planter",
+                  "fence",
+                  "jersey_barrier",
+                  "guard_rail"
+                ]
+              },
+              {
+                "not": {
+                  "tag": "segregated",
+                  "in": [
+                    "yes",
+                    "no"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "and": [
+              {
+                "tag": "traffic_mode:left",
+                "eq": "parking"
+              },
+              {
+                "tag": "segregated",
+                "exists": false
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ]
+}

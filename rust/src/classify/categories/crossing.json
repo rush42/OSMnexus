@@ -1,0 +1,22 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": true,
+  "implicit_oneway_confidence": "low",
+  "copy_surface_smoothness_from_parent": true,
+  "condition": {
+    "and": [
+      {
+        "length_lte": 100.0
+      },
+      {
+        "macro": "is_crossing_pattern"
+      }
+    ]
+  },
+  "excludes": [
+    "cyclewayLink",
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ]
+}

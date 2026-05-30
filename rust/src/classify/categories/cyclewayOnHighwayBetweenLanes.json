@@ -1,0 +1,38 @@
+{
+  "infrastructure_exists": true,
+  "implicit_oneway": true,
+  "implicit_oneway_confidence": "high",
+  "copy_surface_smoothness_from_parent": true,
+  "condition": {
+    "and": [
+      {
+        "side": "self"
+      },
+      {
+        "or": [
+          {
+            "tag": "cycleway:lanes",
+            "contains": "|lane|"
+          },
+          {
+            "tag": "bicycle:lanes",
+            "contains": "|designated|"
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "crossing",
+    "cyclewayLink",
+    "cyclewayOnHighwayProtected",
+    "data_no",
+    "pedestrianAreaBicycleYes",
+    "separate_geometry",
+    "sharedBusLaneBikeWithBus",
+    "sharedBusLaneBusWithBike",
+    "sharedMotorVehicleLane"
+  ]
+}

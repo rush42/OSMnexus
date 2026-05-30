@@ -94,15 +94,17 @@ fn check_overlaps() {
     let mut category_dnfs = HashMap::new();
 
     for cat in &cat_data.categories {
+        // Base expression only to avoid exponential explosion
         let expr = filter_to_expr(&cat.condition, macros);
-        let nnf = to_nnf(expr.clone());
+
+        let nnf = to_nnf(expr);
         let mut dnf = to_dnf(nnf);
 
         // Retain only internally consistent terms for each category
         dnf.retain(|term| check_term_consistency(term).0);
         category_dnfs.insert(cat.id.clone(), dnf);
     }
-
+    
     let cat_names: Vec<String> = cat_data.categories.iter().map(|c| c.id.clone()).collect();
     let mut found_any = false;
 
@@ -112,6 +114,19 @@ fn check_overlaps() {
             let cat_b = &cat_names[j];
             let dnf_a = &category_dnfs[cat_a];
             let dnf_b = &category_dnfs[cat_b];
+            
+            // If they explicitly exclude each other, skip checking since logic natively handles it
+            let excludes_each_other = {
+                let a_def = cat_data.categories.iter().find(|c| c.id == *cat_a).unwrap();
+                let b_def = cat_data.categories.iter().find(|c| c.id == *cat_b).unwrap();
+                let a_excludes_b = a_def.excludes.as_ref().map(|ex| ex.contains(cat_b)).unwrap_or(false);
+                let b_excludes_a = b_def.excludes.as_ref().map(|ex| ex.contains(cat_a)).unwrap_or(false);
+                a_excludes_b || b_excludes_a
+            };
+            
+            if excludes_each_other {
+                continue;
+            }
 
             let mut overlaps = false;
             let mut all_warnings = Vec::new();
