@@ -226,11 +226,12 @@ fn build_bikelane_rows(
             Side::Right => format!("way/{}/{}/right", way.id, obj.prefix.unwrap_or("cycleway")),
         };
 
+        let copy_from_parent = category.copy_surface_smoothness_from_parent;
         let surface = obj.tags.get("surface")
-            .or_else(|| if category.copy_surface_smoothness_from_parent { tags.get("surface") } else { None })
+            .or_else(|| if copy_from_parent { tags.get("surface") } else { None })
             .cloned();
         let smoothness = obj.tags.get("smoothness")
-            .or_else(|| if category.copy_surface_smoothness_from_parent { tags.get("smoothness") } else { None })
+            .or_else(|| if copy_from_parent { tags.get("smoothness") } else { None })
             .cloned();
 
         rows.push(BikelaneRow {
@@ -259,7 +260,7 @@ fn build_bikelane_rows(
             },
             derived: BikelaneDerived {
                 id,
-                category: category.id,
+                category: category.id.as_str(),
                 side: obj.side,
                 prefix: obj.prefix,
                 parent_highway: obj.parent_highway.clone(),
