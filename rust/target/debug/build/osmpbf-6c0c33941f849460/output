@@ -1,0 +1,2 @@
+cargo:rerun-if-changed=src/proto/fileformat.proto
+cargo:rerun-if-changed=src/proto/osmformat.proto
