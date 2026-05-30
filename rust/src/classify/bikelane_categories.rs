@@ -92,12 +92,45 @@ fn is_crossing_pattern(ctx: &CategoryContext) -> bool {
     false
 }
 
-/// Base condition for cyclewayOnHighway_advisoryOrExclusive.
-fn is_advisory_or_exclusive(ctx: &CategoryContext) -> bool {
-    if tag_is(ctx, "highway", "cycleway") {
-        return tag_in(ctx, "cycleway", &["lane", "opposite_lane"]);
+/// Returns true if this side object is part of a "BetweenLanes" dual-tagging situation.
+/// Port of hasCyclewayOnHighwayBetweenLanesConditions from BikelaneCategories.lua.
+fn has_between_lanes_conditions(ctx: &CategoryContext) -> bool {
+    if ctx.side == Side::Self_ {
+        return false;
+    }
+    // `lanes` is the unnested value of `cycleway:lanes` on the side object.
+    if sign_contains(tag(ctx, "lanes"), "|lane|") {
+        return true;
+    }
+    // `bicycle:lanes` on the parent way (not unnested onto side object).
+    if sign_contains(parent_tag(ctx, "bicycle:lanes"), "|designated|") {
+        return true;
     }
     false
+}
+
+/// Base condition for cyclewayOnHighway_advisoryOrExclusive.
+fn is_advisory_or_exclusive(ctx: &CategoryContext) -> bool {
+    if !tag_is(ctx, "highway", "cycleway") {
+        return false;
+    }
+    if !tag_in(ctx, "cycleway", &["lane", "opposite_lane"]) {
+        return false;
+    }
+    // Guard: when this side object is part of dual-tagged BetweenLanes setup,
+    // only accept it if the lane tag ends the lanes string (i.e. it's the edge lane).
+    // Lua: `if ContainsSubstring(tags.lanes, '|lane|') and not has_suffix(tags.lanes, '|lane') then return false`
+    if has_between_lanes_conditions(ctx) {
+        let lanes = tag(ctx, "lanes").unwrap_or("");
+        let bicycle_lanes = parent_tag(ctx, "bicycle:lanes").unwrap_or("");
+        if lanes.contains("|lane|") && !lanes.ends_with("|lane") {
+            return false;
+        }
+        if bicycle_lanes.contains("|designated|") && !bicycle_lanes.ends_with("|designated") {
+            return false;
+        }
+    }
+    true
 }
 
 /// Base condition for bicycleRoad.
@@ -123,9 +156,11 @@ fn is_foot_and_cycleway_shared_base(ctx: &CategoryContext) -> bool {
     }
     let allowed = &["cycleway", "path", "footway", "service", "track"];
     if allowed.contains(&hw) {
+        // Lua requires both values to match: both "designated" OR both "yes".
+        // bicycle=yes + foot=designated does NOT match.
         if tag_is(ctx, "segregated", "no")
-            && tag_in(ctx, "bicycle", &["designated", "yes"])
-            && tag_in(ctx, "foot", &["designated", "yes"])
+            && ((tag_is(ctx, "bicycle", "designated") && tag_is(ctx, "foot", "designated"))
+                || (tag_is(ctx, "bicycle", "yes") && tag_is(ctx, "foot", "yes")))
         {
             return true;
         }
@@ -150,9 +185,10 @@ fn is_foot_and_cycleway_segregated_base(ctx: &CategoryContext) -> bool {
         }
     }
     if matches!(hw, "cycleway" | "path" | "footway") {
+        // Same matching-pair rule as footAndCyclewayShared: both "designated" OR both "yes".
         if tag_is(ctx, "segregated", "yes")
-            && tag_in(ctx, "bicycle", &["designated", "yes"])
-            && tag_in(ctx, "foot", &["designated", "yes"])
+            && ((tag_is(ctx, "bicycle", "designated") && tag_is(ctx, "foot", "designated"))
+                || (tag_is(ctx, "bicycle", "yes") && tag_is(ctx, "foot", "yes")))
         {
             return true;
         }
@@ -170,7 +206,12 @@ fn is_foot_and_cycleway_segregated_base(ctx: &CategoryContext) -> bool {
         if tm_right.map(|v| matches!(v, "foot" | "foot;bicycle")).unwrap_or(false) {
             let sep_right = tag(ctx, "separation:right")
                 .or_else(|| tag(ctx, "separation:both"));
-            let separation_ok = sep_right.is_none() || sep_right == Some("no");
+            // Lua normalizes "surface" and "lane_separator" → "no" (paint ≠ physical separation).
+            let sep_normalized = sep_right.map(|v| match v {
+                "surface" | "lane_separator" => "no",
+                other => other,
+            });
+            let separation_ok = sep_normalized.is_none() || sep_normalized == Some("no");
             if separation_ok {
                 return true;
             }
@@ -194,7 +235,9 @@ fn is_cycleway_separated_base(ctx: &CategoryContext) -> bool {
     {
         return true;
     }
-    if hw == "cycleway" && tag_is(ctx, "is_sidepath", "yes") {
+    // Lua truthy check: any non-nil is_sidepath value (including "no") fires this.
+    // is_sidepath=no then sends it to _isolated via the subcategory condition.
+    if hw == "cycleway" && tag(ctx, "is_sidepath").is_some() {
         return true;
     }
 
