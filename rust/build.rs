@@ -10,10 +10,13 @@ fn main() {
     
     let mut categories = String::new();
     let cat_dir = fs::read_dir("src/classify/categories").expect("Failed to read categories dir");
-    
+
+    // Sort for deterministic order (matches Lua categoryDefinitions ordering by filename)
+    let mut entries: Vec<_> = cat_dir.map(|e| e.unwrap()).collect();
+    entries.sort_by_key(|e| e.file_name());
+
     let mut first = true;
-    for entry in cat_dir {
-        let entry = entry.unwrap();
+    for entry in entries {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("json") {
             let file_stem = path.file_stem().unwrap().to_str().unwrap();

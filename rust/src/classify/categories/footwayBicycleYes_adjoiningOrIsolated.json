@@ -22,7 +22,7 @@
     "cyclewayOnHighway_advisory",
     "cyclewayOnHighway_advisoryOrExclusive",
     "cyclewayOnHighway_exclusive",
-    "cyclewaySeparated_adjoiningOrIsolated",
+    "cycleway_adjoiningOrIsolated",
     "data_no",
     "footAndCyclewaySegregated_adjoiningOrIsolated",
     "footAndCyclewayShared_adjoiningOrIsolated",
