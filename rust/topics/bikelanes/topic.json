@@ -1,9 +1,13 @@
 {
   "table": "bikelanes",
   "exclude_condition": { "macro": "standard_exclude" },
-  "transformations": [
-    { "highway": "cycleway", "prefix": "cycleway" },
-    { "highway": "footway",  "prefix": "sidewalk" }
+  "transforms": [
+    "lifecycle",
+    "cycleway_opposite",
+    "construction_prefix",
+    "cycleway_both",
+    { "transform": "split_sides", "highway": "cycleway", "prefix": "cycleway" },
+    { "transform": "split_sides", "highway": "footway",  "prefix": "sidewalk" }
   ],
   "osm_fields": [
     { "output": "name",               "key": "name",                "source": "obj_then_parent" },

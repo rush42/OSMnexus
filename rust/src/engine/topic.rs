@@ -4,7 +4,11 @@ use crate::classify::categories::{Filter, MinzoomRule};
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
     pub table: String,
-    pub transformations: Vec<TransformSpec>,
+    /// Ordered transform pipeline. Each entry is either a bare string naming a no-arg
+    /// tag transform (e.g. "lifecycle") or a parameterized object such as
+    /// `{ "transform": "split_sides", "sides": [{ "highway": ..., "prefix": ... }] }`.
+    #[serde(default)]
+    pub transforms: Vec<Transform>,
     pub osm_fields: Vec<OsmFieldSpec>,
     pub sanitized_fields: Vec<SanitizerSpec>,
     /// Optional Filter condition evaluated against raw way tags before categorization.
@@ -17,10 +21,17 @@ pub struct TopicSpec {
     pub minzoom: Option<MinzoomRule>,
 }
 
+/// One entry in a topic's `transforms` list.
+/// A JSON string is a no-arg tag transform; a JSON object is a parameterized transform.
 #[derive(Debug, Deserialize)]
-pub struct TransformSpec {
-    pub highway: String,
-    pub prefix: String,
+#[serde(untagged)]
+pub enum Transform {
+    /// e.g. "lifecycle", "cycleway_opposite", "construction_prefix", "cycleway_both".
+    Named(String),
+    /// One center-line split: unnest tags with `prefix` onto a side object whose effective
+    /// highway becomes `highway`. List the entry once per projection, e.g.
+    /// `{ "transform": "split_sides", "highway": "cycleway", "prefix": "cycleway" }`.
+    SplitSides { transform: String, highway: String, prefix: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

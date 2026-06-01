@@ -1,6 +1,6 @@
 {
   "table": "roads",
-  "transformations": [],
+  "transforms": ["lifecycle"],
   "exclude_condition": {
     "or": [
       { "macro": "standard_exclude" },

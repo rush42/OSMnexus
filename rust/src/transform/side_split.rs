@@ -274,11 +274,3 @@ fn convert_directed_tags(obj: &mut RawTags, parent: &RawTags, side: Side) {
         }
     }
 }
-
-/// The two center-line transformations used for roads (cycleway and sidewalk).
-pub fn default_transformations() -> Vec<CenterLineTransformation> {
-    vec![
-        CenterLineTransformation { highway: "cycleway", prefix: "cycleway" },
-        CenterLineTransformation { highway: "footway",  prefix: "sidewalk" },
-    ]
-}

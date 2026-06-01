@@ -4,9 +4,10 @@ use futures::SinkExt;
 use tokio_postgres::Client;
 
 use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
-use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::TopicSpec};
+use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::{Transform, TopicSpec}};
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::types::OsmMeta;
+use crate::transform::TagTransform;
 use crate::transform::side_split::CenterLineTransformation;
 
 const COPY_SQL: &str =
@@ -16,6 +17,9 @@ const COPY_SQL: &str =
 pub struct TopicRunner {
     pub spec: TopicSpec,
     pub categories: CategoriesFile,
+    /// No-arg tag transforms applied (in order) to each way's tags before categorization.
+    pub tag_transforms: Vec<TagTransform>,
+    /// Center-line side split (from a `split_sides` entry); empty if the topic has none.
     pub transformations: Vec<CenterLineTransformation>,
 }
 
@@ -49,16 +53,30 @@ impl TopicRunner {
             categories.macros.entry(k).or_insert(v);
         }
 
-        let transformations = spec
-            .transformations
-            .iter()
-            .map(|t| CenterLineTransformation {
-                highway: Box::leak(t.highway.clone().into_boxed_str()),
-                prefix:  Box::leak(t.prefix.clone().into_boxed_str()),
-            })
-            .collect();
+        // Split the declared transform pipeline into ordered no-arg tag transforms and
+        // the (at most one) parameterized center-line split.
+        let mut tag_transforms = Vec::new();
+        let mut transformations = Vec::new();
+        for t in &spec.transforms {
+            match t {
+                Transform::Named(tname) => tag_transforms.push(
+                    TagTransform::from_name(tname)
+                        .with_context(|| format!("topics/{name}/topic.json transforms"))?,
+                ),
+                Transform::SplitSides { transform, highway, prefix } => {
+                    anyhow::ensure!(
+                        transform == "split_sides",
+                        "unknown parameterized transform '{transform}' in topics/{name}/topic.json",
+                    );
+                    transformations.push(CenterLineTransformation {
+                        highway: Box::leak(highway.clone().into_boxed_str()),
+                        prefix:  Box::leak(prefix.clone().into_boxed_str()),
+                    });
+                }
+            }
+        }
 
-        Ok(Self { spec, categories, transformations })
+        Ok(Self { spec, categories, tag_transforms, transformations })
     }
 
     pub fn table(&self) -> &str {
@@ -69,8 +87,15 @@ impl TopicRunner {
         format!("COPY {} {COPY_SQL}", self.spec.table)
     }
 
-    pub fn process(&self, way: &OsmWay, tags: &RawTags, geom: &geo::LineString<f64>, length_m: f64, meta: &OsmMeta) -> Vec<TopicRow> {
-        build_topic_rows(&self.spec, &self.categories, way, tags, &self.transformations, geom, length_m, meta)
+    /// Run the topic's pipeline for one way: apply this topic's tag transforms to a copy
+    /// of the raw tags, then categorize/split/extract. `raw_tags` are the way's untouched
+    /// tags — each topic transforms its own copy.
+    pub fn process(&self, way: &OsmWay, raw_tags: &RawTags, geom: &geo::LineString<f64>, length_m: f64, meta: &OsmMeta) -> Vec<TopicRow> {
+        let mut tags = raw_tags.clone();
+        for t in &self.tag_transforms {
+            t.apply(&mut tags);
+        }
+        build_topic_rows(&self.spec, &self.categories, way, &tags, &self.transformations, geom, length_m, meta)
     }
 }
 

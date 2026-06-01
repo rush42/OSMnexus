@@ -1,7 +1,7 @@
 {
   "table": "barrierLines",
   "exclude_condition": { "macro": "standard_exclude" },
-  "transformations": [],
+  "transforms": ["lifecycle"],
   "osm_fields": [
     { "output": "highway",    "key": "highway",    "source": "obj" },
     { "output": "name",       "key": "name",       "source": "obj" },
