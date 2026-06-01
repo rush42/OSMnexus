@@ -29,51 +29,7 @@
         }
       },
       {
-        "or": [
-          {
-            "and": [
-              {
-                "first_tag": [
-                  "separation:left",
-                  "separation:both",
-                  "separation"
-                ],
-                "in": [
-                  "bollard",
-                  "flex_post",
-                  "vertical_panel",
-                  "studs",
-                  "bump",
-                  "planter",
-                  "fence",
-                  "jersey_barrier",
-                  "guard_rail"
-                ]
-              },
-              {
-                "not": {
-                  "tag": "segregated",
-                  "in": [
-                    "yes",
-                    "no"
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "and": [
-              {
-                "tag": "traffic_mode:left",
-                "eq": "parking"
-              },
-              {
-                "tag": "segregated",
-                "exists": false
-              }
-            ]
-          }
-        ]
+        "macro": "is_protected_bikelane_separation"
       }
     ]
   },

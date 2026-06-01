@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
+use crate::classify::sanitize::{normalize_separation, normalize_traffic_mode};
 
 /// Context passed to categorization predicates.
 pub struct CategoryContext<'a> {
@@ -97,11 +98,13 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
 
         Filter::Macro { r#macro: name } => match name.as_str() {
             // Rust-implemented predicates — too complex or structural for JSON
-            "is_crossing_pattern"           => is_crossing_pattern(ctx),
-            "is_sidepath"                   => is_sidepath(ctx),
-            "has_between_lanes_conditions"  => has_between_lanes_conditions(ctx),
-            "is_footway_bicycle_yes_base"   => is_footway_bicycle_yes_base(ctx),
-            "is_advisory_or_exclusive"      => is_advisory_or_exclusive(ctx),
+            "is_crossing_pattern"                       => is_crossing_pattern(ctx),
+            "is_sidepath"                               => is_sidepath(ctx),
+            "has_between_lanes_conditions"              => has_between_lanes_conditions(ctx),
+            "is_footway_bicycle_yes_base"               => is_footway_bicycle_yes_base(ctx),
+            "is_advisory_or_exclusive"                  => is_advisory_or_exclusive(ctx),
+            "is_foot_and_cycleway_segregated_edge_case" => is_foot_and_cycleway_segregated_edge_case(ctx),
+            "is_protected_bikelane_separation"          => is_protected_bikelane_separation(ctx),
             // JSON-defined macros
             other => macros
                 .get(other)
@@ -241,6 +244,87 @@ fn is_footway_bicycle_yes_base(ctx: &CategoryContext) -> bool {
         }
     }
     true
+}
+
+/// Port of the `footAndCyclewaySegregated` edge case (traffic_mode:right=foot + separation check).
+/// Lua uses SANITIZE_ROAD_TAGS which normalises separation values; we replicate that here.
+fn is_foot_and_cycleway_segregated_edge_case(ctx: &CategoryContext) -> bool {
+    if !tag_is(ctx, "highway", "cycleway") { return false; }
+
+    // traffic_mode:right (or :both) must be foot (Lua normalises foot;bicycle → foot)
+    let tm_right = tag(ctx, "traffic_mode:right").or_else(|| tag(ctx, "traffic_mode:both"));
+    let tm_foot = matches!(tm_right, Some("foot") | Some("foot;bicycle"));
+    if !tm_foot { return false; }
+
+    // separation:right (or :both) must not be a known blocking separation value.
+    // Lua: Sanitize+transform returns nil for unknown values → treated as non-blocking.
+    let sep_raw = tag(ctx, "separation:right").or_else(|| tag(ctx, "separation:both"));
+    if let Some(raw) = sep_raw {
+        let normalized = normalize_separation(raw);
+        const ALLOWED: &[&str] = &[
+            "no", "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter",
+            "kerb", "fence", "jersey_barrier", "guard_rail", "structure", "ditch",
+            "greenery", "hedge", "tree_row", "cone", "kerb;parking_lane", "kerb;bollard", "yes",
+        ];
+        if ALLOWED.contains(&normalized) && normalized != "no" {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Port of the cyclewayOnHighwayProtected separation check using Lua's SANITIZE_ROAD_TAGS.
+/// Returns true when the context matches a "protected bikelane" separation condition.
+fn is_protected_bikelane_separation(ctx: &CategoryContext) -> bool {
+    const PHYSICAL: &[&str] = &[
+        "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter",
+        "fence", "jersey_barrier", "guard_rail",
+    ];
+
+    let sep_left_raw = tag(ctx, "separation:left")
+        .or_else(|| tag(ctx, "separation:both"))
+        .or_else(|| tag(ctx, "separation"));
+    let sep_left = sep_left_raw.map(normalize_separation);
+
+    let sep_right_raw = tag(ctx, "separation:right")
+        .or_else(|| tag(ctx, "separation:both"));
+    let sep_right = sep_right_raw.map(normalize_separation);
+
+    let tm_right_raw = tag(ctx, "traffic_mode:right")
+        .or_else(|| tag(ctx, "traffic_mode:both"));
+    let tm_right = tm_right_raw.map(normalize_traffic_mode);
+
+    let tm_left_raw = tag(ctx, "traffic_mode:left")
+        .or_else(|| tag(ctx, "traffic_mode:both"));
+    let tm_left = tm_left_raw.map(normalize_traffic_mode);
+
+    let has_segregated = tag(ctx, "segregated").is_some();
+
+    // Case 1: physical separation left + NOT motor_vehicle right + no segregated
+    if let Some(sl) = sep_left {
+        if PHYSICAL.contains(&sl) {
+            if tm_right != Some("motor_vehicle") && !has_segregated {
+                return true;
+            }
+        }
+    }
+
+    // Case 2: parking left + no segregated
+    if tm_left == Some("parking") && !has_segregated {
+        return true;
+    }
+
+    // Case 3: counter-flow — motor_vehicle right + physical separation right
+    if tm_right == Some("motor_vehicle") {
+        if let Some(sr) = sep_right {
+            if PHYSICAL.contains(&sr) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 /// Port of cyclewayOnHighway_advisoryOrExclusive base — kept in Rust for lane-suffix interaction

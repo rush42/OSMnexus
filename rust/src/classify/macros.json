@@ -247,57 +247,7 @@
             ]
           },
           {
-            "and": [
-              {
-                "tag": "highway",
-                "eq": "cycleway"
-              },
-              {
-                "or": [
-                  {
-                    "tag": "traffic_mode:right",
-                    "in": [
-                      "foot",
-                      "foot;bicycle"
-                    ]
-                  },
-                  {
-                    "tag": "traffic_mode:both",
-                    "in": [
-                      "foot",
-                      "foot;bicycle"
-                    ]
-                  }
-                ]
-              },
-              {
-                "or": [
-                  {
-                    "and": [
-                      {
-                        "tag": "separation:right",
-                        "exists": false
-                      },
-                      {
-                        "tag": "separation:both",
-                        "exists": false
-                      }
-                    ]
-                  },
-                  {
-                    "first_tag": [
-                      "separation:right",
-                      "separation:both"
-                    ],
-                    "in": [
-                      "no",
-                      "surface",
-                      "lane_separator"
-                    ]
-                  }
-                ]
-              }
-            ]
+            "macro": "is_foot_and_cycleway_segregated_edge_case"
           }
         ]
       }
