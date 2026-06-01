@@ -1,5 +1,6 @@
 {
   "table": "bikelanes",
+  "exclude_condition": { "macro": "standard_exclude" },
   "transformations": [
     { "highway": "cycleway", "prefix": "cycleway" },
     { "highway": "footway",  "prefix": "sidewalk" }

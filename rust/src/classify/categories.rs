@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
+use anyhow::Context;
 use serde::Deserialize;
 
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
+use crate::classify::highway_classes::allowed_highways;
 use crate::classify::sanitize::{normalize_separation, normalize_traffic_mode, SEPARATION_ALLOWED};
 
 /// Context passed to categorization predicates.
@@ -153,6 +155,27 @@ pub fn load_categories_from_dir(dir: &std::path::Path) -> anyhow::Result<Categor
     Ok(serde_json::from_str(&combined)?)
 }
 
+/// Load shared, cross-topic macros from `topics/_shared/<name>.json` (one Filter per file,
+/// macro name = file stem). Referenced by name from any topic's conditions, e.g.
+/// `{ "macro": "standard_exclude" }`.
+pub fn load_shared_macros(dir: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
+    let mut macros = HashMap::new();
+    if !dir.exists() {
+        return Ok(macros);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        let filter: Filter = serde_json::from_str(&std::fs::read_to_string(&path)?)
+            .with_context(|| format!("parsing shared macro {}", path.display()))?;
+        macros.insert(name, filter);
+    }
+    Ok(macros)
+}
+
 // ── Filter evaluator ──────────────────────────────────────────────────────────
 
 fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
@@ -170,7 +193,8 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
             "is_advisory_or_exclusive"                  => is_advisory_or_exclusive(ctx),
             "is_foot_and_cycleway_segregated_edge_case" => is_foot_and_cycleway_segregated_edge_case(ctx),
             "is_protected_bikelane_separation"          => is_protected_bikelane_separation(ctx),
-            // JSON-defined macros
+            "is_allowed_highway"                        => is_allowed_highway(ctx),
+            // JSON-defined macros (per-topic categories/macros.json + shared topics/_shared/)
             other => macros
                 .get(other)
                 .map(|f| eval(f, ctx, macros))
@@ -248,6 +272,15 @@ fn sign_contains(sign: Option<&str>, needle: &str) -> bool {
     sign.map(|s| s.contains(needle)).unwrap_or(false)
 }
 
+
+/// True when the way's `highway` value is one we process at all.
+/// Backs the shared `standard_exclude` macro (replaces the old `should_exclude`).
+fn is_allowed_highway(ctx: &CategoryContext) -> bool {
+    ctx.tags
+        .get("highway")
+        .map(|hw| allowed_highways().contains(hw.as_str()))
+        .unwrap_or(false)
+}
 
 /// Port of `IsSidepath` from IsSidepath.lua.
 fn is_sidepath(ctx: &CategoryContext) -> bool {

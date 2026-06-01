@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::SinkExt;
 use tokio_postgres::Client;
 
-use crate::classify::categories::{load_categories_from_dir, CategoriesFile};
+use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
 use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::TopicSpec};
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::types::OsmMeta;
@@ -31,7 +31,7 @@ impl TopicRunner {
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
 
         let cats_dir = base.join("categories");
-        let categories = if cats_dir.exists() {
+        let mut categories = if cats_dir.exists() {
             load_categories_from_dir(&cats_dir)
                 .with_context(|| format!("loading topics/{name}/categories/"))?
         } else {
@@ -39,6 +39,15 @@ impl TopicRunner {
             // Every shipped topic has a categories/ dir; this is just a safe fallback.
             CategoriesFile { macros: Default::default(), categories: Vec::new() }
         };
+
+        // Merge shared cross-topic macros (topics/_shared/) into this topic's macro
+        // namespace. Topic-local macros win on name conflict.
+        let shared_dir = base.parent().expect("topics/<name> has a parent").join("_shared");
+        for (k, v) in load_shared_macros(&shared_dir)
+            .with_context(|| "loading topics/_shared/")?
+        {
+            categories.macros.entry(k).or_insert(v);
+        }
 
         let transformations = spec
             .transformations

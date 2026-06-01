@@ -1,4 +1,3 @@
-use crate::classify::exclude::should_exclude;
 use crate::engine::{runner::TopicRow, topic_runner::TopicRunner};
 use crate::osm::types::OsmWay;
 use crate::output::{
@@ -23,10 +22,8 @@ pub fn process_way(way: &OsmWay, runners: &[TopicRunner]) -> WayOutput {
     transform_construction_prefix(&mut tags);
     transform_cycleway_both_postfix(&mut tags);
 
-    if should_exclude(&tags) {
-        return WayOutput(runners.iter().map(|_| Vec::new()).collect());
-    }
-
+    // Exclusion is now per-topic via each topic's `exclude_condition` (see the shared
+    // `standard_exclude` macro), evaluated in `build_topic_rows`.
     let length_m = haversine_length_m(&way.coords);
     let geom = project_line(&way.coords);
 

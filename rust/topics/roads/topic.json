@@ -3,6 +3,7 @@
   "transformations": [],
   "exclude_condition": {
     "or": [
+      { "macro": "standard_exclude" },
       { "tag": "access", "in": ["private", "no", "delivery", "permit"] },
       { "and": [
           { "tag": "highway", "eq": "footway" },
