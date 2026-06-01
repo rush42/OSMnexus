@@ -2,26 +2,30 @@ use tokio_postgres::Client;
 
 const CREATE_BIKELANES: &str = r#"
 CREATE TABLE IF NOT EXISTS bikelanes (
-  osm_id   bigint,
-  osm_type text,
-  id       text NOT NULL,
-  osm      jsonb,
-  derived  jsonb,
-  meta     jsonb,
-  geom     geometry(LineString, 3857),
-  minzoom  integer NOT NULL
+  osm_id    bigint,
+  osm_type  text,
+  id        text NOT NULL,
+  osm       jsonb,
+  sanitized jsonb,
+  derived   jsonb,
+  private   jsonb,
+  meta      jsonb,
+  geom      geometry(LineString, 3857),
+  minzoom   integer NOT NULL
 )"#;
 
 const CREATE_ROADS: &str = r#"
 CREATE TABLE IF NOT EXISTS roads (
-  osm_id   bigint,
-  osm_type text,
-  id       text NOT NULL,
-  osm      jsonb,
-  derived  jsonb,
-  meta     jsonb,
-  geom     geometry(LineString, 3857),
-  minzoom  integer NOT NULL
+  osm_id    bigint,
+  osm_type  text,
+  id        text NOT NULL,
+  osm       jsonb,
+  sanitized jsonb,
+  derived   jsonb,
+  private   jsonb,
+  meta      jsonb,
+  geom      geometry(LineString, 3857),
+  minzoom   integer NOT NULL
 )"#;
 
 const DROP_BIKELANE_INDEXES: &str = r#"
@@ -55,9 +59,7 @@ pub async fn create_tables(client: &Client) -> anyhow::Result<()> {
 }
 
 pub async fn truncate_tables(client: &Client) -> anyhow::Result<()> {
-    client
-        .batch_execute("TRUNCATE TABLE bikelanes, roads")
-        .await?;
+    client.batch_execute("TRUNCATE TABLE bikelanes, roads").await?;
     Ok(())
 }
 

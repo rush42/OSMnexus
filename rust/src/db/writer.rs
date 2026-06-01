@@ -4,22 +4,20 @@ use tokio_postgres::Client;
 
 use crate::output::{bikelane_row::BikelaneRow, geometry::to_ewkb, road_row::RoadRow};
 
-const COPY_BIKELANES: &str =
-    "COPY bikelanes (osm_id, osm_type, id, osm, derived, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
+pub const COPY_BIKELANES: &str =
+    "COPY bikelanes (osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
-const COPY_ROADS: &str =
-    "COPY roads (osm_id, osm_type, id, osm, derived, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
+pub const COPY_ROADS: &str =
+    "COPY roads (osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
 /// Write all bikelane rows using PostgreSQL COPY CSV.
 pub async fn write_bikelanes(client: &Client, rows: &[BikelaneRow]) -> anyhow::Result<usize> {
     let sink = client.copy_in(COPY_BIKELANES).await?;
     let mut sink = std::pin::pin!(sink);
     let mut buf = Vec::new();
-
     for row in rows {
         write_bikelane_csv_row(&mut buf, row)?;
     }
-
     sink.send(Bytes::from(buf)).await?;
     sink.finish().await?;
     Ok(rows.len())
@@ -30,66 +28,64 @@ pub async fn write_roads(client: &Client, rows: &[RoadRow]) -> anyhow::Result<us
     let sink = client.copy_in(COPY_ROADS).await?;
     let mut sink = std::pin::pin!(sink);
     let mut buf = Vec::new();
-
     for row in rows {
         write_road_csv_row(&mut buf, row)?;
     }
-
     sink.send(Bytes::from(buf)).await?;
     sink.finish().await?;
     Ok(rows.len())
 }
 
-fn write_bikelane_csv_row(buf: &mut Vec<u8>, row: &BikelaneRow) -> anyhow::Result<()> {
-    let osm_json = serde_json::to_string(&row.osm)?;
-    let derived_json = serde_json::to_string(&row.derived)?;
-    let meta_json = serde_json::to_string(&row.meta)?;
-    let ewkb_hex = hex::encode(to_ewkb(&row.geom));
+pub fn write_bikelane_csv_row(buf: &mut Vec<u8>, row: &BikelaneRow) -> anyhow::Result<()> {
+    let osm_json       = serde_json::to_string(&row.osm)?;
+    let sanitized_json = serde_json::to_string(&row.sanitized)?;
+    let derived_json   = serde_json::to_string(&row.derived)?;
+    let private_json   = serde_json::to_string(&row.private)?;
+    let meta_json      = serde_json::to_string(&row.meta)?;
+    let ewkb_hex       = hex::encode(to_ewkb(&row.geom));
 
-    write_csv_row(
-        buf,
-        &[
-            row.osm_id.to_string(),
-            row.osm_type.to_owned(),
-            row.id.clone(),
-            osm_json,
-            derived_json,
-            meta_json,
-            ewkb_hex,
-            row.minzoom.to_string(),
-        ],
-    );
+    write_csv_row(buf, &[
+        row.osm_id.to_string(),
+        row.osm_type.to_owned(),
+        row.id.clone(),
+        osm_json,
+        sanitized_json,
+        derived_json,
+        private_json,
+        meta_json,
+        ewkb_hex,
+        row.minzoom.to_string(),
+    ]);
     Ok(())
 }
 
-fn write_road_csv_row(buf: &mut Vec<u8>, row: &RoadRow) -> anyhow::Result<()> {
-    let osm_json = serde_json::to_string(&row.osm)?;
-    let derived_json = serde_json::to_string(&row.derived)?;
-    let meta_json = serde_json::to_string(&row.meta)?;
-    let ewkb_hex = hex::encode(to_ewkb(&row.geom));
+pub fn write_road_csv_row(buf: &mut Vec<u8>, row: &RoadRow) -> anyhow::Result<()> {
+    let osm_json       = serde_json::to_string(&row.osm)?;
+    let sanitized_json = serde_json::to_string(&row.sanitized)?;
+    let derived_json   = serde_json::to_string(&row.derived)?;
+    let private_json   = serde_json::to_string(&row.private)?;
+    let meta_json      = serde_json::to_string(&row.meta)?;
+    let ewkb_hex       = hex::encode(to_ewkb(&row.geom));
 
-    write_csv_row(
-        buf,
-        &[
-            row.osm_id.to_string(),
-            row.osm_type.to_owned(),
-            row.id.clone(),
-            osm_json,
-            derived_json,
-            meta_json,
-            ewkb_hex,
-            row.minzoom.to_string(),
-        ],
-    );
+    write_csv_row(buf, &[
+        row.osm_id.to_string(),
+        row.osm_type.to_owned(),
+        row.id.clone(),
+        osm_json,
+        sanitized_json,
+        derived_json,
+        private_json,
+        meta_json,
+        ewkb_hex,
+        row.minzoom.to_string(),
+    ]);
     Ok(())
 }
 
 /// Write a single CSV row with RFC 4180 quoting.
 fn write_csv_row(buf: &mut Vec<u8>, fields: &[String]) {
     for (i, field) in fields.iter().enumerate() {
-        if i > 0 {
-            buf.push(b',');
-        }
+        if i > 0 { buf.push(b','); }
         let needs_quoting =
             field.contains('"') || field.contains(',') || field.contains('\n') || field.contains('\\');
         if needs_quoting {
