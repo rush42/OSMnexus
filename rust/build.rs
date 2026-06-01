@@ -11,7 +11,7 @@ fn main() {
     let mut categories = String::new();
     let cat_dir = fs::read_dir("src/classify/categories").expect("Failed to read categories dir");
 
-    // Sort for deterministic order (matches Lua categoryDefinitions ordering by filename)
+    // Sort alphabetically for deterministic, reproducible compile-time order.
     let mut entries: Vec<_> = cat_dir.map(|e| e.unwrap()).collect();
     entries.sort_by_key(|e| e.file_name());
 
