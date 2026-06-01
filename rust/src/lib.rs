@@ -4,4 +4,5 @@ pub mod db;
 pub mod error;
 pub mod osm;
 pub mod output;
+pub mod processing;
 pub mod transform;
