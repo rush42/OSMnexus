@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
-use crate::classify::sanitize::{normalize_separation, normalize_traffic_mode};
+use crate::classify::sanitize::{normalize_separation, normalize_traffic_mode, SEPARATION_ALLOWED};
 
 /// Context passed to categorization predicates.
 pub struct CategoryContext<'a> {
@@ -261,12 +261,7 @@ fn is_foot_and_cycleway_segregated_edge_case(ctx: &CategoryContext) -> bool {
     let sep_raw = tag(ctx, "separation:right").or_else(|| tag(ctx, "separation:both"));
     if let Some(raw) = sep_raw {
         let normalized = normalize_separation(raw);
-        const ALLOWED: &[&str] = &[
-            "no", "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter",
-            "kerb", "fence", "jersey_barrier", "guard_rail", "structure", "ditch",
-            "greenery", "hedge", "tree_row", "cone", "kerb;parking_lane", "kerb;bollard", "yes",
-        ];
-        if ALLOWED.contains(&normalized) && normalized != "no" {
+        if SEPARATION_ALLOWED.contains(&normalized) && normalized != "no" {
             return false;
         }
     }
