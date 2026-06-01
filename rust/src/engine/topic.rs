@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use crate::classify::bikelane_categories::Filter;
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
@@ -6,10 +7,11 @@ pub struct TopicSpec {
     pub transformations: Vec<TransformSpec>,
     pub osm_fields: Vec<OsmFieldSpec>,
     pub sanitized_fields: Vec<SanitizerSpec>,
-    /// Named Rust exclusion functions applied before categorization.
-    /// Supported: "by_access", "by_service"
+    /// Optional Filter condition evaluated against raw way tags before categorization.
+    /// If the condition matches, the way is skipped entirely for this topic.
+    /// Uses the same Filter JSON syntax as category conditions.
     #[serde(default)]
-    pub exclude_fns: Vec<String>,
+    pub exclude_condition: Option<Filter>,
 }
 
 #[derive(Debug, Deserialize)]

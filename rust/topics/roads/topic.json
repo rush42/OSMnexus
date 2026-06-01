@@ -1,7 +1,26 @@
 {
   "table": "roads",
   "transformations": [],
-  "exclude_fns": ["by_access", "by_service"],
+  "exclude_condition": {
+    "or": [
+      { "tag": "access", "in": ["private", "no", "delivery", "permit"] },
+      { "and": [
+          { "tag": "highway", "eq": "footway" },
+          { "tag": "foot", "in": ["private", "no", "delivery", "permit"] }
+      ]},
+      { "and": [
+          { "tag": "highway", "eq": "cycleway" },
+          { "tag": "bicycle", "in": ["private", "no", "delivery", "permit"] }
+      ]},
+      { "and": [
+          { "tag": "highway", "eq": "service" },
+          { "not": { "tag": "bicycle", "eq": "designated" } },
+          { "not": { "first_tag": ["bicycle:left","bicycle:right","bicycle:both"], "exists": true } },
+          { "tag": "service", "exists": true },
+          { "not": { "tag": "service", "eq": "alley" } }
+      ]}
+    ]
+  },
   "osm_fields": [
     { "output": "highway",         "key": "highway",        "source": "obj" },
     { "output": "name",            "key": "name",           "source": "obj" },

@@ -377,6 +377,21 @@ fn is_advisory_or_exclusive(ctx: &CategoryContext) -> bool {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Evaluate a Filter against raw tags with a neutral context (side=self, no parent).
+/// Used by the topic engine for way-level exclude_condition checks.
+pub fn eval_filter(filter: &Filter, tags: &RawTags, macros: &HashMap<String, Filter>) -> bool {
+    let ctx = CategoryContext {
+        tags,
+        side: Side::Self_,
+        prefix: None,
+        parent_highway: None,
+        parent_tags: None,
+        infix: None,
+        length_m: 0.0,
+    };
+    eval(filter, &ctx, macros)
+}
+
 /// Find the first matching category for the given context using any CategoriesFile.
 pub fn categorize<'a>(ctx: &CategoryContext, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
     cats.categories.iter().find(|cat| {
