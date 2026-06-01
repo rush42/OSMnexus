@@ -23,7 +23,7 @@ pub struct CategoryContext<'a> {
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CategoryDef {
     pub id: String,
     pub infrastructure_exists: bool,
@@ -32,9 +32,44 @@ pub struct CategoryDef {
     pub copy_surface_smoothness_from_parent: bool,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
+    /// Per-category minzoom override. Falls back to the topic-level default when absent.
+    #[serde(default)]
+    pub minzoom: Option<MinzoomRule>,
 }
 
-#[derive(Debug, Deserialize)]
+/// Declarative minzoom: a constant, or an ordered list of conditional cases with a default.
+/// Cases are evaluated in order against the same `CategoryContext` used for categorization,
+/// reusing the `Filter` evaluator; the first matching case wins, else `default`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum MinzoomRule {
+    Const(i32),
+    Conditional { default: i32, rules: Vec<MinzoomCase> },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MinzoomCase {
+    pub when: Filter,
+    pub zoom: i32,
+}
+
+/// Resolve a minzoom rule against a categorization context.
+pub fn resolve_minzoom(
+    rule: &MinzoomRule,
+    ctx: &CategoryContext,
+    macros: &HashMap<String, Filter>,
+) -> i32 {
+    match rule {
+        MinzoomRule::Const(z) => *z,
+        MinzoomRule::Conditional { default, rules } => rules
+            .iter()
+            .find(|case| eval(&case.when, ctx, macros))
+            .map(|case| case.zoom)
+            .unwrap_or(*default),
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct CategoriesFile {
     pub macros: HashMap<String, Filter>,
     pub categories: Vec<CategoryDef>,
@@ -42,7 +77,7 @@ pub struct CategoriesFile {
 
 /// Filter expression. Variants are tried in declaration order by serde's untagged deserializer,
 /// so more-specific variants (those with unique secondary fields) come before catch-alls.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Filter {
     // Combinators
@@ -74,6 +109,7 @@ pub enum Filter {
     Prefix    { prefix:     String },
     Infix     { infix:      String },
     LengthLte { length_lte: f64   },
+    LengthLt  { length_lt:  f64   },
     HasKeyPrefix { has_key_prefix: String },
 }
 
@@ -192,6 +228,7 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
         Filter::Prefix    { prefix    } => ctx.prefix == Some(prefix.as_str()),
         Filter::Infix     { infix     } => ctx.infix  == Some(infix.as_str()),
         Filter::LengthLte { length_lte } => ctx.length_m <= *length_lte,
+        Filter::LengthLt  { length_lt  } => ctx.length_m <  *length_lt,
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
     }

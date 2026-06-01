@@ -1,7 +1,8 @@
 use tokio_postgres::Client;
 
-const CREATE_BIKELANES: &str = r#"
-CREATE TABLE IF NOT EXISTS bikelanes (
+fn create_table_sql(table: &str) -> String {
+    format!(r#"
+CREATE TABLE IF NOT EXISTS {table} (
   osm_id    bigint,
   osm_type  text,
   id        text NOT NULL,
@@ -12,65 +13,48 @@ CREATE TABLE IF NOT EXISTS bikelanes (
   meta      jsonb,
   geom      geometry(LineString, 3857),
   minzoom   integer NOT NULL
-)"#;
+)"#)
+}
 
-const CREATE_ROADS: &str = r#"
-CREATE TABLE IF NOT EXISTS roads (
-  osm_id    bigint,
-  osm_type  text,
-  id        text NOT NULL,
-  osm       jsonb,
-  sanitized jsonb,
-  derived   jsonb,
-  private   jsonb,
-  meta      jsonb,
-  geom      geometry(LineString, 3857),
-  minzoom   integer NOT NULL
-)"#;
+fn drop_indexes_sql(table: &str) -> String {
+    format!(
+        "DROP INDEX IF EXISTS {table}_geom_idx;\n\
+         DROP INDEX IF EXISTS {table}_minzoom_idx;\n\
+         DROP INDEX IF EXISTS {table}_id_idx"
+    )
+}
 
-const DROP_BIKELANE_INDEXES: &str = r#"
-DROP INDEX IF EXISTS bikelanes_geom_idx;
-DROP INDEX IF EXISTS bikelanes_minzoom_idx;
-DROP INDEX IF EXISTS bikelanes_id_idx
-"#;
+fn create_indexes_sql(table: &str) -> String {
+    format!(
+        "CREATE INDEX IF NOT EXISTS {table}_geom_idx    ON {table} USING GIST (geom);\n\
+         CREATE INDEX IF NOT EXISTS {table}_minzoom_idx ON {table} (minzoom);\n\
+         CREATE UNIQUE INDEX IF NOT EXISTS {table}_id_idx ON {table} (id)"
+    )
+}
 
-const DROP_ROAD_INDEXES: &str = r#"
-DROP INDEX IF EXISTS roads_geom_idx;
-DROP INDEX IF EXISTS roads_minzoom_idx;
-DROP INDEX IF EXISTS roads_id_idx
-"#;
-
-const CREATE_BIKELANE_INDEXES: &str = r#"
-CREATE INDEX IF NOT EXISTS bikelanes_geom_idx    ON bikelanes USING GIST (geom);
-CREATE INDEX IF NOT EXISTS bikelanes_minzoom_idx ON bikelanes (minzoom);
-CREATE UNIQUE INDEX IF NOT EXISTS bikelanes_id_idx ON bikelanes (id)
-"#;
-
-const CREATE_ROAD_INDEXES: &str = r#"
-CREATE INDEX IF NOT EXISTS roads_geom_idx    ON roads USING GIST (geom);
-CREATE INDEX IF NOT EXISTS roads_minzoom_idx ON roads (minzoom);
-CREATE UNIQUE INDEX IF NOT EXISTS roads_id_idx ON roads (id)
-"#;
-
-pub async fn create_tables(client: &Client) -> anyhow::Result<()> {
-    client.batch_execute(CREATE_BIKELANES).await?;
-    client.batch_execute(CREATE_ROADS).await?;
+pub async fn create_tables(client: &Client, tables: &[&str]) -> anyhow::Result<()> {
+    for table in tables {
+        client.batch_execute(&create_table_sql(table)).await?;
+    }
     Ok(())
 }
 
-pub async fn truncate_tables(client: &Client) -> anyhow::Result<()> {
-    client.batch_execute("TRUNCATE TABLE bikelanes, roads").await?;
+pub async fn truncate_tables(client: &Client, tables: &[&str]) -> anyhow::Result<()> {
+    let list = tables.join(", ");
+    client.batch_execute(&format!("TRUNCATE TABLE {list}")).await?;
     Ok(())
 }
 
-pub async fn drop_indexes(client: &Client) -> anyhow::Result<()> {
-    client.batch_execute(DROP_BIKELANE_INDEXES).await?;
-    client.batch_execute(DROP_ROAD_INDEXES).await?;
+pub async fn drop_indexes(client: &Client, tables: &[&str]) -> anyhow::Result<()> {
+    for table in tables {
+        client.batch_execute(&drop_indexes_sql(table)).await?;
+    }
     Ok(())
 }
 
-pub async fn create_indexes(client: &Client) -> anyhow::Result<()> {
-    client.batch_execute(CREATE_BIKELANE_INDEXES).await?;
-    client.batch_execute(CREATE_ROAD_INDEXES).await?;
+pub async fn create_indexes(client: &Client, tables: &[&str]) -> anyhow::Result<()> {
+    for table in tables {
+        client.batch_execute(&create_indexes_sql(table)).await?;
+    }
     Ok(())
 }

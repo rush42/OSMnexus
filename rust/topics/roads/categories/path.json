@@ -1,4 +1,5 @@
 {
+  "minzoom": {"default": 0, "rules": [{"when": {"length_lt": 1000}, "zoom": 13}]},
   "infrastructure_exists": true, "implicit_oneway": false,
   "implicit_oneway_confidence": "not_applicable", "copy_surface_smoothness_from_parent": false,
   "condition": { "tag": "highway", "eq": "path" },

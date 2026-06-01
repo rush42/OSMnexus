@@ -43,5 +43,6 @@
     { "output": "tunnel",       "fn": "yes_flag", "key": "tunnel", "source": "obj" },
     { "output": "traffic_sign", "fn": "traffic_sign" },
     { "output": "lifecycle",    "fn": "lifecycle" }
-  ]
+  ],
+  "minzoom": 0
 }

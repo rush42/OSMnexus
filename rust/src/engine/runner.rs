@@ -1,8 +1,7 @@
 use serde_json::{Map, Value};
 
 use crate::classify::{
-    bikelane_categories::{categorize, eval_filter, CategoriesFile, CategoryContext},
-    minzoom::bikelane_minzoom,
+    bikelane_categories::{categorize, eval_filter, resolve_minzoom, CategoriesFile, CategoryContext},
     road_classification::road_classification_value,
     sanitize as san,
 };
@@ -257,6 +256,14 @@ pub fn build_topic_rows(
             Value::String(category.implicit_oneway_confidence.clone()),
         );
 
+        // Category override wins over the topic-level default; absent → 0.
+        let minzoom = category
+            .minzoom
+            .as_ref()
+            .or(topic.minzoom.as_ref())
+            .map(|rule| resolve_minzoom(rule, &ctx, &categories.macros))
+            .unwrap_or(0);
+
         rows.push(TopicRow {
             osm_id: way.id,
             osm_type: "W",
@@ -267,7 +274,7 @@ pub fn build_topic_rows(
             private,
             meta: meta.clone(),
             geom_ewkb: to_ewkb(geom),
-            minzoom: bikelane_minzoom(length_m),
+            minzoom,
         });
     }
 

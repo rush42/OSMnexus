@@ -57,5 +57,6 @@
     { "output": "surface",             "fn": "surface_with_fallback" },
     { "output": "smoothness",          "fn": "smoothness_with_fallback" },
     { "fn": "derive_traffic_mode", "output_left": "traffic_mode_left", "output_right": "traffic_mode_right" }
-  ]
+  ],
+  "minzoom": { "default": 0, "rules": [ { "when": { "length_lt": 100 }, "zoom": 9 } ] }
 }

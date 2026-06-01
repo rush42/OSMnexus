@@ -9,6 +9,7 @@ pub enum Predicate {
     Exists(String),
     FirstTagIn(Vec<String>, Vec<String>),
     LengthLte(i64),
+    LengthLt(i64),
     HasKeyPrefix(String),
     Prefix(String),
     Infix(String),
@@ -25,6 +26,7 @@ impl Predicate {
             Predicate::Exists(k) => vec![k.clone()],
             Predicate::FirstTagIn(ks, _) => ks.clone(),
             Predicate::LengthLte(_) => vec!["length".to_string()],
+            Predicate::LengthLt(_) => vec!["length".to_string()],
             Predicate::HasKeyPrefix(p) => vec![format!("prefix({})", p)],
             Predicate::Prefix(_) => vec!["[prefix]".to_string()],
             Predicate::Infix(_) => vec!["[infix]".to_string()],
@@ -92,6 +94,7 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::Prefix { prefix } => Expr::Lit(Literal::Pos(Predicate::Prefix(prefix.clone()))),
         Filter::Infix { infix } => Expr::Lit(Literal::Pos(Predicate::Infix(infix.clone()))),
         Filter::LengthLte { length_lte } => Expr::Lit(Literal::Pos(Predicate::LengthLte((*length_lte * 1000.0).round() as i64))),
+        Filter::LengthLt  { length_lt  } => Expr::Lit(Literal::Pos(Predicate::LengthLt((*length_lt * 1000.0).round() as i64))),
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
     }
 }

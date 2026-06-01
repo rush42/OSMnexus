@@ -1,0 +1,20 @@
+{
+  "table": "barrierLines",
+  "transformations": [],
+  "osm_fields": [
+    { "output": "highway",    "key": "highway",    "source": "obj" },
+    { "output": "name",       "key": "name",       "source": "obj" },
+    { "output": "tunnel",     "key": "tunnel",     "source": "obj" },
+    { "output": "bridge",     "key": "bridge",     "source": "obj" },
+    { "output": "waterway",   "key": "waterway",   "source": "obj" },
+    { "output": "railway",    "key": "railway",    "source": "obj" },
+    { "output": "usage",      "key": "usage",      "source": "obj" },
+    { "output": "natural",    "key": "natural",    "source": "obj" },
+    { "output": "aerodrome",  "key": "aerodrome",  "source": "obj" }
+  ],
+  "sanitized_fields": [
+    { "output": "bridge", "fn": "yes_flag", "key": "bridge", "source": "obj" },
+    { "output": "tunnel", "fn": "yes_flag", "key": "tunnel", "source": "obj" }
+  ],
+  "minzoom": 0
+}

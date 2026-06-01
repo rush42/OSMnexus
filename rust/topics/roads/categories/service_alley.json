@@ -1,4 +1,5 @@
 {
+  "minzoom": 11,
   "infrastructure_exists": true, "implicit_oneway": false,
   "implicit_oneway_confidence": "not_applicable", "copy_surface_smoothness_from_parent": false,
   "condition": { "and": [ {"tag":"highway","eq":"service"}, {"tag":"service","eq":"alley"} ] },

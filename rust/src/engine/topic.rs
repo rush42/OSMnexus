@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use crate::classify::bikelane_categories::Filter;
+use crate::classify::bikelane_categories::{Filter, MinzoomRule};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
@@ -12,6 +12,9 @@ pub struct TopicSpec {
     /// Uses the same Filter JSON syntax as category conditions.
     #[serde(default)]
     pub exclude_condition: Option<Filter>,
+    /// Topic-level default minzoom rule, used for any category without its own `minzoom`.
+    #[serde(default)]
+    pub minzoom: Option<MinzoomRule>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,6 +1,5 @@
-use crate::classify::bikelane_categories::CategoriesFile;
 use crate::classify::exclude::should_exclude;
-use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::TopicSpec};
+use crate::engine::{runner::TopicRow, topic_runner::TopicRunner};
 use crate::osm::types::OsmWay;
 use crate::output::{
     geometry::{haversine_length_m, project_line},
@@ -11,22 +10,12 @@ use crate::transform::{
     cycleway_both::transform_cycleway_both_postfix,
     lifecycle::transform_lifecycle_tags,
     opposite::transform_cycleway_opposite_schema,
-    side_split::CenterLineTransformation,
 };
 
-pub struct WayOutput {
-    pub bikelane_rows: Vec<TopicRow>,
-    pub road_rows: Vec<TopicRow>,
-}
+/// Rows per topic (index matches the runners slice passed to process_way).
+pub struct WayOutput(pub Vec<Vec<TopicRow>>);
 
-pub fn process_way(
-    way: &OsmWay,
-    bikelane_transformations: &[CenterLineTransformation],
-    bikelane_topic: &TopicSpec,
-    bikelane_categories: &CategoriesFile,
-    road_topic: &TopicSpec,
-    road_categories: &CategoriesFile,
-) -> WayOutput {
+pub fn process_way(way: &OsmWay, runners: &[TopicRunner]) -> WayOutput {
     let mut tags = way.tags.clone();
 
     transform_lifecycle_tags(&mut tags);
@@ -35,7 +24,7 @@ pub fn process_way(
     transform_cycleway_both_postfix(&mut tags);
 
     if should_exclude(&tags) {
-        return WayOutput { bikelane_rows: Vec::new(), road_rows: Vec::new() };
+        return WayOutput(runners.iter().map(|_| Vec::new()).collect());
     }
 
     let length_m = haversine_length_m(&way.coords);
@@ -50,16 +39,10 @@ pub fn process_way(
         changeset_id: way.meta.changeset,
     };
 
-    let bikelane_rows = build_topic_rows(
-        bikelane_topic, bikelane_categories,
-        way, &tags, bikelane_transformations, &geom, length_m, &meta,
-    );
+    let rows = runners
+        .iter()
+        .map(|r| r.process(way, &tags, &geom, length_m, &meta))
+        .collect();
 
-    // Road topic uses no transformations (empty slice) — always processes as self object
-    let road_rows = build_topic_rows(
-        road_topic, road_categories,
-        way, &tags, &[], &geom, length_m, &meta,
-    );
-
-    WayOutput { bikelane_rows, road_rows }
+    WayOutput(rows)
 }
