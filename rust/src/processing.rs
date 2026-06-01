@@ -1,15 +1,10 @@
-use crate::classify::{
-    exclude::{by_access_bikelanes, by_service, should_exclude},
-    minzoom::road_minzoom,
-    road_classification::road_classification_value,
-    sanitize::{self as san},
-};
+use crate::classify::bikelane_categories::CategoriesFile;
+use crate::classify::exclude::should_exclude;
 use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::TopicSpec};
 use crate::osm::types::OsmWay;
 use crate::output::{
     geometry::{haversine_length_m, project_line},
-    road_row::RoadRow,
-    types::{OsmMeta, RawTagsRef, RoadDerived, RoadOsm, RoadSanitized},
+    types::OsmMeta,
 };
 use crate::transform::{
     construction_prefix::transform_construction_prefix,
@@ -21,13 +16,16 @@ use crate::transform::{
 
 pub struct WayOutput {
     pub bikelane_rows: Vec<TopicRow>,
-    pub road_row: Option<RoadRow>,
+    pub road_rows: Vec<TopicRow>,
 }
 
 pub fn process_way(
     way: &OsmWay,
-    transformations: &[CenterLineTransformation],
-    topic: &TopicSpec,
+    bikelane_transformations: &[CenterLineTransformation],
+    bikelane_topic: &TopicSpec,
+    bikelane_categories: &CategoriesFile,
+    road_topic: &TopicSpec,
+    road_categories: &CategoriesFile,
 ) -> WayOutput {
     let mut tags = way.tags.clone();
 
@@ -37,7 +35,7 @@ pub fn process_way(
     transform_cycleway_both_postfix(&mut tags);
 
     if should_exclude(&tags) {
-        return WayOutput { bikelane_rows: Vec::new(), road_row: None };
+        return WayOutput { bikelane_rows: Vec::new(), road_rows: Vec::new() };
     }
 
     let length_m = haversine_length_m(&way.coords);
@@ -52,66 +50,16 @@ pub fn process_way(
         changeset_id: way.meta.changeset,
     };
 
-    let road_row = build_road_row(way, &tags, &geom, length_m, &meta);
-    let bikelane_rows = build_topic_rows(topic, way, &tags, transformations, &geom, length_m, &meta);
+    let bikelane_rows = build_topic_rows(
+        bikelane_topic, bikelane_categories,
+        way, &tags, bikelane_transformations, &geom, length_m, &meta,
+    );
 
-    WayOutput { bikelane_rows, road_row }
-}
+    // Road topic uses no transformations (empty slice) — always processes as self object
+    let road_rows = build_topic_rows(
+        road_topic, road_categories,
+        way, &tags, &[], &geom, length_m, &meta,
+    );
 
-fn raw(tags: &RawTagsRef, key: &str) -> Option<String> {
-    tags.get(key).cloned()
-}
-
-fn build_road_row(
-    way: &OsmWay,
-    tags: &RawTagsRef,
-    geom: &geo::LineString<f64>,
-    length_m: f64,
-    meta: &OsmMeta,
-) -> Option<RoadRow> {
-    if by_access_bikelanes(tags) || by_service(tags) { return None; }
-    let road = road_classification_value(tags)?;
-    let highway = tags.get("highway").cloned().unwrap_or_default();
-    let id = format!("way/{}", way.id);
-    let minzoom = road_minzoom(&road);
-
-    Some(RoadRow {
-        osm_id: way.id,
-        osm_type: "W",
-        id: id.clone(),
-        osm: RoadOsm {
-            highway,
-            name:           raw(tags, "name"),
-            name_ref:       raw(tags, "ref"),
-            surface:        raw(tags, "surface"),
-            smoothness:     raw(tags, "smoothness"),
-            maxspeed:       raw(tags, "maxspeed"),
-            oneway:         raw(tags, "oneway"),
-            oneway_bicycle: raw(tags, "oneway:bicycle"),
-            lit:            raw(tags, "lit"),
-            bridge:         raw(tags, "bridge"),
-            tunnel:         raw(tags, "tunnel"),
-            operator_type:  raw(tags, "operator_type"),
-            informal:       raw(tags, "informal"),
-            covered:        raw(tags, "covered"),
-            traffic_sign:   raw(tags, "traffic_sign"),
-        },
-        sanitized: RoadSanitized {
-            bridge:       san::sanitize_yes_flag(tags, "bridge"),
-            tunnel:       san::sanitize_yes_flag(tags, "tunnel"),
-            traffic_sign: raw(tags, "traffic_sign").as_deref().and_then(san::sanitize_traffic_sign),
-        },
-        derived: RoadDerived {
-            id,
-            road,
-            length_m,
-            lifecycle: raw(tags, "lifecycle"),
-            bikelane_left: None,
-            bikelane_right: None,
-            bikelane_self: None,
-        },
-        meta: meta.clone(),
-        geom: geom.clone(),
-        minzoom,
-    })
+    WayOutput { bikelane_rows, road_rows }
 }

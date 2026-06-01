@@ -1,7 +1,8 @@
 use serde_json::{Map, Value};
 
 use crate::classify::{
-    bikelane_categories::{categorize_bikelane, CategoryContext},
+    bikelane_categories::{categorize, CategoriesFile, CategoryContext},
+    exclude::{by_access_bikelanes, by_service},
     minzoom::bikelane_minzoom,
     road_classification::road_classification_value,
     sanitize as san,
@@ -175,6 +176,7 @@ fn float_to_json(v: f32) -> serde_json::Number {
 
 pub fn build_topic_rows(
     topic: &TopicSpec,
+    categories: &CategoriesFile,
     way: &OsmWay,
     tags: &RawTags,
     transformations: &[CenterLineTransformation],
@@ -182,6 +184,16 @@ pub fn build_topic_rows(
     length_m: f64,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
+    // Apply topic-level exclusion filters before any categorization.
+    for f in &topic.exclude_fns {
+        let excluded = match f.as_str() {
+            "by_access" => by_access_bikelanes(tags),
+            "by_service" => by_service(tags),
+            other => { tracing::warn!("unknown exclude_fn: {}", other); false }
+        };
+        if excluded { return Vec::new(); }
+    }
+
     let transformed = get_transformed_objects(tags, transformations);
     let mut rows = Vec::new();
 
@@ -197,7 +209,7 @@ pub fn build_topic_rows(
             length_m,
         };
 
-        let Some(category) = categorize_bikelane(&ctx) else { continue };
+        let Some(category) = categorize(&ctx, categories) else { continue };
         if !category.infrastructure_exists { continue }
 
         let id = match obj.side {

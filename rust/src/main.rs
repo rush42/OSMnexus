@@ -1,4 +1,4 @@
-use osm_bikelanes::{config, db, engine, osm, processing, transform};
+use osm_bikelanes::{classify, config, db, engine, osm, processing, transform};
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -7,6 +7,7 @@ use futures::SinkExt;
 use rayon::prelude::*;
 use tracing::info;
 
+use classify::bikelane_categories::{get_categories, load_categories_from_dir};
 use config::Config;
 use db::{pool::build_pool, schema, writer};
 use engine::topic::TopicSpec;
@@ -16,6 +17,17 @@ use transform::side_split::default_transformations;
 
 const FLUSH_BYTES: usize = 512 * 1024;
 
+fn load_topic(name: &str) -> anyhow::Result<TopicSpec> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("topics/{name}/topic.json"));
+    let spec = serde_json::from_str(
+        &std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?,
+    )
+    .context("parsing topic spec")?;
+    Ok(spec)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -23,16 +35,21 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Config::parse();
 
-    // Load the bikelane topic spec (runtime JSON — no recompile needed when changed).
-    let topic_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("topics/bikelanes/topic.json");
-    let topic: TopicSpec = serde_json::from_str(
-        &std::fs::read_to_string(&topic_path)
-            .with_context(|| format!("reading topic spec {}", topic_path.display()))?,
-    )
-    .context("parsing topic spec")?;
-    info!("Loaded topic '{}' ({} osm fields, {} sanitizers)",
-        topic.table, topic.osm_fields.len(), topic.sanitized_fields.len());
+    // Load topics and their categories.
+    let bikelane_topic = load_topic("bikelanes")?;
+    let bikelane_cats  = get_categories(); // compiled-in
+
+    let road_topic = load_topic("roads")?;
+    let road_cats_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("topics/roads/categories");
+    let road_cats = load_categories_from_dir(&road_cats_dir)?;
+
+    info!("Loaded bikelanes topic ({} fields, {} sanitizers, {} categories)",
+        bikelane_topic.osm_fields.len(), bikelane_topic.sanitized_fields.len(),
+        bikelane_cats.categories.len());
+    info!("Loaded roads topic ({} fields, {} sanitizers, {} categories)",
+        road_topic.osm_fields.len(), road_topic.sanitized_fields.len(),
+        road_cats.categories.len());
 
     info!("Connecting to database {}@{}/{}", cfg.db_user, cfg.db_host, cfg.db_name);
     let pool = build_pool(&cfg)?;
@@ -59,7 +76,12 @@ async fn main() -> anyhow::Result<()> {
 
     let process_task = tokio::task::spawn_blocking(move || {
         ways.par_iter().for_each(|way| {
-            let _ = tx.blocking_send(process_way(way, &transformations, &topic));
+            let _ = tx.blocking_send(process_way(
+                way,
+                &transformations,
+                &bikelane_topic, bikelane_cats,
+                &road_topic, &road_cats,
+            ));
         });
     });
 
@@ -85,8 +107,8 @@ async fn main() -> anyhow::Result<()> {
                 bl_buf = Vec::with_capacity(FLUSH_BYTES);
             }
         }
-        if let Some(row) = output.road_row {
-            writer::write_road_csv_row(&mut rd_buf, &row)?;
+        for row in output.road_rows {
+            writer::write_topic_csv_row(&mut rd_buf, &row)?;
             rd_count += 1;
             if rd_buf.len() >= FLUSH_BYTES {
                 road_sink.send(Bytes::from(std::mem::take(&mut rd_buf))).await?;

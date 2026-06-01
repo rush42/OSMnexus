@@ -6,6 +6,10 @@ pub struct TopicSpec {
     pub transformations: Vec<TransformSpec>,
     pub osm_fields: Vec<OsmFieldSpec>,
     pub sanitized_fields: Vec<SanitizerSpec>,
+    /// Named Rust exclusion functions applied before categorization.
+    /// Supported: "by_access", "by_service"
+    #[serde(default)]
+    pub exclude_fns: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

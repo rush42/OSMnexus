@@ -77,7 +77,7 @@ pub enum Filter {
     HasKeyPrefix { has_key_prefix: String },
 }
 
-// ── Static loader ─────────────────────────────────────────────────────────────
+// ── Static loader (bikelane compile-time categories) ─────────────────────────
 
 static CATEGORIES_FILE: OnceLock<CategoriesFile> = OnceLock::new();
 
@@ -86,6 +86,45 @@ pub fn get_categories() -> &'static CategoriesFile {
         serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/categories_compiled.json")))
             .expect("categories_compiled.json failed to parse")
     })
+}
+
+/// Load categories from a directory at runtime.
+/// Reads macros.json + all *.json files (sorted), injects "id" from stem,
+/// same logic as build.rs does at compile time for bikelanes.
+pub fn load_categories_from_dir(dir: &std::path::Path) -> anyhow::Result<CategoriesFile> {
+    let macros_path = dir.join("macros.json");
+    let macros_str = if macros_path.exists() {
+        std::fs::read_to_string(&macros_path)?
+    } else {
+        "{}".to_owned()
+    };
+
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().extension().and_then(|s| s.to_str()) == Some("json")
+                && e.file_name() != std::ffi::OsStr::new("macros.json")
+        })
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut categories_json = String::from("[");
+    let mut first = true;
+    for entry in entries {
+        let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
+        let content = std::fs::read_to_string(entry.path())?;
+        let mut obj: serde_json::Value = serde_json::from_str(&content)?;
+        if let serde_json::Value::Object(ref mut map) = obj {
+            map.insert("id".to_owned(), serde_json::Value::String(stem));
+        }
+        if !first { categories_json.push(','); }
+        categories_json.push_str(&serde_json::to_string(&obj)?);
+        first = false;
+    }
+    categories_json.push(']');
+
+    let combined = format!("{{\"macros\":{macros_str},\"categories\":{categories_json}}}");
+    Ok(serde_json::from_str(&combined)?)
 }
 
 // ── Filter evaluator ──────────────────────────────────────────────────────────
@@ -338,15 +377,12 @@ fn is_advisory_or_exclusive(ctx: &CategoryContext) -> bool {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Find the first matching category for the given context.
-pub fn categorize_bikelane(ctx: &CategoryContext) -> Option<&'static CategoryDef> {
-    let cats = get_categories();
+/// Find the first matching category for the given context using any CategoriesFile.
+pub fn categorize<'a>(ctx: &CategoryContext, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
     cats.categories.iter().find(|cat| {
         if !eval(&cat.condition, ctx, &cats.macros) {
             return false;
         }
-
-        // If this category explicitly excludes others, ensure none of them match
         if let Some(excludes) = &cat.excludes {
             for excluded_id in excludes {
                 if let Some(excluded_cat) = cats.categories.iter().find(|c| c.id == *excluded_id) {
@@ -356,7 +392,11 @@ pub fn categorize_bikelane(ctx: &CategoryContext) -> Option<&'static CategoryDef
                 }
             }
         }
-
         true
     })
+}
+
+/// Convenience wrapper using the compiled-in bikelane categories.
+pub fn categorize_bikelane(ctx: &CategoryContext) -> Option<&'static CategoryDef> {
+    categorize(ctx, get_categories())
 }

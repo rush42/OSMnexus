@@ -1,36 +1,14 @@
 use crate::engine::runner::TopicRow;
-use crate::output::{geometry::to_ewkb, road_row::RoadRow};
 
 pub const COPY_BIKELANES: &str =
     "COPY bikelanes (osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
 pub const COPY_ROADS: &str =
-    "COPY roads (osm_id, osm_type, id, osm, sanitized, derived, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
+    "COPY roads (osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
 pub fn write_topic_csv_row(buf: &mut Vec<u8>, row: &TopicRow) -> anyhow::Result<()> {
     let fields = row.to_csv_fields()?;
     write_csv_row(buf, &fields);
-    Ok(())
-}
-
-pub fn write_road_csv_row(buf: &mut Vec<u8>, row: &RoadRow) -> anyhow::Result<()> {
-    let osm_json       = serde_json::to_string(&row.osm)?;
-    let sanitized_json = serde_json::to_string(&row.sanitized)?;
-    let derived_json   = serde_json::to_string(&row.derived)?;
-    let meta_json      = serde_json::to_string(&row.meta)?;
-    let ewkb_hex       = hex::encode(to_ewkb(&row.geom));
-
-    write_csv_row(buf, &[
-        row.osm_id.to_string(),
-        row.osm_type.to_owned(),
-        row.id.clone(),
-        osm_json,
-        sanitized_json,
-        derived_json,
-        meta_json,
-        ewkb_hex,
-        row.minzoom.to_string(),
-    ]);
     Ok(())
 }
 
