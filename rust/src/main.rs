@@ -1,4 +1,4 @@
-use osm_bikelanes::{config, db, osm, processing, transform};
+use osm_bikelanes::{config, db, engine, osm, processing, transform};
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -9,6 +9,7 @@ use tracing::info;
 
 use config::Config;
 use db::{pool::build_pool, schema, writer};
+use engine::topic::TopicSpec;
 use osm::reader::read_highway_ways;
 use processing::{process_way, WayOutput};
 use transform::side_split::default_transformations;
@@ -21,6 +22,17 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let cfg = Config::parse();
+
+    // Load the bikelane topic spec (runtime JSON — no recompile needed when changed).
+    let topic_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("topics/bikelanes/topic.json");
+    let topic: TopicSpec = serde_json::from_str(
+        &std::fs::read_to_string(&topic_path)
+            .with_context(|| format!("reading topic spec {}", topic_path.display()))?,
+    )
+    .context("parsing topic spec")?;
+    info!("Loaded topic '{}' ({} osm fields, {} sanitizers)",
+        topic.table, topic.osm_fields.len(), topic.sanitized_fields.len());
 
     info!("Connecting to database {}@{}/{}", cfg.db_user, cfg.db_host, cfg.db_name);
     let pool = build_pool(&cfg)?;
@@ -43,16 +55,14 @@ async fn main() -> anyhow::Result<()> {
     let t1 = std::time::Instant::now();
     let transformations = default_transformations();
 
-    // Channel: rayon → async writer. Bounded to limit in-flight memory.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<WayOutput>(512);
 
     let process_task = tokio::task::spawn_blocking(move || {
         ways.par_iter().for_each(|way| {
-            let _ = tx.blocking_send(process_way(way, &transformations));
+            let _ = tx.blocking_send(process_way(way, &transformations, &topic));
         });
     });
 
-    // Two connections — PostgreSQL only allows one COPY per connection.
     let client_bl = pool.get().await.context("getting bikelane DB connection")?;
     let client_rd = pool.get().await.context("getting road DB connection")?;
 
@@ -68,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
     while let Some(output) = rx.recv().await {
         for row in output.bikelane_rows {
-            writer::write_bikelane_csv_row(&mut bl_buf, &row)?;
+            writer::write_topic_csv_row(&mut bl_buf, &row)?;
             bl_count += 1;
             if bl_buf.len() >= FLUSH_BYTES {
                 bikelane_sink.send(Bytes::from(std::mem::take(&mut bl_buf))).await?;

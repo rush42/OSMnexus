@@ -1,8 +1,5 @@
-use bytes::Bytes;
-use futures::SinkExt;
-use tokio_postgres::Client;
-
-use crate::output::{bikelane_row::BikelaneRow, geometry::to_ewkb, road_row::RoadRow};
+use crate::engine::runner::TopicRow;
+use crate::output::{geometry::to_ewkb, road_row::RoadRow};
 
 pub const COPY_BIKELANES: &str =
     "COPY bikelanes (osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
@@ -10,52 +7,9 @@ pub const COPY_BIKELANES: &str =
 pub const COPY_ROADS: &str =
     "COPY roads (osm_id, osm_type, id, osm, sanitized, derived, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
-/// Write all bikelane rows using PostgreSQL COPY CSV.
-pub async fn write_bikelanes(client: &Client, rows: &[BikelaneRow]) -> anyhow::Result<usize> {
-    let sink = client.copy_in(COPY_BIKELANES).await?;
-    let mut sink = std::pin::pin!(sink);
-    let mut buf = Vec::new();
-    for row in rows {
-        write_bikelane_csv_row(&mut buf, row)?;
-    }
-    sink.send(Bytes::from(buf)).await?;
-    sink.finish().await?;
-    Ok(rows.len())
-}
-
-/// Write all road rows using PostgreSQL COPY CSV.
-pub async fn write_roads(client: &Client, rows: &[RoadRow]) -> anyhow::Result<usize> {
-    let sink = client.copy_in(COPY_ROADS).await?;
-    let mut sink = std::pin::pin!(sink);
-    let mut buf = Vec::new();
-    for row in rows {
-        write_road_csv_row(&mut buf, row)?;
-    }
-    sink.send(Bytes::from(buf)).await?;
-    sink.finish().await?;
-    Ok(rows.len())
-}
-
-pub fn write_bikelane_csv_row(buf: &mut Vec<u8>, row: &BikelaneRow) -> anyhow::Result<()> {
-    let osm_json       = serde_json::to_string(&row.osm)?;
-    let sanitized_json = serde_json::to_string(&row.sanitized)?;
-    let derived_json   = serde_json::to_string(&row.derived)?;
-    let private_json   = serde_json::to_string(&row.private)?;
-    let meta_json      = serde_json::to_string(&row.meta)?;
-    let ewkb_hex       = hex::encode(to_ewkb(&row.geom));
-
-    write_csv_row(buf, &[
-        row.osm_id.to_string(),
-        row.osm_type.to_owned(),
-        row.id.clone(),
-        osm_json,
-        sanitized_json,
-        derived_json,
-        private_json,
-        meta_json,
-        ewkb_hex,
-        row.minzoom.to_string(),
-    ]);
+pub fn write_topic_csv_row(buf: &mut Vec<u8>, row: &TopicRow) -> anyhow::Result<()> {
+    let fields = row.to_csv_fields()?;
+    write_csv_row(buf, &fields);
     Ok(())
 }
 
