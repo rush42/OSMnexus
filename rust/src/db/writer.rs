@@ -8,7 +8,7 @@ pub const COPY_BIKELANES: &str =
     "COPY bikelanes (osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
 pub const COPY_ROADS: &str =
-    "COPY roads (osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
+    "COPY roads (osm_id, osm_type, id, osm, sanitized, derived, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
 /// Write all bikelane rows using PostgreSQL COPY CSV.
 pub async fn write_bikelanes(client: &Client, rows: &[BikelaneRow]) -> anyhow::Result<usize> {
@@ -63,7 +63,6 @@ pub fn write_road_csv_row(buf: &mut Vec<u8>, row: &RoadRow) -> anyhow::Result<()
     let osm_json       = serde_json::to_string(&row.osm)?;
     let sanitized_json = serde_json::to_string(&row.sanitized)?;
     let derived_json   = serde_json::to_string(&row.derived)?;
-    let private_json   = serde_json::to_string(&row.private)?;
     let meta_json      = serde_json::to_string(&row.meta)?;
     let ewkb_hex       = hex::encode(to_ewkb(&row.geom));
 
@@ -74,7 +73,6 @@ pub fn write_road_csv_row(buf: &mut Vec<u8>, row: &RoadRow) -> anyhow::Result<()
         osm_json,
         sanitized_json,
         derived_json,
-        private_json,
         meta_json,
         ewkb_hex,
         row.minzoom.to_string(),

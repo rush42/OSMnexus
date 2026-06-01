@@ -1,4 +1,4 @@
-use super::types::{OsmMeta, RoadDerived, RoadOsm, RoadPrivate, RoadSanitized};
+use super::types::{OsmMeta, RoadDerived, RoadOsm, RoadSanitized};
 use geo::LineString;
 
 pub struct RoadRow {
@@ -8,7 +8,6 @@ pub struct RoadRow {
     pub osm: RoadOsm,
     pub sanitized: RoadSanitized,
     pub derived: RoadDerived,
-    pub private: RoadPrivate,
     pub meta: OsmMeta,
     pub geom: LineString<f64>,
     pub minzoom: i32,

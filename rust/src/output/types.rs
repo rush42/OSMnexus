@@ -217,10 +217,6 @@ pub struct RoadDerived {
     pub bikelane_self: Option<String>,
 }
 
-/// Private road processing state (minimal — roads don't have side/prefix).
-#[derive(Debug, Serialize)]
-pub struct RoadPrivate {}
-
 /// OSM metadata extracted from the element (version, timestamp, uid, user).
 #[derive(Debug, Clone, Serialize)]
 pub struct OsmMeta {

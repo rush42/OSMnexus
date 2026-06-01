@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS roads (
   osm       jsonb,
   sanitized jsonb,
   derived   jsonb,
-  private   jsonb,
   meta      jsonb,
   geom      geometry(LineString, 3857),
   minzoom   integer NOT NULL
