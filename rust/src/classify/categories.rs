@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -113,20 +112,11 @@ pub enum Filter {
     HasKeyPrefix { has_key_prefix: String },
 }
 
-// ── Static loader (bikelane compile-time categories) ─────────────────────────
+// ── Category loader ───────────────────────────────────────────────────────────
 
-static CATEGORIES_FILE: OnceLock<CategoriesFile> = OnceLock::new();
-
-pub fn get_categories() -> &'static CategoriesFile {
-    CATEGORIES_FILE.get_or_init(|| {
-        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/categories_compiled.json")))
-            .expect("categories_compiled.json failed to parse")
-    })
-}
-
-/// Load categories from a directory at runtime.
-/// Reads macros.json + all *.json files (sorted), injects "id" from stem,
-/// same logic as build.rs does at compile time for bikelanes.
+/// Load a topic's categories from its `categories/` directory.
+/// Reads `macros.json` (optional) + all other `*.json` files (sorted), injecting the
+/// category `id` from each file stem.
 pub fn load_categories_from_dir(dir: &std::path::Path) -> anyhow::Result<CategoriesFile> {
     let macros_path = dir.join("macros.json");
     let macros_str = if macros_path.exists() {
@@ -448,7 +438,3 @@ pub fn categorize<'a>(ctx: &CategoryContext, cats: &'a CategoriesFile) -> Option
     })
 }
 
-/// Convenience wrapper using the compiled-in bikelane categories.
-pub fn categorize_bikelane(ctx: &CategoryContext) -> Option<&'static CategoryDef> {
-    categorize(ctx, get_categories())
-}

@@ -7,7 +7,7 @@ Schreibt in dieselben PostgreSQL-Tabellen (`bikelanes`, `roads`).
 ## Ausführung
 
 ```bash
-PGDATABASE=osm PGUSER=rush42 ./target/release/osm-bikelanes /tmp/berlin-latest.osm.pbf
+PGDATABASE=osm PGUSER=rush42 ./target/release/osm-pipeline /tmp/berlin-latest.osm.pbf
 ```
 
 Umgebungsvariablen: `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGPORT`, `PBF_FILE`.

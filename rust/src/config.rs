@@ -1,7 +1,7 @@
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(about = "Import OSM PBF bikelanes and roads into PostgreSQL")]
+#[command(about = "Data-driven OSM PBF topic processing pipeline → PostgreSQL")]
 pub struct Config {
     /// Path to the .osm.pbf file
     #[arg(env = "PBF_FILE")]

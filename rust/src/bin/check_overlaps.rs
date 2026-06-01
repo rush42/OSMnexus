@@ -1,8 +1,8 @@
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
-use osm_bikelanes::classify::bikelane_categories::get_categories;
-use osm_bikelanes::classify::overlap::{filter_to_expr, to_nnf, to_dnf, Literal, Predicate};
+use osm_pipeline::classify::categories::load_categories_from_dir;
+use osm_pipeline::classify::overlap::{filter_to_expr, to_nnf, to_dnf, Literal, Predicate};
 
 /// Returns (is_consistent, warnings)
 fn check_term_consistency(term: &[Literal]) -> (bool, Vec<String>) {
@@ -88,7 +88,8 @@ fn check_term_consistency(term: &[Literal]) -> (bool, Vec<String>) {
 }
 
 fn check_overlaps() {
-    let cat_data = get_categories();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("topics/bikelanes/categories");
+    let cat_data = load_categories_from_dir(&dir).expect("loading bikelanes categories");
     let macros = &cat_data.macros;
 
     let mut category_dnfs = HashMap::new();

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::classify::bikelane_categories::Filter;
+use crate::classify::categories::Filter;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Predicate {

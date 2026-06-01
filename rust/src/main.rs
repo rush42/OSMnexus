@@ -1,4 +1,4 @@
-use osm_bikelanes::{config, db, engine, osm, processing};
+use osm_pipeline::{config, db, engine, osm, processing};
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    for (i, mut sink) in sinks.iter_mut().enumerate() {
+    for (i, sink) in sinks.iter_mut().enumerate() {
         if !bufs[i].is_empty() {
             sink.as_mut().send(Bytes::from(std::mem::take(&mut bufs[i]))).await?;
         }

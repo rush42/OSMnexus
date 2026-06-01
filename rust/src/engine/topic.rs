@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use crate::classify::bikelane_categories::{Filter, MinzoomRule};
+use crate::classify::categories::{Filter, MinzoomRule};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {

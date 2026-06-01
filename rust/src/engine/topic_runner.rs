@@ -3,10 +3,10 @@ use bytes::Bytes;
 use futures::SinkExt;
 use tokio_postgres::Client;
 
-use crate::classify::bikelane_categories::{get_categories, load_categories_from_dir, CategoriesFile};
+use crate::classify::categories::{load_categories_from_dir, CategoriesFile};
 use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::TopicSpec};
 use crate::osm::types::{OsmWay, RawTags};
-use crate::output::{geometry::to_ewkb, types::OsmMeta};
+use crate::output::types::OsmMeta;
 use crate::transform::side_split::CenterLineTransformation;
 
 const COPY_SQL: &str =
@@ -35,8 +35,9 @@ impl TopicRunner {
             load_categories_from_dir(&cats_dir)
                 .with_context(|| format!("loading topics/{name}/categories/"))?
         } else {
-            // Bikelanes: categories are compiled-in via build.rs — clone into owned CategoriesFile.
-            get_categories().clone()
+            // No categories/ dir → nothing matches, so the topic emits no rows.
+            // Every shipped topic has a categories/ dir; this is just a safe fallback.
+            CategoriesFile { macros: Default::default(), categories: Vec::new() }
         };
 
         let transformations = spec

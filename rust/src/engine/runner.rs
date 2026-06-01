@@ -1,7 +1,7 @@
 use serde_json::{Map, Value};
 
 use crate::classify::{
-    bikelane_categories::{categorize, eval_filter, resolve_minzoom, CategoriesFile, CategoryContext},
+    categories::{categorize, eval_filter, resolve_minzoom, CategoriesFile, CategoryContext},
     road_classification::road_classification_value,
     sanitize as san,
 };
