@@ -11,7 +11,7 @@ use crate::transform::TagTransform;
 use crate::transform::side_split::CenterLineTransformation;
 
 const COPY_SQL: &str =
-    "(osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
+    "(osm_id, osm_type, id, osm, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
 /// A fully loaded topic ready to process ways.
 pub struct TopicRunner {

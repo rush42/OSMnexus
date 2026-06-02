@@ -7,7 +7,6 @@ CREATE TABLE IF NOT EXISTS {table} (
   osm_type  text,
   id        text NOT NULL,
   osm       jsonb,
-  sanitized jsonb,
   derived   jsonb,
   private   jsonb,
   meta      jsonb,

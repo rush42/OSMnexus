@@ -14,7 +14,7 @@ use osm::reader::read_highway_ways;
 use processing::{process_way, WayOutput};
 
 const COPY_COLUMNS: &str =
-    "(osm_id, osm_type, id, osm, sanitized, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
+    "(osm_id, osm_type, id, osm, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

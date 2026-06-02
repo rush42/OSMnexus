@@ -20,7 +20,7 @@ pub struct TopicRow {
     pub osm_type: &'static str,
     pub id: String,
     pub osm: Map<String, Value>,
-    pub sanitized: Map<String, Value>,
+    /// Merged sanitizer + deriver outputs (the former `sanitized` ∪ `derived` columns).
     pub derived: Map<String, Value>,
     pub private: Map<String, Value>,
     pub meta: OsmMeta,
@@ -29,13 +29,12 @@ pub struct TopicRow {
 }
 
 impl TopicRow {
-    pub fn to_csv_fields(&self) -> anyhow::Result<[String; 10]> {
+    pub fn to_csv_fields(&self) -> anyhow::Result<[String; 9]> {
         Ok([
             self.osm_id.to_string(),
             self.osm_type.to_owned(),
             self.id.clone(),
             serde_json::to_string(&self.osm)?,
-            serde_json::to_string(&self.sanitized)?,
             serde_json::to_string(&self.derived)?,
             serde_json::to_string(&self.private)?,
             serde_json::to_string(&self.meta)?,
@@ -221,7 +220,9 @@ pub fn build_topic_rows(
 
         let osm = extract_osm(&topic.osm_fields, &obj.tags, parent_tags);
 
-        let sanitized = apply_sanitizers(
+        // Sanitizer + deriver outputs share one column. Start from the sanitizer outputs,
+        // then add the derived values.
+        let mut derived = apply_sanitizers(
             &topic.sanitized_fields,
             &obj.tags,
             parent_tags,
@@ -232,7 +233,6 @@ pub fn build_topic_rows(
             side_str,
         );
 
-        let mut derived = Map::new();
         derived.insert("id".into(),       Value::String(id.clone()));
         derived.insert("category".into(), Value::String(category.id.clone()));
         derived.insert("length_m".into(), Value::Number(serde_json::Number::from_f64(length_m).unwrap()));
@@ -269,7 +269,6 @@ pub fn build_topic_rows(
             osm_type: "W",
             id,
             osm,
-            sanitized,
             derived,
             private,
             meta: meta.clone(),
