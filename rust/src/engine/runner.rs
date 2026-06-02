@@ -2,6 +2,7 @@ use serde_json::{Map, Value};
 
 use crate::classify::{
     categories::{categorize, eval_filter, resolve_minzoom, CategoriesFile, CategoryContext},
+    derive,
     road_classification::road_classification_value,
     sanitize as san,
 };
@@ -151,10 +152,10 @@ fn apply_sanitizers(
                 }
             }
             SanitizerSpec::DeriveOneway { output } => {
-                map.insert(output.clone(), Value::String(san::derive_oneway(obj_tags, implicit_oneway)));
+                map.insert(output.clone(), Value::String(derive::derive_oneway(obj_tags, implicit_oneway)));
             }
             SanitizerSpec::DeriveTrafficMode { output_left, output_right } => {
-                let (tm_l, tm_r) = san::derive_traffic_mode(obj_tags, centerline_tags, category_id, side_str);
+                let (tm_l, tm_r) = derive::derive_traffic_mode(obj_tags, centerline_tags, category_id, side_str);
                 if let Some(v) = tm_l { map.insert(output_left.clone(),  Value::String(v)); }
                 if let Some(v) = tm_r { map.insert(output_right.clone(), Value::String(v)); }
             }
