@@ -4,7 +4,7 @@ use futures::SinkExt;
 use tokio_postgres::Client;
 
 use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
-use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::{Transform, TopicSpec}};
+use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::{SanitizedField, Transform, TopicSpec}};
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::types::OsmMeta;
 use crate::transform::TagTransform;
@@ -21,6 +21,9 @@ pub struct TopicRunner {
     pub tag_transforms: Vec<TagTransform>,
     /// Center-line side split (from a `split_sides` entry); empty if the topic has none.
     pub transformations: Vec<CenterLineTransformation>,
+    /// Fields written to the `derived` column: the `sanitizers` (desugared) followed by the
+    /// `derivers`, evaluated in order.
+    pub fields: Vec<SanitizedField>,
 }
 
 impl TopicRunner {
@@ -28,11 +31,15 @@ impl TopicRunner {
     pub fn load(name: &str) -> anyhow::Result<Self> {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("topics/{name}"));
 
-        let spec: TopicSpec = serde_json::from_str(
+        let mut spec: TopicSpec = serde_json::from_str(
             &std::fs::read_to_string(base.join("topic.json"))
                 .with_context(|| format!("reading topics/{name}/topic.json"))?,
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
+
+        // `sanitizers` desugar to Produce fields, then the `derivers` follow.
+        let mut fields: Vec<SanitizedField> = spec.sanitizers.iter().map(|s| s.to_field()).collect();
+        fields.extend(std::mem::take(&mut spec.derivers));
 
         let cats_dir = base.join("categories");
         let mut categories = if cats_dir.exists() {
@@ -76,7 +83,7 @@ impl TopicRunner {
             }
         }
 
-        Ok(Self { spec, categories, tag_transforms, transformations })
+        Ok(Self { spec, categories, tag_transforms, transformations, fields })
     }
 
     pub fn table(&self) -> &str {
@@ -95,7 +102,7 @@ impl TopicRunner {
         for t in &self.tag_transforms {
             t.apply(&mut tags);
         }
-        build_topic_rows(&self.spec, &self.categories, way, &tags, &self.transformations, geom, length_m, meta)
+        build_topic_rows(&self.spec, &self.categories, &self.fields, way, &tags, &self.transformations, geom, length_m, meta)
     }
 }
 

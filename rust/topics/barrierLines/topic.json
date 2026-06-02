@@ -62,21 +62,16 @@
       }
     }
   ],
-  "sanitized_fields": [
+  "sanitizers": [
     {
-      "output": "bridge",
-      "source": {
-        "key": "bridge",
-        "sanitize": "yes_flag"
-      }
+      "tag": "bridge",
+      "name": "yes_flag"
     },
     {
-      "output": "tunnel",
-      "source": {
-        "key": "tunnel",
-        "sanitize": "yes_flag"
-      }
+      "tag": "tunnel",
+      "name": "yes_flag"
     }
   ],
+  "derivers": [],
   "minzoom": 0
 }

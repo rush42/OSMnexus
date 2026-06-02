@@ -34,11 +34,12 @@ async fn main() -> anyhow::Result<()> {
 
     for r in &runners {
         info!(
-            "Loaded topic '{}' ({} categories, {} osm fields, {} sanitizers)",
+            "Loaded topic '{}' ({} categories, {} osm fields, {} sanitizers, {} derivers)",
             r.table(),
             r.categories.categories.len(),
             r.spec.osm_fields.len(),
-            r.spec.sanitized_fields.len()
+            r.spec.sanitizers.len(),
+            r.fields.len() - r.spec.sanitizers.len()
         );
     }
 

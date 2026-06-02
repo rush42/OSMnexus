@@ -93,6 +93,7 @@ fn build_fields(
 pub fn build_topic_rows(
     topic: &TopicSpec,
     categories: &CategoriesFile,
+    fields: &[SanitizedField],
     way: &OsmWay,
     tags: &RawTags,
     transformations: &[CenterLineTransformation],
@@ -149,7 +150,7 @@ pub fn build_topic_rows(
 
         // Sanitizer + deriver outputs share one column. Start from the produced fields,
         // then add the inline derived values.
-        let mut derived = build_fields(&topic.sanitized_fields, &ectx, category.id.as_str(), side_str);
+        let mut derived = build_fields(fields, &ectx, category.id.as_str(), side_str);
 
         derived.insert("id".into(),       Value::String(id.clone()));
         derived.insert("category".into(), Value::String(category.id.clone()));

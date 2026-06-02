@@ -244,106 +244,95 @@
       }
     }
   ],
-  "sanitized_fields": [
+  "sanitizers": [
     {
-      "output": "traffic_sign",
-      "source": {
-        "key": "traffic_sign",
-        "sanitize": "traffic_sign"
-      }
+      "tag": "traffic_sign",
+      "name": "traffic_sign"
     },
     {
-      "output": "separation_left",
-      "source": {
-        "key": "separation",
-        "side": "left",
-        "sanitize": "separation"
-      }
+      "tag": "separation_left",
+      "name": "separation",
+      "in": [
+        "separation:left",
+        "separation:both",
+        "separation"
+      ]
     },
     {
-      "output": "separation_right",
-      "source": {
-        "key": "separation",
-        "side": "right",
-        "sanitize": "separation"
-      }
+      "tag": "separation_right",
+      "name": "separation",
+      "in": [
+        "separation:right",
+        "separation:both"
+      ]
     },
     {
-      "output": "marking_left",
-      "source": {
-        "key": "marking",
-        "side": "left",
-        "sanitize": "marking"
-      }
+      "tag": "marking_left",
+      "name": "marking",
+      "in": [
+        "marking:left",
+        "marking:both",
+        "marking"
+      ]
     },
     {
-      "output": "marking_right",
-      "source": {
-        "key": "marking",
-        "side": "right",
-        "sanitize": "marking"
-      }
+      "tag": "marking_right",
+      "name": "marking",
+      "in": [
+        "marking:right",
+        "marking:both"
+      ]
     },
     {
-      "output": "buffer_left",
-      "source": {
-        "key": "buffer",
-        "side": "left",
-        "sanitize": "buffer"
-      }
+      "tag": "buffer_left",
+      "name": "buffer",
+      "in": [
+        "buffer:left",
+        "buffer:both",
+        "buffer"
+      ]
     },
     {
-      "output": "buffer_right",
-      "source": {
-        "key": "buffer",
-        "side": "right",
-        "sanitize": "buffer"
-      }
+      "tag": "buffer_right",
+      "name": "buffer",
+      "in": [
+        "buffer:right",
+        "buffer:both"
+      ]
     },
     {
-      "output": "surface_color",
-      "source": {
-        "keys": [
-          "surface:colour",
-          "surface:color"
-        ],
-        "sanitize": "surface_color"
-      }
+      "tag": "surface_color",
+      "name": "surface_color",
+      "in": [
+        "surface:colour",
+        "surface:color"
+      ]
     },
     {
-      "output": "bridge",
-      "source": {
-        "key": "bridge",
-        "from": "parent_or_obj",
-        "sanitize": "yes_flag"
-      }
+      "tag": "bridge",
+      "name": "yes_flag",
+      "from": "parent_or_obj"
     },
     {
-      "output": "tunnel",
-      "source": {
-        "key": "tunnel",
-        "from": "parent_or_obj",
-        "sanitize": "yes_flag"
-      }
+      "tag": "tunnel",
+      "name": "yes_flag",
+      "from": "parent_or_obj"
     },
+    {
+      "tag": "width",
+      "name": "parse_length"
+    },
+    {
+      "tag": "width_effective",
+      "name": "parse_length",
+      "in": "width:effective"
+    }
+  ],
+  "derivers": [
     {
       "output": "oneway",
       "source": {
         "derive": "oneway"
-      }
-    },
-    {
-      "output": "width",
-      "source": {
-        "key": "width",
-        "sanitize": "parse_length"
-      }
-    },
-    {
-      "output": "width_effective",
-      "source": {
-        "key": "width:effective",
-        "sanitize": "parse_length"
       }
     },
     {
