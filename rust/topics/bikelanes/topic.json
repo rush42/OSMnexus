@@ -22,171 +22,226 @@
   "osm_fields": [
     {
       "output": "name",
-      "key": "name",
-      "source": "obj_then_parent"
+      "source": {
+        "fallback": [
+          {
+            "key": "name"
+          },
+          {
+            "key": "name",
+            "from": "parent"
+          }
+        ]
+      }
     },
     {
       "output": "surface",
-      "key": "surface",
-      "source": "obj"
+      "source": {
+        "key": "surface"
+      }
     },
     {
       "output": "smoothness",
-      "key": "smoothness",
-      "source": "obj"
+      "source": {
+        "key": "smoothness"
+      }
     },
     {
       "output": "width",
-      "key": "width",
-      "source": "obj"
+      "source": {
+        "key": "width"
+      }
     },
     {
       "output": "source:width",
-      "key": "source:width",
-      "source": "obj"
+      "source": {
+        "key": "source:width"
+      }
     },
     {
       "output": "bridge",
-      "key": "bridge",
-      "source": "parent"
+      "source": {
+        "key": "bridge",
+        "from": "parent"
+      }
     },
     {
       "output": "tunnel",
-      "key": "tunnel",
-      "source": "parent"
+      "source": {
+        "key": "tunnel",
+        "from": "parent"
+      }
     },
     {
       "output": "oneway",
-      "key": "oneway",
-      "source": "obj"
+      "source": {
+        "key": "oneway"
+      }
     },
     {
       "output": "oneway:bicycle",
-      "key": "oneway:bicycle",
-      "source": "obj_then_parent"
+      "source": {
+        "fallback": [
+          {
+            "key": "oneway:bicycle"
+          },
+          {
+            "key": "oneway:bicycle",
+            "from": "parent"
+          }
+        ]
+      }
     },
     {
       "output": "traffic_sign",
-      "key": "traffic_sign",
-      "source": "obj"
+      "source": {
+        "key": "traffic_sign"
+      }
     },
     {
       "output": "informal",
-      "key": "informal",
-      "source": "parent"
+      "source": {
+        "key": "informal",
+        "from": "parent"
+      }
     },
     {
       "output": "covered",
-      "key": "covered",
-      "source": "parent"
+      "source": {
+        "key": "covered",
+        "from": "parent"
+      }
     },
     {
       "output": "operator_type",
-      "key": "operator_type",
-      "source": "parent"
+      "source": {
+        "key": "operator_type",
+        "from": "parent"
+      }
     },
     {
       "output": "mapillary",
-      "key": "mapillary",
-      "source": "parent"
+      "source": {
+        "key": "mapillary",
+        "from": "parent"
+      }
     },
     {
       "output": "segregated",
-      "key": "segregated",
-      "source": "obj"
+      "source": {
+        "key": "segregated"
+      }
     },
     {
       "output": "bicycle",
-      "key": "bicycle",
-      "source": "obj"
+      "source": {
+        "key": "bicycle"
+      }
     },
     {
       "output": "foot",
-      "key": "foot",
-      "source": "obj"
+      "source": {
+        "key": "foot"
+      }
     },
     {
       "output": "description",
-      "key": "description",
-      "source": "obj"
+      "source": {
+        "key": "description"
+      }
     },
     {
       "output": "note",
-      "key": "note",
-      "source": "obj"
+      "source": {
+        "key": "note"
+      }
     },
     {
       "output": "temporary",
-      "key": "temporary",
-      "source": "obj"
+      "source": {
+        "key": "temporary"
+      }
     },
     {
       "output": "separation:left",
-      "key": "separation:left",
-      "source": "obj"
+      "source": {
+        "key": "separation:left"
+      }
     },
     {
       "output": "separation:right",
-      "key": "separation:right",
-      "source": "obj"
+      "source": {
+        "key": "separation:right"
+      }
     },
     {
       "output": "separation:both",
-      "key": "separation:both",
-      "source": "obj"
+      "source": {
+        "key": "separation:both"
+      }
     },
     {
       "output": "marking:left",
-      "key": "marking:left",
-      "source": "obj"
+      "source": {
+        "key": "marking:left"
+      }
     },
     {
       "output": "marking:right",
-      "key": "marking:right",
-      "source": "obj"
+      "source": {
+        "key": "marking:right"
+      }
     },
     {
       "output": "marking:both",
-      "key": "marking:both",
-      "source": "obj"
+      "source": {
+        "key": "marking:both"
+      }
     },
     {
       "output": "traffic_mode:left",
-      "key": "traffic_mode:left",
-      "source": "obj"
+      "source": {
+        "key": "traffic_mode:left"
+      }
     },
     {
       "output": "traffic_mode:right",
-      "key": "traffic_mode:right",
-      "source": "obj"
+      "source": {
+        "key": "traffic_mode:right"
+      }
     },
     {
       "output": "traffic_mode:both",
-      "key": "traffic_mode:both",
-      "source": "obj"
+      "source": {
+        "key": "traffic_mode:both"
+      }
     },
     {
       "output": "buffer:left",
-      "key": "buffer:left",
-      "source": "obj"
+      "source": {
+        "key": "buffer:left"
+      }
     },
     {
       "output": "buffer:right",
-      "key": "buffer:right",
-      "source": "obj"
+      "source": {
+        "key": "buffer:right"
+      }
     },
     {
       "output": "buffer:both",
-      "key": "buffer:both",
-      "source": "obj"
+      "source": {
+        "key": "buffer:both"
+      }
     },
     {
       "output": "surface:colour",
-      "keys": [
-        "surface:colour",
-        "surface:color"
-      ],
-      "source": "obj"
+      "source": {
+        "keys": [
+          "surface:colour",
+          "surface:color"
+        ]
+      }
     }
   ],
   "sanitized_fields": [
@@ -259,7 +314,7 @@
       "output": "bridge",
       "source": {
         "key": "bridge",
-        "from": "parent",
+        "from": "parent_or_obj",
         "sanitize": "yes_flag"
       }
     },
@@ -267,7 +322,7 @@
       "output": "tunnel",
       "source": {
         "key": "tunnel",
-        "from": "parent",
+        "from": "parent_or_obj",
         "sanitize": "yes_flag"
       }
     },

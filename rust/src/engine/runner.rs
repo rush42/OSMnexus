@@ -6,7 +6,7 @@ use crate::classify::{
     road_classification::road_classification_value,
 };
 use crate::engine::extract::ExtractCtx;
-use crate::engine::topic::{OsmFieldSpec, SanitizedField, TagSource, TopicSpec};
+use crate::engine::topic::{OsmFieldSpec, SanitizedField, TopicSpec};
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::{
     geometry::to_ewkb,
@@ -47,28 +47,14 @@ impl TopicRow {
 
 // ── OSM field extraction ──────────────────────────────────────────────────────
 
-fn extract_osm(
-    fields: &[OsmFieldSpec],
-    obj_tags: &RawTags,
-    parent_tags: Option<&RawTags>,
-) -> Map<String, Value> {
+fn extract_osm(fields: &[OsmFieldSpec], ctx: &ExtractCtx) -> Map<String, Value> {
     let mut map = Map::new();
     for spec in fields {
-        let value = match spec.source {
-            TagSource::Obj => first_of(spec.keys.as_slice(), obj_tags),
-            TagSource::Parent => parent_tags.and_then(|pt| first_of(spec.keys.as_slice(), pt)),
-            TagSource::ObjThenParent => first_of(spec.keys.as_slice(), obj_tags)
-                .or_else(|| parent_tags.and_then(|pt| first_of(spec.keys.as_slice(), pt))),
-        };
-        if let Some(v) = value {
-            map.insert(spec.output.clone(), Value::String(v));
+        if let Some(v) = spec.source.eval(ctx) {
+            map.insert(spec.output.clone(), v);
         }
     }
     map
-}
-
-fn first_of(keys: &[String], tags: &RawTags) -> Option<String> {
-    keys.iter().find_map(|k| tags.get(k).cloned())
 }
 
 // ── Field production (sanitizers + single/two-output derivers) ──────────────────
@@ -151,10 +137,6 @@ pub fn build_topic_rows(
             Side::Self_ => "self",
         };
 
-        let osm = extract_osm(&topic.osm_fields, &obj.tags, parent_tags);
-
-        // Sanitizer + deriver outputs share one column. Start from the produced fields,
-        // then add the inline derived values.
         let ectx = ExtractCtx {
             obj_tags: &obj.tags,
             parent_tags,
@@ -162,6 +144,11 @@ pub fn build_topic_rows(
             implicit_oneway: category.implicit_oneway,
             copy_surface_from_parent: category.copy_surface_smoothness_from_parent,
         };
+
+        let osm = extract_osm(&topic.osm_fields, &ectx);
+
+        // Sanitizer + deriver outputs share one column. Start from the produced fields,
+        // then add the inline derived values.
         let mut derived = build_fields(&topic.sanitized_fields, &ectx, category.id.as_str(), side_str);
 
         derived.insert("id".into(),       Value::String(id.clone()));

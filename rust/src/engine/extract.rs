@@ -26,7 +26,12 @@ pub struct ExtractCtx<'a> {
 pub enum TagSet {
     #[default]
     Obj,
+    /// Strict parent way: nothing if the object has no parent (matches old osm `parent`).
     Parent,
+    /// Parent way, falling back to the object's own tags when there is no parent
+    /// (matches the old yes_flag `source: parent`).
+    ParentOrObj,
+    /// The center-line / parent way tags (always present).
     Centerline,
 }
 
@@ -66,11 +71,11 @@ impl Producer {
                     return None;
                 }
                 let tags = match from {
-                    TagSet::Obj => ctx.obj_tags,
-                    // Mirrors the old YesFlag source=parent: parent tags, falling back to obj.
-                    TagSet::Parent => ctx.parent_tags.unwrap_or(ctx.obj_tags),
-                    TagSet::Centerline => ctx.centerline_tags,
-                };
+                    TagSet::Obj => Some(ctx.obj_tags),
+                    TagSet::Parent => ctx.parent_tags, // strict: None when no parent
+                    TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
+                    TagSet::Centerline => Some(ctx.centerline_tags),
+                }?;
                 let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
                 match sanitize {
                     Some(name) => sanitize::apply_sanitizer(name, raw),

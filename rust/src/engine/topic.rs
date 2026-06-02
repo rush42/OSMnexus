@@ -35,38 +35,13 @@ pub enum Transform {
     SplitSides { transform: String, highway: String, prefix: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TagSource {
-    Obj,
-    Parent,
-    ObjThenParent,
-}
-
+/// A raw OSM tag copied into the `osm` column, produced by the same extraction layer as
+/// sanitized fields (`{ "output": ..., "source": <Producer> }`). obj-then-parent is just a
+/// `fallback` of two extracts.
 #[derive(Debug, Deserialize)]
 pub struct OsmFieldSpec {
     pub output: String,
-    /// Resolved from either `"key": "..."` or `"keys": [...]` in JSON.
-    #[serde(flatten)]
-    pub keys: OsmKeys,
-    pub source: TagSource,
-}
-
-/// Allows `"key": "foo"` or `"keys": ["foo", "bar"]` in JSON.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum OsmKeys {
-    Single { key: String },
-    Multi  { keys: Vec<String> },
-}
-
-impl OsmKeys {
-    pub fn as_slice(&self) -> &[String] {
-        match self {
-            OsmKeys::Single { key } => std::slice::from_ref(key),
-            OsmKeys::Multi  { keys } => keys.as_slice(),
-        }
-    }
+    pub source: Producer,
 }
 
 /// One produced field written to the merged `derived` column. Either a single-output field

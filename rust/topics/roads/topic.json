@@ -90,78 +90,93 @@
   "osm_fields": [
     {
       "output": "highway",
-      "key": "highway",
-      "source": "obj"
+      "source": {
+        "key": "highway"
+      }
     },
     {
       "output": "name",
-      "key": "name",
-      "source": "obj"
+      "source": {
+        "key": "name"
+      }
     },
     {
       "output": "ref",
-      "key": "ref",
-      "source": "obj"
+      "source": {
+        "key": "ref"
+      }
     },
     {
       "output": "surface",
-      "key": "surface",
-      "source": "obj"
+      "source": {
+        "key": "surface"
+      }
     },
     {
       "output": "smoothness",
-      "key": "smoothness",
-      "source": "obj"
+      "source": {
+        "key": "smoothness"
+      }
     },
     {
       "output": "maxspeed",
-      "key": "maxspeed",
-      "source": "obj"
+      "source": {
+        "key": "maxspeed"
+      }
     },
     {
       "output": "oneway",
-      "key": "oneway",
-      "source": "obj"
+      "source": {
+        "key": "oneway"
+      }
     },
     {
       "output": "oneway:bicycle",
-      "key": "oneway:bicycle",
-      "source": "obj"
+      "source": {
+        "key": "oneway:bicycle"
+      }
     },
     {
       "output": "lit",
-      "key": "lit",
-      "source": "obj"
+      "source": {
+        "key": "lit"
+      }
     },
     {
       "output": "bridge",
-      "key": "bridge",
-      "source": "obj"
+      "source": {
+        "key": "bridge"
+      }
     },
     {
       "output": "tunnel",
-      "key": "tunnel",
-      "source": "obj"
+      "source": {
+        "key": "tunnel"
+      }
     },
     {
       "output": "operator_type",
-      "key": "operator_type",
-      "source": "obj"
+      "source": {
+        "key": "operator_type"
+      }
     },
     {
       "output": "informal",
-      "key": "informal",
-      "source": "obj"
+      "source": {
+        "key": "informal"
+      }
     },
     {
       "output": "covered",
-      "key": "covered",
-      "source": "obj"
+      "source": {
+        "key": "covered"
+      }
     },
     {
       "output": "traffic_sign",
-      "key": "traffic_sign",
-      "source": "obj"
+      "source": {
+        "key": "traffic_sign"
+      }
     }
   ],
   "sanitized_fields": [
