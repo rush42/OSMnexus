@@ -1,67 +1,359 @@
 {
   "table": "bikelanes",
-  "exclude_condition": { "macro": "standard_exclude" },
+  "exclude_condition": {
+    "macro": "standard_exclude"
+  },
   "transforms": [
     "lifecycle",
     "cycleway_opposite",
     "construction_prefix",
     "cycleway_both",
-    { "transform": "split_sides", "highway": "cycleway", "prefix": "cycleway" },
-    { "transform": "split_sides", "highway": "footway",  "prefix": "sidewalk" }
+    {
+      "transform": "split_sides",
+      "highway": "cycleway",
+      "prefix": "cycleway"
+    },
+    {
+      "transform": "split_sides",
+      "highway": "footway",
+      "prefix": "sidewalk"
+    }
   ],
   "osm_fields": [
-    { "output": "name",               "key": "name",                "source": "obj_then_parent" },
-    { "output": "surface",            "key": "surface",             "source": "obj" },
-    { "output": "smoothness",         "key": "smoothness",          "source": "obj" },
-    { "output": "width",              "key": "width",               "source": "obj" },
-    { "output": "source:width",       "key": "source:width",        "source": "obj" },
-    { "output": "bridge",             "key": "bridge",              "source": "parent" },
-    { "output": "tunnel",             "key": "tunnel",              "source": "parent" },
-    { "output": "oneway",             "key": "oneway",              "source": "obj" },
-    { "output": "oneway:bicycle",     "key": "oneway:bicycle",      "source": "obj_then_parent" },
-    { "output": "traffic_sign",       "key": "traffic_sign",        "source": "obj" },
-    { "output": "informal",           "key": "informal",            "source": "parent" },
-    { "output": "covered",            "key": "covered",             "source": "parent" },
-    { "output": "operator_type",      "key": "operator_type",       "source": "parent" },
-    { "output": "mapillary",          "key": "mapillary",           "source": "parent" },
-    { "output": "segregated",         "key": "segregated",          "source": "obj" },
-    { "output": "bicycle",            "key": "bicycle",             "source": "obj" },
-    { "output": "foot",               "key": "foot",                "source": "obj" },
-    { "output": "description",        "key": "description",         "source": "obj" },
-    { "output": "note",               "key": "note",                "source": "obj" },
-    { "output": "temporary",          "key": "temporary",           "source": "obj" },
-    { "output": "separation:left",    "key": "separation:left",     "source": "obj" },
-    { "output": "separation:right",   "key": "separation:right",    "source": "obj" },
-    { "output": "separation:both",    "key": "separation:both",     "source": "obj" },
-    { "output": "marking:left",       "key": "marking:left",        "source": "obj" },
-    { "output": "marking:right",      "key": "marking:right",       "source": "obj" },
-    { "output": "marking:both",       "key": "marking:both",        "source": "obj" },
-    { "output": "traffic_mode:left",  "key": "traffic_mode:left",   "source": "obj" },
-    { "output": "traffic_mode:right", "key": "traffic_mode:right",  "source": "obj" },
-    { "output": "traffic_mode:both",  "key": "traffic_mode:both",   "source": "obj" },
-    { "output": "buffer:left",        "key": "buffer:left",         "source": "obj" },
-    { "output": "buffer:right",       "key": "buffer:right",        "source": "obj" },
-    { "output": "buffer:both",        "key": "buffer:both",         "source": "obj" },
-    { "output": "surface:colour",     "keys": ["surface:colour", "surface:color"], "source": "obj" }
+    {
+      "output": "name",
+      "key": "name",
+      "source": "obj_then_parent"
+    },
+    {
+      "output": "surface",
+      "key": "surface",
+      "source": "obj"
+    },
+    {
+      "output": "smoothness",
+      "key": "smoothness",
+      "source": "obj"
+    },
+    {
+      "output": "width",
+      "key": "width",
+      "source": "obj"
+    },
+    {
+      "output": "source:width",
+      "key": "source:width",
+      "source": "obj"
+    },
+    {
+      "output": "bridge",
+      "key": "bridge",
+      "source": "parent"
+    },
+    {
+      "output": "tunnel",
+      "key": "tunnel",
+      "source": "parent"
+    },
+    {
+      "output": "oneway",
+      "key": "oneway",
+      "source": "obj"
+    },
+    {
+      "output": "oneway:bicycle",
+      "key": "oneway:bicycle",
+      "source": "obj_then_parent"
+    },
+    {
+      "output": "traffic_sign",
+      "key": "traffic_sign",
+      "source": "obj"
+    },
+    {
+      "output": "informal",
+      "key": "informal",
+      "source": "parent"
+    },
+    {
+      "output": "covered",
+      "key": "covered",
+      "source": "parent"
+    },
+    {
+      "output": "operator_type",
+      "key": "operator_type",
+      "source": "parent"
+    },
+    {
+      "output": "mapillary",
+      "key": "mapillary",
+      "source": "parent"
+    },
+    {
+      "output": "segregated",
+      "key": "segregated",
+      "source": "obj"
+    },
+    {
+      "output": "bicycle",
+      "key": "bicycle",
+      "source": "obj"
+    },
+    {
+      "output": "foot",
+      "key": "foot",
+      "source": "obj"
+    },
+    {
+      "output": "description",
+      "key": "description",
+      "source": "obj"
+    },
+    {
+      "output": "note",
+      "key": "note",
+      "source": "obj"
+    },
+    {
+      "output": "temporary",
+      "key": "temporary",
+      "source": "obj"
+    },
+    {
+      "output": "separation:left",
+      "key": "separation:left",
+      "source": "obj"
+    },
+    {
+      "output": "separation:right",
+      "key": "separation:right",
+      "source": "obj"
+    },
+    {
+      "output": "separation:both",
+      "key": "separation:both",
+      "source": "obj"
+    },
+    {
+      "output": "marking:left",
+      "key": "marking:left",
+      "source": "obj"
+    },
+    {
+      "output": "marking:right",
+      "key": "marking:right",
+      "source": "obj"
+    },
+    {
+      "output": "marking:both",
+      "key": "marking:both",
+      "source": "obj"
+    },
+    {
+      "output": "traffic_mode:left",
+      "key": "traffic_mode:left",
+      "source": "obj"
+    },
+    {
+      "output": "traffic_mode:right",
+      "key": "traffic_mode:right",
+      "source": "obj"
+    },
+    {
+      "output": "traffic_mode:both",
+      "key": "traffic_mode:both",
+      "source": "obj"
+    },
+    {
+      "output": "buffer:left",
+      "key": "buffer:left",
+      "source": "obj"
+    },
+    {
+      "output": "buffer:right",
+      "key": "buffer:right",
+      "source": "obj"
+    },
+    {
+      "output": "buffer:both",
+      "key": "buffer:both",
+      "source": "obj"
+    },
+    {
+      "output": "surface:colour",
+      "keys": [
+        "surface:colour",
+        "surface:color"
+      ],
+      "source": "obj"
+    }
   ],
   "sanitized_fields": [
-    { "output": "traffic_sign",        "fn": "traffic_sign" },
-    { "output": "separation_left",     "fn": "separation",   "side": "left" },
-    { "output": "separation_right",    "fn": "separation",   "side": "right" },
-    { "output": "marking_left",        "fn": "marking",      "side": "left" },
-    { "output": "marking_right",       "fn": "marking",      "side": "right" },
-    { "output": "buffer_left",         "fn": "buffer",       "side": "left" },
-    { "output": "buffer_right",        "fn": "buffer",       "side": "right" },
-    { "output": "surface_color",       "fn": "surface_color" },
-    { "output": "bridge",              "fn": "yes_flag",     "key": "bridge", "source": "parent" },
-    { "output": "tunnel",              "fn": "yes_flag",     "key": "tunnel", "source": "parent" },
-    { "output": "oneway",              "fn": "derive_oneway" },
-    { "output": "width",               "fn": "parse_length", "key": "width" },
-    { "output": "width_effective",     "fn": "parse_length", "key": "width:effective" },
-    { "output": "lifecycle",           "fn": "lifecycle" },
-    { "output": "surface",             "fn": "surface_with_fallback" },
-    { "output": "smoothness",          "fn": "smoothness_with_fallback" },
-    { "fn": "derive_traffic_mode", "output_left": "traffic_mode_left", "output_right": "traffic_mode_right" }
+    {
+      "output": "traffic_sign",
+      "source": {
+        "key": "traffic_sign",
+        "sanitize": "traffic_sign"
+      }
+    },
+    {
+      "output": "separation_left",
+      "source": {
+        "key": "separation",
+        "side": "left",
+        "sanitize": "separation"
+      }
+    },
+    {
+      "output": "separation_right",
+      "source": {
+        "key": "separation",
+        "side": "right",
+        "sanitize": "separation"
+      }
+    },
+    {
+      "output": "marking_left",
+      "source": {
+        "key": "marking",
+        "side": "left",
+        "sanitize": "marking"
+      }
+    },
+    {
+      "output": "marking_right",
+      "source": {
+        "key": "marking",
+        "side": "right",
+        "sanitize": "marking"
+      }
+    },
+    {
+      "output": "buffer_left",
+      "source": {
+        "key": "buffer",
+        "side": "left",
+        "sanitize": "buffer"
+      }
+    },
+    {
+      "output": "buffer_right",
+      "source": {
+        "key": "buffer",
+        "side": "right",
+        "sanitize": "buffer"
+      }
+    },
+    {
+      "output": "surface_color",
+      "source": {
+        "keys": [
+          "surface:colour",
+          "surface:color"
+        ],
+        "sanitize": "surface_color"
+      }
+    },
+    {
+      "output": "bridge",
+      "source": {
+        "key": "bridge",
+        "from": "parent",
+        "sanitize": "yes_flag"
+      }
+    },
+    {
+      "output": "tunnel",
+      "source": {
+        "key": "tunnel",
+        "from": "parent",
+        "sanitize": "yes_flag"
+      }
+    },
+    {
+      "output": "oneway",
+      "source": {
+        "derive": "oneway"
+      }
+    },
+    {
+      "output": "width",
+      "source": {
+        "key": "width",
+        "sanitize": "parse_length"
+      }
+    },
+    {
+      "output": "width_effective",
+      "source": {
+        "key": "width:effective",
+        "sanitize": "parse_length"
+      }
+    },
+    {
+      "output": "lifecycle",
+      "source": {
+        "fallback": [
+          {
+            "key": "temporary",
+            "sanitize": "temporary"
+          },
+          {
+            "key": "lifecycle"
+          },
+          {
+            "key": "lifecycle",
+            "from": "centerline"
+          }
+        ]
+      }
+    },
+    {
+      "output": "surface",
+      "source": {
+        "fallback": [
+          {
+            "key": "surface"
+          },
+          {
+            "key": "surface",
+            "from": "centerline",
+            "if_copy_surface": true
+          }
+        ]
+      }
+    },
+    {
+      "output": "smoothness",
+      "source": {
+        "fallback": [
+          {
+            "key": "smoothness"
+          },
+          {
+            "key": "smoothness",
+            "from": "centerline",
+            "if_copy_surface": true
+          }
+        ]
+      }
+    },
+    {
+      "output_left": "traffic_mode_left",
+      "output_right": "traffic_mode_right",
+      "derive": "traffic_mode"
+    }
   ],
-  "minzoom": { "default": 0, "rules": [ { "when": { "length_lt": 100 }, "zoom": 9 } ] }
+  "minzoom": {
+    "default": 0,
+    "rules": [
+      {
+        "when": {
+          "length_lt": 100
+        },
+        "zoom": 9
+      }
+    ]
+  }
 }

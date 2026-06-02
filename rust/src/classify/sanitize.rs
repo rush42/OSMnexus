@@ -1,9 +1,13 @@
-/// Port of Lua's sanitize_road_tags.lua, SanitizeTrafficSign.lua, and DeriveOneway.lua.
-/// All functions are pure (no side effects) and operate on raw tag maps.
+//! Sanitizers: pure `&str -> atomic value` functions (the counterpart to `derive.rs`).
+//! Each takes a single already-extracted tag value and returns a cleaned/validated atomic
+//! output. Tag selection (which key, which side, obj/parent/centerline, fallbacks) is the
+//! extraction layer's job (`engine/extract.rs`), not the sanitizer's.
+
+use serde_json::{Number, Value};
 
 use crate::osm::types::RawTags;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Sided extraction helpers (used by the extraction layer + derive.rs) ─────────
 
 pub(crate) fn get_sided<'a>(tags: &'a RawTags, key: &str, side: &str) -> Option<&'a str> {
     tags.get(&format!("{key}:{side}"))
@@ -11,7 +15,8 @@ pub(crate) fn get_sided<'a>(tags: &'a RawTags, key: &str, side: &str) -> Option<
         .map(String::as_str)
 }
 
-fn get_sided_with_bare_left<'a>(tags: &'a RawTags, key: &str, side: &str) -> Option<&'a str> {
+/// `key:{side}` → `key:both` → (for left only) bare `key`.
+pub(crate) fn get_sided_with_bare_left<'a>(tags: &'a RawTags, key: &str, side: &str) -> Option<&'a str> {
     let sided = get_sided(tags, key, side);
     if side == "left" {
         sided.or_else(|| tags.get(key).map(String::as_str))
@@ -22,6 +27,28 @@ fn get_sided_with_bare_left<'a>(tags: &'a RawTags, key: &str, side: &str) -> Opt
 
 fn in_list(value: &str, list: &[&str]) -> bool {
     list.contains(&value)
+}
+
+fn float_to_json(v: f32) -> Number {
+    Number::from_f64(v as f64).unwrap_or_else(|| Number::from(0))
+}
+
+// ── Sanitizer registry ──────────────────────────────────────────────────────────
+
+/// Apply a named `&str -> atomic` sanitizer to an extracted value. Returns None when the
+/// value is rejected (not in an allowed set / unparseable).
+pub fn apply_sanitizer(name: &str, raw: &str) -> Option<Value> {
+    match name {
+        "parse_length"  => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
+        "buffer"        => buffer(raw).map(|v| Value::Number(float_to_json(v))),
+        "separation"    => separation(raw).map(Value::String),
+        "marking"       => marking(raw).map(Value::String),
+        "surface_color" => surface_color(raw).map(Value::String),
+        "traffic_sign"  => traffic_sign(raw).map(Value::String),
+        "yes_flag"      => yes_flag(raw).map(Value::Bool),
+        "temporary"     => temporary(raw).map(|s| Value::String(s.to_owned())),
+        other => { tracing::warn!("unknown sanitizer: {other}"); None }
+    }
 }
 
 // ── parse_length ──────────────────────────────────────────────────────────────
@@ -67,18 +94,14 @@ pub fn parse_length(raw: &str) -> Option<f32> {
 
 // ── surface_color ─────────────────────────────────────────────────────────────
 
-/// Port of SANITIZE_ROAD_TAGS.surface_color.
-pub fn surface_color(tags: &RawTags) -> Option<String> {
-    let raw = tags.get("surface:colour").or_else(|| tags.get("surface:color"))?;
-    let mut v = raw.as_str();
-
-    let transformed = match v {
+/// Port of SANITIZE_ROAD_TAGS.surface_color. Input is the raw colour value.
+pub fn surface_color(raw: &str) -> Option<String> {
+    let v = match raw {
         "none" | "grey" | "gray" | "silver" | "dimgray" | "#888888" => "no",
         "#b5565a" | "orange" => "red",
         "green;red" => "red;green",
-        _ => v,
+        other => other,
     };
-    v = transformed;
 
     if in_list(v, &["red", "green", "red;green", "no"]) {
         Some(v.to_owned())
@@ -107,9 +130,8 @@ pub const SEPARATION_ALLOWED: &[&str] = &[
     "tree_row", "cone", "kerb;parking_lane", "kerb;bollard", "yes",
 ];
 
-/// Port of SANITIZE_ROAD_TAGS.separation.
-pub fn separation(tags: &RawTags, side: &str) -> Option<String> {
-    let raw = get_sided_with_bare_left(tags, "separation", side)?;
+/// Port of SANITIZE_ROAD_TAGS.separation. Input is the raw (already side-selected) value.
+pub fn separation(raw: &str) -> Option<String> {
     let normalized = normalize_separation(raw);
     if in_list(normalized, SEPARATION_ALLOWED) {
         Some(normalized.to_owned())
@@ -125,8 +147,7 @@ const MARKING_ALLOWED: &[&str] = &[
 ];
 
 /// Port of SANITIZE_ROAD_TAGS.marking.
-pub fn marking(tags: &RawTags, side: &str) -> Option<String> {
-    let raw = get_sided_with_bare_left(tags, "marking", side)?;
+pub fn marking(raw: &str) -> Option<String> {
     if in_list(raw, MARKING_ALLOWED) {
         Some(raw.to_owned())
     } else {
@@ -134,7 +155,7 @@ pub fn marking(tags: &RawTags, side: &str) -> Option<String> {
     }
 }
 
-// ── traffic_mode ──────────────────────────────────────────────────────────────
+// ── traffic_mode (used by derive.rs) ────────────────────────────────────────────
 
 pub(crate) fn normalize_traffic_mode(raw: &str) -> &str {
     match raw {
@@ -149,7 +170,8 @@ const TRAFFIC_MODE_ALLOWED: &[&str] = &[
     "no", "motor_vehicle", "parking", "psv", "bicycle", "foot",
 ];
 
-/// Port of SANITIZE_ROAD_TAGS.traffic_mode.
+/// Port of SANITIZE_ROAD_TAGS.traffic_mode. Still reads sided tags directly because
+/// `derive_traffic_mode` consumes both sides and the inference context.
 pub fn traffic_mode(tags: &RawTags, side: &str) -> Option<String> {
     let raw = get_sided_with_bare_left(tags, "traffic_mode", side)?;
     let normalized = normalize_traffic_mode(raw);
@@ -163,8 +185,7 @@ pub fn traffic_mode(tags: &RawTags, side: &str) -> Option<String> {
 // ── buffer ────────────────────────────────────────────────────────────────────
 
 /// Port of SANITIZE_ROAD_TAGS.buffer.
-pub fn buffer(tags: &RawTags, side: &str) -> Option<f32> {
-    let raw = get_sided_with_bare_left(tags, "buffer", side)?;
+pub fn buffer(raw: &str) -> Option<f32> {
     match raw {
         "no" | "none" => Some(0.0),
         other => parse_length(other),
@@ -173,20 +194,16 @@ pub fn buffer(tags: &RawTags, side: &str) -> Option<f32> {
 
 // ── temporary ─────────────────────────────────────────────────────────────────
 
-/// Returns "temporary" if `temporary=yes`, otherwise None.
-pub fn temporary(tags: &RawTags) -> Option<&'static str> {
-    if tags.get("temporary").map(String::as_str) == Some("yes") {
-        Some("temporary")
-    } else {
-        None
-    }
+/// Returns "temporary" if the value is "yes", otherwise None.
+pub fn temporary(raw: &str) -> Option<&'static str> {
+    if raw == "yes" { Some("temporary") } else { None }
 }
 
-// ── sanitize_traffic_sign ─────────────────────────────────────────────────────
+// ── traffic_sign ────────────────────────────────────────────────────────────────
 
 /// Port of SanitizeTrafficSign.lua.
 /// Normalises format irregularities like "DE: 244,1020-30" → "DE:244,1020-30".
-pub fn sanitize_traffic_sign(raw: &str) -> Option<String> {
+pub fn traffic_sign(raw: &str) -> Option<String> {
     if raw.is_empty() { return None; }
     if raw == "no" || raw == "none" { return Some("none".to_owned()); }
 
@@ -224,13 +241,9 @@ pub fn sanitize_traffic_sign(raw: &str) -> Option<String> {
     Some(stripped)
 }
 
-// ── sanitize_bridge_tunnel ────────────────────────────────────────────────────
+// ── yes_flag ────────────────────────────────────────────────────────────────────
 
-/// Returns Some(true) only for "yes", None otherwise (port of Sanitize(v, {"yes"})).
-pub fn sanitize_yes_flag(tags: &RawTags, key: &str) -> Option<bool> {
-    if tags.get(key).map(String::as_str) == Some("yes") {
-        Some(true)
-    } else {
-        None
-    }
+/// Returns Some(true) only for "yes" (port of Sanitize(v, {"yes"})).
+pub fn yes_flag(raw: &str) -> Option<bool> {
+    if raw == "yes" { Some(true) } else { None }
 }

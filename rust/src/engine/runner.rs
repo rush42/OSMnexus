@@ -4,9 +4,9 @@ use crate::classify::{
     categories::{categorize, eval_filter, resolve_minzoom, CategoriesFile, CategoryContext},
     derive,
     road_classification::road_classification_value,
-    sanitize as san,
 };
-use crate::engine::topic::{OsmFieldSpec, SanitizerSpec, TagSource, TopicSpec};
+use crate::engine::extract::ExtractCtx;
+use crate::engine::topic::{OsmFieldSpec, SanitizedField, TagSource, TopicSpec};
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::{
     geometry::to_ewkb,
@@ -71,91 +71,28 @@ fn first_of(keys: &[String], tags: &RawTags) -> Option<String> {
     keys.iter().find_map(|k| tags.get(k).cloned())
 }
 
-// ── Sanitizer dispatch ────────────────────────────────────────────────────────
+// ── Field production (sanitizers + single/two-output derivers) ──────────────────
 
-fn apply_sanitizers(
-    specs: &[SanitizerSpec],
-    obj_tags: &RawTags,
-    parent_tags: Option<&RawTags>,
-    centerline_tags: &RawTags,
+fn build_fields(
+    fields: &[SanitizedField],
+    ctx: &ExtractCtx,
     category_id: &str,
-    implicit_oneway: bool,
-    copy_surface_from_parent: bool,
     side_str: &str,
 ) -> Map<String, Value> {
     let mut map = Map::new();
 
-    for spec in specs {
-        match spec {
-            SanitizerSpec::TrafficSign { output } => {
-                if let Some(v) = obj_tags.get("traffic_sign").and_then(|r| san::sanitize_traffic_sign(r)) {
-                    map.insert(output.clone(), Value::String(v));
+    for field in fields {
+        match field {
+            SanitizedField::Produce { output, source } => {
+                if let Some(v) = source.eval(ctx) {
+                    map.insert(output.clone(), v);
                 }
             }
-            SanitizerSpec::Separation { output, side } => {
-                if let Some(v) = san::separation(obj_tags, side) {
-                    map.insert(output.clone(), Value::String(v));
-                }
-            }
-            SanitizerSpec::Marking { output, side } => {
-                if let Some(v) = san::marking(obj_tags, side) {
-                    map.insert(output.clone(), Value::String(v));
-                }
-            }
-            SanitizerSpec::Buffer { output, side } => {
-                if let Some(v) = san::buffer(obj_tags, side) {
-                    map.insert(output.clone(), Value::Number(float_to_json(v)));
-                }
-            }
-            SanitizerSpec::SurfaceColor { output } => {
-                if let Some(v) = san::surface_color(obj_tags) {
-                    map.insert(output.clone(), Value::String(v));
-                }
-            }
-            SanitizerSpec::YesFlag { output, key, source } => {
-                let tags = match source {
-                    TagSource::Parent => parent_tags.unwrap_or(obj_tags),
-                    _ => obj_tags,
-                };
-                if san::sanitize_yes_flag(tags, key).is_some() {
-                    map.insert(output.clone(), Value::Bool(true));
-                }
-            }
-            SanitizerSpec::ParseLength { output, key } => {
-                if let Some(v) = obj_tags.get(key).and_then(|r| san::parse_length(r)) {
-                    map.insert(output.clone(), Value::Number(float_to_json(v)));
-                }
-            }
-            SanitizerSpec::Lifecycle { output } => {
-                let v = san::temporary(obj_tags)
-                    .map(str::to_owned)
-                    .or_else(|| obj_tags.get("lifecycle").cloned())
-                    .or_else(|| centerline_tags.get("lifecycle").cloned());
-                if let Some(v) = v {
-                    map.insert(output.clone(), Value::String(v));
-                }
-            }
-            SanitizerSpec::SurfaceWithFallback { output } => {
-                let v = obj_tags.get("surface")
-                    .or_else(|| if copy_surface_from_parent { centerline_tags.get("surface") } else { None })
-                    .cloned();
-                if let Some(v) = v {
-                    map.insert(output.clone(), Value::String(v));
-                }
-            }
-            SanitizerSpec::SmoothnessWithFallback { output } => {
-                let v = obj_tags.get("smoothness")
-                    .or_else(|| if copy_surface_from_parent { centerline_tags.get("smoothness") } else { None })
-                    .cloned();
-                if let Some(v) = v {
-                    map.insert(output.clone(), Value::String(v));
-                }
-            }
-            SanitizerSpec::DeriveOneway { output } => {
-                map.insert(output.clone(), Value::String(derive::derive_oneway(obj_tags, implicit_oneway)));
-            }
-            SanitizerSpec::DeriveTrafficMode { output_left, output_right } => {
-                let (tm_l, tm_r) = derive::derive_traffic_mode(obj_tags, centerline_tags, category_id, side_str);
+            // Two-output deriver: explicit traffic_mode (left/right) with parking inference.
+            SanitizedField::TrafficMode { output_left, output_right, .. } => {
+                let (tm_l, tm_r) = derive::derive_traffic_mode(
+                    ctx.obj_tags, ctx.centerline_tags, category_id, side_str,
+                );
                 if let Some(v) = tm_l { map.insert(output_left.clone(),  Value::String(v)); }
                 if let Some(v) = tm_r { map.insert(output_right.clone(), Value::String(v)); }
             }
@@ -163,11 +100,6 @@ fn apply_sanitizers(
     }
 
     map
-}
-
-fn float_to_json(v: f32) -> serde_json::Number {
-    serde_json::Number::from_f64(v as f64)
-        .unwrap_or_else(|| serde_json::Number::from(0))
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -221,18 +153,16 @@ pub fn build_topic_rows(
 
         let osm = extract_osm(&topic.osm_fields, &obj.tags, parent_tags);
 
-        // Sanitizer + deriver outputs share one column. Start from the sanitizer outputs,
-        // then add the derived values.
-        let mut derived = apply_sanitizers(
-            &topic.sanitized_fields,
-            &obj.tags,
+        // Sanitizer + deriver outputs share one column. Start from the produced fields,
+        // then add the inline derived values.
+        let ectx = ExtractCtx {
+            obj_tags: &obj.tags,
             parent_tags,
-            tags, // centerline (parent way) tags for parking inference + lifecycle fallback
-            category.id.as_str(),
-            category.implicit_oneway,
-            category.copy_surface_smoothness_from_parent,
-            side_str,
-        );
+            centerline_tags: tags, // parent way tags for parking inference + lifecycle/surface fallback
+            implicit_oneway: category.implicit_oneway,
+            copy_surface_from_parent: category.copy_surface_smoothness_from_parent,
+        };
+        let mut derived = build_fields(&topic.sanitized_fields, &ectx, category.id.as_str(), side_str);
 
         derived.insert("id".into(),       Value::String(id.clone()));
         derived.insert("category".into(), Value::String(category.id.clone()));

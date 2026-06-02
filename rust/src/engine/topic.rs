@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use crate::classify::categories::{Filter, MinzoomRule};
+use crate::engine::extract::Producer;
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
@@ -10,7 +11,7 @@ pub struct TopicSpec {
     #[serde(default)]
     pub transforms: Vec<Transform>,
     pub osm_fields: Vec<OsmFieldSpec>,
-    pub sanitized_fields: Vec<SanitizerSpec>,
+    pub sanitized_fields: Vec<SanitizedField>,
     /// Optional Filter condition evaluated against raw way tags before categorization.
     /// If the condition matches, the way is skipped entirely for this topic.
     /// Uses the same Filter JSON syntax as category conditions.
@@ -68,21 +69,14 @@ impl OsmKeys {
     }
 }
 
-/// Each variant corresponds to a named sanitizer function.
-/// Serde tag = "fn" field in JSON.
+/// One produced field written to the merged `derived` column. Either a single-output field
+/// backed by a `Producer` (extract [+ sanitize] / fallback / single-value derive), or the
+/// two-output `traffic_mode` deriver.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "fn", rename_all = "snake_case")]
-pub enum SanitizerSpec {
-    TrafficSign          { output: String },
-    Separation           { output: String, side: String },
-    Marking              { output: String, side: String },
-    Buffer               { output: String, side: String },
-    SurfaceColor         { output: String },
-    YesFlag              { output: String, key: String, source: TagSource },
-    ParseLength          { output: String, key: String },
-    Lifecycle            { output: String },
-    SurfaceWithFallback  { output: String },
-    SmoothnessWithFallback { output: String },
-    DeriveOneway         { output: String },
-    DeriveTrafficMode    { output_left: String, output_right: String },
+#[serde(untagged)]
+pub enum SanitizedField {
+    /// `{ "output_left": ..., "output_right": ..., "derive": "traffic_mode" }`
+    TrafficMode { output_left: String, output_right: String, derive: String },
+    /// `{ "output": ..., "source": <Producer> }`
+    Produce { output: String, source: Producer },
 }

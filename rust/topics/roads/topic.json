@@ -1,49 +1,209 @@
 {
   "table": "roads",
-  "transforms": ["lifecycle"],
+  "transforms": [
+    "lifecycle"
+  ],
   "exclude_condition": {
     "or": [
-      { "macro": "standard_exclude" },
-      { "tag": "access", "in": ["private", "no", "delivery", "permit"] },
-      { "and": [
-          { "tag": "highway", "eq": "footway" },
-          { "tag": "foot", "in": ["private", "no", "delivery", "permit"] }
-      ]},
-      { "and": [
-          { "tag": "highway", "eq": "cycleway" },
-          { "tag": "bicycle", "in": ["private", "no", "delivery", "permit"] }
-      ]},
-      { "and": [
-          { "tag": "highway", "eq": "service" },
-          { "not": { "tag": "bicycle", "eq": "designated" } },
-          { "not": { "first_tag": ["bicycle:left","bicycle:right","bicycle:both"], "exists": true } },
-          { "tag": "service", "exists": true },
-          { "not": { "tag": "service", "eq": "alley" } }
-      ]}
+      {
+        "macro": "standard_exclude"
+      },
+      {
+        "tag": "access",
+        "in": [
+          "private",
+          "no",
+          "delivery",
+          "permit"
+        ]
+      },
+      {
+        "and": [
+          {
+            "tag": "highway",
+            "eq": "footway"
+          },
+          {
+            "tag": "foot",
+            "in": [
+              "private",
+              "no",
+              "delivery",
+              "permit"
+            ]
+          }
+        ]
+      },
+      {
+        "and": [
+          {
+            "tag": "highway",
+            "eq": "cycleway"
+          },
+          {
+            "tag": "bicycle",
+            "in": [
+              "private",
+              "no",
+              "delivery",
+              "permit"
+            ]
+          }
+        ]
+      },
+      {
+        "and": [
+          {
+            "tag": "highway",
+            "eq": "service"
+          },
+          {
+            "not": {
+              "tag": "bicycle",
+              "eq": "designated"
+            }
+          },
+          {
+            "not": {
+              "first_tag": [
+                "bicycle:left",
+                "bicycle:right",
+                "bicycle:both"
+              ],
+              "exists": true
+            }
+          },
+          {
+            "tag": "service",
+            "exists": true
+          },
+          {
+            "not": {
+              "tag": "service",
+              "eq": "alley"
+            }
+          }
+        ]
+      }
     ]
   },
   "osm_fields": [
-    { "output": "highway",         "key": "highway",        "source": "obj" },
-    { "output": "name",            "key": "name",           "source": "obj" },
-    { "output": "ref",             "key": "ref",            "source": "obj" },
-    { "output": "surface",         "key": "surface",        "source": "obj" },
-    { "output": "smoothness",      "key": "smoothness",     "source": "obj" },
-    { "output": "maxspeed",        "key": "maxspeed",       "source": "obj" },
-    { "output": "oneway",          "key": "oneway",         "source": "obj" },
-    { "output": "oneway:bicycle",  "key": "oneway:bicycle", "source": "obj" },
-    { "output": "lit",             "key": "lit",            "source": "obj" },
-    { "output": "bridge",          "key": "bridge",         "source": "obj" },
-    { "output": "tunnel",          "key": "tunnel",         "source": "obj" },
-    { "output": "operator_type",   "key": "operator_type",  "source": "obj" },
-    { "output": "informal",        "key": "informal",       "source": "obj" },
-    { "output": "covered",         "key": "covered",        "source": "obj" },
-    { "output": "traffic_sign",    "key": "traffic_sign",   "source": "obj" }
+    {
+      "output": "highway",
+      "key": "highway",
+      "source": "obj"
+    },
+    {
+      "output": "name",
+      "key": "name",
+      "source": "obj"
+    },
+    {
+      "output": "ref",
+      "key": "ref",
+      "source": "obj"
+    },
+    {
+      "output": "surface",
+      "key": "surface",
+      "source": "obj"
+    },
+    {
+      "output": "smoothness",
+      "key": "smoothness",
+      "source": "obj"
+    },
+    {
+      "output": "maxspeed",
+      "key": "maxspeed",
+      "source": "obj"
+    },
+    {
+      "output": "oneway",
+      "key": "oneway",
+      "source": "obj"
+    },
+    {
+      "output": "oneway:bicycle",
+      "key": "oneway:bicycle",
+      "source": "obj"
+    },
+    {
+      "output": "lit",
+      "key": "lit",
+      "source": "obj"
+    },
+    {
+      "output": "bridge",
+      "key": "bridge",
+      "source": "obj"
+    },
+    {
+      "output": "tunnel",
+      "key": "tunnel",
+      "source": "obj"
+    },
+    {
+      "output": "operator_type",
+      "key": "operator_type",
+      "source": "obj"
+    },
+    {
+      "output": "informal",
+      "key": "informal",
+      "source": "obj"
+    },
+    {
+      "output": "covered",
+      "key": "covered",
+      "source": "obj"
+    },
+    {
+      "output": "traffic_sign",
+      "key": "traffic_sign",
+      "source": "obj"
+    }
   ],
   "sanitized_fields": [
-    { "output": "bridge",       "fn": "yes_flag", "key": "bridge", "source": "obj" },
-    { "output": "tunnel",       "fn": "yes_flag", "key": "tunnel", "source": "obj" },
-    { "output": "traffic_sign", "fn": "traffic_sign" },
-    { "output": "lifecycle",    "fn": "lifecycle" }
+    {
+      "output": "bridge",
+      "source": {
+        "key": "bridge",
+        "sanitize": "yes_flag"
+      }
+    },
+    {
+      "output": "tunnel",
+      "source": {
+        "key": "tunnel",
+        "sanitize": "yes_flag"
+      }
+    },
+    {
+      "output": "traffic_sign",
+      "source": {
+        "key": "traffic_sign",
+        "sanitize": "traffic_sign"
+      }
+    },
+    {
+      "output": "lifecycle",
+      "source": {
+        "fallback": [
+          {
+            "key": "temporary",
+            "sanitize": "temporary"
+          },
+          {
+            "key": "lifecycle"
+          },
+          {
+            "key": "lifecycle",
+            "from": "centerline"
+          }
+        ]
+      }
+    }
   ],
   "minzoom": 0
 }
