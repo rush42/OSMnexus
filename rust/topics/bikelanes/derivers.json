@@ -9,13 +9,8 @@
       { "key": "lifecycle", "from": "centerline" }
     ]
   },
-  "surface": { "key": "surface", "sanitize": "surface" },
-  "surface_from_parent": {
-    "fallback": [
-      { "key": "surface", "sanitize": "surface" },
-      { "key": "surface", "from": "centerline", "sanitize": "surface" }
-    ]
-  },
+  "surface": { "derive": "surface" },
+  "surface_from_parent": { "derive": "surface_parent" },
   "smoothness": {
     "fallback": [
       { "key": "smoothness", "sanitize": "smoothness_normalize" },
