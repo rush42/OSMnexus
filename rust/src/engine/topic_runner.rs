@@ -6,6 +6,7 @@ use futures::SinkExt;
 use tokio_postgres::Client;
 
 use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
+use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
 use crate::engine::extract::Producer;
 use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::{DeriverBinding, Field, Transform, TopicSpec}};
 use crate::osm::types::{OsmWay, RawTags};
@@ -26,6 +27,8 @@ pub struct TopicRunner {
     pub transformations: Vec<CenterLineTransformation>,
     /// Desugared `sanitizers` — applied to every object regardless of category.
     pub sanitizer_fields: Vec<Field>,
+    /// Data-defined sanitizer chains (sanitizers.json) layered over the built-in registry.
+    pub sanitizers: SanitizerRegistry,
     /// Topic-default derivers (resolved from `derivers.json` via `topic.json`'s bindings).
     pub topic_derivers: Vec<Field>,
     /// Per-category effective derivers — present only for categories that override a deriver
@@ -80,6 +83,16 @@ impl TopicRunner {
 
         // Sanitizers desugar to per-object `Field`s, applied to every category.
         let sanitizer_fields: Vec<Field> = spec.sanitizers.iter().map(|s| s.to_field()).collect();
+
+        // Load the data-defined sanitizer chains (optional file). Names here win over built-ins.
+        let sanitizers_path = base.join("sanitizers.json");
+        let sanitizer_defs: HashMap<String, SanitizerDef> = if sanitizers_path.exists() {
+            serde_json::from_str(&std::fs::read_to_string(&sanitizers_path)?)
+                .with_context(|| format!("parsing topics/{name}/sanitizers.json"))?
+        } else {
+            HashMap::new()
+        };
+        let sanitizers = SanitizerRegistry::new(sanitizer_defs);
 
         // Load the deriver library (named single-output extractors). Optional: a topic with no
         // derivers (e.g. barrierLines) may omit the file.
@@ -151,6 +164,7 @@ impl TopicRunner {
             tag_transforms,
             transformations,
             sanitizer_fields,
+            sanitizers,
             topic_derivers,
             category_derivers,
         })

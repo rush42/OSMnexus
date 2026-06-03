@@ -9,18 +9,28 @@
       { "key": "lifecycle", "from": "centerline" }
     ]
   },
-  "surface": { "key": "surface" },
+  "surface": { "key": "surface", "sanitize": "surface" },
   "surface_from_parent": {
     "fallback": [
-      { "key": "surface" },
-      { "key": "surface", "from": "centerline" }
+      { "key": "surface", "sanitize": "surface" },
+      { "key": "surface", "from": "centerline", "sanitize": "surface" }
     ]
   },
-  "smoothness": { "key": "smoothness" },
+  "smoothness": {
+    "fallback": [
+      { "key": "smoothness", "sanitize": "smoothness_normalize" },
+      { "key": "surface",    "sanitize": "surface_to_smoothness" },
+      { "key": "tracktype",  "sanitize": "tracktype_to_smoothness" },
+      { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness" }
+    ]
+  },
   "smoothness_from_parent": {
     "fallback": [
-      { "key": "smoothness" },
-      { "key": "smoothness", "from": "centerline" }
+      { "key": "smoothness", "sanitize": "smoothness_normalize" },
+      { "key": "surface",    "sanitize": "surface_to_smoothness" },
+      { "key": "tracktype",  "sanitize": "tracktype_to_smoothness" },
+      { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness" },
+      { "key": "smoothness", "from": "centerline", "sanitize": "smoothness_normalize" }
     ]
   }
 }

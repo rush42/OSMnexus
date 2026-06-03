@@ -114,6 +114,7 @@ pub fn build_topic_rows(
             implicit_oneway: category.implicit_oneway,
             category_id: category.id.as_str(),
             obj_side: side_str,
+            sanitizers: &runner.sanitizers,
         };
 
         let mut osm = Map::new();

@@ -9,6 +9,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::classify::sanitize::SanitizerRegistry;
 use crate::classify::{derive, sanitize};
 use crate::osm::types::RawTags;
 
@@ -21,6 +22,8 @@ pub struct ExtractCtx<'a> {
     /// Matched category id and the transformed object's side — used by the `traffic_mode` deriver.
     pub category_id: &'a str,
     pub obj_side: &'a str,
+    /// Sanitizer registry (data-defined chains + built-ins) used to resolve `sanitize` names.
+    pub sanitizers: &'a SanitizerRegistry,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -82,7 +85,7 @@ impl Producer {
                 }?;
                 let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
                 match sanitize {
-                    Some(name) => sanitize::apply_sanitizer(name, raw),
+                    Some(name) => ctx.sanitizers.apply(name, raw),
                     None => Some(Value::String(raw.to_owned())),
                 }
             }

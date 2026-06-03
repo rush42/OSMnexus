@@ -3,6 +3,9 @@
 //! output. Tag selection (which key, which side, obj/parent/centerline, fallbacks) is the
 //! extraction layer's job (`engine/extract.rs`), not the sanitizer's.
 
+use std::collections::HashMap;
+
+use serde::Deserialize;
 use serde_json::{Number, Value};
 
 use crate::osm::types::RawTags;
@@ -33,11 +36,99 @@ fn float_to_json(v: f32) -> Number {
     Number::from_f64(v as f64).unwrap_or_else(|| Number::from(0))
 }
 
-// ── Sanitizer registry ──────────────────────────────────────────────────────────
+// ── Data-driven sanitizer chains (sanitizers.json) ────────────────────────────────
+//
+// A `SanitizerDef` is a pure `&str -> Option<atomic>` transform defined in data:
+//   - an array of steps  → a chain (folded left, short-circuiting on drop)
+//   - a single step object → `{ "mapping": {…}, "on_miss": … }` or `{ "filter": [...] }`
+//   - a bare string        → an alias to a built-in Rust sanitizer
+// Tag selection (which key, side, fallbacks) stays in the extraction layer; a sanitizer
+// only ever sees one already-extracted value.
 
-/// Apply a named `&str -> atomic` sanitizer to an extracted value. Returns None when the
-/// value is rejected (not in an allowed set / unparseable).
-pub fn apply_sanitizer(name: &str, raw: &str) -> Option<Value> {
+/// One transform step: a lookup table or an allow-list.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Step {
+    /// Table lookup. On a miss, `on_miss` decides: "keep" (passthrough), "drop"/absent (null),
+    /// or any other string (a constant default).
+    Mapping {
+        mapping: HashMap<String, String>,
+        #[serde(default)]
+        on_miss: Option<String>,
+    },
+    /// Keep the value iff it is in the set, else drop (sugar for an identity mapping + drop).
+    Filter { filter: Vec<String> },
+}
+
+impl Step {
+    fn apply(&self, v: &str) -> Option<String> {
+        match self {
+            Step::Mapping { mapping, on_miss } => match mapping.get(v) {
+                Some(mapped) => Some(mapped.clone()),
+                None => match on_miss.as_deref() {
+                    Some("keep") => Some(v.to_owned()),
+                    Some("drop") | None => None,
+                    Some(constant) => Some(constant.to_owned()),
+                },
+            },
+            Step::Filter { filter } => filter.iter().any(|a| a == v).then(|| v.to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum SanitizerDef {
+    Chain(Vec<Step>),
+    One(Step),
+    /// Alias to a built-in Rust sanitizer (e.g. `"parse_length"`).
+    Alias(String),
+}
+
+impl SanitizerDef {
+    /// Apply the (string→string) steps. Only valid for `One`/`Chain`; `Alias` is resolved by
+    /// the registry to a built-in before reaching here.
+    fn apply_chain(&self, raw: &str) -> Option<String> {
+        match self {
+            SanitizerDef::One(step) => step.apply(raw),
+            SanitizerDef::Chain(steps) => {
+                let mut cur = raw.to_owned();
+                for s in steps {
+                    cur = s.apply(&cur)?;
+                }
+                Some(cur)
+            }
+            SanitizerDef::Alias(_) => None,
+        }
+    }
+}
+
+/// Resolves a sanitizer name to either a data-defined chain (sanitizers.json) or a built-in.
+/// Custom definitions win; an unknown name falls back to the built-in registry.
+#[derive(Debug, Default)]
+pub struct SanitizerRegistry {
+    custom: HashMap<String, SanitizerDef>,
+}
+
+impl SanitizerRegistry {
+    pub fn new(custom: HashMap<String, SanitizerDef>) -> Self {
+        Self { custom }
+    }
+
+    pub fn apply(&self, name: &str, raw: &str) -> Option<Value> {
+        match self.custom.get(name) {
+            Some(SanitizerDef::Alias(builtin)) => apply_builtin(builtin, raw),
+            Some(def) => def.apply_chain(raw).map(Value::String),
+            None => apply_builtin(name, raw),
+        }
+    }
+}
+
+// ── Built-in sanitizer registry ───────────────────────────────────────────────────
+
+/// Apply a named built-in `&str -> atomic` sanitizer. Returns None when the value is
+/// rejected (not in an allowed set / unparseable).
+pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
     match name {
         "parse_length"  => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
         "buffer"        => buffer(raw).map(|v| Value::Number(float_to_json(v))),
