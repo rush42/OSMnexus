@@ -84,14 +84,21 @@ impl TopicRunner {
         // Sanitizers desugar to per-object `Field`s, applied to every category.
         let sanitizer_fields: Vec<Field> = spec.sanitizers.iter().map(|s| s.to_field()).collect();
 
-        // Load the data-defined sanitizer chains (optional file). Names here win over built-ins.
-        let sanitizers_path = base.join("sanitizers.json");
-        let sanitizer_defs: HashMap<String, SanitizerDef> = if sanitizers_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(&sanitizers_path)?)
-                .with_context(|| format!("parsing topics/{name}/sanitizers.json"))?
-        } else {
-            HashMap::new()
+        // Load the data-defined sanitizer chains: shared (topics/_shared/sanitizers.json) merged
+        // with the topic's own, topic-local winning on name conflict. Names win over built-ins.
+        let read_sanitizers = |path: &std::path::Path| -> anyhow::Result<HashMap<String, SanitizerDef>> {
+            if path.exists() {
+                Ok(serde_json::from_str(&std::fs::read_to_string(path)?)
+                    .with_context(|| format!("parsing {}", path.display()))?)
+            } else {
+                Ok(HashMap::new())
+            }
         };
+        let shared_dir = base.parent().expect("topics/<name> has a parent").join("_shared");
+        let mut sanitizer_defs = read_sanitizers(&shared_dir.join("sanitizers.json"))?;
+        for (k, v) in read_sanitizers(&base.join("sanitizers.json"))? {
+            sanitizer_defs.insert(k, v); // topic-local overrides shared
+        }
         let sanitizers = SanitizerRegistry::new(sanitizer_defs);
 
         // Load the deriver library (named single-output extractors). Optional: a topic with no

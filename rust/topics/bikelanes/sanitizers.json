@@ -1,4 +1,18 @@
 {
+  "marking": {
+    "filter": ["solid_line", "dashed_line", "double_solid_line", "barred_area", "pictogram", "surface"]
+  },
+
+  "surface_color": {
+    "mapping": {
+      "none": "no", "grey": "no", "gray": "no", "silver": "no", "dimgray": "no", "#888888": "no",
+      "#b5565a": "red", "orange": "red",
+      "green;red": "red;green",
+      "red": "red", "green": "green", "red;green": "red;green", "no": "no"
+    },
+    "on_miss": "drop"
+  },
+
   "surface": {
     "mapping": {
       "earth": "ground", "mud": "ground", "clay": "ground", "dirt": "ground", "dirt/sand": "ground",

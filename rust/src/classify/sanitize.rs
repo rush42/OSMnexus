@@ -133,11 +133,9 @@ pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
         "parse_length"  => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
         "buffer"        => buffer(raw).map(|v| Value::Number(float_to_json(v))),
         "separation"    => separation(raw).map(Value::String),
-        "marking"       => marking(raw).map(Value::String),
-        "surface_color" => surface_color(raw).map(Value::String),
         "traffic_sign"  => traffic_sign(raw).map(Value::String),
         "yes_flag"      => yes_flag(raw).map(Value::Bool),
-        "temporary"     => temporary(raw).map(|s| Value::String(s.to_owned())),
+        // marking / surface_color / temporary are now data sanitizers (sanitizers.json).
         other => { tracing::warn!("unknown sanitizer: {other}"); None }
     }
 }
@@ -183,24 +181,6 @@ pub fn parse_length(raw: &str) -> Option<f32> {
     Some(v * scale)
 }
 
-// ── surface_color ─────────────────────────────────────────────────────────────
-
-/// Port of SANITIZE_ROAD_TAGS.surface_color. Input is the raw colour value.
-pub fn surface_color(raw: &str) -> Option<String> {
-    let v = match raw {
-        "none" | "grey" | "gray" | "silver" | "dimgray" | "#888888" => "no",
-        "#b5565a" | "orange" => "red",
-        "green;red" => "red;green",
-        other => other,
-    };
-
-    if in_list(v, &["red", "green", "red;green", "no"]) {
-        Some(v.to_owned())
-    } else {
-        None
-    }
-}
-
 // ── separation ────────────────────────────────────────────────────────────────
 
 pub(crate) fn normalize_separation(raw: &str) -> &str {
@@ -226,21 +206,6 @@ pub fn separation(raw: &str) -> Option<String> {
     let normalized = normalize_separation(raw);
     if in_list(normalized, SEPARATION_ALLOWED) {
         Some(normalized.to_owned())
-    } else {
-        None
-    }
-}
-
-// ── marking ───────────────────────────────────────────────────────────────────
-
-const MARKING_ALLOWED: &[&str] = &[
-    "solid_line", "dashed_line", "double_solid_line", "barred_area", "pictogram", "surface",
-];
-
-/// Port of SANITIZE_ROAD_TAGS.marking.
-pub fn marking(raw: &str) -> Option<String> {
-    if in_list(raw, MARKING_ALLOWED) {
-        Some(raw.to_owned())
     } else {
         None
     }
@@ -281,13 +246,6 @@ pub fn buffer(raw: &str) -> Option<f32> {
         "no" | "none" => Some(0.0),
         other => parse_length(other),
     }
-}
-
-// ── temporary ─────────────────────────────────────────────────────────────────
-
-/// Returns "temporary" if the value is "yes", otherwise None.
-pub fn temporary(raw: &str) -> Option<&'static str> {
-    if raw == "yes" { Some("temporary") } else { None }
 }
 
 // ── traffic_sign ────────────────────────────────────────────────────────────────

@@ -172,6 +172,10 @@ pub fn load_shared_macros(dir: &std::path::Path) -> anyhow::Result<HashMap<Strin
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
+        // sanitizers.json in _shared is the shared sanitizer library, not a Filter macro.
+        if path.file_name() == Some(std::ffi::OsStr::new("sanitizers.json")) {
+            continue;
+        }
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
         let filter: Filter = serde_json::from_str(&std::fs::read_to_string(&path)?)
             .with_context(|| format!("parsing shared macro {}", path.display()))?;
