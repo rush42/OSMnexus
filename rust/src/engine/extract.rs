@@ -6,6 +6,8 @@
 //! the old obj-then-parent lookup, multi-key lookup, `get_sided_with_bare_left`, and the
 //! `surface:colour`/`surface:color` fallback.
 
+use std::collections::HashMap;
+
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -13,7 +15,25 @@ use crate::classify::sanitize::SanitizerRegistry;
 use crate::classify::{derive, sanitize};
 use crate::osm::types::RawTags;
 
-/// Everything a producer might need to resolve a value.
+/// A produced value plus optional provenance. `source`/`confidence` flow from the winning
+/// fallback branch (or a Rust deriver) and are emitted as `<field>_source`/`<field>_confidence`.
+#[derive(Debug, Clone)]
+pub struct Produced {
+    pub value: Value,
+    pub source: Option<String>,
+    pub confidence: Option<String>,
+}
+
+impl Produced {
+    /// A bare value with no provenance.
+    fn bare(value: Value) -> Self {
+        Produced { value, source: None, confidence: None }
+    }
+}
+
+/// Everything a producer might need to resolve a value. `Copy` so a deriver can cheaply build a
+/// variant (e.g. swapping `obj_tags` to the parent) when re-evaluating a sibling producer.
+#[derive(Clone, Copy)]
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags,
     pub parent_tags: Option<&'a RawTags>,
@@ -24,6 +44,9 @@ pub struct ExtractCtx<'a> {
     pub obj_side: &'a str,
     /// Sanitizer registry (data-defined chains + built-ins) used to resolve `sanitize` names.
     pub sanitizers: &'a SanitizerRegistry,
+    /// The topic's deriver library — lets a Rust deriver re-evaluate a sibling by name
+    /// (e.g. `smoothness_parent` re-runs the base `smoothness` fallback against the parent).
+    pub derivers: &'a HashMap<String, Producer>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -54,36 +77,36 @@ pub enum Producer {
         #[serde(default)] from: TagSet,
         #[serde(default)] side: Option<String>,
         #[serde(default)] sanitize: Option<String>,
+        /// Provenance this branch implies when it produces the value (Lua's *_source/_confidence).
+        #[serde(default)] source: Option<String>,
+        #[serde(default)] confidence: Option<String>,
     },
 }
 
 impl Producer {
-    pub fn eval(&self, ctx: &ExtractCtx) -> Option<Value> {
+    pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
+            // First non-empty branch wins, carrying its own source/confidence.
             Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
 
             Producer::Derive { derive, out_side } => match derive.as_str() {
-                "oneway" => Some(Value::String(
+                "oneway" => Some(Produced::bare(Value::String(
                     derive::derive_oneway(ctx.obj_tags, ctx.implicit_oneway),
-                )),
+                ))),
                 "traffic_mode" => {
                     let out_side = out_side.as_deref()
                         .expect("traffic_mode deriver needs `out_side`");
                     derive::traffic_mode_side(
                         ctx.obj_tags, ctx.centerline_tags, ctx.category_id, ctx.obj_side, out_side,
-                    ).map(Value::String)
+                    ).map(|v| Produced::bare(Value::String(v)))
                 }
-                "surface" => derive::surface(ctx.obj_tags, ctx.sanitizers).map(Value::String),
-                "surface_parent" => derive::surface_with_parent(
-                    ctx.obj_tags, ctx.parent_tags, ctx.sanitizers,
-                ).map(Value::String),
-                "smoothness_parent" => derive::smoothness_with_parent(
-                    ctx.obj_tags, ctx.parent_tags, ctx.sanitizers,
-                ).map(Value::String),
+                "surface" => surface_produced(derive::surface(ctx.obj_tags, ctx.sanitizers), false),
+                "surface_parent" => surface_parent(ctx),
+                "smoothness_parent" => smoothness_parent(ctx),
                 other => { tracing::warn!("unknown deriver: {other}"); None }
             },
 
-            Producer::Extract { key, keys, from, side, sanitize } => {
+            Producer::Extract { key, keys, from, side, sanitize, source, confidence } => {
                 let tags = match from {
                     TagSet::Obj => Some(ctx.obj_tags),
                     TagSet::Parent => ctx.parent_tags, // strict: None when no parent
@@ -91,12 +114,68 @@ impl Producer {
                     TagSet::Centerline => Some(ctx.centerline_tags),
                 }?;
                 let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
-                match sanitize {
-                    Some(name) => ctx.sanitizers.apply(name, raw),
-                    None => Some(Value::String(raw.to_owned())),
-                }
+                let value = match sanitize {
+                    Some(name) => ctx.sanitizers.apply(name, raw)?,
+                    None => Value::String(raw.to_owned()),
+                };
+                Some(Produced { value, source: source.clone(), confidence: confidence.clone() })
             }
         }
+    }
+}
+
+/// Wrap a Rust-derived surface value with its provenance (`tag` own, `parent_highway_tag` copied).
+fn surface_produced(value: Option<String>, from_parent: bool) -> Option<Produced> {
+    value.map(|v| Produced {
+        value: Value::String(v),
+        source: Some(if from_parent { "parent_highway_tag" } else { "tag" }.to_owned()),
+        confidence: Some("high".to_owned()),
+    })
+}
+
+/// `deriveBikelaneSurface`: own surface, else (no own) the parent highway's surface.
+fn surface_parent(ctx: &ExtractCtx) -> Option<Produced> {
+    if let Some(own) = surface_produced(derive::surface(ctx.obj_tags, ctx.sanitizers), false) {
+        return Some(own);
+    }
+    let parent = ctx.parent_tags?;
+    surface_produced(derive::surface(parent, ctx.sanitizers), true)
+}
+
+/// `deriveBikelaneSmoothness`: re-evaluate the base `smoothness` fallback (the single source of
+/// truth for the 4-source derivation + provenance) against own and parent tags, then copy the
+/// parent's value under the Lua guards, prefixing its source with `parent_highway_`.
+fn smoothness_parent(ctx: &ExtractCtx) -> Option<Produced> {
+    let base = ctx.derivers.get("smoothness")?;
+    let own = base.eval(ctx);
+
+    let Some(parent) = ctx.parent_tags else { return own };
+    let mut pctx = *ctx;
+    pctx.obj_tags = parent;
+    let par = base.eval(&pctx);
+    if par.is_none() {
+        return own;
+    }
+
+    let own_surface = ctx.obj_tags.get("surface");
+    let surfaces_match = own_surface == parent.get("surface");
+    let own_from_tag = own.as_ref().map_or(false, |p| {
+        matches!(p.source.as_deref(), Some("tag") | Some("tag_normalized"))
+    });
+
+    // A: own absent, and own surface absent or equal to the parent's.
+    let cond_a = own.is_none() && (own_surface.is_none() || surfaces_match);
+    // B: own not tag-sourced (derived or absent), own surface present and equal.
+    let cond_b = !own_from_tag && own_surface.is_some() && surfaces_match;
+
+    if cond_a || cond_b {
+        par.map(|p| Produced {
+            value: p.value,
+            source: p.source.map(|s| format!("parent_highway_{s}")),
+            confidence: p.confidence,
+        })
+    } else {
+        own
     }
 }
 

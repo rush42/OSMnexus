@@ -32,10 +32,12 @@
     "on_miss": "drop"
   },
 
-  "smoothness_normalize": {
+  "smoothness_direct": {
+    "filter": ["excellent", "good", "intermediate", "bad", "very_bad"]
+  },
+
+  "smoothness_norm": {
     "mapping": {
-      "excellent": "excellent", "good": "good", "intermediate": "intermediate",
-      "bad": "bad", "very_bad": "very_bad",
       "very_good": "excellent", "impassable": "very_bad", "horrible": "very_bad", "very_horrible": "very_bad"
     },
     "on_miss": "drop"

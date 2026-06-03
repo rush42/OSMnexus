@@ -103,69 +103,10 @@ fn derive_surface_value(tags: &RawTags, reg: &SanitizerRegistry) -> Option<Strin
     apply_str(reg, "surface", raw)
 }
 
-/// Port of `deriveBikelaneSurface`: own surface, falling back to the parent highway's surface
-/// when the object has none (copy categories). No parent → just the own value.
-pub fn surface_with_parent(
-    obj: &RawTags,
-    parent: Option<&RawTags>,
-    reg: &SanitizerRegistry,
-) -> Option<String> {
-    derive_surface_value(obj, reg).or_else(|| derive_surface_value(parent?, reg))
-}
-
-/// Own-tags surface deriver (no parent copy) — used by non-copy categories.
+/// Own-tags surface deriver: data `surface` mapping + the multi-tag `sett` size split. The
+/// parent copy (deriveBikelaneSurface) and provenance are orchestrated in `engine/extract.rs`.
 pub fn surface(obj: &RawTags, reg: &SanitizerRegistry) -> Option<String> {
     derive_surface_value(obj, reg)
-}
-
-/// Own-tags smoothness (the 4-source derivation, mirroring the `smoothness` deriver in data).
-/// Returns `(value, from_tag)` where `from_tag` marks the `smoothness` tag source (Lua's
-/// "tag"/"tag_normalized" okSources) vs. a value derived from surface/tracktype/mtb:scale.
-fn derive_smoothness(tags: &RawTags, reg: &SanitizerRegistry) -> (Option<String>, bool) {
-    if let Some(raw) = tags.get("smoothness") {
-        if let Some(v) = apply_str(reg, "smoothness_normalize", raw) {
-            return (Some(v), true);
-        }
-    }
-    for (key, san) in [
-        ("surface", "surface_to_smoothness"),
-        ("tracktype", "tracktype_to_smoothness"),
-        ("mtb:scale", "mtb_scale_to_smoothness"),
-    ] {
-        if let Some(raw) = tags.get(key) {
-            if let Some(v) = apply_str(reg, san, raw) {
-                return (Some(v), false);
-            }
-        }
-    }
-    (None, false)
-}
-
-/// Port of `deriveBikelaneSmoothness`: own 4-source smoothness, then copy the parent highway's
-/// smoothness under the Lua guards. Used by copy categories (`smoothness_from_parent`). For an
-/// object with no parent (e.g. bicycleRoad self) this is just the own derivation.
-pub fn smoothness_with_parent(
-    obj: &RawTags,
-    parent: Option<&RawTags>,
-    reg: &SanitizerRegistry,
-) -> Option<String> {
-    let (own, own_from_tag) = derive_smoothness(obj, reg);
-    let Some(parent) = parent else { return own };
-
-    let (par, _) = derive_smoothness(parent, reg);
-    if par.is_none() {
-        return own;
-    }
-
-    let own_surface = obj.get("surface");
-    let surfaces_match = own_surface == parent.get("surface");
-
-    // A: own smoothness absent, and own surface absent or equal to the parent's.
-    let cond_a = own.is_none() && (own_surface.is_none() || surfaces_match);
-    // B: own smoothness not tag-sourced (derived or absent), own surface present and equal.
-    let cond_b = !own_from_tag && own_surface.is_some() && surfaces_match;
-
-    if cond_a || cond_b { par } else { own }
 }
 
 // ── derive_oneway ───────────────────────────────────────────────────────────────

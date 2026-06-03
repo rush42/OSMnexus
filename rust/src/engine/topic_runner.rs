@@ -29,6 +29,9 @@ pub struct TopicRunner {
     pub sanitizer_fields: Vec<Field>,
     /// Data-defined sanitizer chains (sanitizers.json) layered over the built-in registry.
     pub sanitizers: SanitizerRegistry,
+    /// The deriver library (derivers.json) — kept so Rust derivers can re-evaluate a sibling
+    /// by name (e.g. smoothness_parent re-runs the base smoothness fallback on the parent).
+    pub deriver_lib: HashMap<String, Producer>,
     /// Topic-default derivers (resolved from `derivers.json` via `topic.json`'s bindings).
     pub topic_derivers: Vec<Field>,
     /// Per-category effective derivers — present only for categories that override a deriver
@@ -172,6 +175,7 @@ impl TopicRunner {
             transformations,
             sanitizer_fields,
             sanitizers,
+            deriver_lib,
             topic_derivers,
             category_derivers,
         })

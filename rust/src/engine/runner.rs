@@ -48,11 +48,18 @@ impl TopicRow {
 // ── Field evaluation ────────────────────────────────────────────────────────────
 
 /// Evaluate each `Field`'s producer against `ctx`, inserting non-empty results into `map`.
+/// When a value carries provenance, also emit `<output>_source` / `<output>_confidence`.
 /// Used for `osm_fields`, sanitizers, and derivers alike.
 fn eval_fields(fields: &[Field], ctx: &ExtractCtx, map: &mut Map<String, Value>) {
     for field in fields {
-        if let Some(v) = field.source.eval(ctx) {
-            map.insert(field.output.clone(), v);
+        if let Some(p) = field.source.eval(ctx) {
+            map.insert(field.output.clone(), p.value);
+            if let Some(s) = p.source {
+                map.insert(format!("{}_source", field.output), Value::String(s));
+            }
+            if let Some(c) = p.confidence {
+                map.insert(format!("{}_confidence", field.output), Value::String(c));
+            }
         }
     }
 }
@@ -115,6 +122,7 @@ pub fn build_topic_rows(
             category_id: category.id.as_str(),
             obj_side: side_str,
             sanitizers: &runner.sanitizers,
+            derivers: &runner.deriver_lib,
         };
 
         let mut osm = Map::new();

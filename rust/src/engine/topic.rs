@@ -109,6 +109,8 @@ impl Sanitizer {
                 from: self.from,
                 side: None,
                 sanitize: Some(self.name.clone()),
+                source: None,
+                confidence: None,
             },
         }
     }
