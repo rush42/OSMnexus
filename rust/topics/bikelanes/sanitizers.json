@@ -1,84 +1,211 @@
 {
   "marking": {
-    "filter": ["solid_line", "dashed_line", "double_solid_line", "barred_area", "pictogram", "surface"]
+    "filter": [
+      "solid_line",
+      "dashed_line",
+      "double_solid_line",
+      "barred_area",
+      "pictogram",
+      "surface"
+    ]
   },
-
   "surface_color": {
-    "mapping": {
-      "none": "no", "grey": "no", "gray": "no", "silver": "no", "dimgray": "no", "#888888": "no",
-      "#b5565a": "red", "orange": "red",
-      "green;red": "red;green",
-      "red": "red", "green": "green", "red;green": "red;green", "no": "no"
+    "cases": {
+      "no": [
+        "none",
+        "grey",
+        "gray",
+        "silver",
+        "dimgray",
+        "#888888",
+        "no"
+      ],
+      "red": [
+        "#b5565a",
+        "orange",
+        "red"
+      ],
+      "red;green": [
+        "green;red",
+        "red;green"
+      ],
+      "green": "green"
     },
     "on_miss": "drop"
   },
-
   "surface": {
-    "mapping": {
-      "earth": "ground", "mud": "ground", "clay": "ground", "dirt": "ground", "dirt/sand": "ground",
-      "cobblestone": "large_sett", "unhewn_cobblestone": "large_sett", "cobblestone:flattened": "large_sett",
-      "rock": "stone", "stone:plates": "stone",
-      "paving_stones:20": "paving_stones", "paving_stones:30": "paving_stones",
-      "tartan": "rubber",
-      "asphalt": "asphalt", "paved": "paved", "unpaved": "unpaved",
-      "concrete": "concrete", "concrete:plates": "concrete:plates", "concrete:lanes": "concrete:lanes",
-      "paving_stones": "paving_stones", "paving_stones:lanes": "paving_stones:lanes",
-      "sett": "sett", "bricks": "bricks", "stone": "stone",
-      "ground": "ground", "grass": "grass", "sand": "sand", "compacted": "compacted",
-      "fine_gravel": "fine_gravel", "gravel": "gravel", "pebblestone": "pebblestone",
-      "wood": "wood", "woodchips": "woodchips", "metal": "metal", "metal_grid": "metal_grid",
-      "plastic": "plastic", "rubber": "rubber", "grass_paver": "grass_paver"
+    "cases": {
+      "ground": [
+        "earth",
+        "mud",
+        "clay",
+        "dirt",
+        "dirt/sand",
+        "ground"
+      ],
+      "large_sett": [
+        "cobblestone",
+        "unhewn_cobblestone",
+        "cobblestone:flattened"
+      ],
+      "stone": [
+        "rock",
+        "stone:plates",
+        "stone"
+      ],
+      "paving_stones": [
+        "paving_stones:20",
+        "paving_stones:30",
+        "paving_stones"
+      ],
+      "rubber": [
+        "tartan",
+        "rubber"
+      ],
+      "asphalt": "asphalt",
+      "paved": "paved",
+      "unpaved": "unpaved",
+      "concrete": "concrete",
+      "concrete:plates": "concrete:plates",
+      "concrete:lanes": "concrete:lanes",
+      "paving_stones:lanes": "paving_stones:lanes",
+      "sett": "sett",
+      "bricks": "bricks",
+      "grass": "grass",
+      "sand": "sand",
+      "compacted": "compacted",
+      "fine_gravel": "fine_gravel",
+      "gravel": "gravel",
+      "pebblestone": "pebblestone",
+      "wood": "wood",
+      "woodchips": "woodchips",
+      "metal": "metal",
+      "metal_grid": "metal_grid",
+      "plastic": "plastic",
+      "grass_paver": "grass_paver"
     },
     "on_miss": "drop"
   },
-
   "smoothness_direct": {
-    "filter": ["excellent", "good", "intermediate", "bad", "very_bad"]
+    "filter": [
+      "excellent",
+      "good",
+      "intermediate",
+      "bad",
+      "very_bad"
+    ]
   },
-
   "smoothness_norm": {
     "mapping": {
-      "very_good": "excellent", "impassable": "very_bad", "horrible": "very_bad", "very_horrible": "very_bad"
+      "very_good": "excellent",
+      "impassable": "very_bad",
+      "horrible": "very_bad",
+      "very_horrible": "very_bad"
     },
     "on_miss": "drop"
   },
-
   "surface_to_smoothness": {
-    "mapping": {
-      "cobblestone:flattened": "bad", "concrete:lanes": "intermediate", "concrete:plates": "intermediate",
-      "stone:plates": "intermediate", "asphalt": "good", "brick": "bad", "cobblestone": "very_bad",
-      "compacted": "intermediate", "concrete": "intermediate", "dirt": "bad", "earth": "bad",
-      "fine_gravel": "intermediate", "granite": "intermediate", "grass_paver": "bad", "grass": "bad",
-      "gravel": "bad", "gravel:lanes": "bad", "ground": "bad", "metal_grid": "bad", "metal": "good",
-      "mud": "very_bad", "paved": "intermediate", "paving_stones": "intermediate", "pebblestone": "very_bad",
-      "rock": "very_bad", "rubber": "good", "sand": "very_bad", "sett": "bad", "stepping_stones": "bad",
-      "stone": "bad", "tartan": "good", "unhewn_cobblestone": "very_bad", "unpaved": "bad",
-      "wood": "intermediate", "woodchips": "very_bad",
-
-      ":plates": "intermediate", "asphalt;compacted": "intermediate", "asphalt;paving_stones": "intermediate",
-      "sandstone": "intermediate", "asphalt:lanes": "intermediate", "asphalt|sett": "very_bad",
-      "cobblestone;ground": "bad", "cobblestone;asphalt": "bad", "compacted;paving_s": "bad",
-      "compacted;paving_stones": "intermediate", "dirt;grass": "bad", "dirt/sand": "very_bad",
-      "dirt;sand": "very_bad", "3": "bad", "grass;gravel": "bad", "ground;grass": "bad", "grass;ground": "bad",
-      "gravel:tracks": "bad", "gravel;grass": "bad", "fine_gravel;grass": "bad", "fine_gravel;ground": "bad",
-      "gravel;ground": "bad", "gravel; grass": "bad", "clay": "bad", "paving_s;sett": "bad",
-      "paving_stones;asphalt": "intermediate", "paving_stones;sett": "bad", "paving_stones:30": "intermediate",
-      "sett;paving_s": "bad", "sett;paving_stones;cobblestone:flattened": "bad", "sett;paving_stones": "bad",
-      "grass_unpaved": "bad", "grund": "bad", "macadam": "intermediate", "paving_stonees": "intermediate",
-      "tiles": "bad"
+    "cases": {
+      "bad": [
+        "cobblestone:flattened",
+        "brick",
+        "dirt",
+        "earth",
+        "grass_paver",
+        "grass",
+        "gravel",
+        "gravel:lanes",
+        "ground",
+        "metal_grid",
+        "sett",
+        "stepping_stones",
+        "stone",
+        "unpaved",
+        "cobblestone;ground",
+        "cobblestone;asphalt",
+        "compacted;paving_s",
+        "dirt;grass",
+        "3",
+        "grass;gravel",
+        "ground;grass",
+        "grass;ground",
+        "gravel:tracks",
+        "gravel;grass",
+        "fine_gravel;grass",
+        "fine_gravel;ground",
+        "gravel;ground",
+        "gravel; grass",
+        "clay",
+        "paving_s;sett",
+        "paving_stones;sett",
+        "sett;paving_s",
+        "sett;paving_stones;cobblestone:flattened",
+        "sett;paving_stones",
+        "grass_unpaved",
+        "grund",
+        "tiles"
+      ],
+      "intermediate": [
+        "concrete:lanes",
+        "concrete:plates",
+        "stone:plates",
+        "compacted",
+        "concrete",
+        "fine_gravel",
+        "granite",
+        "paved",
+        "paving_stones",
+        "wood",
+        ":plates",
+        "asphalt;compacted",
+        "asphalt;paving_stones",
+        "sandstone",
+        "asphalt:lanes",
+        "compacted;paving_stones",
+        "paving_stones;asphalt",
+        "paving_stones:30",
+        "macadam",
+        "paving_stonees"
+      ],
+      "good": [
+        "asphalt",
+        "metal",
+        "rubber",
+        "tartan"
+      ],
+      "very_bad": [
+        "cobblestone",
+        "mud",
+        "pebblestone",
+        "rock",
+        "sand",
+        "unhewn_cobblestone",
+        "woodchips",
+        "asphalt|sett",
+        "dirt/sand",
+        "dirt;sand"
+      ]
     },
     "on_miss": "drop"
   },
-
   "tracktype_to_smoothness": {
-    "mapping": {
-      "grade1": "good", "grade2": "intermediate", "grade3": "bad", "grade4": "bad", "grade5": "very_bad"
+    "cases": {
+      "good": "grade1",
+      "intermediate": "grade2",
+      "bad": [
+        "grade3",
+        "grade4"
+      ],
+      "very_bad": "grade5"
     },
     "on_miss": "drop"
   },
-
   "mtb_scale_to_smoothness": {
-    "mapping": { "0": "bad", "0+": "bad", "0-": "bad" },
+    "mapping": {
+      "0": "bad",
+      "0+": "bad",
+      "0-": "bad"
+    },
     "on_miss": "very_bad"
   }
 }

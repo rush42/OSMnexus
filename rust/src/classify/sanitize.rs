@@ -45,6 +45,23 @@ fn float_to_json(v: f32) -> Number {
 // Tag selection (which key, side, fallbacks) stays in the extraction layer; a sanitizer
 // only ever sees one already-extracted value.
 
+/// Accepts either `"foo"` or `["foo", "bar"]` in JSON.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum StrOrVec {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl StrOrVec {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            StrOrVec::One(s) => vec![s],
+            StrOrVec::Many(v) => v,
+        }
+    }
+}
+
 /// One transform step: a lookup table or an allow-list.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -56,11 +73,39 @@ pub enum Step {
         #[serde(default)]
         on_miss: Option<String>,
     },
+    /// Inverted lookup shorthand: `{ "<output>": "<input>" | ["<input>", ...] }`. Collapses the
+    /// common case of many inputs → one output. Normalized into a forward `Mapping` at load.
+    Cases {
+        cases: HashMap<String, StrOrVec>,
+        #[serde(default)]
+        on_miss: Option<String>,
+    },
     /// Keep the value iff it is in the set, else drop (sugar for an identity mapping + drop).
     Filter { filter: Vec<String> },
 }
 
 impl Step {
+    /// Expand a `Cases` step into the equivalent forward `Mapping`; other steps pass through.
+    /// Done once at registry build so `apply` stays an O(1) lookup.
+    fn normalize(self) -> Step {
+        match self {
+            Step::Cases { cases, on_miss } => {
+                let mut mapping = HashMap::new();
+                for (output, inputs) in cases {
+                    for input in inputs.into_vec() {
+                        if let Some(prev) = mapping.insert(input.clone(), output.clone()) {
+                            tracing::warn!(
+                                "sanitizer `cases`: input {input:?} maps to both {prev:?} and {output:?}"
+                            );
+                        }
+                    }
+                }
+                Step::Mapping { mapping, on_miss }
+            }
+            other => other,
+        }
+    }
+
     fn apply(&self, v: &str) -> Option<String> {
         match self {
             Step::Mapping { mapping, on_miss } => match mapping.get(v) {
@@ -72,6 +117,8 @@ impl Step {
                 },
             },
             Step::Filter { filter } => filter.iter().any(|a| a == v).then(|| v.to_owned()),
+            // Normalized into Mapping at registry build (SanitizerRegistry::new).
+            Step::Cases { .. } => unreachable!("`cases` step must be normalized before apply"),
         }
     }
 }
@@ -86,6 +133,17 @@ pub enum SanitizerDef {
 }
 
 impl SanitizerDef {
+    /// Normalize every `Cases` step into its forward `Mapping` (done once at registry build).
+    fn normalize(self) -> Self {
+        match self {
+            SanitizerDef::One(step) => SanitizerDef::One(step.normalize()),
+            SanitizerDef::Chain(steps) => {
+                SanitizerDef::Chain(steps.into_iter().map(Step::normalize).collect())
+            }
+            alias => alias,
+        }
+    }
+
     /// Apply the (string→string) steps. Only valid for `One`/`Chain`; `Alias` is resolved by
     /// the registry to a built-in before reaching here.
     fn apply_chain(&self, raw: &str) -> Option<String> {
@@ -112,6 +170,7 @@ pub struct SanitizerRegistry {
 
 impl SanitizerRegistry {
     pub fn new(custom: HashMap<String, SanitizerDef>) -> Self {
+        let custom = custom.into_iter().map(|(k, v)| (k, v.normalize())).collect();
         Self { custom }
     }
 
