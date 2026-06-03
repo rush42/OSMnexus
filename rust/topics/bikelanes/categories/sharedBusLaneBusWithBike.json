@@ -2,7 +2,6 @@
   "infrastructure_exists": true,
   "implicit_oneway": true,
   "implicit_oneway_confidence": "high",
-  "copy_surface_smoothness_from_parent": true,
   "condition": {
     "and": [
       {
@@ -76,5 +75,15 @@
     "not_expected",
     "separate_geometry",
     "sharedBusLaneBikeWithBus"
+  ],
+  "derivers": [
+    {
+      "deriver": "surface_from_parent",
+      "output": "surface"
+    },
+    {
+      "deriver": "smoothness_from_parent",
+      "output": "smoothness"
+    }
   ]
 }

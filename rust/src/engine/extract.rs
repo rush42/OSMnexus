@@ -18,7 +18,9 @@ pub struct ExtractCtx<'a> {
     pub parent_tags: Option<&'a RawTags>,
     pub centerline_tags: &'a RawTags,
     pub implicit_oneway: bool,
-    pub copy_surface_from_parent: bool,
+    /// Matched category id and the transformed object's side — used by the `traffic_mode` deriver.
+    pub category_id: &'a str,
+    pub obj_side: &'a str,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -37,20 +39,18 @@ pub enum TagSet {
 
 /// A value producer. Untagged: object with `fallback` → Fallback; with `derive` → Derive;
 /// otherwise → Extract. (Order matters — Extract's fields are all optional.)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Producer {
     Fallback { fallback: Vec<Producer> },
-    Derive { derive: String },
+    /// A Rust-backed deriver. `out_side` fixes the side for the per-side `traffic_mode` deriver.
+    Derive { derive: String, #[serde(default)] out_side: Option<String> },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
         #[serde(default)] from: TagSet,
         #[serde(default)] side: Option<String>,
         #[serde(default)] sanitize: Option<String>,
-        /// When true, this producer is skipped unless the matched category sets
-        /// `copy_surface_smoothness_from_parent` (the surface/smoothness parent fallback).
-        #[serde(default)] if_copy_surface: bool,
     },
 }
 
@@ -59,17 +59,21 @@ impl Producer {
         match self {
             Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
 
-            Producer::Derive { derive } => match derive.as_str() {
+            Producer::Derive { derive, out_side } => match derive.as_str() {
                 "oneway" => Some(Value::String(
                     derive::derive_oneway(ctx.obj_tags, ctx.implicit_oneway),
                 )),
+                "traffic_mode" => {
+                    let out_side = out_side.as_deref()
+                        .expect("traffic_mode deriver needs `out_side`");
+                    derive::traffic_mode_side(
+                        ctx.obj_tags, ctx.centerline_tags, ctx.category_id, ctx.obj_side, out_side,
+                    ).map(Value::String)
+                }
                 other => { tracing::warn!("unknown deriver: {other}"); None }
             },
 
-            Producer::Extract { key, keys, from, side, sanitize, if_copy_surface } => {
-                if *if_copy_surface && !ctx.copy_surface_from_parent {
-                    return None;
-                }
+            Producer::Extract { key, keys, from, side, sanitize } => {
                 let tags = match from {
                     TagSet::Obj => Some(ctx.obj_tags),
                     TagSet::Parent => ctx.parent_tags, // strict: None when no parent

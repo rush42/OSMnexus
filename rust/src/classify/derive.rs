@@ -35,41 +35,42 @@ const DIRECTIONAL_PARKING_CATEGORIES: &[&str] = &[
     "cyclewayOnHighwayProtected",
 ];
 
-/// Port of Lua's `deriveTrafficMode` — returns `(traffic_mode_left, traffic_mode_right)`.
-/// Uses explicit `traffic_mode:*` tags first; falls back to parking-lane inference.
-pub fn derive_traffic_mode(
-    bikelane_tags: &RawTags,  // transformed object tags
+fn is_bicycle_road(category_id: &str) -> bool {
+    category_id == "bicycleRoad" || category_id == "bicycleRoad_vehicleDestination"
+}
+
+/// Single-output port of Lua's `deriveTrafficMode`, computing one side's value.
+/// `out_side` ("left"|"right") selects which side this deriver emits; `obj_side` is the
+/// transformed object's side (from context), used for the directional inference branch.
+///
+/// Note: single-*output* ≠ single-*input* — the explicit-tag gate is cross-side (an explicit
+/// `traffic_mode:*` on *either* side suppresses inference on both), so both sides are read.
+/// Equivalent to the former tuple `derive_traffic_mode`, projected onto `out_side`.
+pub fn traffic_mode_side(
+    obj_tags: &RawTags,       // transformed object tags
     centerline_tags: &RawTags, // parent way tags (for parking:*)
     category_id: &str,
-    side: &str,               // "left" | "right" | "self"
-) -> (Option<String>, Option<String>) {
-    let tm_left  = traffic_mode(bikelane_tags, "left");
-    let tm_right = traffic_mode(bikelane_tags, "right");
-
-    // Explicit tags win — no inference needed.
-    if tm_left.is_some() || tm_right.is_some() {
-        return (tm_left, tm_right);
+    obj_side: &str,           // "left" | "right" | "self"
+    out_side: &str,           // "left" | "right"
+) -> Option<String> {
+    // Explicit tags win (on either side) — no inference; emit this side's explicit value.
+    let explicit_any =
+        traffic_mode(obj_tags, "left").is_some() || traffic_mode(obj_tags, "right").is_some();
+    if explicit_any {
+        return traffic_mode(obj_tags, out_side);
     }
 
     // Bicycle roads: infer both sides from centerline parking tags.
-    if category_id == "bicycleRoad" || category_id == "bicycleRoad_vehicleDestination" {
-        return (
-            infer_traffic_mode_from_parking(centerline_tags, "left"),
-            infer_traffic_mode_from_parking(centerline_tags, "right"),
-        );
+    if is_bicycle_road(category_id) {
+        return infer_traffic_mode_from_parking(centerline_tags, out_side);
     }
 
     // Lane categories: infer only the transformed side.
-    if DIRECTIONAL_PARKING_CATEGORIES.contains(&category_id) {
-        let inferred = infer_traffic_mode_from_parking(centerline_tags, side);
-        return match side {
-            "left"  => (inferred, None),
-            "right" => (None, inferred),
-            _       => (None, None),
-        };
+    if DIRECTIONAL_PARKING_CATEGORIES.contains(&category_id) && obj_side == out_side {
+        return infer_traffic_mode_from_parking(centerline_tags, out_side);
     }
 
-    (None, None)
+    None
 }
 
 // ── derive_oneway ───────────────────────────────────────────────────────────────

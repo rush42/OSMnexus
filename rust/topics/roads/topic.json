@@ -194,24 +194,7 @@
     }
   ],
   "derivers": [
-    {
-      "output": "lifecycle",
-      "source": {
-        "fallback": [
-          {
-            "key": "temporary",
-            "sanitize": "temporary"
-          },
-          {
-            "key": "lifecycle"
-          },
-          {
-            "key": "lifecycle",
-            "from": "centerline"
-          }
-        ]
-      }
-    }
+    "lifecycle"
   ],
   "minzoom": 0
 }

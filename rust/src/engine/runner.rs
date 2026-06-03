@@ -1,18 +1,18 @@
 use serde_json::{Map, Value};
 
 use crate::classify::{
-    categories::{categorize, eval_filter, resolve_minzoom, CategoriesFile, CategoryContext},
-    derive,
+    categories::{categorize, eval_filter, resolve_minzoom, CategoryContext},
     road_classification::road_classification_value,
 };
 use crate::engine::extract::ExtractCtx;
-use crate::engine::topic::{OsmFieldSpec, SanitizedField, TopicSpec};
+use crate::engine::topic::Field;
+use crate::engine::topic_runner::TopicRunner;
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::{
     geometry::to_ewkb,
     types::{OsmMeta, Side},
 };
-use crate::transform::side_split::{get_transformed_objects, CenterLineTransformation};
+use crate::transform::side_split::get_transformed_objects;
 
 /// A single output row produced by the topic engine.
 /// All four data columns are runtime JSON maps — no per-topic typed structs needed.
@@ -45,62 +45,31 @@ impl TopicRow {
     }
 }
 
-// ── OSM field extraction ──────────────────────────────────────────────────────
+// ── Field evaluation ────────────────────────────────────────────────────────────
 
-fn extract_osm(fields: &[OsmFieldSpec], ctx: &ExtractCtx) -> Map<String, Value> {
-    let mut map = Map::new();
-    for spec in fields {
-        if let Some(v) = spec.source.eval(ctx) {
-            map.insert(spec.output.clone(), v);
-        }
-    }
-    map
-}
-
-// ── Field production (sanitizers + single/two-output derivers) ──────────────────
-
-fn build_fields(
-    fields: &[SanitizedField],
-    ctx: &ExtractCtx,
-    category_id: &str,
-    side_str: &str,
-) -> Map<String, Value> {
-    let mut map = Map::new();
-
+/// Evaluate each `Field`'s producer against `ctx`, inserting non-empty results into `map`.
+/// Used for `osm_fields`, sanitizers, and derivers alike.
+fn eval_fields(fields: &[Field], ctx: &ExtractCtx, map: &mut Map<String, Value>) {
     for field in fields {
-        match field {
-            SanitizedField::Produce { output, source } => {
-                if let Some(v) = source.eval(ctx) {
-                    map.insert(output.clone(), v);
-                }
-            }
-            // Two-output deriver: explicit traffic_mode (left/right) with parking inference.
-            SanitizedField::TrafficMode { output_left, output_right, .. } => {
-                let (tm_l, tm_r) = derive::derive_traffic_mode(
-                    ctx.obj_tags, ctx.centerline_tags, category_id, side_str,
-                );
-                if let Some(v) = tm_l { map.insert(output_left.clone(),  Value::String(v)); }
-                if let Some(v) = tm_r { map.insert(output_right.clone(), Value::String(v)); }
-            }
+        if let Some(v) = field.source.eval(ctx) {
+            map.insert(field.output.clone(), v);
         }
     }
-
-    map
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub fn build_topic_rows(
-    topic: &TopicSpec,
-    categories: &CategoriesFile,
-    fields: &[SanitizedField],
+    runner: &TopicRunner,
     way: &OsmWay,
     tags: &RawTags,
-    transformations: &[CenterLineTransformation],
     geom: &geo::LineString<f64>,
     length_m: f64,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
+    let topic = &runner.spec;
+    let categories = &runner.categories;
+
     // Evaluate optional way-level exclude condition before any categorization.
     if let Some(cond) = &topic.exclude_condition {
         if eval_filter(cond, tags, &categories.macros) {
@@ -108,7 +77,7 @@ pub fn build_topic_rows(
         }
     }
 
-    let transformed = get_transformed_objects(tags, transformations);
+    let transformed = get_transformed_objects(tags, &runner.transformations);
     let mut rows = Vec::new();
 
     for obj in &transformed {
@@ -143,14 +112,22 @@ pub fn build_topic_rows(
             parent_tags,
             centerline_tags: tags, // parent way tags for parking inference + lifecycle/surface fallback
             implicit_oneway: category.implicit_oneway,
-            copy_surface_from_parent: category.copy_surface_smoothness_from_parent,
+            category_id: category.id.as_str(),
+            obj_side: side_str,
         };
 
-        let osm = extract_osm(&topic.osm_fields, &ectx);
+        let mut osm = Map::new();
+        eval_fields(&topic.osm_fields, &ectx, &mut osm);
 
-        // Sanitizer + deriver outputs share one column. Start from the produced fields,
-        // then add the inline derived values.
-        let mut derived = build_fields(fields, &ectx, category.id.as_str(), side_str);
+        // Sanitizer + deriver outputs share one column. Sanitizers apply to every category;
+        // derivers come from this category's effective set (topic defaults ± overrides).
+        let derivers = runner
+            .category_derivers
+            .get(&category.id)
+            .unwrap_or(&runner.topic_derivers);
+        let mut derived = Map::new();
+        eval_fields(&runner.sanitizer_fields, &ectx, &mut derived);
+        eval_fields(derivers, &ectx, &mut derived);
 
         derived.insert("id".into(),       Value::String(id.clone()));
         derived.insert("category".into(), Value::String(category.id.clone()));

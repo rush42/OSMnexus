@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde::Deserialize;
 
+use crate::engine::topic::DeriverBinding;
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
 use crate::classify::highway_classes::allowed_highways;
@@ -30,12 +31,15 @@ pub struct CategoryDef {
     pub infrastructure_exists: bool,
     pub implicit_oneway: bool,
     pub implicit_oneway_confidence: String,
-    pub copy_surface_smoothness_from_parent: bool,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
     /// Per-category minzoom override. Falls back to the topic-level default when absent.
     #[serde(default)]
     pub minzoom: Option<MinzoomRule>,
+    /// Per-category deriver overrides: re-bind a different deriver to an output (replacing the
+    /// topic default for that output). E.g. surface/smoothness sourced from the parent highway.
+    #[serde(default)]
+    pub derivers: Option<Vec<DeriverBinding>>,
 }
 
 /// Declarative minzoom: a constant, or an ordered list of conditional cases with a default.

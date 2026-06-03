@@ -1,9 +1,39 @@
 {
-  "infrastructure_exists": true, "implicit_oneway": false,
-  "implicit_oneway_confidence": "not_applicable", "copy_surface_smoothness_from_parent": false,
-  "condition": { "and": [ {"tag":"highway","eq":"service"}, {"or":[
-    {"tag":"service","eq":"emergency_access"},
-    {"and":[{"tag":"service","eq":"driveway"},{"tag":"emergency","in":["yes","designated"]}]}
-  ]}]},
-  "excludes": ["bicycle_road"]
+  "infrastructure_exists": true,
+  "implicit_oneway": false,
+  "implicit_oneway_confidence": "not_applicable",
+  "condition": {
+    "and": [
+      {
+        "tag": "highway",
+        "eq": "service"
+      },
+      {
+        "or": [
+          {
+            "tag": "service",
+            "eq": "emergency_access"
+          },
+          {
+            "and": [
+              {
+                "tag": "service",
+                "eq": "driveway"
+              },
+              {
+                "tag": "emergency",
+                "in": [
+                  "yes",
+                  "designated"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycle_road"
+  ]
 }

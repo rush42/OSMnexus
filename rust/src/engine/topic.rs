@@ -10,15 +10,16 @@ pub struct TopicSpec {
     /// `{ "transform": "split_sides", "sides": [{ "highway": ..., "prefix": ... }] }`.
     #[serde(default)]
     pub transforms: Vec<Transform>,
-    pub osm_fields: Vec<OsmFieldSpec>,
+    pub osm_fields: Vec<Field>,
     /// Simple field sanitizers: read one tag (or first present of several), clean it with a
     /// named `&str -> atomic` sanitizer, write to `tag`.
     #[serde(default)]
     pub sanitizers: Vec<Sanitizer>,
-    /// Computed fields needing more than a single read + sanitize: multi-source fallbacks
-    /// (lifecycle/surface/smoothness) and Rust derivers (oneway/traffic_mode).
+    /// References (by name) into the topic's `derivers.json` library. Each binding names a
+    /// single-output deriver and the output field it writes. Categories may override these
+    /// by re-binding a different deriver to the same output.
     #[serde(default)]
-    pub derivers: Vec<SanitizedField>,
+    pub derivers: Vec<DeriverBinding>,
     /// Optional Filter condition evaluated against raw way tags before categorization.
     /// If the condition matches, the way is skipped entirely for this topic.
     /// Uses the same Filter JSON syntax as category conditions.
@@ -42,13 +43,31 @@ pub enum Transform {
     SplitSides { transform: String, highway: String, prefix: String },
 }
 
-/// A raw OSM tag copied into the `osm` column, produced by the same extraction layer as
-/// sanitized fields (`{ "output": ..., "source": <Producer> }`). obj-then-parent is just a
-/// `fallback` of two extracts.
-#[derive(Debug, Deserialize)]
-pub struct OsmFieldSpec {
+/// One produced field: `{ "output": ..., "source": <Producer> }`. Used for `osm_fields`,
+/// desugared sanitizers, and resolved derivers alike — they all share one eval path.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Field {
     pub output: String,
     pub source: Producer,
+}
+
+/// A reference from `topic.json` (or a category) into the `derivers.json` library.
+/// A bare string names a deriver whose output equals its name; the object form binds a
+/// deriver to a different output (e.g. `surface_from_parent` → `surface`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum DeriverBinding {
+    Named(String),
+    Bound { deriver: String, output: String },
+}
+
+impl DeriverBinding {
+    pub fn deriver(&self) -> &str {
+        match self { DeriverBinding::Named(s) => s, DeriverBinding::Bound { deriver, .. } => deriver }
+    }
+    pub fn output(&self) -> &str {
+        match self { DeriverBinding::Named(s) => s, DeriverBinding::Bound { output, .. } => output }
+    }
 }
 
 /// A simple sanitizer: `{ tag, name, in?, from? }`. Reads the first present of `in` (default
@@ -80,9 +99,9 @@ impl Sanitizer {
         }
     }
 
-    /// Desugar to the equivalent `Produce` field so sanitizers and derivers share one eval path.
-    pub fn to_field(&self) -> SanitizedField {
-        SanitizedField::Produce {
+    /// Desugar to the equivalent `Field` so sanitizers and derivers share one eval path.
+    pub fn to_field(&self) -> Field {
+        Field {
             output: self.tag.clone(),
             source: Producer::Extract {
                 key: None,
@@ -90,20 +109,7 @@ impl Sanitizer {
                 from: self.from,
                 side: None,
                 sanitize: Some(self.name.clone()),
-                if_copy_surface: false,
             },
         }
     }
-}
-
-/// One produced field written to the merged `derived` column. Either a single-output field
-/// backed by a `Producer` (extract [+ sanitize] / fallback / single-value derive), or the
-/// two-output `traffic_mode` deriver.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum SanitizedField {
-    /// `{ "output_left": ..., "output_right": ..., "derive": "traffic_mode" }`
-    TrafficMode { output_left: String, output_right: String, derive: String },
-    /// `{ "output": ..., "source": <Producer> }`
-    Produce { output: String, source: Producer },
 }

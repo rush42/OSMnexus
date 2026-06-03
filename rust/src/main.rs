@@ -38,8 +38,8 @@ async fn main() -> anyhow::Result<()> {
             r.table(),
             r.categories.categories.len(),
             r.spec.osm_fields.len(),
-            r.spec.sanitizers.len(),
-            r.fields.len() - r.spec.sanitizers.len()
+            r.sanitizer_fields.len(),
+            r.topic_derivers.len()
         );
     }
 

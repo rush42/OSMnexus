@@ -329,65 +329,12 @@
     }
   ],
   "derivers": [
-    {
-      "output": "oneway",
-      "source": {
-        "derive": "oneway"
-      }
-    },
-    {
-      "output": "lifecycle",
-      "source": {
-        "fallback": [
-          {
-            "key": "temporary",
-            "sanitize": "temporary"
-          },
-          {
-            "key": "lifecycle"
-          },
-          {
-            "key": "lifecycle",
-            "from": "centerline"
-          }
-        ]
-      }
-    },
-    {
-      "output": "surface",
-      "source": {
-        "fallback": [
-          {
-            "key": "surface"
-          },
-          {
-            "key": "surface",
-            "from": "centerline",
-            "if_copy_surface": true
-          }
-        ]
-      }
-    },
-    {
-      "output": "smoothness",
-      "source": {
-        "fallback": [
-          {
-            "key": "smoothness"
-          },
-          {
-            "key": "smoothness",
-            "from": "centerline",
-            "if_copy_surface": true
-          }
-        ]
-      }
-    },
-    {
-      "output_left": "traffic_mode_left",
-      "output_right": "traffic_mode_right",
-      "derive": "traffic_mode"
-    }
+    "oneway",
+    "lifecycle",
+    "surface",
+    "smoothness",
+    "traffic_mode_left",
+    "traffic_mode_right"
   ],
   "minzoom": {
     "default": 0,

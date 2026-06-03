@@ -1,10 +1,13 @@
+use std::collections::HashMap;
+
 use anyhow::Context;
 use bytes::Bytes;
 use futures::SinkExt;
 use tokio_postgres::Client;
 
 use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
-use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::{SanitizedField, Transform, TopicSpec}};
+use crate::engine::extract::Producer;
+use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::{DeriverBinding, Field, Transform, TopicSpec}};
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::types::OsmMeta;
 use crate::transform::TagTransform;
@@ -21,9 +24,47 @@ pub struct TopicRunner {
     pub tag_transforms: Vec<TagTransform>,
     /// Center-line side split (from a `split_sides` entry); empty if the topic has none.
     pub transformations: Vec<CenterLineTransformation>,
-    /// Fields written to the `derived` column: the `sanitizers` (desugared) followed by the
-    /// `derivers`, evaluated in order.
-    pub fields: Vec<SanitizedField>,
+    /// Desugared `sanitizers` — applied to every object regardless of category.
+    pub sanitizer_fields: Vec<Field>,
+    /// Topic-default derivers (resolved from `derivers.json` via `topic.json`'s bindings).
+    pub topic_derivers: Vec<Field>,
+    /// Per-category effective derivers — present only for categories that override a deriver
+    /// (topic defaults with the category's re-bindings applied by output). Categories absent
+    /// from this map use `topic_derivers` directly.
+    pub category_derivers: HashMap<String, Vec<Field>>,
+}
+
+/// Resolve a list of deriver bindings against the `derivers.json` library, erroring on any
+/// dangling reference (load-time validation — the cost of name indirection bought back).
+fn resolve_bindings(
+    lib: &HashMap<String, Producer>,
+    bindings: &[DeriverBinding],
+    topic: &str,
+) -> anyhow::Result<Vec<Field>> {
+    bindings
+        .iter()
+        .map(|b| {
+            let source = lib.get(b.deriver()).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "topics/{topic}: deriver '{}' not found in derivers.json",
+                    b.deriver()
+                )
+            })?;
+            Ok(Field { output: b.output().to_owned(), source })
+        })
+        .collect()
+}
+
+/// Apply a category's deriver overrides on top of the topic defaults, replacing by output.
+fn apply_overrides(base: &[Field], overrides: Vec<Field>) -> Vec<Field> {
+    let mut fields = base.to_vec();
+    for ov in overrides {
+        match fields.iter_mut().find(|f| f.output == ov.output) {
+            Some(existing) => existing.source = ov.source,
+            None => fields.push(ov),
+        }
+    }
+    fields
 }
 
 impl TopicRunner {
@@ -31,15 +72,27 @@ impl TopicRunner {
     pub fn load(name: &str) -> anyhow::Result<Self> {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("topics/{name}"));
 
-        let mut spec: TopicSpec = serde_json::from_str(
+        let spec: TopicSpec = serde_json::from_str(
             &std::fs::read_to_string(base.join("topic.json"))
                 .with_context(|| format!("reading topics/{name}/topic.json"))?,
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
 
-        // `sanitizers` desugar to Produce fields, then the `derivers` follow.
-        let mut fields: Vec<SanitizedField> = spec.sanitizers.iter().map(|s| s.to_field()).collect();
-        fields.extend(std::mem::take(&mut spec.derivers));
+        // Sanitizers desugar to per-object `Field`s, applied to every category.
+        let sanitizer_fields: Vec<Field> = spec.sanitizers.iter().map(|s| s.to_field()).collect();
+
+        // Load the deriver library (named single-output extractors). Optional: a topic with no
+        // derivers (e.g. barrierLines) may omit the file.
+        let derivers_path = base.join("derivers.json");
+        let deriver_lib: HashMap<String, Producer> = if derivers_path.exists() {
+            serde_json::from_str(&std::fs::read_to_string(&derivers_path)?)
+                .with_context(|| format!("parsing topics/{name}/derivers.json"))?
+        } else {
+            HashMap::new()
+        };
+
+        // Resolve the topic-default deriver bindings (validates references).
+        let topic_derivers = resolve_bindings(&deriver_lib, &spec.derivers, name)?;
 
         let cats_dir = base.join("categories");
         let mut categories = if cats_dir.exists() {
@@ -83,7 +136,24 @@ impl TopicRunner {
             }
         }
 
-        Ok(Self { spec, categories, tag_transforms, transformations, fields })
+        // Precompute effective derivers for categories that override one (validates references).
+        let mut category_derivers = HashMap::new();
+        for cat in &categories.categories {
+            if let Some(bindings) = &cat.derivers {
+                let overrides = resolve_bindings(&deriver_lib, bindings, name)?;
+                category_derivers.insert(cat.id.clone(), apply_overrides(&topic_derivers, overrides));
+            }
+        }
+
+        Ok(Self {
+            spec,
+            categories,
+            tag_transforms,
+            transformations,
+            sanitizer_fields,
+            topic_derivers,
+            category_derivers,
+        })
     }
 
     pub fn table(&self) -> &str {
@@ -102,7 +172,7 @@ impl TopicRunner {
         for t in &self.tag_transforms {
             t.apply(&mut tags);
         }
-        build_topic_rows(&self.spec, &self.categories, &self.fields, way, &tags, &self.transformations, geom, length_m, meta)
+        build_topic_rows(self, way, &tags, geom, length_m, meta)
     }
 }
 

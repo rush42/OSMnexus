@@ -1,6 +1,25 @@
 {
-  "infrastructure_exists": true, "implicit_oneway": false,
-  "implicit_oneway_confidence": "not_applicable", "copy_surface_smoothness_from_parent": false,
-  "condition": { "tag": "highway", "eq": "tertiary_link" },
-  "excludes": ["bicycle_road","cycleway_crossing","footway_crossing","footway_cycleway_crossing","footway_sidewalk","footway_steps","residential_priority_road","service_alley","service_driveway","service_emergency_access","service_parking_aisle","service_road","service_uncategorized","unspecified_road"]
+  "infrastructure_exists": true,
+  "implicit_oneway": false,
+  "implicit_oneway_confidence": "not_applicable",
+  "condition": {
+    "tag": "highway",
+    "eq": "tertiary_link"
+  },
+  "excludes": [
+    "bicycle_road",
+    "cycleway_crossing",
+    "footway_crossing",
+    "footway_cycleway_crossing",
+    "footway_sidewalk",
+    "footway_steps",
+    "residential_priority_road",
+    "service_alley",
+    "service_driveway",
+    "service_emergency_access",
+    "service_parking_aisle",
+    "service_road",
+    "service_uncategorized",
+    "unspecified_road"
+  ]
 }

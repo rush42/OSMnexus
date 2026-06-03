@@ -1,6 +1,12 @@
 {
-  "infrastructure_exists": true, "implicit_oneway": false,
-  "implicit_oneway_confidence": "not_applicable", "copy_surface_smoothness_from_parent": false,
-  "condition": { "tag": "highway", "eq": "steps" },
-  "excludes": ["bicycle_road"]
+  "infrastructure_exists": true,
+  "implicit_oneway": false,
+  "implicit_oneway_confidence": "not_applicable",
+  "condition": {
+    "tag": "highway",
+    "eq": "steps"
+  },
+  "excludes": [
+    "bicycle_road"
+  ]
 }
