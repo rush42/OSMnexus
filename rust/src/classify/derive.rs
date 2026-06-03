@@ -3,7 +3,7 @@
 //! deliberate counterpart to `sanitize.rs`, whose functions are pure `&str -> atomic`.
 
 use crate::osm::types::RawTags;
-use crate::classify::sanitize::{get_sided, traffic_mode};
+use crate::classify::sanitize::{get_sided, traffic_mode, SanitizerRegistry};
 
 // ── parking inference (used by derive_traffic_mode) ─────────────────────────────
 
@@ -71,6 +71,62 @@ pub fn traffic_mode_side(
     }
 
     None
+}
+
+// ── smoothness with parent copy ───────────────────────────────────────────────────
+
+fn apply_str(reg: &SanitizerRegistry, name: &str, raw: &str) -> Option<String> {
+    reg.apply(name, raw).and_then(|v| v.as_str().map(str::to_owned))
+}
+
+/// Own-tags smoothness (the 4-source derivation, mirroring the `smoothness` deriver in data).
+/// Returns `(value, from_tag)` where `from_tag` marks the `smoothness` tag source (Lua's
+/// "tag"/"tag_normalized" okSources) vs. a value derived from surface/tracktype/mtb:scale.
+fn derive_smoothness(tags: &RawTags, reg: &SanitizerRegistry) -> (Option<String>, bool) {
+    if let Some(raw) = tags.get("smoothness") {
+        if let Some(v) = apply_str(reg, "smoothness_normalize", raw) {
+            return (Some(v), true);
+        }
+    }
+    for (key, san) in [
+        ("surface", "surface_to_smoothness"),
+        ("tracktype", "tracktype_to_smoothness"),
+        ("mtb:scale", "mtb_scale_to_smoothness"),
+    ] {
+        if let Some(raw) = tags.get(key) {
+            if let Some(v) = apply_str(reg, san, raw) {
+                return (Some(v), false);
+            }
+        }
+    }
+    (None, false)
+}
+
+/// Port of `deriveBikelaneSmoothness`: own 4-source smoothness, then copy the parent highway's
+/// smoothness under the Lua guards. Used by copy categories (`smoothness_from_parent`). For an
+/// object with no parent (e.g. bicycleRoad self) this is just the own derivation.
+pub fn smoothness_with_parent(
+    obj: &RawTags,
+    parent: Option<&RawTags>,
+    reg: &SanitizerRegistry,
+) -> Option<String> {
+    let (own, own_from_tag) = derive_smoothness(obj, reg);
+    let Some(parent) = parent else { return own };
+
+    let (par, _) = derive_smoothness(parent, reg);
+    if par.is_none() {
+        return own;
+    }
+
+    let own_surface = obj.get("surface");
+    let surfaces_match = own_surface == parent.get("surface");
+
+    // A: own smoothness absent, and own surface absent or equal to the parent's.
+    let cond_a = own.is_none() && (own_surface.is_none() || surfaces_match);
+    // B: own smoothness not tag-sourced (derived or absent), own surface present and equal.
+    let cond_b = !own_from_tag && own_surface.is_some() && surfaces_match;
+
+    if cond_a || cond_b { par } else { own }
 }
 
 // ── derive_oneway ───────────────────────────────────────────────────────────────

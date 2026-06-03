@@ -24,13 +24,5 @@
       { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness" }
     ]
   },
-  "smoothness_from_parent": {
-    "fallback": [
-      { "key": "smoothness", "sanitize": "smoothness_normalize" },
-      { "key": "surface",    "sanitize": "surface_to_smoothness" },
-      { "key": "tracktype",  "sanitize": "tracktype_to_smoothness" },
-      { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness" },
-      { "key": "smoothness", "from": "centerline", "sanitize": "smoothness_normalize" }
-    ]
-  }
+  "smoothness_from_parent": { "derive": "smoothness_parent" }
 }

@@ -73,6 +73,9 @@ impl Producer {
                         ctx.obj_tags, ctx.centerline_tags, ctx.category_id, ctx.obj_side, out_side,
                     ).map(Value::String)
                 }
+                "smoothness_parent" => derive::smoothness_with_parent(
+                    ctx.obj_tags, ctx.parent_tags, ctx.sanitizers,
+                ).map(Value::String),
                 other => { tracing::warn!("unknown deriver: {other}"); None }
             },
 
