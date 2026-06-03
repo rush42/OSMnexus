@@ -1,6 +1,5 @@
 {
   "infrastructure_exists": true,
-  "implicit_oneway": true,
   "implicit_oneway_confidence": "low",
   "condition": {
     "and": [
@@ -17,5 +16,11 @@
   "excludes": [
     "cyclewayOnHighwayProtected",
     "not_expected"
+  ],
+  "derivers": [
+    {
+      "deriver": "oneway_implicit",
+      "output": "oneway"
+    }
   ]
 }

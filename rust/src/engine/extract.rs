@@ -38,7 +38,6 @@ pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags,
     pub parent_tags: Option<&'a RawTags>,
     pub centerline_tags: &'a RawTags,
-    pub implicit_oneway: bool,
     /// Matched category id and the transformed object's side — used by the `traffic_mode` deriver.
     pub category_id: &'a str,
     pub obj_side: &'a str,
@@ -69,8 +68,13 @@ pub enum TagSet {
 #[serde(untagged)]
 pub enum Producer {
     Fallback { fallback: Vec<Producer> },
-    /// A Rust-backed deriver. `out_side` fixes the side for the per-side `traffic_mode` deriver.
-    Derive { derive: String, #[serde(default)] out_side: Option<String> },
+    /// A Rust-backed deriver. `out_side` fixes the side for the per-side `traffic_mode` deriver;
+    /// `implicit` selects implicit-one-way assumption for the `oneway` deriver.
+    Derive {
+        derive: String,
+        #[serde(default)] out_side: Option<String>,
+        #[serde(default)] implicit: bool,
+    },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
@@ -89,9 +93,9 @@ impl Producer {
             // First non-empty branch wins, carrying its own source/confidence.
             Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
 
-            Producer::Derive { derive, out_side } => match derive.as_str() {
+            Producer::Derive { derive, out_side, implicit } => match derive.as_str() {
                 "oneway" => Some(Produced::bare(Value::String(
-                    derive::derive_oneway(ctx.obj_tags, ctx.implicit_oneway),
+                    derive::derive_oneway(ctx.obj_tags, *implicit),
                 ))),
                 "traffic_mode" => {
                     let out_side = out_side.as_deref()

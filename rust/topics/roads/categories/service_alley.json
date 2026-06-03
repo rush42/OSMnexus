@@ -1,7 +1,6 @@
 {
   "minzoom": 11,
   "infrastructure_exists": true,
-  "implicit_oneway": false,
   "implicit_oneway_confidence": "not_applicable",
   "condition": {
     "and": [

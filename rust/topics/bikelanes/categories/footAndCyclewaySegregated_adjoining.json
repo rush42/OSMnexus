@@ -1,6 +1,5 @@
 {
   "infrastructure_exists": true,
-  "implicit_oneway": true,
   "implicit_oneway_confidence": "low",
   "condition": {
     "and": [
@@ -25,5 +24,11 @@
     "sharedBusLaneBikeWithBus",
     "sharedBusLaneBusWithBike",
     "sharedMotorVehicleLane"
+  ],
+  "derivers": [
+    {
+      "deriver": "oneway_implicit",
+      "output": "oneway"
+    }
   ]
 }

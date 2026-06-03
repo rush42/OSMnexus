@@ -29,7 +29,6 @@ pub struct CategoryContext<'a> {
 pub struct CategoryDef {
     pub id: String,
     pub infrastructure_exists: bool,
-    pub implicit_oneway: bool,
     pub implicit_oneway_confidence: String,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,

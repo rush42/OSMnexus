@@ -1,5 +1,6 @@
 {
   "oneway": { "derive": "oneway" },
+  "oneway_implicit": { "derive": "oneway", "implicit": true },
   "traffic_mode_left":  { "derive": "traffic_mode", "out_side": "left" },
   "traffic_mode_right": { "derive": "traffic_mode", "out_side": "right" },
   "lifecycle": {

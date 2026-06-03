@@ -1,6 +1,5 @@
 {
   "infrastructure_exists": true,
-  "implicit_oneway": true,
   "implicit_oneway_confidence": "high",
   "condition": {
     "and": [
@@ -80,6 +79,10 @@
     {
       "deriver": "smoothness_from_parent",
       "output": "smoothness"
+    },
+    {
+      "deriver": "oneway_implicit",
+      "output": "oneway"
     }
   ]
 }
