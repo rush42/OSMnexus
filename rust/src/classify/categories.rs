@@ -166,28 +166,20 @@ pub fn load_categories_from_dir(dir: &std::path::Path) -> anyhow::Result<Categor
     Ok(serde_json::from_str(&combined)?)
 }
 
-/// Load shared, cross-topic macros from `topics/_shared/<name>.json` (one Filter per file,
-/// macro name = file stem). Referenced by name from any topic's conditions, e.g.
-/// `{ "macro": "standard_exclude" }`.
-pub fn load_shared_macros(dir: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
+/// Load shared, cross-topic macros from `topics/_shared/macros/<name>.json` (one Filter per
+/// file, macro name = file stem). Referenced by name from any topic's conditions, e.g.
+/// `{ "macro": "standard_exclude" }`. `shared_dir` is `topics/_shared`; only its `macros/`
+/// subdirectory holds Filter macros — the data libraries (sanitizers.json, value_sets.json,
+/// road_classification.json) live at the `_shared/` root and are loaded explicitly elsewhere.
+pub fn load_shared_macros(shared_dir: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
     let mut macros = HashMap::new();
+    let dir = shared_dir.join("macros");
     if !dir.exists() {
         return Ok(macros);
     }
-    for entry in std::fs::read_dir(dir)? {
+    for entry in std::fs::read_dir(&dir)? {
         let path = entry?.path();
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        // Some _shared/*.json files are data libraries, not Filter macros.
-        const NON_MACRO_FILES: &[&str] =
-            &["sanitizers.json", "value_sets.json", "road_classification.json"];
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| NON_MACRO_FILES.contains(&n))
-            .unwrap_or(false)
-        {
             continue;
         }
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
