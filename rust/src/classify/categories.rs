@@ -180,7 +180,8 @@ pub fn load_shared_macros(dir: &std::path::Path) -> anyhow::Result<HashMap<Strin
             continue;
         }
         // Some _shared/*.json files are data libraries, not Filter macros.
-        const NON_MACRO_FILES: &[&str] = &["sanitizers.json", "value_sets.json"];
+        const NON_MACRO_FILES: &[&str] =
+            &["sanitizers.json", "value_sets.json", "road_classification.json"];
         if path
             .file_name()
             .and_then(|n| n.to_str())
