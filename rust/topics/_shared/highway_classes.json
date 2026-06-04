@@ -1,6 +1,0 @@
-{
-  "motorway":   ["motorway", "motorway_link", "trunk", "trunk_link"],
-  "major_road": ["primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link"],
-  "minor_road": ["unclassified", "residential", "road", "living_street", "pedestrian", "service"],
-  "path":       ["track", "path", "footway", "cycleway", "steps"]
-}

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::classify::highway_classes::sidepath_highway_classes;
 use crate::osm::types::RawTags;
+use crate::value_sets::value_set;
 use crate::output::types::Side;
 
 /// A way object after center-line splitting.
@@ -38,7 +38,7 @@ pub fn get_transformed_objects(
     transformations: &[CenterLineTransformation],
 ) -> Vec<TransformedObject> {
     let highway = tags.get("highway").cloned().unwrap_or_default();
-    let sidepath_classes = sidepath_highway_classes();
+    let sidepath_classes = value_set("sidepath_highway");
 
     // Self object — always included.
     let mut center = tags.clone();

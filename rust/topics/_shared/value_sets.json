@@ -1,0 +1,11 @@
+{
+  "allowed_highway": [
+    "motorway", "motorway_link", "trunk", "trunk_link",
+    "primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link",
+    "unclassified", "residential", "road", "living_street", "pedestrian", "service",
+    "track", "path", "footway", "cycleway", "steps"
+  ],
+  "sidepath_highway": [
+    "track", "path", "footway", "cycleway", "steps", "pedestrian"
+  ]
+}

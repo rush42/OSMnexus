@@ -7,3 +7,4 @@ pub mod osm;
 pub mod output;
 pub mod processing;
 pub mod transform;
+pub mod value_sets;

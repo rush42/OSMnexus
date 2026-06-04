@@ -6,8 +6,8 @@ use serde::Deserialize;
 use crate::engine::topic::DeriverBinding;
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
-use crate::classify::highway_classes::allowed_highways;
 use crate::classify::sanitize::SanitizerRegistry;
+use crate::value_sets::value_set;
 
 /// Context passed to categorization predicates.
 pub struct CategoryContext<'a> {
@@ -98,6 +98,8 @@ pub enum Filter {
     Macro { r#macro: String },
 
     // Tag predicates — secondary field disambiguates (TagEq is the catch-all)
+    /// Membership in a named set from `_shared/value_sets.json` (keeps long value lists in data).
+    TagInSet     { tag: String, in_set:      String      },
     TagIn        { tag: String, r#in:        Vec<String> },
     TagContains  { tag: String, contains:    String      },
     TagStartsWith{ tag: String, starts_with: String      },
@@ -178,7 +180,7 @@ pub fn load_shared_macros(dir: &std::path::Path) -> anyhow::Result<HashMap<Strin
             continue;
         }
         // Some _shared/*.json files are data libraries, not Filter macros.
-        const NON_MACRO_FILES: &[&str] = &["sanitizers.json", "highway_classes.json"];
+        const NON_MACRO_FILES: &[&str] = &["sanitizers.json", "value_sets.json"];
         if path
             .file_name()
             .and_then(|n| n.to_str())
@@ -212,7 +214,6 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
             "is_advisory_or_exclusive"                  => is_advisory_or_exclusive(ctx),
             "is_foot_and_cycleway_segregated_edge_case" => is_foot_and_cycleway_segregated_edge_case(ctx),
             "is_protected_bikelane_separation"          => is_protected_bikelane_separation(ctx),
-            "is_allowed_highway"                        => is_allowed_highway(ctx),
             // JSON-defined macros (per-topic categories/macros.json + shared topics/_shared/)
             other => macros
                 .get(other)
@@ -222,6 +223,8 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
 
         Filter::TagEq { tag, eq } =>
             ctx.tags.get(tag).map(|v| v == eq).unwrap_or(false),
+        Filter::TagInSet { tag, in_set } =>
+            ctx.tags.get(tag).map(|v| value_set(in_set).contains(v)).unwrap_or(false),
         Filter::TagIn { tag, r#in } =>
             ctx.tags.get(tag).map(|v| r#in.iter().any(|s| s == v)).unwrap_or(false),
         Filter::TagContains { tag, contains } =>
@@ -297,15 +300,6 @@ fn sign_contains(sign: Option<&str>, needle: &str) -> bool {
     sign.map(|s| s.contains(needle)).unwrap_or(false)
 }
 
-
-/// True when the way's `highway` value is one we process at all.
-/// Backs the shared `standard_exclude` macro (replaces the old `should_exclude`).
-fn is_allowed_highway(ctx: &CategoryContext) -> bool {
-    ctx.tags
-        .get("highway")
-        .map(|hw| allowed_highways().contains(hw.as_str()))
-        .unwrap_or(false)
-}
 
 /// Port of `IsSidepath` from IsSidepath.lua.
 fn is_sidepath(ctx: &CategoryContext) -> bool {

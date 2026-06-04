@@ -1,5 +1,5 @@
-use crate::classify::highway_classes::allowed_highways;
 use crate::osm::types::RawTags;
+use crate::value_sets::value_set;
 
 /// Port of transform_lifecycle_tags.lua.
 ///
@@ -14,7 +14,7 @@ pub fn transform_lifecycle_tags(tags: &mut RawTags) -> Option<String> {
         return None;
     }
 
-    let allowed = allowed_highways();
+    let allowed = value_set("allowed_highway");
 
     // Handle highway=construction + construction=<valid highway>
     if let Some(construction_val) = tags.get("construction").cloned() {

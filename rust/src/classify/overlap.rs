@@ -76,6 +76,14 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
             let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), v.clone())))).collect();
             Expr::Or(exprs)
         },
+        Filter::TagInSet { tag, in_set } => {
+            // Expand the named set to an OR of equalities, mirroring TagIn.
+            let exprs: Vec<_> = crate::value_sets::value_set(in_set)
+                .iter()
+                .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), v.clone()))))
+                .collect();
+            Expr::Or(exprs)
+        },
 
         // FirstTagEq was removed, skipping
         Filter::FirstTagIn { first_tag, r#in } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(first_tag.clone(), r#in.clone()))),
