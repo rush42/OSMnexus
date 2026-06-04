@@ -6,7 +6,7 @@
     "fallback": [
       { "key": "temporary", "sanitize": "temporary" },
       { "key": "lifecycle" },
-      { "key": "lifecycle", "from": "centerline" }
+      { "key": "lifecycle", "from": "parent" }
     ]
   },
   "surface": { "derive": "surface" },

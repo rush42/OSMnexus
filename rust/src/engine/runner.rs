@@ -116,7 +116,6 @@ pub fn build_topic_rows(
         let ectx = ExtractCtx {
             obj_tags: &obj.tags,
             parent_tags,
-            centerline_tags: tags, // parent way tags for parking inference + lifecycle/surface fallback
             category_id: category.id.as_str(),
             obj_side: side_str,
             sanitizers: &runner.sanitizers,

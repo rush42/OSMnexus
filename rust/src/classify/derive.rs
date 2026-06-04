@@ -48,7 +48,7 @@ fn is_bicycle_road(category_id: &str) -> bool {
 /// Equivalent to the former tuple `derive_traffic_mode`, projected onto `out_side`.
 pub fn traffic_mode_side(
     obj_tags: &RawTags,       // transformed object tags
-    centerline_tags: &RawTags, // parent way tags (for parking:*)
+    parking_tags: &RawTags,   // underlying way tags carrying parking:* (parent, or self for non-split)
     category_id: &str,
     obj_side: &str,           // "left" | "right" | "self"
     out_side: &str,           // "left" | "right"
@@ -66,14 +66,14 @@ pub fn traffic_mode_side(
         return tm(out_side);
     }
 
-    // Bicycle roads: infer both sides from centerline parking tags.
+    // Bicycle roads: infer both sides from the underlying way's parking tags.
     if is_bicycle_road(category_id) {
-        return infer_traffic_mode_from_parking(centerline_tags, out_side);
+        return infer_traffic_mode_from_parking(parking_tags, out_side);
     }
 
     // Lane categories: infer only the transformed side.
     if DIRECTIONAL_PARKING_CATEGORIES.contains(&category_id) && obj_side == out_side {
-        return infer_traffic_mode_from_parking(centerline_tags, out_side);
+        return infer_traffic_mode_from_parking(parking_tags, out_side);
     }
 
     None

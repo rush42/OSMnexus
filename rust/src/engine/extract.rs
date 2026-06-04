@@ -37,7 +37,6 @@ impl Produced {
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags,
     pub parent_tags: Option<&'a RawTags>,
-    pub centerline_tags: &'a RawTags,
     /// Matched category id and the transformed object's side — used by the `traffic_mode` deriver.
     pub category_id: &'a str,
     pub obj_side: &'a str,
@@ -56,10 +55,10 @@ pub enum TagSet {
     /// Strict parent way: nothing if the object has no parent (matches old osm `parent`).
     Parent,
     /// Parent way, falling back to the object's own tags when there is no parent
-    /// (matches the old yes_flag `source: parent`).
+    /// (matches the old yes_flag `source: parent`). Commits to the parent tagset when a
+    /// parent exists — distinct from a `fallback:[{parent},{obj}]`, which would also fall
+    /// through when the parent merely lacks the key.
     ParentOrObj,
-    /// The center-line / parent way tags (always present).
-    Centerline,
 }
 
 /// A value producer. Untagged: object with `fallback` → Fallback; with `derive` → Derive;
@@ -97,8 +96,12 @@ impl Producer {
                 "traffic_mode" => {
                     let out_side = out_side.as_deref()
                         .expect("traffic_mode deriver needs `out_side`");
+                    // Parking inference reads the underlying way's parking tags. For side
+                    // objects that's the parent; for self objects the parent is absent but the
+                    // object's own tags carry the (never-unnested) parking tags.
+                    let parking_tags = ctx.parent_tags.unwrap_or(ctx.obj_tags);
                     derive::traffic_mode_side(
-                        ctx.obj_tags, ctx.centerline_tags, ctx.category_id, ctx.obj_side, out_side,
+                        ctx.obj_tags, parking_tags, ctx.category_id, ctx.obj_side, out_side,
                         ctx.sanitizers,
                     ).map(|v| Produced::bare(Value::String(v)))
                 }
@@ -113,7 +116,6 @@ impl Producer {
                     TagSet::Obj => Some(ctx.obj_tags),
                     TagSet::Parent => ctx.parent_tags, // strict: None when no parent
                     TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
-                    TagSet::Centerline => Some(ctx.centerline_tags),
                 }?;
                 let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
                 let value = match sanitize {
