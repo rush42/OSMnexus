@@ -1,3 +1,4 @@
 {
-  "temporary": { "mapping": { "yes": "temporary" }, "on_miss": "drop" }
+  "temporary": { "mapping": { "yes": "temporary" }, "on_miss": "drop" },
+  "yes_flag": { "mapping": { "yes": true }, "on_miss": "drop" }
 }

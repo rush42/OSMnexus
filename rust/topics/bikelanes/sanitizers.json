@@ -35,6 +35,10 @@
       "filter": ["no", "motor_vehicle", "parking", "psv", "bicycle", "foot"]
     }
   ],
+  "buffer": [
+    { "cases": { "0": ["no", "none"] }, "on_miss": "keep" },
+    "parse_length"
+  ],
   "surface_color": {
     "cases": {
       "no": [

@@ -62,10 +62,11 @@ impl StrOrVec {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Step {
-    /// Table lookup. On a miss, `on_miss` decides: "keep" (passthrough), "drop"/absent (null),
-    /// or any other string (a constant default).
+    /// Table lookup. Values may be any atomic JSON (string/bool/number) so a sanitizer can
+    /// produce e.g. a boolean (`{ "yes": true }`). On a miss, `on_miss` decides: "keep"
+    /// (passthrough), "drop"/absent (null), or any other string (a constant default).
     Mapping {
-        mapping: HashMap<String, String>,
+        mapping: HashMap<String, Value>,
         #[serde(default)]
         on_miss: Option<String>,
     },
@@ -78,6 +79,9 @@ pub enum Step {
     },
     /// Keep the value iff it is in the set, else drop (sugar for an identity mapping + drop).
     Filter { filter: Vec<String> },
+    /// A built-in Rust sanitizer as a (terminal) chain step, e.g. `"parse_length"`. Lets a data
+    /// chain end in an algorithmic, possibly non-string transform.
+    Builtin(String),
 }
 
 impl Step {
@@ -89,7 +93,8 @@ impl Step {
                 let mut mapping = HashMap::new();
                 for (output, inputs) in cases {
                     for input in inputs.into_vec() {
-                        if let Some(prev) = mapping.insert(input.clone(), output.clone()) {
+                        let val = Value::String(output.clone());
+                        if let Some(prev) = mapping.insert(input.clone(), val) {
                             tracing::warn!(
                                 "sanitizer `cases`: input {input:?} maps to both {prev:?} and {output:?}"
                             );
@@ -102,17 +107,20 @@ impl Step {
         }
     }
 
-    fn apply(&self, v: &str) -> Option<String> {
+    fn apply(&self, v: &str) -> Option<Value> {
         match self {
             Step::Mapping { mapping, on_miss } => match mapping.get(v) {
                 Some(mapped) => Some(mapped.clone()),
                 None => match on_miss.as_deref() {
-                    Some("keep") => Some(v.to_owned()),
+                    Some("keep") => Some(Value::String(v.to_owned())),
                     Some("drop") | None => None,
-                    Some(constant) => Some(constant.to_owned()),
+                    Some(constant) => Some(Value::String(constant.to_owned())),
                 },
             },
-            Step::Filter { filter } => filter.iter().any(|a| a == v).then(|| v.to_owned()),
+            Step::Filter { filter } => {
+                filter.iter().any(|a| a == v).then(|| Value::String(v.to_owned()))
+            }
+            Step::Builtin(name) => apply_builtin(name, v),
             // Normalized into Mapping at registry build (SanitizerRegistry::new).
             Step::Cases { .. } => unreachable!("`cases` step must be normalized before apply"),
         }
@@ -140,15 +148,15 @@ impl SanitizerDef {
         }
     }
 
-    /// Apply the (string→string) steps. Only valid for `One`/`Chain`; `Alias` is resolved by
-    /// the registry to a built-in before reaching here.
-    fn apply_chain(&self, raw: &str) -> Option<String> {
+    /// Fold the steps. String-producing steps chain (each consumes the previous string); the
+    /// final step may yield any atomic `Value`. `Alias` is resolved by the registry first.
+    fn apply_chain(&self, raw: &str) -> Option<Value> {
         match self {
             SanitizerDef::One(step) => step.apply(raw),
             SanitizerDef::Chain(steps) => {
-                let mut cur = raw.to_owned();
+                let mut cur = Value::String(raw.to_owned());
                 for s in steps {
-                    cur = s.apply(&cur)?;
+                    cur = s.apply(cur.as_str()?)?;
                 }
                 Some(cur)
             }
@@ -173,7 +181,7 @@ impl SanitizerRegistry {
     pub fn apply(&self, name: &str, raw: &str) -> Option<Value> {
         match self.custom.get(name) {
             Some(SanitizerDef::Alias(builtin)) => apply_builtin(builtin, raw),
-            Some(def) => def.apply_chain(raw).map(Value::String),
+            Some(def) => def.apply_chain(raw),
             None => apply_builtin(name, raw),
         }
     }
@@ -185,11 +193,10 @@ impl SanitizerRegistry {
 /// rejected (not in an allowed set / unparseable).
 pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
     match name {
-        "parse_length"  => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
-        "buffer"        => buffer(raw).map(|v| Value::Number(float_to_json(v))),
-        "traffic_sign"  => traffic_sign(raw).map(Value::String),
-        "yes_flag"      => yes_flag(raw).map(Value::Bool),
-        // separation / traffic_mode / marking / surface_color / temporary are data sanitizers.
+        "parse_length" => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
+        "traffic_sign" => traffic_sign(raw).map(Value::String),
+        // Everything else (yes_flag, buffer, separation, traffic_mode, marking, surface_color,
+        // temporary, the surface/smoothness tables) lives in sanitizers.json now.
         other => { tracing::warn!("unknown sanitizer: {other}"); None }
     }
 }
@@ -235,16 +242,6 @@ pub fn parse_length(raw: &str) -> Option<f32> {
     Some(v * scale)
 }
 
-// ── buffer ────────────────────────────────────────────────────────────────────
-
-/// Port of SANITIZE_ROAD_TAGS.buffer.
-pub fn buffer(raw: &str) -> Option<f32> {
-    match raw {
-        "no" | "none" => Some(0.0),
-        other => parse_length(other),
-    }
-}
-
 // ── traffic_sign ────────────────────────────────────────────────────────────────
 
 /// Port of SanitizeTrafficSign.lua.
@@ -287,9 +284,3 @@ pub fn traffic_sign(raw: &str) -> Option<String> {
     Some(stripped)
 }
 
-// ── yes_flag ────────────────────────────────────────────────────────────────────
-
-/// Returns Some(true) only for "yes" (port of Sanitize(v, {"yes"})).
-pub fn yes_flag(raw: &str) -> Option<bool> {
-    if raw == "yes" { Some(true) } else { None }
-}
