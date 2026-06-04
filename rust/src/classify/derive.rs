@@ -3,7 +3,7 @@
 //! deliberate counterpart to `sanitize.rs`, whose functions are pure `&str -> atomic`.
 
 use crate::osm::types::RawTags;
-use crate::classify::sanitize::{get_sided, parse_length, traffic_mode, SanitizerRegistry};
+use crate::classify::sanitize::{get_sided, get_sided_with_bare_left, parse_length, SanitizerRegistry};
 
 // ── parking inference (used by derive_traffic_mode) ─────────────────────────────
 
@@ -52,12 +52,18 @@ pub fn traffic_mode_side(
     category_id: &str,
     obj_side: &str,           // "left" | "right" | "self"
     out_side: &str,           // "left" | "right"
+    reg: &SanitizerRegistry,
 ) -> Option<String> {
+    // Sided, sanitized traffic_mode tag (normalize + allow-list via the data `traffic_mode`).
+    let tm = |side: &str| {
+        get_sided_with_bare_left(obj_tags, "traffic_mode", side)
+            .and_then(|raw| apply_str(reg, "traffic_mode", raw))
+    };
+
     // Explicit tags win (on either side) — no inference; emit this side's explicit value.
-    let explicit_any =
-        traffic_mode(obj_tags, "left").is_some() || traffic_mode(obj_tags, "right").is_some();
+    let explicit_any = tm("left").is_some() || tm("right").is_some();
     if explicit_any {
-        return traffic_mode(obj_tags, out_side);
+        return tm(out_side);
     }
 
     // Bicycle roads: infer both sides from centerline parking tags.

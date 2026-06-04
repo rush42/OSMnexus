@@ -79,7 +79,7 @@ pub fn build_topic_rows(
 
     // Evaluate optional way-level exclude condition before any categorization.
     if let Some(cond) = &topic.exclude_condition {
-        if eval_filter(cond, tags, &categories.macros) {
+        if eval_filter(cond, tags, &categories.macros, &runner.sanitizers) {
             return Vec::new();
         }
     }
@@ -97,6 +97,7 @@ pub fn build_topic_rows(
             parent_tags,
             infix: obj.infix,
             length_m,
+            sanitizers: &runner.sanitizers,
         };
 
         let Some(category) = categorize(&ctx, categories) else { continue };

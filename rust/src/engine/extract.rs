@@ -102,6 +102,7 @@ impl Producer {
                         .expect("traffic_mode deriver needs `out_side`");
                     derive::traffic_mode_side(
                         ctx.obj_tags, ctx.centerline_tags, ctx.category_id, ctx.obj_side, out_side,
+                        ctx.sanitizers,
                     ).map(|v| Produced::bare(Value::String(v)))
                 }
                 "surface" => surface_produced(derive::surface(ctx.obj_tags, ctx.sanitizers), false),

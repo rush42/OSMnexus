@@ -7,7 +7,7 @@ use crate::engine::topic::DeriverBinding;
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
 use crate::classify::highway_classes::allowed_highways;
-use crate::classify::sanitize::{normalize_separation, normalize_traffic_mode, SEPARATION_ALLOWED};
+use crate::classify::sanitize::SanitizerRegistry;
 
 /// Context passed to categorization predicates.
 pub struct CategoryContext<'a> {
@@ -21,6 +21,8 @@ pub struct CategoryContext<'a> {
     /// The infix that matched during side splitting (e.g. "", "left", "both").
     pub infix: Option<&'a str>,
     pub length_m: f64,
+    /// Sanitizer registry — lets predicates normalize separation/traffic_mode via data.
+    pub sanitizers: &'a SanitizerRegistry,
 }
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -271,6 +273,12 @@ fn tag_in(ctx: &CategoryContext, key: &str, vals: &[&str]) -> bool {
     ctx.tags.get(key).map(|v| vals.contains(&v.as_str())).unwrap_or(false)
 }
 
+/// Run a data sanitizer (e.g. "separation", "traffic_mode") over a raw value, returning the
+/// cleaned string (or None if dropped). Lets predicates share the sanitizers.json tables.
+fn sanitize_str(ctx: &CategoryContext, name: &str, raw: &str) -> Option<String> {
+    ctx.sanitizers.apply(name, raw).and_then(|v| v.as_str().map(str::to_owned))
+}
+
 fn parent_tag<'a>(ctx: &'a CategoryContext<'a>, key: &str) -> Option<&'a str> {
     ctx.parent_tags.and_then(|t| t.get(key)).map(String::as_str)
 }
@@ -357,18 +365,19 @@ fn is_footway_bicycle_yes_base(ctx: &CategoryContext) -> bool {
 fn is_foot_and_cycleway_segregated_edge_case(ctx: &CategoryContext) -> bool {
     if !tag_is(ctx, "highway", "cycleway") { return false; }
 
-    // traffic_mode:right (or :both) must be foot (Lua normalises foot;bicycle → foot)
+    // traffic_mode:right (or :both) must be foot (the `traffic_mode` sanitizer folds foot;bicycle→foot)
     let tm_right = tag(ctx, "traffic_mode:right").or_else(|| tag(ctx, "traffic_mode:both"));
-    let tm_foot = matches!(tm_right, Some("foot") | Some("foot;bicycle"));
+    let tm_foot = tm_right.and_then(|r| sanitize_str(ctx, "traffic_mode", r)).as_deref() == Some("foot");
     if !tm_foot { return false; }
 
     // separation:right (or :both) must not be a known blocking separation value.
-    // Lua: Sanitize+transform returns nil for unknown values → treated as non-blocking.
+    // A sanitized value is in the allow-list; treat any allowed non-"no" value as blocking.
     let sep_raw = tag(ctx, "separation:right").or_else(|| tag(ctx, "separation:both"));
     if let Some(raw) = sep_raw {
-        let normalized = normalize_separation(raw);
-        if SEPARATION_ALLOWED.contains(&normalized) && normalized != "no" {
-            return false;
+        if let Some(sep) = sanitize_str(ctx, "separation", raw) {
+            if sep != "no" {
+                return false;
+            }
         }
     }
 
@@ -383,46 +392,34 @@ fn is_protected_bikelane_separation(ctx: &CategoryContext) -> bool {
         "fence", "jersey_barrier", "guard_rail",
     ];
 
-    let sep_left_raw = tag(ctx, "separation:left")
-        .or_else(|| tag(ctx, "separation:both"))
-        .or_else(|| tag(ctx, "separation"));
-    let sep_left = sep_left_raw.map(normalize_separation);
+    let sided = |key_main: &str, key_both: &str, bare: Option<&str>, san: &str| -> Option<String> {
+        tag(ctx, key_main)
+            .or_else(|| tag(ctx, key_both))
+            .or_else(|| bare.and_then(|b| tag(ctx, b)))
+            .and_then(|raw| sanitize_str(ctx, san, raw))
+    };
 
-    let sep_right_raw = tag(ctx, "separation:right")
-        .or_else(|| tag(ctx, "separation:both"));
-    let sep_right = sep_right_raw.map(normalize_separation);
-
-    let tm_right_raw = tag(ctx, "traffic_mode:right")
-        .or_else(|| tag(ctx, "traffic_mode:both"));
-    let tm_right = tm_right_raw.map(normalize_traffic_mode);
-
-    let tm_left_raw = tag(ctx, "traffic_mode:left")
-        .or_else(|| tag(ctx, "traffic_mode:both"));
-    let tm_left = tm_left_raw.map(normalize_traffic_mode);
+    let sep_left = sided("separation:left", "separation:both", Some("separation"), "separation");
+    let sep_right = sided("separation:right", "separation:both", None, "separation");
+    let tm_right = sided("traffic_mode:right", "traffic_mode:both", None, "traffic_mode");
+    let tm_left = sided("traffic_mode:left", "traffic_mode:both", None, "traffic_mode");
 
     let has_segregated = tag(ctx, "segregated").is_some();
+    let is_physical = |s: &Option<String>| s.as_deref().map_or(false, |v| PHYSICAL.contains(&v));
 
     // Case 1: physical separation left + NOT motor_vehicle right + no segregated
-    if let Some(sl) = sep_left {
-        if PHYSICAL.contains(&sl) {
-            if tm_right != Some("motor_vehicle") && !has_segregated {
-                return true;
-            }
-        }
+    if is_physical(&sep_left) && tm_right.as_deref() != Some("motor_vehicle") && !has_segregated {
+        return true;
     }
 
     // Case 2: parking left + no segregated
-    if tm_left == Some("parking") && !has_segregated {
+    if tm_left.as_deref() == Some("parking") && !has_segregated {
         return true;
     }
 
     // Case 3: counter-flow — motor_vehicle right + physical separation right
-    if tm_right == Some("motor_vehicle") {
-        if let Some(sr) = sep_right {
-            if PHYSICAL.contains(&sr) {
-                return true;
-            }
-        }
+    if tm_right.as_deref() == Some("motor_vehicle") && is_physical(&sep_right) {
+        return true;
     }
 
     false
@@ -446,7 +443,12 @@ fn is_advisory_or_exclusive(ctx: &CategoryContext) -> bool {
 
 /// Evaluate a Filter against raw tags with a neutral context (side=self, no parent).
 /// Used by the topic engine for way-level exclude_condition checks.
-pub fn eval_filter(filter: &Filter, tags: &RawTags, macros: &HashMap<String, Filter>) -> bool {
+pub fn eval_filter(
+    filter: &Filter,
+    tags: &RawTags,
+    macros: &HashMap<String, Filter>,
+    sanitizers: &SanitizerRegistry,
+) -> bool {
     let ctx = CategoryContext {
         tags,
         side: Side::Self_,
@@ -455,6 +457,7 @@ pub fn eval_filter(filter: &Filter, tags: &RawTags, macros: &HashMap<String, Fil
         parent_tags: None,
         infix: None,
         length_m: 0.0,
+        sanitizers,
     };
     eval(filter, &ctx, macros)
 }

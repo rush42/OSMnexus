@@ -28,10 +28,6 @@ pub(crate) fn get_sided_with_bare_left<'a>(tags: &'a RawTags, key: &str, side: &
     }
 }
 
-fn in_list(value: &str, list: &[&str]) -> bool {
-    list.contains(&value)
-}
-
 fn float_to_json(v: f32) -> Number {
     Number::from_f64(v as f64).unwrap_or_else(|| Number::from(0))
 }
@@ -191,10 +187,9 @@ pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
     match name {
         "parse_length"  => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
         "buffer"        => buffer(raw).map(|v| Value::Number(float_to_json(v))),
-        "separation"    => separation(raw).map(Value::String),
         "traffic_sign"  => traffic_sign(raw).map(Value::String),
         "yes_flag"      => yes_flag(raw).map(Value::Bool),
-        // marking / surface_color / temporary are now data sanitizers (sanitizers.json).
+        // separation / traffic_mode / marking / surface_color / temporary are data sanitizers.
         other => { tracing::warn!("unknown sanitizer: {other}"); None }
     }
 }
@@ -238,63 +233,6 @@ pub fn parse_length(raw: &str) -> Option<f32> {
 
     let v: f32 = num_str.replace(',', ".").parse().ok()?;
     Some(v * scale)
-}
-
-// ── separation ────────────────────────────────────────────────────────────────
-
-pub(crate) fn normalize_separation(raw: &str) -> &str {
-    match raw {
-        "separation_kerb" | "lane_separator" => "bump",
-        "surface" => "no",
-        "tree_row;kerb" | "kerb;tree_row" | "tree_row;kerb;parking_lane"
-        | "grass_verge;tree_row" => "tree_row",
-        "kerb;greenery" => "kerb",
-        "parking_lane;kerb" | "solid_line;parking_lane" => "parking_lane",
-        other => other,
-    }
-}
-
-pub const SEPARATION_ALLOWED: &[&str] = &[
-    "no", "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter", "kerb",
-    "fence", "jersey_barrier", "guard_rail", "structure", "ditch", "greenery", "hedge",
-    "tree_row", "cone", "kerb;parking_lane", "kerb;bollard", "yes",
-];
-
-/// Port of SANITIZE_ROAD_TAGS.separation. Input is the raw (already side-selected) value.
-pub fn separation(raw: &str) -> Option<String> {
-    let normalized = normalize_separation(raw);
-    if in_list(normalized, SEPARATION_ALLOWED) {
-        Some(normalized.to_owned())
-    } else {
-        None
-    }
-}
-
-// ── traffic_mode (used by derive.rs) ────────────────────────────────────────────
-
-pub(crate) fn normalize_traffic_mode(raw: &str) -> &str {
-    match raw {
-        "foot;bicycle" => "foot",
-        "motorized" => "motor_vehicle",
-        "none" => "no",
-        other => other,
-    }
-}
-
-const TRAFFIC_MODE_ALLOWED: &[&str] = &[
-    "no", "motor_vehicle", "parking", "psv", "bicycle", "foot",
-];
-
-/// Port of SANITIZE_ROAD_TAGS.traffic_mode. Still reads sided tags directly because
-/// `derive_traffic_mode` consumes both sides and the inference context.
-pub fn traffic_mode(tags: &RawTags, side: &str) -> Option<String> {
-    let raw = get_sided_with_bare_left(tags, "traffic_mode", side)?;
-    let normalized = normalize_traffic_mode(raw);
-    if in_list(normalized, TRAFFIC_MODE_ALLOWED) {
-        Some(normalized.to_owned())
-    } else {
-        None
-    }
 }
 
 // ── buffer ────────────────────────────────────────────────────────────────────
