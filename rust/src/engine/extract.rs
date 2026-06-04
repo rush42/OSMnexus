@@ -9,25 +9,25 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::classify::sanitize::SanitizerRegistry;
 use crate::classify::{derive, sanitize};
 use crate::osm::types::RawTags;
 
-/// A produced value plus optional provenance. `source`/`confidence` flow from the winning
-/// fallback branch (or a Rust deriver) and are emitted as `<field>_source`/`<field>_confidence`.
+/// A produced value plus optional provenance. The `consts` are arbitrary key/value pairs the
+/// winning fallback branch (or a Rust deriver) contributes; each is emitted as `<field>_<k>`
+/// (e.g. `source`/`confidence` → `<field>_source`/`<field>_confidence`).
 #[derive(Debug, Clone)]
 pub struct Produced {
     pub value: Value,
-    pub source: Option<String>,
-    pub confidence: Option<String>,
+    pub consts: Map<String, Value>,
 }
 
 impl Produced {
-    /// A bare value with no provenance.
+    /// A bare value with no companion consts.
     fn bare(value: Value) -> Self {
-        Produced { value, source: None, confidence: None }
+        Produced { value, consts: Map::new() }
     }
 }
 
@@ -81,9 +81,9 @@ pub enum Producer {
         #[serde(default)] from: TagSet,
         #[serde(default)] side: Option<String>,
         #[serde(default)] sanitize: Option<String>,
-        /// Provenance this branch implies when it produces the value (Lua's *_source/_confidence).
-        #[serde(default)] source: Option<String>,
-        #[serde(default)] confidence: Option<String>,
+        /// Companion key/values this branch contributes when it produces the value; emitted as
+        /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
+        #[serde(default)] consts: Map<String, Value>,
     },
 }
 
@@ -111,7 +111,7 @@ impl Producer {
                 other => { tracing::warn!("unknown deriver: {other}"); None }
             },
 
-            Producer::Extract { key, keys, from, side, sanitize, source, confidence } => {
+            Producer::Extract { key, keys, from, side, sanitize, consts } => {
                 let tags = match from {
                     TagSet::Obj => Some(ctx.obj_tags),
                     TagSet::Parent => ctx.parent_tags, // strict: None when no parent
@@ -123,7 +123,7 @@ impl Producer {
                     Some(name) => ctx.sanitizers.apply(name, raw)?,
                     None => Value::String(raw.to_owned()),
                 };
-                Some(Produced { value, source: source.clone(), confidence: confidence.clone() })
+                Some(Produced { value, consts: consts.clone() })
             }
         }
     }
@@ -131,10 +131,12 @@ impl Producer {
 
 /// Wrap a Rust-derived surface value with its provenance (`tag` own, `parent_highway_tag` copied).
 fn surface_produced(value: Option<String>, from_parent: bool) -> Option<Produced> {
-    value.map(|v| Produced {
-        value: Value::String(v),
-        source: Some(if from_parent { "parent_highway_tag" } else { "tag" }.to_owned()),
-        confidence: Some("high".to_owned()),
+    value.map(|v| {
+        let mut consts = Map::new();
+        let source = if from_parent { "parent_highway_tag" } else { "tag" };
+        consts.insert("source".into(), Value::String(source.to_owned()));
+        consts.insert("confidence".into(), Value::String("high".to_owned()));
+        Produced { value: Value::String(v), consts }
     })
 }
 
@@ -164,9 +166,8 @@ fn smoothness_parent(ctx: &ExtractCtx) -> Option<Produced> {
 
     let own_surface = ctx.obj_tags.get("surface");
     let surfaces_match = own_surface == parent.get("surface");
-    let own_from_tag = own.as_ref().map_or(false, |p| {
-        matches!(p.source.as_deref(), Some("tag") | Some("tag_normalized"))
-    });
+    let own_source = own.as_ref().and_then(|p| p.consts.get("source")).and_then(Value::as_str);
+    let own_from_tag = matches!(own_source, Some("tag") | Some("tag_normalized"));
 
     // A: own absent, and own surface absent or equal to the parent's.
     let cond_a = own.is_none() && (own_surface.is_none() || surfaces_match);
@@ -174,10 +175,13 @@ fn smoothness_parent(ctx: &ExtractCtx) -> Option<Produced> {
     let cond_b = !own_from_tag && own_surface.is_some() && surfaces_match;
 
     if cond_a || cond_b {
-        par.map(|p| Produced {
-            value: p.value,
-            source: p.source.map(|s| format!("parent_highway_{s}")),
-            confidence: p.confidence,
+        par.map(|mut p| {
+            // Prefix the copied source with `parent_highway_`.
+            if let Some(s) = p.consts.get("source").and_then(Value::as_str) {
+                let prefixed = Value::String(format!("parent_highway_{s}"));
+                p.consts.insert("source".into(), prefixed);
+            }
+            p
         })
     } else {
         own

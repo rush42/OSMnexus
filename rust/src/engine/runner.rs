@@ -54,11 +54,9 @@ fn eval_fields(fields: &[Field], ctx: &ExtractCtx, map: &mut Map<String, Value>)
     for field in fields {
         if let Some(p) = field.source.eval(ctx) {
             map.insert(field.output.clone(), p.value);
-            if let Some(s) = p.source {
-                map.insert(format!("{}_source", field.output), Value::String(s));
-            }
-            if let Some(c) = p.confidence {
-                map.insert(format!("{}_confidence", field.output), Value::String(c));
+            // Companion consts → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
+            for (k, v) in p.consts {
+                map.insert(format!("{}_{}", field.output, k), v);
             }
         }
     }

@@ -109,8 +109,7 @@ impl Sanitizer {
                 from: self.from,
                 side: None,
                 sanitize: Some(self.name.clone()),
-                source: None,
-                confidence: None,
+                consts: serde_json::Map::new(),
             },
         }
     }

@@ -14,11 +14,11 @@
   "surface_from_parent": { "derive": "surface_parent" },
   "smoothness": {
     "fallback": [
-      { "key": "smoothness", "sanitize": "smoothness_direct", "source": "tag",            "confidence": "high" },
-      { "key": "smoothness", "sanitize": "smoothness_norm",   "source": "tag_normalized",  "confidence": "high" },
-      { "key": "surface",    "sanitize": "surface_to_smoothness",   "source": "surface_to_smoothness",   "confidence": "medium" },
-      { "key": "tracktype",  "sanitize": "tracktype_to_smoothness", "source": "tracktype_to_smoothness", "confidence": "medium" },
-      { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness", "source": "mtb:scale_to_smoothness", "confidence": "medium" }
+      { "key": "smoothness", "sanitize": "smoothness_direct", "consts": { "source": "tag",            "confidence": "high" } },
+      { "key": "smoothness", "sanitize": "smoothness_norm",   "consts": { "source": "tag_normalized", "confidence": "high" } },
+      { "key": "surface",    "sanitize": "surface_to_smoothness",   "consts": { "source": "surface_to_smoothness",   "confidence": "medium" } },
+      { "key": "tracktype",  "sanitize": "tracktype_to_smoothness", "consts": { "source": "tracktype_to_smoothness", "confidence": "medium" } },
+      { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness", "consts": { "source": "mtb:scale_to_smoothness", "confidence": "medium" } }
     ]
   },
   "smoothness_from_parent": { "derive": "smoothness_parent" }
