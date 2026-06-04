@@ -133,6 +133,13 @@ pub fn build_topic_rows(
             .get(&category.id)
             .unwrap_or(&runner.topic_derivers);
         let mut derived = Map::new();
+        // Lowest-priority layer: category consts (defaults), overwritten by any sanitizer/deriver
+        // that produces the same key.
+        if let Some(consts) = runner.category_consts.get(&category.id) {
+            for (k, v) in consts {
+                derived.insert(k.clone(), v.clone());
+            }
+        }
         eval_fields(&runner.sanitizer_fields, &ectx, &mut derived);
         eval_fields(derivers, &ectx, &mut derived);
 

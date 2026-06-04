@@ -38,6 +38,9 @@ pub struct TopicRunner {
     /// (topic defaults with the category's re-bindings applied by output). Categories absent
     /// from this map use `topic_derivers` directly.
     pub category_derivers: HashMap<String, Vec<Field>>,
+    /// Per-category effective consts (topic-level `consts` overlaid by the category's), seeded
+    /// into `derived` as the lowest-priority layer. Present for every category.
+    pub category_consts: HashMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Resolve a list of deriver bindings against the `derivers.json` library, erroring on any
@@ -168,6 +171,16 @@ impl TopicRunner {
             }
         }
 
+        // Precompute effective consts per category: topic-level defaults overlaid per-key.
+        let mut category_consts = HashMap::new();
+        for cat in &categories.categories {
+            let mut consts = spec.consts.clone();
+            for (k, v) in &cat.consts {
+                consts.insert(k.clone(), v.clone());
+            }
+            category_consts.insert(cat.id.clone(), consts);
+        }
+
         Ok(Self {
             spec,
             categories,
@@ -178,6 +191,7 @@ impl TopicRunner {
             deriver_lib,
             topic_derivers,
             category_derivers,
+            category_consts,
         })
     }
 

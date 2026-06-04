@@ -121,33 +121,28 @@ pub fn surface(obj: &RawTags, reg: &SanitizerRegistry) -> Option<String> {
 /// Returns one of: "yes" | "no" | "car_not_bike" | "assumed_no" | "implicit_yes"
 ///
 /// `implicit_oneway` comes from the matched category's `implicit_oneway` field.
-pub fn derive_oneway(tags: &RawTags, implicit_oneway: bool) -> String {
+/// Returns the explicit/derived oneway, or `None` when there's no signal — in which case the
+/// category's `oneway` const (the lowest-priority layer of `derived`) supplies the default
+/// (`implicit_yes` for implicit categories, else `assumed_no`).
+pub fn derive_oneway(tags: &RawTags) -> Option<String> {
     let oneway_bicycle = tags.get("oneway:bicycle").map(String::as_str);
     let oneway = tags.get("oneway").map(String::as_str);
 
     if oneway_bicycle == Some("yes") {
-        return "yes".to_owned();
+        return Some("yes".to_owned());
     }
     if oneway_bicycle == Some("no") {
-        return if oneway == Some("yes") {
-            "car_not_bike".to_owned()
-        } else {
-            "no".to_owned()
-        };
+        return Some(if oneway == Some("yes") { "car_not_bike" } else { "no" }.to_owned());
     }
 
     if matches!(oneway, Some("yes") | Some("no")) {
-        return oneway.unwrap().to_owned();
+        return Some(oneway.unwrap().to_owned());
     }
 
     let highway = tags.get("highway").map(String::as_str);
     if matches!(highway, Some("service") | Some("track")) {
-        return "assumed_no".to_owned();
+        return Some("assumed_no".to_owned());
     }
 
-    if implicit_oneway {
-        return "implicit_yes".to_owned();
-    }
-
-    "assumed_no".to_owned()
+    None
 }

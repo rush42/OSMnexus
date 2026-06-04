@@ -41,6 +41,10 @@ pub struct CategoryDef {
     /// topic default for that output). E.g. surface/smoothness sourced from the parent highway.
     #[serde(default)]
     pub derivers: Option<Vec<DeriverBinding>>,
+    /// Per-category constants (override the topic-level `consts` per key). Seeded into `derived`
+    /// as the lowest-priority layer; a sanitizer/deriver producing the same key overrides them.
+    #[serde(default)]
+    pub consts: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Declarative minzoom: a constant, or an ordered list of conditional cases with a default.

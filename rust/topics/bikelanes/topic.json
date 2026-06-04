@@ -1,5 +1,8 @@
 {
   "table": "bikelanes",
+  "consts": {
+    "oneway": "assumed_no"
+  },
   "exclude_condition": {
     "macro": "standard_exclude"
   },

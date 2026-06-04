@@ -28,6 +28,11 @@ pub struct TopicSpec {
     /// Topic-level default minzoom rule, used for any category without its own `minzoom`.
     #[serde(default)]
     pub minzoom: Option<MinzoomRule>,
+    /// Topic-level default constants seeded into `derived` (lowest priority — any sanitizer/
+    /// deriver producing the same key overrides them). Categories override per-key via their own
+    /// `consts`.
+    #[serde(default)]
+    pub consts: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One entry in a topic's `transforms` list.

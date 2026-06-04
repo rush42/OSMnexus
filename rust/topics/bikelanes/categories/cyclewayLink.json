@@ -17,10 +17,7 @@
     "cyclewayOnHighwayProtected",
     "not_expected"
   ],
-  "derivers": [
-    {
-      "deriver": "oneway_implicit",
-      "output": "oneway"
-    }
-  ]
+  "consts": {
+    "oneway": "implicit_yes"
+  }
 }

@@ -43,10 +43,9 @@
     {
       "deriver": "smoothness_from_parent",
       "output": "smoothness"
-    },
-    {
-      "deriver": "oneway_implicit",
-      "output": "oneway"
     }
-  ]
+  ],
+  "consts": {
+    "oneway": "implicit_yes"
+  }
 }
