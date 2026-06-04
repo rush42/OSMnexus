@@ -177,8 +177,14 @@ pub fn load_shared_macros(dir: &std::path::Path) -> anyhow::Result<HashMap<Strin
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        // sanitizers.json in _shared is the shared sanitizer library, not a Filter macro.
-        if path.file_name() == Some(std::ffi::OsStr::new("sanitizers.json")) {
+        // Some _shared/*.json files are data libraries, not Filter macros.
+        const NON_MACRO_FILES: &[&str] = &["sanitizers.json", "highway_classes.json"];
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| NON_MACRO_FILES.contains(&n))
+            .unwrap_or(false)
+        {
             continue;
         }
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
