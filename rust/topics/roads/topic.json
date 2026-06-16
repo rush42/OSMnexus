@@ -3,7 +3,6 @@
   "private": {
     "_implicit_oneway_confidence": "not_applicable"
   },
-  "infrastructure_exists": true,
   "transforms": [
     "lifecycle"
   ],

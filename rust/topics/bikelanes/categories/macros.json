@@ -1,4 +1,21 @@
 {
+  "data_no": {
+    "tag": "cycleway",
+    "in": ["no", "none"]
+  },
+  "separate_geometry": {
+    "tag": "cycleway",
+    "eq": "separate"
+  },
+  "not_expected": {
+    "and": [
+      { "prefix": "cycleway" },
+      { "infix": "" },
+      { "side": "left" },
+      { "parent_tag": "oneway", "eq": "yes" },
+      { "not": { "parent_tag": "oneway:bicycle", "eq": "no" } }
+    ]
+  },
   "is_crossing_pattern": {
     "or": [
       {

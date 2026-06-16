@@ -1,7 +1,0 @@
-{
-  "infrastructure_exists": false,
-  "condition": {
-    "tag": "cycleway",
-    "eq": "separate"
-  }
-}

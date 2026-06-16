@@ -30,12 +30,6 @@ pub struct CategoryContext<'a> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CategoryDef {
     pub id: String,
-    /// Whether matching this category means infrastructure exists (emit a row). Per-category
-    /// override of the topic-level default (which is `true` in practice); the few sentinel
-    /// categories that exist only to be `excludes`d by others set it `false` so they match without
-    /// emitting a row (the runner skips them). Absent → inherit the topic default.
-    #[serde(default)]
-    pub infrastructure_exists: Option<bool>,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
     /// Per-category minzoom override. Falls back to the topic-level default when absent.
@@ -454,8 +448,16 @@ pub fn categorize<'a>(ctx: &CategoryContext, cats: &'a CategoriesFile) -> Option
         }
         if let Some(excludes) = &cat.excludes {
             for excluded_id in excludes {
-                if let Some(excluded_cat) = cats.categories.iter().find(|c| c.id == *excluded_id) {
-                    if eval(&excluded_cat.condition, ctx, &cats.macros) {
+                // An exclude resolves to another category's condition, or — for conditions that
+                // exist only to disqualify (e.g. `data_no`) — a macro of the same name.
+                let cond = cats
+                    .categories
+                    .iter()
+                    .find(|c| c.id == *excluded_id)
+                    .map(|c| &c.condition)
+                    .or_else(|| cats.macros.get(excluded_id));
+                if let Some(cond) = cond {
+                    if eval(cond, ctx, &cats.macros) {
                         return false;
                     }
                 }
