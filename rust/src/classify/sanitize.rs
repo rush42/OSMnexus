@@ -83,9 +83,47 @@ pub enum Step {
     },
     /// Keep the value iff it is in the set, else drop (sugar for an identity mapping + drop).
     Filter { filter: Vec<String> },
+    /// Drop the value iff it is in the set, else keep — the reject-list counterpart to `filter`.
+    /// Dropping short-circuits the chain (e.g. `{ "drop": [""] }` to discard empty input).
+    Drop { drop: Vec<String> },
+    /// Literal string rewrites, applied in order (each transforms the running value, then the
+    /// next sees the result — sed-like). A general, country-agnostic alternative to a hardcoded
+    /// normalizer (e.g. the former `traffic_sign` builtin). Never drops.
+    Replace { replace: Vec<ReplaceRule> },
     /// A built-in Rust sanitizer as a (terminal) chain step, e.g. `"parse_length"`. Lets a data
     /// chain end in an algorithmic, possibly non-string transform.
     Builtin(String),
+}
+
+/// One literal rewrite for a `replace` step.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReplaceRule {
+    from: String,
+    to: String,
+    #[serde(default)]
+    at: ReplaceAt,
+}
+
+/// Where a `ReplaceRule` matches: anywhere (replace every occurrence) or only as a prefix
+/// (rewrite the leading `from`, keep the suffix; no-op when absent).
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplaceAt {
+    #[default]
+    Anywhere,
+    Prefix,
+}
+
+impl ReplaceRule {
+    fn apply(&self, s: &str) -> String {
+        match self.at {
+            ReplaceAt::Anywhere => s.replace(&self.from, &self.to),
+            ReplaceAt::Prefix => match s.strip_prefix(&self.from) {
+                Some(rest) => format!("{}{rest}", self.to),
+                None => s.to_owned(),
+            },
+        }
+    }
 }
 
 impl Step {
@@ -123,6 +161,13 @@ impl Step {
             },
             Step::Filter { filter } => {
                 filter.iter().any(|a| a == v).then(|| Value::String(v.to_owned()))
+            }
+            Step::Drop { drop } => {
+                (!drop.iter().any(|a| a == v)).then(|| Value::String(v.to_owned()))
+            }
+            Step::Replace { replace } => {
+                let out = replace.iter().fold(v.to_owned(), |s, r| r.apply(&s));
+                Some(Value::String(out))
             }
             Step::Builtin(name) => apply_builtin(name, v),
             // Normalized into Mapping at registry build (SanitizerRegistry::new).
@@ -198,9 +243,9 @@ impl SanitizerRegistry {
 pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
     match name {
         "parse_length" => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
-        "traffic_sign" => traffic_sign(raw).map(Value::String),
-        // Everything else (yes_flag, buffer, separation, traffic_mode, marking, surface_color,
-        // temporary, the surface/smoothness tables) lives in sanitizers.json now.
+        // `parse_length` is the lone built-in: universal unit arithmetic, not a finite table.
+        // Everything else (incl. the former `traffic_sign` country normalizer) lives in
+        // sanitizers.json — as mapping/cases/filter/replace chains.
         other => { tracing::warn!("unknown sanitizer: {other}"); None }
     }
 }
@@ -246,45 +291,4 @@ pub fn parse_length(raw: &str) -> Option<f32> {
     Some(v * scale)
 }
 
-// ── traffic_sign ────────────────────────────────────────────────────────────────
-
-/// Port of SanitizeTrafficSign.lua.
-/// Normalises format irregularities like "DE: 244,1020-30" → "DE:244,1020-30".
-pub fn traffic_sign(raw: &str) -> Option<String> {
-    if raw.is_empty() { return None; }
-    if raw == "no" || raw == "none" { return Some("none".to_owned()); }
-
-    // Strip whitespace after delimiters first
-    let stripped = raw.replace(", ", ",").replace("; ", ";");
-    let s = stripped.as_str();
-
-    // Already correctly prefixed
-    if s.starts_with("DE:") && s.len() > 3 && !s[3..].starts_with(' ') {
-        return Some(stripped);
-    }
-
-    // Known substitutions (order matters — more specific first)
-    let substitutions: &[(&str, &str)] = &[
-        ("DE: ", "DE:"),
-        ("DE.", "DE:"),
-        ("D:",  "DE:"),
-        ("D.",  "DE:"),
-        ("de:", "DE:"),
-        ("DE1", "DE:1"),
-        ("DE2", "DE:2"),
-    ];
-    for (prefix, replacement) in substitutions {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            return Some(format!("{replacement}{rest}"));
-        }
-    }
-
-    // Bare numeric: "244" → "DE:244", "1020-30" → "DE:1020-30"
-    if s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-        return Some(format!("DE:{s}"));
-    }
-
-    // Free text: return cleaned
-    Some(stripped)
-}
 
