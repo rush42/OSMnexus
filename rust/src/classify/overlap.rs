@@ -11,6 +11,7 @@ pub enum Predicate {
     LengthLte(i64),
     LengthLt(i64),
     HasKeyPrefix(String),
+    HasParent,
     Prefix(String),
     Infix(String),
     Side(String),
@@ -28,6 +29,7 @@ impl Predicate {
             Predicate::LengthLte(_) => vec!["length".to_string()],
             Predicate::LengthLt(_) => vec!["length".to_string()],
             Predicate::HasKeyPrefix(p) => vec![format!("prefix({})", p)],
+            Predicate::HasParent => vec!["[parent]".to_string()],
             Predicate::Prefix(_) => vec!["[prefix]".to_string()],
             Predicate::Infix(_) => vec!["[infix]".to_string()],
             Predicate::Side(_) => vec!["[side]".to_string()],
@@ -104,6 +106,8 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::LengthLte { length_lte } => Expr::Lit(Literal::Pos(Predicate::LengthLte((*length_lte * 1000.0).round() as i64))),
         Filter::LengthLt  { length_lt  } => Expr::Lit(Literal::Pos(Predicate::LengthLt((*length_lt * 1000.0).round() as i64))),
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
+        Filter::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
+        Filter::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),
     }
 }
 

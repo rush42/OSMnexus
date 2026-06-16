@@ -128,6 +128,8 @@ pub enum Filter {
     LengthLte { length_lte: f64   },
     LengthLt  { length_lt:  f64   },
     HasKeyPrefix { has_key_prefix: String },
+    /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
+    HasParent { has_parent: bool },
 }
 
 // ── Category loader ───────────────────────────────────────────────────────────
@@ -205,11 +207,8 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
 
         Filter::Macro { r#macro: name } => match name.as_str() {
             // Rust-implemented predicates — too complex or structural for JSON
-            "is_crossing_pattern"                       => is_crossing_pattern(ctx),
-            "is_sidepath"                               => is_sidepath(ctx),
-            "has_between_lanes_conditions"              => has_between_lanes_conditions(ctx),
-            "is_footway_bicycle_yes_base"               => is_footway_bicycle_yes_base(ctx),
-            "is_advisory_or_exclusive"                  => is_advisory_or_exclusive(ctx),
+            "is_footway_bicycle_yes_base"               => is_footway_bicycle_yes_base(ctx, macros),
+            "is_advisory_or_exclusive"                  => is_advisory_or_exclusive(ctx, macros),
             "is_foot_and_cycleway_segregated_edge_case" => is_foot_and_cycleway_segregated_edge_case(ctx),
             "is_protected_bikelane_separation"          => is_protected_bikelane_separation(ctx),
             // JSON-defined macros (per-topic categories/macros.json + shared topics/_shared/)
@@ -265,6 +264,7 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
         Filter::LengthLt  { length_lt  } => ctx.length_m <  *length_lt,
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
+        Filter::HasParent { has_parent } => ctx.parent_highway.is_some() == *has_parent,
     }
 }
 
@@ -298,51 +298,16 @@ fn sign_contains(sign: Option<&str>, needle: &str) -> bool {
     sign.map(|s| s.contains(needle)).unwrap_or(false)
 }
 
-
-/// Port of `IsSidepath` from IsSidepath.lua.
-fn is_sidepath(ctx: &CategoryContext) -> bool {
-    if tag_is(ctx, "is_sidepath", "no") { return false; }
-    tag_is(ctx, "is_sidepath", "yes")
-        || ctx.parent_highway.is_some()
-        || tag_is(ctx, "footway", "sidewalk")
-        || tag_is(ctx, "path", "sidewalk")
-        || tag_is(ctx, "path", "sidepath")
-        || tag_is(ctx, "cycleway", "sidepath")
-        || tag_is(ctx, "steps", "sidewalk")
-}
-
-/// Port of `is_crossing_pattern` from BikelaneCategories.lua.
-fn is_crossing_pattern(ctx: &CategoryContext) -> bool {
-    let hw = tag(ctx, "highway");
-    let cycleway = tag(ctx, "cycleway");
-    if hw == Some("cycleway") && cycleway == Some("lane") && tag_is(ctx, "lane", "crossing") {
-        return true;
-    }
-    if hw == Some("cycleway") && matches!(cycleway, Some("crossing") | Some("traffic_island")) {
-        return true;
-    }
-    if hw == Some("path")
-        && matches!(tag(ctx, "path"), Some("crossing") | Some("traffic_island"))
-        && tag_in(ctx, "bicycle", &["yes", "designated"])
-    { return true; }
-    if hw == Some("footway")
-        && matches!(tag(ctx, "footway"), Some("crossing") | Some("traffic_island"))
-        && tag_in(ctx, "bicycle", &["yes", "designated"])
-    { return true; }
-    false
-}
-
-/// Port of hasCyclewayOnHighwayBetweenLanesConditions from BikelaneCategories.lua.
-fn has_between_lanes_conditions(ctx: &CategoryContext) -> bool {
-    if ctx.side == Side::Self_ { return false; }
-    if sign_contains(tag(ctx, "lanes"), "|lane|") { return true; }
-    if sign_contains(parent_tag(ctx, "bicycle:lanes"), "|designated|") { return true; }
-    false
+/// Evaluate a JSON-defined macro by name. Used by the remaining Rust predicates that still
+/// depend on a now-datafied sub-condition (`is_crossing_pattern`, `has_between_lanes_conditions`).
+/// Missing macro → false, matching the dispatch fallback.
+fn eval_macro(name: &str, ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
+    macros.get(name).map(|f| eval(f, ctx, macros)).unwrap_or(false)
 }
 
 /// Port of the footwayBicycleYes base condition — kept in Rust for mtb:scale numeric parsing.
-fn is_footway_bicycle_yes_base(ctx: &CategoryContext) -> bool {
-    if is_crossing_pattern(ctx) { return false; }
+fn is_footway_bicycle_yes_base(ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
+    if eval_macro("is_crossing_pattern", ctx, macros) { return false; }
     let hw = tag(ctx, "highway").unwrap_or("");
     if !matches!(hw, "footway" | "path") { return false; }
     let has_bicycle_access = tag_is(ctx, "bicycle", "yes")
@@ -429,10 +394,10 @@ fn is_protected_bikelane_separation(ctx: &CategoryContext) -> bool {
 
 /// Port of cyclewayOnHighway_advisoryOrExclusive base — kept in Rust for lane-suffix interaction
 /// with hasCyclewayOnHighwayBetweenLanesConditions.
-fn is_advisory_or_exclusive(ctx: &CategoryContext) -> bool {
+fn is_advisory_or_exclusive(ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
     if !tag_is(ctx, "highway", "cycleway") { return false; }
     if !tag_in(ctx, "cycleway", &["lane", "opposite_lane"]) { return false; }
-    if has_between_lanes_conditions(ctx) {
+    if eval_macro("has_between_lanes_conditions", ctx, macros) {
         let lanes = tag(ctx, "lanes").unwrap_or("");
         let bicycle_lanes = parent_tag(ctx, "bicycle:lanes").unwrap_or("");
         if lanes.contains("|lane|") && !lanes.ends_with("|lane") { return false; }
