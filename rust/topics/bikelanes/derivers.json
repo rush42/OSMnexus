@@ -8,6 +8,7 @@
       { "when": { "tag": "highway", "in": ["service", "track"] }, "value": "assumed_no" }
     ]
   },
+  "road": { "shared": "road", "from": "parent_or_obj" },
   "traffic_mode_left":  { "derive": "traffic_mode", "out_side": "left" },
   "traffic_mode_right": { "derive": "traffic_mode", "out_side": "right" },
   "lifecycle": {

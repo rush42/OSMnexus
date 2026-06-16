@@ -105,24 +105,31 @@ pub enum Filter {
     /// Reference to a named macro defined in `macros` or a Rust-implemented predicate.
     Macro { r#macro: String },
 
-    // Tag predicates — secondary field disambiguates (TagEq is the catch-all)
+    // Tag predicates — secondary field disambiguates (TagEq is the catch-all).
+    // The equality/membership predicates accept an optional `sanitize` chain: when set, the raw
+    // tag value is normalized through that sanitizer before comparison (a dropped value behaves
+    // as absent → false), mirroring the `num` predicate's `sanitize`.
     /// Membership in a named set from `_shared/value_sets.json` (keeps long value lists in data).
     TagInSet     { tag: String, in_set:      String      },
-    TagIn        { tag: String, r#in:        Vec<String> },
+    TagIn        { tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<String> },
     TagContains  { tag: String, contains:    String      },
     TagStartsWith{ tag: String, starts_with: String      },
+    TagEndsWith  { tag: String, ends_with:   String      },
     TagExists    { tag: String, exists:      bool        },
-    TagEq        { tag: String, eq:          String      },
+    TagEq        { tag: String, eq:          String,      #[serde(default)] sanitize: Option<String> },
 
-    // "First matching tag from a list" — tries each key in order, uses the first that exists
-    FirstTagIn   { first_tag: Vec<String>, r#in:     Vec<String> },
+    // "First matching tag from a list" — tries each key in order, uses the first that exists.
+    /// First-present sibling of `TagInSet`; also honours an optional `sanitize` chain.
+    FirstTagInSet { first_tag: Vec<String>, in_set: String, #[serde(default)] sanitize: Option<String> },
+    FirstTagIn   { first_tag: Vec<String>, r#in:     Vec<String>, #[serde(default)] sanitize: Option<String> },
     FirstTagExists { first_tag: Vec<String>, exists: bool        },
 
     // Parent tag predicates
-    ParentTagIn        { parent_tag: String, r#in:        Vec<String> },
+    ParentTagIn        { parent_tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<String> },
     ParentTagContains  { parent_tag: String, contains:    String      },
     ParentTagStartsWith{ parent_tag: String, starts_with: String      },
-    ParentTagEq        { parent_tag: String, eq:          String      },
+    ParentTagEndsWith  { parent_tag: String, ends_with:   String      },
+    ParentTagEq        { parent_tag: String, eq:          String,      #[serde(default)] sanitize: Option<String> },
 
     // Context predicates
     Side      { side:       String },   // "self" | "left" | "right"
@@ -187,7 +194,7 @@ pub fn load_categories_from_dir(dir: &std::path::Path) -> anyhow::Result<Categor
 /// file, macro name = file stem). Referenced by name from any topic's conditions, e.g.
 /// `{ "macro": "standard_exclude" }`. `shared_dir` is `topics/_shared`; only its `macros/`
 /// subdirectory holds Filter macros — the data libraries (sanitizers.json, value_sets.json,
-/// road_classification.json) live at the `_shared/` root and are loaded explicitly elsewhere.
+/// classifiers/) live at the `_shared/` root and are loaded explicitly elsewhere.
 pub fn load_shared_macros(shared_dir: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
     let mut macros = HashMap::new();
     let dir = shared_dir.join("macros");
@@ -215,45 +222,44 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
         Filter::Or  { or  } => or.iter().any(|f| eval(f, ctx, macros)),
         Filter::Not { not } => !eval(not, ctx, macros),
 
-        Filter::Macro { r#macro: name } => match name.as_str() {
-            // Rust-implemented predicates — too complex or structural for JSON
-            "is_advisory_or_exclusive"                  => is_advisory_or_exclusive(ctx, macros),
-            "is_foot_and_cycleway_segregated_edge_case" => is_foot_and_cycleway_segregated_edge_case(ctx),
-            "is_protected_bikelane_separation"          => is_protected_bikelane_separation(ctx),
-            // JSON-defined macros (per-topic categories/macros.json + shared topics/_shared/)
-            other => macros
-                .get(other)
-                .map(|f| eval(f, ctx, macros))
-                .unwrap_or_else(|| { tracing::warn!("unknown macro: {}", other); false }),
-        },
+        // JSON-defined macros (per-topic categories/macros.json + shared topics/_shared/).
+        Filter::Macro { r#macro: name } => macros
+            .get(name)
+            .map(|f| eval(f, ctx, macros))
+            .unwrap_or_else(|| { tracing::warn!("unknown macro: {}", name); false }),
 
-        Filter::TagEq { tag, eq } =>
-            ctx.tags.get(tag).map(|v| v == eq).unwrap_or(false),
+        Filter::TagEq { tag, eq, sanitize } =>
+            read_str(ctx.tags.get(tag).map(String::as_str), sanitize, ctx.sanitizers)
+                .is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::TagInSet { tag, in_set } =>
             ctx.tags.get(tag).map(|v| value_set(in_set).contains(v)).unwrap_or(false),
-        Filter::TagIn { tag, r#in } =>
-            ctx.tags.get(tag).map(|v| r#in.iter().any(|s| s == v)).unwrap_or(false),
+        Filter::TagIn { tag, r#in, sanitize } =>
+            read_str(ctx.tags.get(tag).map(String::as_str), sanitize, ctx.sanitizers)
+                .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::TagContains { tag, contains } =>
             ctx.tags.get(tag).map(|v| v.contains(contains.as_str())).unwrap_or(false),
         Filter::TagStartsWith { tag, starts_with } =>
             ctx.tags.get(tag).map(|v| v.starts_with(starts_with.as_str())).unwrap_or(false),
+        Filter::TagEndsWith { tag, ends_with } =>
+            ctx.tags.get(tag).map(|v| v.ends_with(ends_with.as_str())).unwrap_or(false),
         Filter::TagExists { tag, exists } =>
             ctx.tags.contains_key(tag) == *exists,
 
-        Filter::FirstTagIn { first_tag, r#in } =>
-            first_tag.iter()
-                .find_map(|k| ctx.tags.get(k))
-                .map(|v| r#in.iter().any(|s| s == v))
-                .unwrap_or(false),
+        Filter::FirstTagInSet { first_tag, in_set, sanitize } =>
+            read_str(first_present(ctx, first_tag), sanitize, ctx.sanitizers)
+                .is_some_and(|v| value_set(in_set).contains(v.as_ref())),
+        Filter::FirstTagIn { first_tag, r#in, sanitize } =>
+            read_str(first_present(ctx, first_tag), sanitize, ctx.sanitizers)
+                .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::FirstTagExists { first_tag, exists } =>
             first_tag.iter().any(|k| ctx.tags.contains_key(k)) == *exists,
 
-        Filter::ParentTagEq { parent_tag, eq } =>
-            ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(|v| v == eq).unwrap_or(false),
-        Filter::ParentTagIn { parent_tag, r#in } =>
-            ctx.parent_tags.and_then(|t| t.get(parent_tag))
-                .map(|v| r#in.iter().any(|s| s == v))
-                .unwrap_or(false),
+        Filter::ParentTagEq { parent_tag, eq, sanitize } =>
+            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, ctx.sanitizers)
+                .is_some_and(|v| v.as_ref() == eq.as_str()),
+        Filter::ParentTagIn { parent_tag, r#in, sanitize } =>
+            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, ctx.sanitizers)
+                .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::ParentTagContains { parent_tag, contains } =>
             ctx.parent_tags.and_then(|t| t.get(parent_tag))
                 .map(|v| v.contains(contains.as_str()))
@@ -261,6 +267,10 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
         Filter::ParentTagStartsWith { parent_tag, starts_with } =>
             ctx.parent_tags.and_then(|t| t.get(parent_tag))
                 .map(|v| v.starts_with(starts_with.as_str()))
+                .unwrap_or(false),
+        Filter::ParentTagEndsWith { parent_tag, ends_with } =>
+            ctx.parent_tags.and_then(|t| t.get(parent_tag))
+                .map(|v| v.ends_with(ends_with.as_str()))
                 .unwrap_or(false),
 
         Filter::Side { side } => {
@@ -305,116 +315,28 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
     }
 }
 
-// ── Rust-implemented predicates ───────────────────────────────────────────────
-// These are structurally complex (multi-tag normalization, numeric parsing,
-// cross-field interaction) and are unlikely to vary by jurisdiction.
-
-fn tag<'a>(ctx: &'a CategoryContext<'a>, key: &str) -> Option<&'a str> {
-    ctx.tags.get(key).map(String::as_str)
+/// The value of the first key in `keys` that is present in the context tags.
+fn first_present<'a>(ctx: &'a CategoryContext<'a>, keys: &[String]) -> Option<&'a str> {
+    keys.iter().find_map(|k| ctx.tags.get(k)).map(String::as_str)
 }
 
-fn tag_is(ctx: &CategoryContext, key: &str, val: &str) -> bool {
-    ctx.tags.get(key).map(|v| v == val).unwrap_or(false)
-}
-
-fn tag_in(ctx: &CategoryContext, key: &str, vals: &[&str]) -> bool {
-    ctx.tags.get(key).map(|v| vals.contains(&v.as_str())).unwrap_or(false)
-}
-
-/// Run a data sanitizer (e.g. "separation", "traffic_mode") over a raw value, returning the
-/// cleaned string (or None if dropped). Lets predicates share the sanitizers.json tables.
-fn sanitize_str(ctx: &CategoryContext, name: &str, raw: &str) -> Option<String> {
-    ctx.sanitizers.apply(name, raw).and_then(|v| v.as_str().map(str::to_owned))
-}
-
-fn parent_tag<'a>(ctx: &'a CategoryContext<'a>, key: &str) -> Option<&'a str> {
-    ctx.parent_tags.and_then(|t| t.get(key)).map(String::as_str)
-}
-
-/// Evaluate a JSON-defined macro by name. Used by the remaining Rust predicates that still
-/// depend on a now-datafied sub-condition (`has_between_lanes_conditions`).
-/// Missing macro → false, matching the dispatch fallback.
-fn eval_macro(name: &str, ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
-    macros.get(name).map(|f| eval(f, ctx, macros)).unwrap_or(false)
-}
-
-/// Port of the `footAndCyclewaySegregated` edge case (traffic_mode:right=foot + separation check).
-/// Lua uses SANITIZE_ROAD_TAGS which normalises separation values; we replicate that here.
-fn is_foot_and_cycleway_segregated_edge_case(ctx: &CategoryContext) -> bool {
-    if !tag_is(ctx, "highway", "cycleway") { return false; }
-
-    // traffic_mode:right (or :both) must be foot (the `traffic_mode` sanitizer folds foot;bicycle→foot)
-    let tm_right = tag(ctx, "traffic_mode:right").or_else(|| tag(ctx, "traffic_mode:both"));
-    let tm_foot = tm_right.and_then(|r| sanitize_str(ctx, "traffic_mode", r)).as_deref() == Some("foot");
-    if !tm_foot { return false; }
-
-    // separation:right (or :both) must not be a known blocking separation value.
-    // A sanitized value is in the allow-list; treat any allowed non-"no" value as blocking.
-    let sep_raw = tag(ctx, "separation:right").or_else(|| tag(ctx, "separation:both"));
-    if let Some(raw) = sep_raw {
-        if let Some(sep) = sanitize_str(ctx, "separation", raw) {
-            if sep != "no" {
-                return false;
-            }
-        }
+/// Read a string value for a tag predicate. With no `sanitize`, returns the raw value borrowed;
+/// with `sanitize`, runs it through that sanitizer chain (coercing the atomic output to a string),
+/// yielding None when the value is dropped — so a sanitized-away value compares as absent.
+/// Mirrors `read_num` for the numeric predicates.
+fn read_str<'a>(
+    raw: Option<&'a str>,
+    sanitize: &Option<String>,
+    reg: &SanitizerRegistry,
+) -> Option<std::borrow::Cow<'a, str>> {
+    let raw = raw?;
+    match sanitize {
+        None => Some(std::borrow::Cow::Borrowed(raw)),
+        Some(name) => match reg.apply(name, raw)? {
+            serde_json::Value::String(s) => Some(std::borrow::Cow::Owned(s)),
+            other => other.as_str().map(|s| std::borrow::Cow::Owned(s.to_owned())),
+        },
     }
-
-    true
-}
-
-/// Port of the cyclewayOnHighwayProtected separation check using Lua's SANITIZE_ROAD_TAGS.
-/// Returns true when the context matches a "protected bikelane" separation condition.
-fn is_protected_bikelane_separation(ctx: &CategoryContext) -> bool {
-    const PHYSICAL: &[&str] = &[
-        "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter",
-        "fence", "jersey_barrier", "guard_rail",
-    ];
-
-    let sided = |key_main: &str, key_both: &str, bare: Option<&str>, san: &str| -> Option<String> {
-        tag(ctx, key_main)
-            .or_else(|| tag(ctx, key_both))
-            .or_else(|| bare.and_then(|b| tag(ctx, b)))
-            .and_then(|raw| sanitize_str(ctx, san, raw))
-    };
-
-    let sep_left = sided("separation:left", "separation:both", Some("separation"), "separation");
-    let sep_right = sided("separation:right", "separation:both", None, "separation");
-    let tm_right = sided("traffic_mode:right", "traffic_mode:both", None, "traffic_mode");
-    let tm_left = sided("traffic_mode:left", "traffic_mode:both", None, "traffic_mode");
-
-    let has_segregated = tag(ctx, "segregated").is_some();
-    let is_physical = |s: &Option<String>| s.as_deref().map_or(false, |v| PHYSICAL.contains(&v));
-
-    // Case 1: physical separation left + NOT motor_vehicle right + no segregated
-    if is_physical(&sep_left) && tm_right.as_deref() != Some("motor_vehicle") && !has_segregated {
-        return true;
-    }
-
-    // Case 2: parking left + no segregated
-    if tm_left.as_deref() == Some("parking") && !has_segregated {
-        return true;
-    }
-
-    // Case 3: counter-flow — motor_vehicle right + physical separation right
-    if tm_right.as_deref() == Some("motor_vehicle") && is_physical(&sep_right) {
-        return true;
-    }
-
-    false
-}
-
-/// Port of cyclewayOnHighway_advisoryOrExclusive base — kept in Rust for lane-suffix interaction
-/// with hasCyclewayOnHighwayBetweenLanesConditions.
-fn is_advisory_or_exclusive(ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
-    if !tag_is(ctx, "highway", "cycleway") { return false; }
-    if !tag_in(ctx, "cycleway", &["lane", "opposite_lane"]) { return false; }
-    if eval_macro("has_between_lanes_conditions", ctx, macros) {
-        let lanes = tag(ctx, "lanes").unwrap_or("");
-        let bicycle_lanes = parent_tag(ctx, "bicycle:lanes").unwrap_or("");
-        if lanes.contains("|lane|") && !lanes.ends_with("|lane") { return false; }
-        if bicycle_lanes.contains("|designated|") && !bicycle_lanes.ends_with("|designated") { return false; }
-    }
-    true
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

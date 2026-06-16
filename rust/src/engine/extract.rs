@@ -82,6 +82,14 @@ pub enum Producer {
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
     },
+    /// Like `Classify`, but the rule table is a named shared classifier loaded from
+    /// `topics/_shared/classifiers/<shared>.json` — lets topics reuse one table (e.g. the `road`
+    /// classification) without duplicating it. `from`/`consts` behave as in `Classify`.
+    SharedClassify {
+        shared: String,
+        #[serde(default)] from: TagSet,
+        #[serde(default)] consts: Map<String, Value>,
+    },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
@@ -109,6 +117,17 @@ impl Producer {
                 crate::classify::classifier::classify_rules(
                     rules, tags, &HashMap::new(), ctx.sanitizers,
                 ).map(|v| Produced { value: Value::String(v), consts: consts.clone() })
+            }
+
+            Producer::SharedClassify { shared, from, consts } => {
+                let tags = match from {
+                    TagSet::Obj => Some(ctx.obj_tags),
+                    TagSet::Parent => ctx.parent_tags, // strict: None when no parent
+                    TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
+                }?;
+                crate::classify::classifier::shared_classifier(shared)
+                    .classify(tags, &HashMap::new(), ctx.sanitizers)
+                    .map(|v| Produced { value: Value::String(v), consts: consts.clone() })
             }
 
             Producer::Derive { derive, out_side } => match derive.as_str() {

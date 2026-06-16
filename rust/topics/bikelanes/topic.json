@@ -340,7 +340,8 @@
     "surface",
     "smoothness",
     "traffic_mode_left",
-    "traffic_mode_right"
+    "traffic_mode_right",
+    "road"
   ],
   "minzoom": {
     "default": 0,

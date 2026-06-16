@@ -75,6 +75,8 @@
       "name": "yes_flag"
     }
   ],
-  "derivers": [],
+  "derivers": [
+    "road"
+  ],
   "minzoom": 0
 }

@@ -197,7 +197,8 @@
     }
   ],
   "derivers": [
-    "lifecycle"
+    "lifecycle",
+    "road"
   ],
   "minzoom": 0
 }

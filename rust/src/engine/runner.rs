@@ -1,9 +1,6 @@
 use serde_json::{Map, Value};
 
-use crate::classify::{
-    categories::{categorize, eval_filter, resolve_minzoom, CategoryContext},
-    classifier::road_classifier,
-};
+use crate::classify::categories::{categorize, eval_filter, resolve_minzoom, CategoryContext};
 use crate::engine::extract::ExtractCtx;
 use crate::engine::topic::Field;
 use crate::engine::topic_runner::TopicRunner;
@@ -150,9 +147,6 @@ pub fn build_topic_rows(
         derived.insert("id".into(),       Value::String(id.clone()));
         derived.insert("category".into(), Value::String(category.id.clone()));
         derived.insert("length_m".into(), Value::Number(serde_json::Number::from_f64(length_m).unwrap()));
-        if let Some(road) = road_classifier().classify(tags, &categories.macros, &runner.sanitizers) {
-            derived.insert("road".into(), Value::String(road));
-        }
 
         private.insert("_side".into(), Value::String(side_str.to_owned()));
         if let Some(p) = obj.prefix {

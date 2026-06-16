@@ -6,6 +6,7 @@ pub enum Predicate {
     Eq(String, String),
     Contains(String, String),
     StartsWith(String, String),
+    EndsWith(String, String),
     Exists(String),
     FirstTagIn(Vec<String>, Vec<String>),
     /// Numeric comparison atom: `(value key, op, threshold bits)`. The threshold is stored as the
@@ -30,6 +31,7 @@ impl Predicate {
             Predicate::Eq(k, _) => vec![k.clone()],
             Predicate::Contains(k, _) => vec![k.clone()],
             Predicate::StartsWith(k, _) => vec![k.clone()],
+            Predicate::EndsWith(k, _) => vec![k.clone()],
             Predicate::Exists(k) => vec![k.clone()],
             Predicate::FirstTagIn(ks, _) => ks.clone(),
             Predicate::Num(k, _, _) => vec![k.clone()],
@@ -74,12 +76,15 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
             }
         },
 
-        Filter::TagEq { tag, eq } => Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), eq.clone()))),
+        // `sanitize` is ignored here: the overlap lint is a conservative heuristic and treats a
+        // sanitized comparison like a raw one (atoms are independent, which keeps it sound enough).
+        Filter::TagEq { tag, eq, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), eq.clone()))),
         Filter::TagExists { tag, exists: true } => Expr::Lit(Literal::Pos(Predicate::Exists(tag.clone()))),
         Filter::TagExists { tag, exists: false } => Expr::Lit(Literal::Neg(Predicate::Exists(tag.clone()))),
         Filter::TagContains { tag, contains } => Expr::Lit(Literal::Pos(Predicate::Contains(tag.clone(), contains.clone()))),
         Filter::TagStartsWith { tag, starts_with } => Expr::Lit(Literal::Pos(Predicate::StartsWith(tag.clone(), starts_with.clone()))),
-        Filter::TagIn { tag, r#in } => {
+        Filter::TagEndsWith { tag, ends_with } => Expr::Lit(Literal::Pos(Predicate::EndsWith(tag.clone(), ends_with.clone()))),
+        Filter::TagIn { tag, r#in, .. } => {
             let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), v.clone())))).collect();
             Expr::Or(exprs)
         },
@@ -93,14 +98,20 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         },
 
         // FirstTagEq was removed, skipping
-        Filter::FirstTagIn { first_tag, r#in } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(first_tag.clone(), r#in.clone()))),
+        Filter::FirstTagIn { first_tag, r#in, .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(first_tag.clone(), r#in.clone()))),
+        Filter::FirstTagInSet { first_tag, in_set, .. } => {
+            let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
+            vals.sort();
+            Expr::Lit(Literal::Pos(Predicate::FirstTagIn(first_tag.clone(), vals)))
+        },
         Filter::FirstTagExists { first_tag, exists: true } => Expr::Lit(Literal::Pos(Predicate::Exists(first_tag[0].clone()))), // approximation
         Filter::FirstTagExists { first_tag, exists: false } => Expr::Lit(Literal::Neg(Predicate::Exists(first_tag[0].clone()))),
 
-        Filter::ParentTagEq { parent_tag, eq } => Expr::Lit(Literal::Pos(Predicate::Eq(format!("parent_{}", parent_tag), eq.clone()))),
+        Filter::ParentTagEq { parent_tag, eq, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(format!("parent_{}", parent_tag), eq.clone()))),
         Filter::ParentTagContains { parent_tag, contains } => Expr::Lit(Literal::Pos(Predicate::Contains(format!("parent_{}", parent_tag), contains.clone()))),
         Filter::ParentTagStartsWith { parent_tag, starts_with } => Expr::Lit(Literal::Pos(Predicate::StartsWith(format!("parent_{}", parent_tag), starts_with.clone()))),
-        Filter::ParentTagIn { parent_tag, r#in } => {
+        Filter::ParentTagEndsWith { parent_tag, ends_with } => Expr::Lit(Literal::Pos(Predicate::EndsWith(format!("parent_{}", parent_tag), ends_with.clone()))),
+        Filter::ParentTagIn { parent_tag, r#in, .. } => {
             let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(format!("parent_{}", parent_tag), v.clone())))).collect();
             Expr::Or(exprs)
         },
