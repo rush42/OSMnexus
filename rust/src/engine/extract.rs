@@ -37,8 +37,9 @@ impl Produced {
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags,
     pub parent_tags: Option<&'a RawTags>,
-    /// Matched category id and the transformed object's side — used by the `traffic_mode` deriver.
-    pub category_id: &'a str,
+    /// The matched category's parking-inference scope (`both`/`directional`/none) and the
+    /// transformed object's side — used by the `traffic_mode` deriver.
+    pub parking_inference: Option<&'a str>,
     pub obj_side: &'a str,
     /// Sanitizer registry (data-defined chains + built-ins) used to resolve `sanitize` names.
     pub sanitizers: &'a SanitizerRegistry,
@@ -113,7 +114,7 @@ impl Producer {
                     // object's own tags carry the (never-unnested) parking tags.
                     let parking_tags = ctx.parent_tags.unwrap_or(ctx.obj_tags);
                     derive::traffic_mode_side(
-                        ctx.obj_tags, parking_tags, ctx.category_id, ctx.obj_side, out_side,
+                        ctx.obj_tags, parking_tags, ctx.parking_inference, ctx.obj_side, out_side,
                         ctx.sanitizers,
                     ).map(|v| Produced::bare(Value::String(v)))
                 }

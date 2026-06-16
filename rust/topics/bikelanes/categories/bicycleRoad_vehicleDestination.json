@@ -1,4 +1,5 @@
 {
+  "parking_inference": "both",
   "infrastructure_exists": true,
   "implicit_oneway_confidence": "high",
   "condition": {

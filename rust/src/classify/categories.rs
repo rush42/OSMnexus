@@ -45,6 +45,11 @@ pub struct CategoryDef {
     /// as the lowest-priority layer; a sanitizer/deriver producing the same key overrides them.
     #[serde(default)]
     pub consts: serde_json::Map<String, serde_json::Value>,
+    /// Scope of parking-based `traffic_mode` inference for this category: `"both"` (infer both
+    /// sides, e.g. bicycle roads) or `"directional"` (infer only the transformed side, e.g.
+    /// on-highway cycleway lanes). Absent = no parking inference.
+    #[serde(default)]
+    pub parking_inference: Option<String>,
 }
 
 /// Declarative minzoom: a constant, or an ordered list of conditional cases with a default.

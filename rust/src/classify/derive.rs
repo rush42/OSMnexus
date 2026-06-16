@@ -20,22 +20,11 @@ fn infer_traffic_mode_from_parking(
     apply_str(reg, "parking", raw)
 }
 
-/// Categories where parking inference applies to the transformed side only.
-const DIRECTIONAL_PARKING_CATEGORIES: &[&str] = &[
-    "cyclewayOnHighway_advisory",
-    "cyclewayOnHighway_advisoryOrExclusive",
-    "cyclewayOnHighway_exclusive",
-    "cyclewayOnHighwayBetweenLanes",
-    "cyclewayOnHighwayProtected",
-];
-
-fn is_bicycle_road(category_id: &str) -> bool {
-    category_id == "bicycleRoad" || category_id == "bicycleRoad_vehicleDestination"
-}
-
 /// Single-output port of Lua's `deriveTrafficMode`, computing one side's value.
 /// `out_side` ("left"|"right") selects which side this deriver emits; `obj_side` is the
 /// transformed object's side (from context), used for the directional inference branch.
+/// `parking_inference` is the matched category's scope (`"both"` | `"directional"` | none),
+/// which is data — the engine carries no category names.
 ///
 /// Note: single-*output* ≠ single-*input* — the explicit-tag gate is cross-side (an explicit
 /// `traffic_mode:*` on *either* side suppresses inference on both), so both sides are read.
@@ -43,7 +32,7 @@ fn is_bicycle_road(category_id: &str) -> bool {
 pub fn traffic_mode_side(
     obj_tags: &RawTags,       // transformed object tags
     parking_tags: &RawTags,   // underlying way tags carrying parking:* (parent, or self for non-split)
-    category_id: &str,
+    parking_inference: Option<&str>, // category's parking-inference scope: "both" | "directional"
     obj_side: &str,           // "left" | "right" | "self"
     out_side: &str,           // "left" | "right"
     reg: &SanitizerRegistry,
@@ -60,17 +49,16 @@ pub fn traffic_mode_side(
         return tm(out_side);
     }
 
-    // Bicycle roads: infer both sides from the underlying way's parking tags.
-    if is_bicycle_road(category_id) {
-        return infer_traffic_mode_from_parking(parking_tags, out_side, reg);
+    // Otherwise infer from the underlying way's parking tags, scoped by the category:
+    //   "both"        → infer both sides (e.g. bicycle roads),
+    //   "directional" → infer only the transformed side (e.g. on-highway cycleway lanes).
+    match parking_inference {
+        Some("both") => infer_traffic_mode_from_parking(parking_tags, out_side, reg),
+        Some("directional") if obj_side == out_side => {
+            infer_traffic_mode_from_parking(parking_tags, out_side, reg)
+        }
+        _ => None,
     }
-
-    // Lane categories: infer only the transformed side.
-    if DIRECTIONAL_PARKING_CATEGORIES.contains(&category_id) && obj_side == out_side {
-        return infer_traffic_mode_from_parking(parking_tags, out_side, reg);
-    }
-
-    None
 }
 
 // ── surface (with sett size split + parent copy) ────────────────────────────────────

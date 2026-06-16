@@ -116,7 +116,7 @@ pub fn build_topic_rows(
         let ectx = ExtractCtx {
             obj_tags: &obj.tags,
             parent_tags,
-            category_id: category.id.as_str(),
+            parking_inference: category.parking_inference.as_deref(),
             obj_side: side_str,
             sanitizers: &runner.sanitizers,
             derivers: &runner.deriver_lib,
