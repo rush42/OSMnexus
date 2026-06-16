@@ -79,9 +79,10 @@ fn sett_size(sett_length: Option<&str>) -> Option<&'static str> {
     })
 }
 
-/// Own-tags surface: the data-defined `surface` mapping, plus the multi-tag `sett` size split
-/// (needs the sibling `sett:length`, hence Rust rather than a pure 1→1 sanitizer).
-fn derive_surface_value(tags: &RawTags, reg: &SanitizerRegistry) -> Option<String> {
+/// Own-tags surface deriver: the data-defined `surface` mapping, plus the multi-tag `sett` size
+/// split (needs the sibling `sett:length`, hence Rust rather than a pure 1→1 sanitizer). The
+/// parent copy (deriveBikelaneSurface) and provenance are orchestrated in `engine/extract.rs`.
+pub fn surface(tags: &RawTags, reg: &SanitizerRegistry) -> Option<String> {
     let raw = tags.get("surface")?;
     if raw == "sett" {
         if let Some(sz) = sett_size(tags.get("sett:length").map(String::as_str)) {
@@ -89,11 +90,5 @@ fn derive_surface_value(tags: &RawTags, reg: &SanitizerRegistry) -> Option<Strin
         }
     }
     apply_str(reg, "surface", raw)
-}
-
-/// Own-tags surface deriver: data `surface` mapping + the multi-tag `sett` size split. The
-/// parent copy (deriveBikelaneSurface) and provenance are orchestrated in `engine/extract.rs`.
-pub fn surface(obj: &RawTags, reg: &SanitizerRegistry) -> Option<String> {
-    derive_surface_value(obj, reg)
 }
 
