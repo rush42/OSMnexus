@@ -10,7 +10,8 @@ use tracing::info;
 use config::Config;
 use db::{pool::build_pool, schema};
 use engine::topic_runner::{stream_rows, TopicRunner};
-use osm::reader::read_highway_ways;
+use osm::reader::read_ways;
+use osm::types::ElementFilter;
 use processing::{process_way, WayOutput};
 
 const COPY_COLUMNS: &str =
@@ -55,10 +56,27 @@ async fn main() -> anyhow::Result<()> {
     schema::drop_indexes(&client_setup, &table_refs).await?;
     drop(client_setup);
 
+    // Each topic declares which ways it needs (data-defined `element_filter` in topic.json,
+    // defaulting to `highway`). The reader keeps any way matching any topic's filter.
+    let filters: Vec<ElementFilter> = runners
+        .iter()
+        .map(|r| r.spec.element_filter.clone().unwrap_or_else(ElementFilter::highway))
+        .collect();
+
     info!("Reading PBF: {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
-    let ways = read_highway_ways(&cfg.pbf_file)?;
-    info!("{} highway ways loaded in {:.1}s", ways.len(), t0.elapsed().as_secs_f32());
+    let (ways, node_index) = read_ways(&cfg.pbf_file, &filters, cfg.find_intersections)?;
+    info!("{} ways loaded in {:.1}s", ways.len(), t0.elapsed().as_secs_f32());
+    // NodeIndex (coords + per-node use counts) is the routable-graph foundation; only retained
+    // with --find-intersections (otherwise dropped after resolution to keep memory lean).
+    if let Some(ni) = &node_index {
+        let intersections = ni.use_counts.values().filter(|&&c| c >= 2).count();
+        info!(
+            "Node index ready: {} referenced nodes, {} intersections (≥2 ways)",
+            ni.use_counts.len(),
+            intersections
+        );
+    }
 
     info!(
         "Processing {} topics across {} ways (streaming to DB)...",
