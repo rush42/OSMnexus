@@ -4,14 +4,13 @@ use anyhow::Context;
 use bytes::Bytes;
 use clap::Parser;
 use futures::SinkExt;
-use rayon::prelude::*;
 use tracing::info;
 
 use config::Config;
 use db::{pool::build_pool, schema};
 use engine::topic_runner::{stream_rows, TopicRunner};
-use osm::reader::read_ways;
-use osm::types::ElementFilter;
+use osm::reader::stream_ways;
+use osm::types::{ElementFilter, NodeIndex};
 use processing::{process_way, WayOutput};
 
 const COPY_COLUMNS: &str =
@@ -63,33 +62,20 @@ async fn main() -> anyhow::Result<()> {
         .map(|r| r.spec.element_filter.clone().unwrap_or_else(ElementFilter::highway))
         .collect();
 
-    info!("Reading PBF: {}", cfg.pbf_file);
+    info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
-    let (ways, node_index) = read_ways(&cfg.pbf_file, &filters, cfg.find_intersections)?;
-    info!("{} ways loaded in {:.1}s", ways.len(), t0.elapsed().as_secs_f32());
-    // NodeIndex (coords + per-node use counts) is the routable-graph foundation; only retained
-    // with --find-intersections (otherwise dropped after resolution to keep memory lean).
-    if let Some(ni) = &node_index {
-        let intersections = ni.use_counts.values().filter(|&&c| c >= 2).count();
-        info!(
-            "Node index ready: {} referenced nodes, {} intersections (≥2 ways)",
-            ni.use_counts.len(),
-            intersections
-        );
-    }
-
-    info!(
-        "Processing {} topics across {} ways (streaming to DB)...",
-        runners.len(),
-        ways.len()
-    );
-    let t1 = std::time::Instant::now();
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<WayOutput>(512);
 
-    let process_task = tokio::task::spawn_blocking(move || {
-        ways.par_iter()
-            .for_each(|way| { let _ = tx.blocking_send(process_way(way, &runners)); });
+    // Producer: stream ways straight from the PBF and process each into rows, fed to the COPY
+    // consumer below. Runs on the blocking pool because the reader is CPU-bound rayon work.
+    // Ways are never materialized — peak memory tracks the node coordinates, not the way count.
+    let pbf_file = cfg.pbf_file.clone();
+    let find_intersections = cfg.find_intersections;
+    let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<NodeIndex>> {
+        stream_ways(&pbf_file, &filters, find_intersections, |way| {
+            let _ = tx.blocking_send(process_way(way, &runners));
+        })
     });
 
     // One COPY sink per topic, pinned in a Box so they can live in a Vec.
@@ -128,12 +114,22 @@ async fn main() -> anyhow::Result<()> {
         sink.as_mut().finish().await?;
     }
 
-    process_task.await.context("rayon processing panicked")?;
+    // NodeIndex (coords + per-node use counts) is returned only with --find-intersections;
+    // otherwise it's dropped inside the reader, keeping memory proportional to node coords.
+    let node_index = producer.await.context("reader/processing task panicked")??;
+    if let Some(ni) = &node_index {
+        let intersections = ni.use_counts.values().filter(|&&c| c >= 2).count();
+        info!(
+            "Node index ready: {} referenced nodes, {} intersections (≥2 ways)",
+            ni.use_counts.len(),
+            intersections
+        );
+    }
 
     for (i, table) in tables.iter().enumerate() {
         info!("Wrote {} rows → {}", counts[i], table);
     }
-    info!("Processing time: {:.1}s", t1.elapsed().as_secs_f32());
+    info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 
     info!("Creating indexes...");
     let client_idx = pool.get().await.context("getting index DB connection")?;

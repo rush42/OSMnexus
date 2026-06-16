@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Context};
-use osmpbf::{
-    BlobReader, BlobType, ByteOffset, Element, ElementReader, PrimitiveBlock, Way,
-};
+use osmpbf::{BlobReader, BlobType, ByteOffset, Element, ElementReader, PrimitiveBlock, Way};
 use rayon::prelude::*;
 use tracing::{info, warn};
 
@@ -17,132 +15,143 @@ struct WayData {
     meta: WayMeta,
 }
 
-/// Read OSM ways matching any of `filters` from a PBF file, together with a [`NodeIndex`]
-/// of the referenced nodes (coordinates + per-node use counts for future graph building).
+/// Stream OSM ways matching any of `filters` from a PBF file, invoking `for_each` on each
+/// resolved way. Returns a [`NodeIndex`] (coords + per-node use counts) when
+/// `find_intersections` is set, else `None`.
 ///
-/// Fast path (sorted files): exploit the `node → way → relation` ordering to decode the way
-/// region first (learning the needed node IDs + counts), then only the node region — each data
-/// blob decompressed exactly once, fully parallel. Memory scales with the *selected* network,
-/// not the input file size.
+/// Ways are **streamed, not materialized**: each way is resolved, handed to `for_each`, and
+/// dropped — so peak memory is proportional to the referenced-node coordinates (the selected
+/// network), not the number of ways or their tags.
 ///
-/// Fallback (unsorted / boundary check fails): the original two-full-pass parallel scan.
+/// Fast path (sorted `node → way → relation` files):
+///   * Pass A — decode the way region, collect per-node use counts (= the needed-node set).
+///   * Pass B — decode the node region once, collect coords for those nodes.
+///   * Pass C — decode the way region again, resolve + `for_each` each way, streaming.
+/// The way region (small — typically ~15% of blobs) is decoded twice; the heavy node region
+/// once. This trades ~14% extra decode for bounded, network-proportional memory.
 ///
-/// The node coordinates are always built transiently to resolve way geometry. The
-/// [`NodeIndex`] (coords + per-node use counts) and the per-way `node_ids` are only *retained*
-/// when `find_intersections` is set; otherwise they are dropped right after resolving, keeping
-/// peak memory proportional to the way geometry alone.
-pub fn read_ways(
+/// Fallback (unsorted / boundary check fails / `PBF_FORCE_FALLBACK`): three full parallel
+/// scans (refs → coords → stream). Rare; still streams, still bounded memory.
+pub fn stream_ways<F>(
     path: &str,
     filters: &[ElementFilter],
     find_intersections: bool,
-) -> anyhow::Result<(Vec<OsmWay>, Option<NodeIndex>)> {
-    let (ways_data, node_index) = read_ways_indexed_or_fallback(path, filters)?;
-
-    info!("Resolving geometries (parallel)...");
-    let ways: Vec<OsmWay> = ways_data
-        .into_par_iter()
-        .filter_map(|wd| resolve_way(wd, &node_index.coords, find_intersections))
-        .collect();
-    info!("Resolved: {} ways with valid geometry", ways.len());
-
-    // Drop the node store unless it was requested — frees coords + use_counts before the
-    // (long) processing/COPY phase.
-    Ok((ways, if find_intersections { Some(node_index) } else { None }))
-}
-
-fn read_ways_indexed_or_fallback(
-    path: &str,
-    filters: &[ElementFilter],
-) -> anyhow::Result<(Vec<WayData>, NodeIndex)> {
+    for_each: F,
+) -> anyhow::Result<Option<NodeIndex>>
+where
+    F: Fn(&OsmWay) + Sync + Send,
+{
     info!("Building blob index (no decompression)...");
     let (data_offsets, header_offset) = build_blob_index(path)?;
 
     // Escape hatch: `PBF_FORCE_FALLBACK=1` skips the ordered fast path (debugging / a file that
     // wrongly advertises Sort.Type_then_ID).
     let force_fallback = std::env::var_os("PBF_FORCE_FALLBACK").is_some();
-
     let sorted = !force_fallback
         && header_offset
             .map(|off| pbf_is_sorted(path, off).unwrap_or(false))
             .unwrap_or(false);
 
-    let result = if sorted {
+    if sorted {
         info!(
-            "PBF declares Sort.Type_then_ID — using single-pass ordered reader ({} data blobs)",
+            "PBF declares Sort.Type_then_ID — single-pass ordered streaming reader ({} data blobs)",
             data_offsets.len()
         );
-        match read_ways_sorted(path, filters, &data_offsets) {
-            Ok(r) => Some(r),
+        // The only "risky" step (the sort-order assumption) is the boundary search; it runs
+        // before any streaming, so a failure can still fall back cleanly.
+        match find_way_section_start(path, &data_offsets) {
+            Ok(way_start) => {
+                info!(
+                    "Way region starts at data blob {}/{} (node region: {} blobs)",
+                    way_start,
+                    data_offsets.len(),
+                    way_start
+                );
+                let way_offsets = &data_offsets[way_start..];
+                let node_offsets = &data_offsets[..way_start];
+
+                // Pass A — way region: per-node use counts (keyset = needed-node set).
+                let use_counts = collect_use_counts(path, way_offsets, filters)?;
+                // Pass B — node region: coords for needed nodes only.
+                let coords = collect_coords(path, node_offsets, &use_counts)?;
+                log_node_summary(&use_counts);
+                // Pass C — way region again: resolve + stream each way.
+                stream_way_region(path, way_offsets, filters, &coords, &for_each)?;
+
+                return Ok(find_intersections.then_some(NodeIndex { coords, use_counts }));
+            }
             Err(e) => {
-                warn!("ordered fast-path failed ({e:#}); falling back to full two-pass scan");
-                None
+                warn!("ordered fast-path boundary check failed ({e:#}); falling back to full scan");
             }
         }
     } else {
-        warn!("PBF not declared Sort.Type_then_ID — using full two-pass scan");
-        None
-    };
+        warn!("PBF not declared Sort.Type_then_ID — using full-scan streaming reader");
+    }
 
-    let (ways_data, node_index) = match result {
-        Some(r) => r,
-        None => read_ways_fallback(path, filters)?,
-    };
-
-    let intersections = node_index.use_counts.values().filter(|&&c| c >= 2).count();
-    info!(
-        "{} kept ways, {} referenced nodes, {} intersection nodes (≥2 ways)",
-        ways_data.len(),
-        node_index.use_counts.len(),
-        intersections
-    );
-    Ok((ways_data, node_index))
+    stream_ways_fallback(path, filters, find_intersections, for_each)
 }
 
 // ----------------------------------------------------------------------------------------
 // Sorted fast path
 // ----------------------------------------------------------------------------------------
 
-/// Single ordered pass: decode the way region, then only the node region.
-fn read_ways_sorted(
+/// Pass A — decode the way-region blobs (parallel) and tally per-node use counts across all
+/// matching ways. The count map's keyset is exactly the needed-node set for Pass B.
+fn collect_use_counts(
     path: &str,
+    way_offsets: &[ByteOffset],
     filters: &[ElementFilter],
-    data_offsets: &[ByteOffset],
-) -> anyhow::Result<(Vec<WayData>, NodeIndex)> {
-    let way_start = find_way_section_start(path, data_offsets)?;
-    info!(
-        "Way region starts at data blob {}/{} (node region: {} blobs)",
-        way_start,
-        data_offsets.len(),
-        way_start
-    );
-
-    // Pass A — way region (parallel): collect matching ways.
-    let ways_data: Vec<WayData> = data_offsets[way_start..]
+) -> anyhow::Result<HashMap<i64, u32>> {
+    let per_blob: Vec<Vec<i64>> = way_offsets
         .par_iter()
-        .map(|&off| -> anyhow::Result<Vec<WayData>> {
+        .map(|&off| -> anyhow::Result<Vec<i64>> {
             let block = decode_block(path, off)?;
-            let mut out = Vec::new();
+            let mut refs = Vec::new();
             for group in block.groups() {
                 for way in group.ways() {
                     if way_passes(filters, &way) {
-                        out.push(way_data(&way));
+                        refs.extend(way.refs());
                     }
                 }
             }
-            Ok(out)
+            Ok(refs)
         })
-        .collect::<anyhow::Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
-    // Per-node use counts; the keyset is exactly the needed-node set.
-    let use_counts = build_use_counts(&ways_data);
+    let mut counts: HashMap<i64, u32> = HashMap::new();
+    for refs in per_blob {
+        for id in refs {
+            *counts.entry(id).or_insert(0) += 1;
+        }
+    }
+    Ok(counts)
+}
 
-    // Pass B — node region (parallel): coords for needed nodes only.
-    let coords = collect_coords(path, &data_offsets[..way_start], &use_counts)?;
-
-    Ok((ways_data, NodeIndex { coords, use_counts }))
+/// Pass C — decode the way-region blobs again (parallel), resolve each matching way against the
+/// coords map, and stream it to `for_each`. Nothing accumulates; ways are dropped after the call.
+fn stream_way_region<F>(
+    path: &str,
+    way_offsets: &[ByteOffset],
+    filters: &[ElementFilter],
+    coords: &HashMap<i64, (f32, f32)>,
+    for_each: &F,
+) -> anyhow::Result<()>
+where
+    F: Fn(&OsmWay) + Sync,
+{
+    way_offsets.par_iter().try_for_each(|&off| -> anyhow::Result<()> {
+        let block = decode_block(path, off)?;
+        for group in block.groups() {
+            for way in group.ways() {
+                if way_passes(filters, &way) {
+                    if let Some(w) = resolve_way(way_data(&way), coords) {
+                        for_each(&w);
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Build the blob index without decompressing any blob: record the byte offset of every
@@ -274,25 +283,30 @@ fn collect_coords(
 }
 
 // ----------------------------------------------------------------------------------------
-// Fallback: two full parallel passes (handles unsorted / non-seekable-ordered files)
+// Fallback: full parallel scans (handles unsorted / non-seekable-ordered files)
 // ----------------------------------------------------------------------------------------
 
-fn read_ways_fallback(
+fn stream_ways_fallback<F>(
     path: &str,
     filters: &[ElementFilter],
-) -> anyhow::Result<(Vec<WayData>, NodeIndex)> {
-    info!("Pass 1 (parallel): collecting matching ways...");
-    let ways_data = ElementReader::from_path(path)
+    find_intersections: bool,
+    for_each: F,
+) -> anyhow::Result<Option<NodeIndex>>
+where
+    F: Fn(&OsmWay) + Sync + Send,
+{
+    info!("Pass 1 (parallel): collecting referenced node ids...");
+    let all_refs: Vec<i64> = ElementReader::from_path(path)
         .context("opening PBF for pass 1")?
         .par_map_reduce(
             |element| {
-                let mut ways = Vec::new();
+                let mut refs = Vec::new();
                 if let Element::Way(way) = element {
                     if way_passes(filters, &way) {
-                        ways.push(way_data(&way));
+                        refs.extend(way.refs());
                     }
                 }
-                ways
+                refs
             },
             Vec::new,
             |mut a, b| {
@@ -302,7 +316,10 @@ fn read_ways_fallback(
         )
         .context("pass 1 parallel read")?;
 
-    let use_counts = build_use_counts(&ways_data);
+    let mut use_counts: HashMap<i64, u32> = HashMap::new();
+    for id in all_refs {
+        *use_counts.entry(id).or_insert(0) += 1;
+    }
 
     info!("Pass 2 (parallel): collecting node coordinates...");
     let coords_vec = ElementReader::from_path(path)
@@ -328,14 +345,44 @@ fn read_ways_fallback(
             },
         )
         .context("pass 2 parallel read")?;
+    let coords: HashMap<i64, (f32, f32)> =
+        coords_vec.into_iter().map(|(id, lon, lat)| (id, (lon, lat))).collect();
 
-    let coords = coords_vec.into_iter().map(|(id, lon, lat)| (id, (lon, lat))).collect();
-    Ok((ways_data, NodeIndex { coords, use_counts }))
+    log_node_summary(&use_counts);
+
+    info!("Pass 3 (parallel): streaming ways...");
+    ElementReader::from_path(path)
+        .context("opening PBF for pass 3")?
+        .par_map_reduce(
+            |element| {
+                if let Element::Way(way) = element {
+                    if way_passes(filters, &way) {
+                        if let Some(w) = resolve_way(way_data(&way), &coords) {
+                            for_each(&w);
+                        }
+                    }
+                }
+            },
+            || (),
+            |_, _| (),
+        )
+        .context("pass 3 parallel read")?;
+
+    Ok(find_intersections.then_some(NodeIndex { coords, use_counts }))
 }
 
 // ----------------------------------------------------------------------------------------
 // Shared helpers
 // ----------------------------------------------------------------------------------------
+
+fn log_node_summary(use_counts: &HashMap<i64, u32>) {
+    let intersections = use_counts.values().filter(|&&c| c >= 2).count();
+    info!(
+        "{} referenced nodes, {} intersection nodes (≥2 ways)",
+        use_counts.len(),
+        intersections
+    );
+}
 
 /// True if the way matches any topic's element filter.
 fn way_passes(filters: &[ElementFilter], way: &Way) -> bool {
@@ -350,7 +397,7 @@ fn way_passes(filters: &[ElementFilter], way: &Way) -> bool {
     })
 }
 
-/// Extract a [`WayData`] from an osmpbf `Way` (shared by the indexed and fallback readers).
+/// Extract a [`WayData`] from an osmpbf `Way`.
 fn way_data(way: &Way) -> WayData {
     let tags: RawTags = way.tags().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
     let refs: Vec<i64> = way.refs().collect();
@@ -369,25 +416,8 @@ fn way_data(way: &Way) -> WayData {
     WayData { id: way.id(), tags, node_refs: refs, meta }
 }
 
-/// Per-node use count across all kept ways. `>= 2` ⇒ a node shared by multiple ways
-/// (an intersection / crossing) — the seed of a routable graph.
-fn build_use_counts(ways: &[WayData]) -> HashMap<i64, u32> {
-    let mut counts: HashMap<i64, u32> = HashMap::new();
-    for w in ways {
-        for &id in &w.node_refs {
-            *counts.entry(id).or_insert(0) += 1;
-        }
-    }
-    counts
-}
-
-/// Resolve a `WayData` into an `OsmWay` by looking up node coordinates. `keep_node_ids`
-/// retains the referenced node ids for graph building; otherwise they are dropped to save memory.
-fn resolve_way(
-    wd: WayData,
-    coords: &HashMap<i64, (f32, f32)>,
-    keep_node_ids: bool,
-) -> Option<OsmWay> {
+/// Resolve a `WayData` into an `OsmWay` by looking up node coordinates.
+fn resolve_way(wd: WayData, coords: &HashMap<i64, (f32, f32)>) -> Option<OsmWay> {
     let pts: Vec<(f64, f64)> = wd
         .node_refs
         .iter()
@@ -399,6 +429,5 @@ fn resolve_way(
         return None;
     }
 
-    let node_ids = if keep_node_ids { wd.node_refs } else { Vec::new() };
-    Some(OsmWay { id: wd.id, coords: pts, node_ids, tags: wd.tags, meta: wd.meta })
+    Some(OsmWay { id: wd.id, coords: pts, tags: wd.tags, meta: wd.meta })
 }
