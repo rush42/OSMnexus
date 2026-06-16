@@ -46,6 +46,34 @@
       }
     ]
   },
+  "is_footway_bicycle_yes_base": {
+    "and": [
+      { "not": { "macro": "is_crossing_pattern" } },
+      { "tag": "highway", "in": ["footway", "path"] },
+      {
+        "or": [
+          { "tag": "bicycle", "eq": "yes" },
+          { "tag": "traffic_sign", "contains": "1022-10" }
+        ]
+      },
+      {
+        "or": [
+          { "tag": "mtb:scale", "exists": false },
+          {
+            "and": [
+              { "num": "mtb:scale", "sanitize": "mtb_scale", "lte": 1.0 },
+              {
+                "or": [
+                  { "tag": "traffic_sign", "exists": true },
+                  { "tag": "is_sidepath", "exists": true }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
   "has_between_lanes_conditions": {
     "and": [
       { "not": { "side": "self" } },

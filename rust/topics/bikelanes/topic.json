@@ -344,7 +344,8 @@
     "rules": [
       {
         "when": {
-          "length_lt": 100
+          "num": "length",
+          "lt": 100
         },
         "zoom": 9
       }

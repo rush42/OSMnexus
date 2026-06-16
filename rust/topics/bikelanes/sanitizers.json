@@ -1,4 +1,7 @@
 {
+  "mtb_scale": [
+    { "replace": [ { "from": "+", "to": "" }, { "from": "-", "to": "" }, { "from": " ", "to": "" } ] }
+  ],
   "marking": {
     "filter": [
       "solid_line",

@@ -3,7 +3,7 @@
 //! deliberate counterpart to `sanitize.rs`, whose functions are pure `&str -> atomic`.
 
 use crate::osm::types::RawTags;
-use crate::classify::sanitize::{first_present, parse_length, sided_keys, SanitizerRegistry};
+use crate::classify::sanitize::{first_present, sided_keys, SanitizerRegistry};
 
 // ── parking inference (used by derive_traffic_mode) ─────────────────────────────
 
@@ -61,34 +61,9 @@ pub fn traffic_mode_side(
     }
 }
 
-// ── surface (with sett size split + parent copy) ────────────────────────────────────
+// ── shared helper ───────────────────────────────────────────────────────────────────
 
 fn apply_str(reg: &SanitizerRegistry, name: &str, raw: &str) -> Option<String> {
     reg.apply(name, raw).and_then(|v| v.as_str().map(str::to_owned))
-}
-
-/// The `sett` size split (Lua sanitize_tags.surface): refine `surface=sett` by `sett:length`.
-fn sett_size(sett_length: Option<&str>) -> Option<&'static str> {
-    let size = sett_length.and_then(parse_length)?;
-    Some(if size <= 0.08 {
-        "mosaic_sett"
-    } else if size <= 0.13 {
-        "small_sett"
-    } else {
-        "large_sett"
-    })
-}
-
-/// Own-tags surface deriver: the data-defined `surface` mapping, plus the multi-tag `sett` size
-/// split (needs the sibling `sett:length`, hence Rust rather than a pure 1→1 sanitizer). The
-/// parent copy (deriveBikelaneSurface) and provenance are orchestrated in `engine/extract.rs`.
-pub fn surface(tags: &RawTags, reg: &SanitizerRegistry) -> Option<String> {
-    let raw = tags.get("surface")?;
-    if raw == "sett" {
-        if let Some(sz) = sett_size(tags.get("sett:length").map(String::as_str)) {
-            return Some(sz.to_owned());
-        }
-    }
-    apply_str(reg, "surface", raw)
 }
 

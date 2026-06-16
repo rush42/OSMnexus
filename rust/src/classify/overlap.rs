@@ -8,8 +8,11 @@ pub enum Predicate {
     StartsWith(String, String),
     Exists(String),
     FirstTagIn(Vec<String>, Vec<String>),
-    LengthLte(i64),
-    LengthLt(i64),
+    /// Numeric comparison atom: `(value key, op, threshold bits)`. The threshold is stored as the
+    /// f64 bit pattern so the atom stays `Hash`/`Eq`/`Ord`; identity is exact-literal, which is all
+    /// the overlap lint needs (it won't *prove* e.g. `lte 0.08 ⟹ lte 0.13`, only treats atoms as
+    /// independent — sound but conservative).
+    Num(String, NumOp, u64),
     HasKeyPrefix(String),
     HasParent,
     Prefix(String),
@@ -17,6 +20,9 @@ pub enum Predicate {
     Side(String),
     RustMacro(String),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum NumOp { Lt, Lte, Gt, Gte }
 
 impl Predicate {
     pub fn tags_involved(&self) -> Vec<String> {
@@ -26,8 +32,7 @@ impl Predicate {
             Predicate::StartsWith(k, _) => vec![k.clone()],
             Predicate::Exists(k) => vec![k.clone()],
             Predicate::FirstTagIn(ks, _) => ks.clone(),
-            Predicate::LengthLte(_) => vec!["length".to_string()],
-            Predicate::LengthLt(_) => vec!["length".to_string()],
+            Predicate::Num(k, _, _) => vec![k.clone()],
             Predicate::HasKeyPrefix(p) => vec![format!("prefix({})", p)],
             Predicate::HasParent => vec!["[parent]".to_string()],
             Predicate::Prefix(_) => vec!["[prefix]".to_string()],
@@ -103,8 +108,10 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::Side { side } => Expr::Lit(Literal::Pos(Predicate::Side(side.clone()))),
         Filter::Prefix { prefix } => Expr::Lit(Literal::Pos(Predicate::Prefix(prefix.clone()))),
         Filter::Infix { infix } => Expr::Lit(Literal::Pos(Predicate::Infix(infix.clone()))),
-        Filter::LengthLte { length_lte } => Expr::Lit(Literal::Pos(Predicate::LengthLte((*length_lte * 1000.0).round() as i64))),
-        Filter::LengthLt  { length_lt  } => Expr::Lit(Literal::Pos(Predicate::LengthLt((*length_lt * 1000.0).round() as i64))),
+        Filter::NumLt  { num, lt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Lt,  lt.to_bits()))),
+        Filter::NumLte { num, lte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Lte, lte.to_bits()))),
+        Filter::NumGt  { num, gt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Gt,  gt.to_bits()))),
+        Filter::NumGte { num, gte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Gte, gte.to_bits()))),
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
         Filter::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
         Filter::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),

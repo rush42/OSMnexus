@@ -4,7 +4,8 @@
     "rules": [
       {
         "when": {
-          "length_lt": 1000
+          "num": "length",
+          "lt": 1000
         },
         "zoom": 13
       }

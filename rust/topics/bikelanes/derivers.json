@@ -17,11 +17,30 @@
       { "key": "lifecycle", "from": "parent" }
     ]
   },
-  "surface": { "derive": "surface", "consts": { "source": "tag", "confidence": "high" } },
+  "surface": {
+    "fallback": [
+      { "rules": [
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+        ], "consts": { "source": "tag", "confidence": "high" } },
+      { "key": "surface", "sanitize": "surface", "consts": { "source": "tag", "confidence": "high" } }
+    ]
+  },
   "surface_from_parent": {
     "fallback": [
-      { "derive": "surface", "consts": { "source": "tag", "confidence": "high" } },
-      { "derive": "surface", "from": "parent", "consts": { "source": "parent_highway_tag", "confidence": "high" } }
+      { "rules": [
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+        ], "consts": { "source": "tag", "confidence": "high" } },
+      { "key": "surface", "sanitize": "surface", "consts": { "source": "tag", "confidence": "high" } },
+      { "rules": [
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+        ], "from": "parent", "consts": { "source": "parent_highway_tag", "confidence": "high" } },
+      { "key": "surface", "sanitize": "surface", "from": "parent", "consts": { "source": "parent_highway_tag", "confidence": "high" } }
     ]
   },
   "smoothness": {

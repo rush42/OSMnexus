@@ -4,7 +4,8 @@
   "condition": {
     "and": [
       {
-        "length_lte": 100.0
+        "num": "length",
+        "lte": 100.0
       },
       {
         "macro": "is_crossing_pattern"

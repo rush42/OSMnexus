@@ -125,11 +125,18 @@ pub enum Filter {
     Side      { side:       String },   // "self" | "left" | "right"
     Prefix    { prefix:     String },
     Infix     { infix:      String },
-    LengthLte { length_lte: f64   },
-    LengthLt  { length_lt:  f64   },
     HasKeyPrefix { has_key_prefix: String },
     /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
     HasParent { has_parent: bool },
+
+    // Numeric comparisons. `num` names the value: the reserved key `"length"` reads the context
+    // length in metres; any other key reads that tag, optionally run through a `sanitize` chain
+    // first (which may yield a JSON number, e.g. `parse_length`) before parsing to f64. Absent or
+    // unparseable input makes the comparison false. The secondary field (lt/lte/gt/gte) is the op.
+    NumLt  { num: String, #[serde(default)] sanitize: Option<String>, lt:  f64 },
+    NumLte { num: String, #[serde(default)] sanitize: Option<String>, lte: f64 },
+    NumGt  { num: String, #[serde(default)] sanitize: Option<String>, gt:  f64 },
+    NumGte { num: String, #[serde(default)] sanitize: Option<String>, gte: f64 },
 }
 
 // ── Category loader ───────────────────────────────────────────────────────────
@@ -207,7 +214,6 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
 
         Filter::Macro { r#macro: name } => match name.as_str() {
             // Rust-implemented predicates — too complex or structural for JSON
-            "is_footway_bicycle_yes_base"               => is_footway_bicycle_yes_base(ctx, macros),
             "is_advisory_or_exclusive"                  => is_advisory_or_exclusive(ctx, macros),
             "is_foot_and_cycleway_segregated_edge_case" => is_foot_and_cycleway_segregated_edge_case(ctx),
             "is_protected_bikelane_separation"          => is_protected_bikelane_separation(ctx),
@@ -260,11 +266,39 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
         }
         Filter::Prefix    { prefix    } => ctx.prefix == Some(prefix.as_str()),
         Filter::Infix     { infix     } => ctx.infix  == Some(infix.as_str()),
-        Filter::LengthLte { length_lte } => ctx.length_m <= *length_lte,
-        Filter::LengthLt  { length_lt  } => ctx.length_m <  *length_lt,
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         Filter::HasParent { has_parent } => ctx.parent_highway.is_some() == *has_parent,
+
+        Filter::NumLt  { num, sanitize, lt  } => read_num(ctx, num, sanitize).is_some_and(|n| n <  *lt),
+        Filter::NumLte { num, sanitize, lte } => read_num(ctx, num, sanitize).is_some_and(|n| n <= *lte),
+        Filter::NumGt  { num, sanitize, gt  } => read_num(ctx, num, sanitize).is_some_and(|n| n >  *gt),
+        Filter::NumGte { num, sanitize, gte } => read_num(ctx, num, sanitize).is_some_and(|n| n >= *gte),
+    }
+}
+
+/// Read a numeric value for a `num` predicate. The reserved key `"length"` yields the context
+/// length in metres; any other key reads that tag and, when `sanitize` is set, runs it through
+/// that sanitizer chain (which may yield a JSON number, e.g. `parse_length`) before coercing to
+/// f64. Returns None when the tag is absent or the value is unparseable — so every numeric
+/// comparison is false on missing/garbage input.
+fn read_num(ctx: &CategoryContext, key: &str, sanitize: &Option<String>) -> Option<f64> {
+    if key == "length" {
+        return Some(ctx.length_m);
+    }
+    let raw = ctx.tags.get(key)?;
+    match sanitize {
+        Some(name) => num_from_value(&ctx.sanitizers.apply(name, raw)?),
+        None => raw.trim().parse().ok(),
+    }
+}
+
+/// Coerce an atomic sanitizer output to f64: a JSON number directly, or a string parsed as f64.
+fn num_from_value(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
     }
 }
 
@@ -294,37 +328,11 @@ fn parent_tag<'a>(ctx: &'a CategoryContext<'a>, key: &str) -> Option<&'a str> {
     ctx.parent_tags.and_then(|t| t.get(key)).map(String::as_str)
 }
 
-fn sign_contains(sign: Option<&str>, needle: &str) -> bool {
-    sign.map(|s| s.contains(needle)).unwrap_or(false)
-}
-
 /// Evaluate a JSON-defined macro by name. Used by the remaining Rust predicates that still
-/// depend on a now-datafied sub-condition (`is_crossing_pattern`, `has_between_lanes_conditions`).
+/// depend on a now-datafied sub-condition (`has_between_lanes_conditions`).
 /// Missing macro → false, matching the dispatch fallback.
 fn eval_macro(name: &str, ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
     macros.get(name).map(|f| eval(f, ctx, macros)).unwrap_or(false)
-}
-
-/// Port of the footwayBicycleYes base condition — kept in Rust for mtb:scale numeric parsing.
-fn is_footway_bicycle_yes_base(ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
-    if eval_macro("is_crossing_pattern", ctx, macros) { return false; }
-    let hw = tag(ctx, "highway").unwrap_or("");
-    if !matches!(hw, "footway" | "path") { return false; }
-    let has_bicycle_access = tag_is(ctx, "bicycle", "yes")
-        || sign_contains(tag(ctx, "traffic_sign"), "1022-10");
-    if !has_bicycle_access { return false; }
-    if let Some(mtb) = tag(ctx, "mtb:scale") {
-        let cleaned: String = mtb.chars().filter(|c| !matches!(c, '+' | '-' | ' ')).collect();
-        match cleaned.parse::<f64>() {
-            Ok(n) if n > 1.0 => return false,
-            Err(_) => return false,
-            _ => {}
-        }
-        if tag(ctx, "traffic_sign").is_none() && tag(ctx, "is_sidepath").is_none() {
-            return false;
-        }
-    }
-    true
 }
 
 /// Port of the `footAndCyclewaySegregated` edge case (traffic_mode:right=foot + separation check).
