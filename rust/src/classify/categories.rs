@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::engine::topic::DeriverBinding;
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
-use crate::classify::sanitize::SanitizerRegistry;
+use crate::classify::sanitize::{first_present, SanitizerRegistry};
 use crate::value_sets::value_set;
 
 /// Context passed to categorization predicates.
@@ -246,10 +246,10 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
             ctx.tags.contains_key(tag) == *exists,
 
         Filter::FirstTagInSet { first_tag, in_set, sanitize } =>
-            read_str(first_present(ctx, first_tag), sanitize, ctx.sanitizers)
+            read_str(first_present(ctx.tags, first_tag), sanitize, ctx.sanitizers)
                 .is_some_and(|v| value_set(in_set).contains(v.as_ref())),
         Filter::FirstTagIn { first_tag, r#in, sanitize } =>
-            read_str(first_present(ctx, first_tag), sanitize, ctx.sanitizers)
+            read_str(first_present(ctx.tags, first_tag), sanitize, ctx.sanitizers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::FirstTagExists { first_tag, exists } =>
             first_tag.iter().any(|k| ctx.tags.contains_key(k)) == *exists,
@@ -313,11 +313,6 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
         serde_json::Value::String(s) => s.trim().parse().ok(),
         _ => None,
     }
-}
-
-/// The value of the first key in `keys` that is present in the context tags.
-fn first_present<'a>(ctx: &'a CategoryContext<'a>, keys: &[String]) -> Option<&'a str> {
-    keys.iter().find_map(|k| ctx.tags.get(k)).map(String::as_str)
 }
 
 /// Read a string value for a tag predicate. With no `sanitize`, returns the raw value borrowed;

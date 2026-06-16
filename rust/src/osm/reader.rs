@@ -27,6 +27,7 @@ struct WayData {
 ///   * Pass A — decode the way region, collect per-node use counts (= the needed-node set).
 ///   * Pass B — decode the node region once, collect coords for those nodes.
 ///   * Pass C — decode the way region again, resolve + `for_each` each way, streaming.
+///
 /// The way region (small — typically ~15% of blobs) is decoded twice; the heavy node region
 /// once. This trades ~14% extra decode for bounded, network-proportional memory.
 ///

@@ -14,10 +14,10 @@ use crate::osm::types::RawTags;
 
 /// The first-present fallback over an ordered list of candidate keys — the single primitive
 /// behind both the `keys` extractor and the sided lookups. Returns the first key that is set.
-pub(crate) fn first_present<'a, K: AsRef<str>>(
-    tags: &'a RawTags,
+pub(crate) fn first_present<K: AsRef<str>>(
+    tags: &RawTags,
     keys: impl IntoIterator<Item = K>,
-) -> Option<&'a str> {
+) -> Option<&str> {
     keys.into_iter().find_map(|k| tags.get(k.as_ref()).map(String::as_str))
 }
 
@@ -54,7 +54,7 @@ pub enum StrOrVec {
 }
 
 impl StrOrVec {
-    fn into_vec(self) -> Vec<String> {
+    pub(crate) fn into_vec(self) -> Vec<String> {
         match self {
             StrOrVec::One(s) => vec![s],
             StrOrVec::Many(v) => v,
@@ -264,7 +264,7 @@ pub fn parse_length(raw: &str) -> Option<f32> {
         let feet: f32 = parts[0].trim().parse().ok()?;
         let inches: f32 = parts.get(1)
             .map(|p| p.trim().trim_end_matches('"'))
-            .and_then(|p| if p.is_empty() { Some("0") } else { Some(p) })
+            .map(|p| if p.is_empty() { "0" } else { p })
             .and_then(|p| p.parse().ok())
             .unwrap_or(0.0);
         return Some((feet * 12.0 + inches) * 0.0254);

@@ -62,6 +62,18 @@ pub enum TagSet {
     ParentOrObj,
 }
 
+impl TagSet {
+    /// Which tagset a producer reads. `Parent` is strict (None when the object has no parent);
+    /// `ParentOrObj` falls back to the object's own tags.
+    fn resolve<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<&'a RawTags> {
+        match self {
+            TagSet::Obj => Some(ctx.obj_tags),
+            TagSet::Parent => ctx.parent_tags,
+            TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
+        }
+    }
+}
+
 /// A value producer. Untagged: object with `fallback` → Fallback; with `derive` → Derive;
 /// otherwise → Extract. (Order matters — Extract's fields are all optional.)
 #[derive(Debug, Clone, Deserialize)]
@@ -109,22 +121,14 @@ impl Producer {
             Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
 
             Producer::Classify { rules, from, consts } => {
-                let tags = match from {
-                    TagSet::Obj => Some(ctx.obj_tags),
-                    TagSet::Parent => ctx.parent_tags, // strict: None when no parent
-                    TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
-                }?;
+                let tags = from.resolve(ctx)?;
                 crate::classify::classifier::classify_rules(
                     rules, tags, &HashMap::new(), ctx.sanitizers,
                 ).map(|v| Produced { value: Value::String(v), consts: consts.clone() })
             }
 
             Producer::SharedClassify { shared, from, consts } => {
-                let tags = match from {
-                    TagSet::Obj => Some(ctx.obj_tags),
-                    TagSet::Parent => ctx.parent_tags, // strict: None when no parent
-                    TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
-                }?;
+                let tags = from.resolve(ctx)?;
                 crate::classify::classifier::shared_classifier(shared)
                     .classify(tags, &HashMap::new(), ctx.sanitizers)
                     .map(|v| Produced { value: Value::String(v), consts: consts.clone() })
@@ -148,11 +152,7 @@ impl Producer {
             },
 
             Producer::Extract { key, keys, from, side, sanitize, consts } => {
-                let tags = match from {
-                    TagSet::Obj => Some(ctx.obj_tags),
-                    TagSet::Parent => ctx.parent_tags, // strict: None when no parent
-                    TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
-                }?;
+                let tags = from.resolve(ctx)?;
                 let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
                 let value = match sanitize {
                     Some(name) => ctx.sanitizers.apply(name, raw)?,

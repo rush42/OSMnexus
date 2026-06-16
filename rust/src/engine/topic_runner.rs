@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use anyhow::Context;
 use bytes::Bytes;
 use futures::SinkExt;
-use tokio_postgres::Client;
 
 use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
 use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
@@ -13,9 +12,6 @@ use crate::osm::types::{OsmWay, RawTags};
 use crate::output::types::OsmMeta;
 use crate::transform::TagTransform;
 use crate::transform::side_split::CenterLineTransformation;
-
-const COPY_SQL: &str =
-    "(osm_id, osm_type, id, osm, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
 /// Per-key overlay: the topic-level default map with the category's entries layered on top.
 /// The shared shape behind both `consts` (→ derived) and `private` (→ private column).
@@ -214,10 +210,6 @@ impl TopicRunner {
         &self.spec.table
     }
 
-    pub fn copy_sql(&self) -> String {
-        format!("COPY {} {COPY_SQL}", self.spec.table)
-    }
-
     /// Run the topic's pipeline for one way: apply this topic's tag transforms to a copy
     /// of the raw tags, then categorize/split/extract. `raw_tags` are the way's untouched
     /// tags — each topic transforms its own copy.
@@ -274,12 +266,4 @@ fn write_csv_row(buf: &mut Vec<u8>, fields: &[String]) {
         }
     }
     buf.push(b'\n');
-}
-
-/// Open a COPY sink for a topic on a dedicated connection.
-pub async fn open_copy_sink(
-    client: &Client,
-    copy_sql: &str,
-) -> anyhow::Result<tokio_postgres::CopyInSink<Bytes>> {
-    Ok(client.copy_in(copy_sql).await?)
 }

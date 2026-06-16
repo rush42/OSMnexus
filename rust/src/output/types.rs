@@ -1,8 +1,4 @@
-use std::collections::HashMap;
 use serde::Serialize;
-
-/// Type alias used throughout — same as RawTags but avoids circular imports.
-pub type RawTagsRef = HashMap<String, String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

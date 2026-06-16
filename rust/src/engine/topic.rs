@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use crate::classify::categories::{Filter, MinzoomRule};
+use crate::classify::sanitize::StrOrVec;
 use crate::engine::extract::{Producer, TagSet};
 use crate::osm::types::ElementFilter;
 
@@ -92,24 +93,15 @@ pub struct Sanitizer {
     pub tag: String,
     pub name: String,
     #[serde(default, rename = "in")]
-    pub in_keys: Option<StringOrVec>,
+    pub in_keys: Option<StrOrVec>,
     #[serde(default)]
     pub from: TagSet,
 }
 
-/// Accepts either `"foo"` or `["foo", "bar"]` in JSON.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum StringOrVec {
-    One(String),
-    Many(Vec<String>),
-}
-
 impl Sanitizer {
     fn input_keys(&self) -> Vec<String> {
-        match &self.in_keys {
-            Some(StringOrVec::One(s)) => vec![s.clone()],
-            Some(StringOrVec::Many(v)) => v.clone(),
+        match self.in_keys.clone() {
+            Some(sv) => sv.into_vec(),
             None => vec![self.tag.clone()],
         }
     }

@@ -45,9 +45,9 @@ pub fn get_transformed_objects(
 
     // For sidepath highways, unnest bare cycleway tags onto the self object.
     if sidepath_classes.contains(highway.as_str()) {
-        unnest_prefixed_tags(tags, "cycleway", "", &mut center);
+        unnest_prefixed_tags(tags, "cycleway", "", None, &mut center);
         for meta in META_PREFIXES {
-            unnest_prefixed_tags_meta(tags, "cycleway", "", meta, &mut center);
+            unnest_prefixed_tags(tags, "cycleway", "", Some(meta), &mut center);
         }
         // Directed traffic sign for oneway cycleways
         if center.get("oneway").map(|v| v == "yes").unwrap_or(false)
@@ -93,43 +93,23 @@ pub fn get_transformed_objects(
 
             let mut obj: HashMap<String, String> = HashMap::new();
 
-            // Priority (lowest to highest): bare < both < side-specific.
-            // Track the highest-priority infix that contributed any data.
+            // Priority (lowest to highest): bare < both < side-specific. Apply in that order,
+            // tracking the highest-priority infix that contributed any data.
             // Mirrors Lua: unnestPrefixedTags called with '', ':both', ':side' in order.
             let mut matched_infix: &'static str = "";
-
-            let bare_had_data = {
+            for infix in ["", "both", side_str] {
                 let before = obj.len();
-                unnest_prefixed_tags(tags, transformation.prefix, "", &mut obj);
-                obj.len() > before
-            };
-            if bare_had_data {
-                matched_infix = "";
-            }
-
-            let both_had_data = {
-                let before = obj.len();
-                unnest_prefixed_tags(tags, transformation.prefix, "both", &mut obj);
-                obj.len() > before
-            };
-            if both_had_data {
-                matched_infix = "both";
-            }
-
-            let side_had_data = {
-                let before = obj.len();
-                unnest_prefixed_tags(tags, transformation.prefix, side_str, &mut obj);
-                obj.len() > before
-            };
-            if side_had_data {
-                matched_infix = side_str;
+                unnest_prefixed_tags(tags, transformation.prefix, infix, None, &mut obj);
+                if obj.len() > before {
+                    matched_infix = infix;
+                }
             }
 
             // Meta-prefixed tags (source:, note:) — processed after, overwrite.
             for meta in META_PREFIXES {
-                unnest_prefixed_tags_meta(tags, transformation.prefix, "", meta, &mut obj);
-                unnest_prefixed_tags_meta(tags, transformation.prefix, "both", meta, &mut obj);
-                unnest_prefixed_tags_meta(tags, transformation.prefix, side_str, meta, &mut obj);
+                for infix in ["", "both", side_str] {
+                    unnest_prefixed_tags(tags, transformation.prefix, infix, Some(meta), &mut obj);
+                }
             }
 
             // Only emit an object if something was actually projected.
@@ -158,23 +138,32 @@ pub fn get_transformed_objects(
     results
 }
 
-/// Unnest tags with a given prefix and infix onto `dest`.
+/// Unnest tags matching `{meta}{prefix}[:{infix}]` onto `dest`.
 ///
-/// Example: prefix="cycleway", infix="left"
-///   fullPrefix = "cycleway:left"
-///   Case 1: key == "cycleway:left"         → dest["cycleway"] = val
-///   Case 2: key == "cycleway:left:width"   → dest["width"] = val
+/// `meta` is an optional meta-prefix (e.g. `"source:"`, `"note:"`); pass `None` for the plain
+/// tag. The destination key is the meta key (`"source"`) when a meta-prefix is given, else the
+/// bare `prefix`.
+///
+/// Example (no meta, prefix="cycleway", infix="left"), full prefix "cycleway:left":
+///   key == "cycleway:left"        → dest["cycleway"] = val
+///   key == "cycleway:left:width"  → dest["width"]    = val
+/// Example (meta="source:", same prefix/infix), full prefix "source:cycleway:left":
+///   key == "source:cycleway:left"        → dest["source"]       = val
+///   key == "source:cycleway:left:width"  → dest["source:width"] = val
 fn unnest_prefixed_tags(
     tags: &RawTags,
     prefix: &str,
     infix: &str,
+    meta: Option<&str>,
     dest: &mut RawTags,
 ) {
+    let meta_prefix = meta.unwrap_or("");
     let full_prefix = if infix.is_empty() {
-        prefix.to_owned()
+        format!("{meta_prefix}{prefix}")
     } else {
-        format!("{prefix}:{infix}")
+        format!("{meta_prefix}{prefix}:{infix}")
     };
+    let meta_key = meta.map(|m| m.trim_end_matches(':'));
 
     for (key, val) in tags {
         if !key.starts_with(&full_prefix) {
@@ -182,10 +171,10 @@ fn unnest_prefixed_tags(
         }
 
         if key == &full_prefix {
-            // Case 1: exact match → dest[prefix] = val
-            dest.insert(prefix.to_owned(), val.clone());
+            // Case 1: exact match → dest[meta_key or prefix] = val
+            dest.insert(meta_key.unwrap_or(prefix).to_owned(), val.clone());
         } else if key.len() > full_prefix.len() && key.as_bytes()[full_prefix.len()] == b':' {
-            // Case 2: sub-key → dest[suffix] = val
+            // Case 2: sub-key → dest[(meta:)suffix] = val
             let suffix = &key[full_prefix.len() + 1..];
 
             // Validate: when infix is empty, the first component of suffix must not itself be a side.
@@ -196,51 +185,11 @@ fn unnest_prefixed_tags(
                 }
             }
 
-            dest.insert(suffix.to_owned(), val.clone());
-        }
-    }
-}
-
-/// Same as `unnest_prefixed_tags` but with a meta-prefix (e.g. "source:").
-///
-/// Example: meta="source:", prefix="cycleway", infix="left"
-///   fullPrefix = "source:cycleway:left"
-///   Case 1: key == "source:cycleway:left"          → dest["source"] = val
-///   Case 2: key == "source:cycleway:left:width"    → dest["source:width"] = val
-fn unnest_prefixed_tags_meta(
-    tags: &RawTags,
-    prefix: &str,
-    infix: &str,
-    meta: &str, // e.g. "source:"
-    dest: &mut RawTags,
-) {
-    let full_prefix = if infix.is_empty() {
-        format!("{meta}{prefix}")
-    } else {
-        format!("{meta}{prefix}:{infix}")
-    };
-    let meta_key = meta.trim_end_matches(':');
-
-    for (key, val) in tags {
-        if !key.starts_with(&full_prefix) {
-            continue;
-        }
-
-        if key == &full_prefix {
-            // Case 1: dest[meta_key] = val (e.g. "source")
-            dest.insert(meta_key.to_owned(), val.clone());
-        } else if key.len() > full_prefix.len() && key.as_bytes()[full_prefix.len()] == b':' {
-            let suffix = &key[full_prefix.len() + 1..];
-
-            if infix.is_empty() {
-                let first = suffix.split(':').next().unwrap_or("");
-                if matches!(first, "left" | "right" | "both") {
-                    continue;
-                }
-            }
-
-            // dest[meta:suffix] = val (e.g. "source:width")
-            dest.insert(format!("{meta_key}:{suffix}"), val.clone());
+            let dest_key = match meta_key {
+                Some(mk) => format!("{mk}:{suffix}"),
+                None => suffix.to_owned(),
+            };
+            dest.insert(dest_key, val.clone());
         }
     }
 }
