@@ -39,6 +39,10 @@ pub struct TopicSpec {
     /// `consts`.
     #[serde(default)]
     pub consts: serde_json::Map<String, serde_json::Value>,
+    /// Topic-level default private metadata, emitted into the `private` column. Categories override
+    /// per-key via their own `private`. The private counterpart to `consts`.
+    #[serde(default)]
+    pub private: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One entry in a topic's `transforms` list.

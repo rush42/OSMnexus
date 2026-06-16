@@ -31,7 +31,6 @@ pub struct CategoryContext<'a> {
 pub struct CategoryDef {
     pub id: String,
     pub infrastructure_exists: bool,
-    pub implicit_oneway_confidence: String,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
     /// Per-category minzoom override. Falls back to the topic-level default when absent.
@@ -45,6 +44,11 @@ pub struct CategoryDef {
     /// as the lowest-priority layer; a sanitizer/deriver producing the same key overrides them.
     #[serde(default)]
     pub consts: serde_json::Map<String, serde_json::Value>,
+    /// Per-category private metadata (override the topic-level `private` per key). Emitted into the
+    /// `private` output column verbatim — the explicit counterpart to `consts`, for internal keys
+    /// like `_implicit_oneway_confidence` that are not part of the public `derived` payload.
+    #[serde(default)]
+    pub private: serde_json::Map<String, serde_json::Value>,
     /// Scope of parking-based `traffic_mode` inference for this category: `"both"` (infer both
     /// sides, e.g. bicycle roads) or `"directional"` (infer only the transformed side, e.g.
     /// on-highway cycleway lanes). Absent = no parking inference.

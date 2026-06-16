@@ -1,7 +1,9 @@
 {
   "parking_inference": "directional",
   "infrastructure_exists": true,
-  "implicit_oneway_confidence": "medium",
+  "private": {
+    "_implicit_oneway_confidence": "medium"
+  },
   "condition": {
     "and": [
       {

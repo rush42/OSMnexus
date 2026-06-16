@@ -1,7 +1,9 @@
 {
   "parking_inference": "both",
   "infrastructure_exists": true,
-  "implicit_oneway_confidence": "high",
+  "private": {
+    "_implicit_oneway_confidence": "high"
+  },
   "condition": {
     "macro": "is_bicycle_road"
   },

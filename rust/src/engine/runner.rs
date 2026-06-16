@@ -132,11 +132,17 @@ pub fn build_topic_rows(
             .get(&category.id)
             .unwrap_or(&runner.topic_derivers);
         let mut derived = Map::new();
+        let mut private = Map::new();
         // Lowest-priority layer: category consts (defaults), overwritten by any sanitizer/deriver
-        // that produces the same key.
+        // that produces the same key. `consts` feed `derived`; `private` feed the private column.
         if let Some(consts) = runner.category_consts.get(&category.id) {
             for (k, v) in consts {
                 derived.insert(k.clone(), v.clone());
+            }
+        }
+        if let Some(privates) = runner.category_private.get(&category.id) {
+            for (k, v) in privates {
+                private.insert(k.clone(), v.clone());
             }
         }
         eval_fields(&runner.sanitizer_fields, &ectx, &mut derived);
@@ -149,7 +155,6 @@ pub fn build_topic_rows(
             derived.insert("road".into(), Value::String(road));
         }
 
-        let mut private = Map::new();
         private.insert("_side".into(), Value::String(side_str.to_owned()));
         if let Some(p) = obj.prefix {
             private.insert("_prefix".into(), Value::String(p.to_owned()));
@@ -160,10 +165,6 @@ pub fn build_topic_rows(
         if let Some(ph) = &obj.parent_highway {
             private.insert("_parent_highway".into(), Value::String(ph.clone()));
         }
-        private.insert(
-            "_implicit_oneway_confidence".into(),
-            Value::String(category.implicit_oneway_confidence.clone()),
-        );
 
         // Category override wins over the topic-level default; absent → 0.
         let minzoom = category

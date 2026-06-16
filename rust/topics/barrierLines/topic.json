@@ -1,5 +1,8 @@
 {
   "table": "barrierLines",
+  "private": {
+    "_implicit_oneway_confidence": "not_applicable"
+  },
   "exclude_condition": {
     "macro": "standard_exclude"
   },

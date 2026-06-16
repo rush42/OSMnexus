@@ -12,7 +12,6 @@
     ]
   },
   "infrastructure_exists": true,
-  "implicit_oneway_confidence": "not_applicable",
   "condition": {
     "tag": "highway",
     "eq": "path"
