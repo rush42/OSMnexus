@@ -3,8 +3,8 @@
 //! A `Producer` is either an `Extract` (read a tag — single `key` or first-present `keys`,
 //! from obj/parent/centerline, optional `side` expansion, optional `sanitize`), a `fallback`
 //! over producers (first non-empty wins), or a `derive` call. This one combinator subsumes
-//! the old obj-then-parent lookup, multi-key lookup, `get_sided_with_bare_left`, and the
-//! `surface:colour`/`surface:color` fallback.
+//! the old obj-then-parent lookup, multi-key lookup, the sided (`key:{side}`→`:both`→bare-left)
+//! lookup, and the `surface:colour`/`surface:color` fallback.
 
 use std::collections::HashMap;
 
@@ -68,10 +68,18 @@ pub enum TagSet {
 pub enum Producer {
     Fallback { fallback: Vec<Producer> },
     /// A Rust-backed deriver. `out_side` fixes the side for the per-side `traffic_mode` deriver.
+    /// `from` picks the tagset the deriver reads (honored by `surface`; lets the parent-copy be a
+    /// plain `fallback`), and `consts` is the provenance this branch contributes when it produces.
     Derive {
         derive: String,
         #[serde(default)] out_side: Option<String>,
+        #[serde(default)] from: TagSet,
+        #[serde(default)] consts: Map<String, Value>,
     },
+    /// A data-defined first-match-wins rule table (same engine as the `road` classifier),
+    /// evaluated against the object's tags. Returns `None` when no rule matches — letting a
+    /// category const default supply the fallback (e.g. oneway `assumed_no`/`implicit_yes`).
+    Classify { rules: Vec<crate::classify::classifier::Rule> },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
@@ -90,9 +98,13 @@ impl Producer {
             // First non-empty branch wins, carrying its own source/confidence.
             Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
 
-            Producer::Derive { derive, out_side } => match derive.as_str() {
-                "oneway" => derive::derive_oneway(ctx.obj_tags)
-                    .map(|v| Produced::bare(Value::String(v))),
+            Producer::Classify { rules } => {
+                crate::classify::classifier::classify_rules(
+                    rules, ctx.obj_tags, &HashMap::new(), ctx.sanitizers,
+                ).map(|v| Produced::bare(Value::String(v)))
+            }
+
+            Producer::Derive { derive, out_side, from, consts } => match derive.as_str() {
                 "traffic_mode" => {
                     let out_side = out_side.as_deref()
                         .expect("traffic_mode deriver needs `out_side`");
@@ -105,8 +117,18 @@ impl Producer {
                         ctx.sanitizers,
                     ).map(|v| Produced::bare(Value::String(v)))
                 }
-                "surface" => surface_produced(derive::surface(ctx.obj_tags, ctx.sanitizers), false),
-                "surface_parent" => surface_parent(ctx),
+                // `from` picks the tagset (obj, or strict `parent` for the parent-copy branch);
+                // `consts` (source/confidence) rides along, so the `deriveBikelaneSurface`
+                // own-then-parent copy is now just a `fallback` of two surface derives in data.
+                "surface" => {
+                    let tags = match from {
+                        TagSet::Obj => Some(ctx.obj_tags),
+                        TagSet::Parent => ctx.parent_tags, // strict: None when no parent
+                        TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
+                    }?;
+                    derive::surface(tags, ctx.sanitizers)
+                        .map(|v| Produced { value: Value::String(v), consts: consts.clone() })
+                }
                 "smoothness_parent" => smoothness_parent(ctx),
                 other => { tracing::warn!("unknown deriver: {other}"); None }
             },
@@ -126,26 +148,6 @@ impl Producer {
             }
         }
     }
-}
-
-/// Wrap a Rust-derived surface value with its provenance (`tag` own, `parent_highway_tag` copied).
-fn surface_produced(value: Option<String>, from_parent: bool) -> Option<Produced> {
-    value.map(|v| {
-        let mut consts = Map::new();
-        let source = if from_parent { "parent_highway_tag" } else { "tag" };
-        consts.insert("source".into(), Value::String(source.to_owned()));
-        consts.insert("confidence".into(), Value::String("high".to_owned()));
-        Produced { value: Value::String(v), consts }
-    })
-}
-
-/// `deriveBikelaneSurface`: own surface, else (no own) the parent highway's surface.
-fn surface_parent(ctx: &ExtractCtx) -> Option<Produced> {
-    if let Some(own) = surface_produced(derive::surface(ctx.obj_tags, ctx.sanitizers), false) {
-        return Some(own);
-    }
-    let parent = ctx.parent_tags?;
-    surface_produced(derive::surface(parent, ctx.sanitizers), true)
 }
 
 /// `deriveBikelaneSmoothness`: re-evaluate the base `smoothness` fallback (the single source of
@@ -187,8 +189,9 @@ fn smoothness_parent(ctx: &ExtractCtx) -> Option<Produced> {
     }
 }
 
-/// Resolve the raw string for an Extract: optional sided expansion, single `key`, or the
-/// first present of `keys`.
+/// Resolve the raw string for an Extract — all three forms are a first-present fallback over a
+/// candidate key list: a sided expansion (`key:{side}` → `:both` → bare-left), a single `key`,
+/// or the explicit `keys` list.
 fn read_raw<'a>(
     tags: &'a RawTags,
     key: Option<&str>,
@@ -196,14 +199,14 @@ fn read_raw<'a>(
     side: Option<&str>,
 ) -> Option<&'a str> {
     if let Some(side) = side {
-        // sided lookup applies to the single key
-        return sanitize::get_sided_with_bare_left(tags, key.expect("sided extract needs `key`"), side);
+        let candidates = sanitize::sided_keys(key.expect("sided extract needs `key`"), side, true);
+        return sanitize::first_present(tags, candidates);
     }
     if let Some(key) = key {
-        return tags.get(key).map(String::as_str);
+        return sanitize::first_present(tags, std::iter::once(key));
     }
     if let Some(keys) = keys {
-        return keys.iter().find_map(|k| tags.get(k).map(String::as_str));
+        return sanitize::first_present(tags, keys);
     }
     None
 }

@@ -44,16 +44,27 @@ impl Classifier {
         macros: &HashMap<String, Filter>,
         sanitizers: &SanitizerRegistry,
     ) -> Option<String> {
-        for rule in &self.rules {
-            if eval_filter(&rule.when, tags, macros, sanitizers) {
-                return match &rule.value {
-                    ValueSpec::Const(s) => Some(s.clone()),
-                    ValueSpec::Tag { tag } => tags.get(tag).cloned(),
-                };
-            }
-        }
-        None
+        classify_rules(&self.rules, tags, macros, sanitizers)
     }
+}
+
+/// First matching rule's value, or `None` if no rule matches (first-match-wins). Shared by the
+/// standalone `road` classifier and the data-defined `rules` value producer (`engine/extract.rs`).
+pub fn classify_rules(
+    rules: &[Rule],
+    tags: &RawTags,
+    macros: &HashMap<String, Filter>,
+    sanitizers: &SanitizerRegistry,
+) -> Option<String> {
+    for rule in rules {
+        if eval_filter(&rule.when, tags, macros, sanitizers) {
+            return match &rule.value {
+                ValueSpec::Const(s) => Some(s.clone()),
+                ValueSpec::Tag { tag } => tags.get(tag).cloned(),
+            };
+        }
+    }
+    None
 }
 
 /// The shared `road` classifier, loaded once from `topics/_shared/road_classification.json`.

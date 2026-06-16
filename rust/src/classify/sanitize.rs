@@ -10,22 +10,26 @@ use serde_json::{Number, Value};
 
 use crate::osm::types::RawTags;
 
-// ── Sided extraction helpers (used by the extraction layer + derive.rs) ─────────
+// ── Key fallback primitive + sided lookups (used by the extraction layer + derive.rs) ─────────
 
-pub(crate) fn get_sided<'a>(tags: &'a RawTags, key: &str, side: &str) -> Option<&'a str> {
-    tags.get(&format!("{key}:{side}"))
-        .or_else(|| tags.get(&format!("{key}:both")))
-        .map(String::as_str)
+/// The first-present fallback over an ordered list of candidate keys — the single primitive
+/// behind both the `keys` extractor and the sided lookups. Returns the first key that is set.
+pub(crate) fn first_present<'a, K: AsRef<str>>(
+    tags: &'a RawTags,
+    keys: impl IntoIterator<Item = K>,
+) -> Option<&'a str> {
+    keys.into_iter().find_map(|k| tags.get(k.as_ref()).map(String::as_str))
 }
 
-/// `key:{side}` → `key:both` → (for left only) bare `key`.
-pub(crate) fn get_sided_with_bare_left<'a>(tags: &'a RawTags, key: &str, side: &str) -> Option<&'a str> {
-    let sided = get_sided(tags, key, side);
-    if side == "left" {
-        sided.or_else(|| tags.get(key).map(String::as_str))
-    } else {
-        sided
+/// Candidate keys for a sided read, as a fallback list: `key:{side}` → `key:both`
+/// → (left only, when `bare_left`) the bare `key`. A sided lookup is just `first_present`
+/// over this list — what `getSided` / `getSidedWithBareLeft` were in Lua.
+pub(crate) fn sided_keys(key: &str, side: &str, bare_left: bool) -> Vec<String> {
+    let mut keys = vec![format!("{key}:{side}"), format!("{key}:both")];
+    if bare_left && side == "left" {
+        keys.push(key.to_owned());
     }
+    keys
 }
 
 fn float_to_json(v: f32) -> Number {

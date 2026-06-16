@@ -35,6 +35,10 @@
       "filter": ["no", "motor_vehicle", "parking", "psv", "bicycle", "foot"]
     }
   ],
+  "parking": {
+    "cases": { "parking": ["yes", "lane", "street_side", "on_kerb", "half_on_kerb", "shoulder", "separate"] },
+    "on_miss": "drop"
+  },
   "buffer": [
     { "cases": { "0": ["no", "none"] }, "on_miss": "keep" },
     "parse_length"
