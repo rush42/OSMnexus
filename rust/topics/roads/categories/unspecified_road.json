@@ -1,6 +1,5 @@
 {
   "minzoom": 11,
-  "infrastructure_exists": true,
   "condition": {
     "tag": "highway",
     "eq": "road"

@@ -16,7 +16,6 @@
       }
     ]
   },
-  "infrastructure_exists": true,
   "condition": {
     "tag": "highway",
     "eq": "track"

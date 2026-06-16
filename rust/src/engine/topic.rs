@@ -34,6 +34,10 @@ pub struct TopicSpec {
     /// Topic-level default minzoom rule, used for any category without its own `minzoom`.
     #[serde(default)]
     pub minzoom: Option<MinzoomRule>,
+    /// Topic-level default for `infrastructure_exists`, used for any category that doesn't set its
+    /// own. Categories overriding to `false` are sentinels that match but emit no row.
+    #[serde(default)]
+    pub infrastructure_exists: Option<bool>,
     /// Topic-level default constants seeded into `derived` (lowest priority — any sanitizer/
     /// deriver producing the same key overrides them). Categories override per-key via their own
     /// `consts`.

@@ -1,5 +1,4 @@
 {
-  "infrastructure_exists": true,
   "condition": {
     "and": [
       {

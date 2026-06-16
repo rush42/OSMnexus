@@ -17,6 +17,19 @@ use crate::transform::side_split::CenterLineTransformation;
 const COPY_SQL: &str =
     "(osm_id, osm_type, id, osm, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
 
+/// Per-key overlay: the topic-level default map with the category's entries layered on top.
+/// The shared shape behind both `consts` (→ derived) and `private` (→ private column).
+fn overlay(
+    base: &serde_json::Map<String, serde_json::Value>,
+    over: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut merged = base.clone();
+    for (k, v) in over {
+        merged.insert(k.clone(), v.clone());
+    }
+    merged
+}
+
 /// A fully loaded topic ready to process ways.
 pub struct TopicRunner {
     pub spec: TopicSpec,
@@ -178,17 +191,8 @@ impl TopicRunner {
         let mut category_consts = HashMap::new();
         let mut category_private = HashMap::new();
         for cat in &categories.categories {
-            let mut consts = spec.consts.clone();
-            for (k, v) in &cat.consts {
-                consts.insert(k.clone(), v.clone());
-            }
-            category_consts.insert(cat.id.clone(), consts);
-
-            let mut privates = spec.private.clone();
-            for (k, v) in &cat.private {
-                privates.insert(k.clone(), v.clone());
-            }
-            category_private.insert(cat.id.clone(), privates);
+            category_consts.insert(cat.id.clone(), overlay(&spec.consts, &cat.consts));
+            category_private.insert(cat.id.clone(), overlay(&spec.private, &cat.private));
         }
 
         Ok(Self {

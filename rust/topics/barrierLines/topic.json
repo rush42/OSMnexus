@@ -3,6 +3,7 @@
   "private": {
     "_implicit_oneway_confidence": "not_applicable"
   },
+  "infrastructure_exists": true,
   "exclude_condition": {
     "macro": "standard_exclude"
   },

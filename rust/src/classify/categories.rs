@@ -30,7 +30,12 @@ pub struct CategoryContext<'a> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CategoryDef {
     pub id: String,
-    pub infrastructure_exists: bool,
+    /// Whether matching this category means infrastructure exists (emit a row). Per-category
+    /// override of the topic-level default (which is `true` in practice); the few sentinel
+    /// categories that exist only to be `excludes`d by others set it `false` so they match without
+    /// emitting a row (the runner skips them). Absent → inherit the topic default.
+    #[serde(default)]
+    pub infrastructure_exists: Option<bool>,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
     /// Per-category minzoom override. Falls back to the topic-level default when absent.

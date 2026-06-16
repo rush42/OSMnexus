@@ -99,7 +99,10 @@ pub fn build_topic_rows(
         };
 
         let Some(category) = categorize(&ctx, categories) else { continue };
-        if !category.infrastructure_exists { continue }
+        // Category override wins over the topic default; absent everywhere → infrastructure exists.
+        if !category.infrastructure_exists.or(topic.infrastructure_exists).unwrap_or(true) {
+            continue;
+        }
 
         let id = match obj.side {
             Side::Self_ => format!("way/{}", way.id),
