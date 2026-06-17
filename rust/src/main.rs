@@ -132,8 +132,9 @@ async fn main() -> anyhow::Result<()> {
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 
     info!("Creating indexes...");
-    let client_idx = pool.get().await.context("getting index DB connection")?;
-    schema::create_indexes(&client_idx, &table_refs).await?;
+    let t_idx = std::time::Instant::now();
+    schema::create_indexes(&pool, &table_refs).await?;
+    info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
 
     info!("Done. Total: {:.1}s", t0.elapsed().as_secs_f32());
     Ok(())
