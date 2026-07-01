@@ -109,7 +109,12 @@ async fn main() -> anyhow::Result<()> {
     let mut bufs: Vec<Vec<u8>>  = (0..n).map(|_| Vec::with_capacity(512 * 1024)).collect();
     let mut counts: Vec<usize>  = vec![0; n];
 
+    // Consumer-active timer: started on the first row (not sink setup), so it excludes the
+    // Pass A+B window during which the consumer is idle-blocked on recv. Compared against the
+    // reader's Pass C duration, this shows whether the producer or the DB drain is the wall.
+    let mut t_drain: Option<std::time::Instant> = None;
     while let Some(WayOutput(topic_rows)) = rx.recv().await {
+        t_drain.get_or_insert_with(std::time::Instant::now);
         for (i, rows) in topic_rows.into_iter().enumerate() {
             counts[i] += stream_rows(rows, &mut bufs[i], sinks[i].as_mut()).await?;
         }
@@ -120,6 +125,9 @@ async fn main() -> anyhow::Result<()> {
             sink.as_mut().send(Bytes::from(std::mem::take(&mut bufs[i]))).await?;
         }
         sink.as_mut().finish().await?;
+    }
+    if let Some(t) = t_drain {
+        info!("[phase] DB drain + COPY finish (consumer-active): {:.1}s", t.elapsed().as_secs_f32());
     }
 
     producer.await.context("reader/processing task panicked")??;

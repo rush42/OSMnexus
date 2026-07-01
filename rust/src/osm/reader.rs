@@ -42,7 +42,9 @@ where
     F: Fn(&OsmWay) + Sync + Send,
 {
     info!("Building blob index (no decompression)...");
+    let t_idx = std::time::Instant::now();
     let (data_offsets, header_offset) = build_blob_index(path)?;
+    info!("[phase] blob index build: {:.1}s", t_idx.elapsed().as_secs_f32());
 
     // Escape hatch: `PBF_FORCE_FALLBACK=1` skips the ordered fast path (debugging / a file that
     // wrongly advertises Sort.Type_then_ID).
@@ -71,14 +73,21 @@ where
                 let node_offsets = &data_offsets[..way_start];
 
                 // Pass A — way region: per-node use counts (keyset = needed-node set).
+                let t = std::time::Instant::now();
                 let use_counts = collect_use_counts(path, way_offsets, filters)?;
+                info!("[phase] Pass A (filter ways → node refs): {:.1}s", t.elapsed().as_secs_f32());
                 // Pass B — node region: coords for needed nodes only.
+                let t = std::time::Instant::now();
                 let coords = collect_coords(path, node_offsets, &use_counts)?;
+                info!("[phase] Pass B (collect node coords): {:.1}s", t.elapsed().as_secs_f32());
                 log_node_summary(&use_counts);
                 // Pass C — way region again: resolve + stream each way. `coords`/`use_counts` are
                 // reader-internal: geometry + cut_points are attached to each way, so nothing needs
                 // the node maps afterwards — they drop here, freeing memory before index creation.
+                // Overlaps with the DB-drain consumer, so its duration is the *producer* side only.
+                let t = std::time::Instant::now();
                 stream_way_region(path, way_offsets, filters, &coords, &use_counts, &for_each)?;
+                info!("[phase] Pass C (build geometries + categorize + emit, producer): {:.1}s", t.elapsed().as_secs_f32());
 
                 return Ok(());
             }
