@@ -8,6 +8,11 @@ pub struct OsmWay {
     pub id: i64,
     /// WGS84 coordinates in (lon, lat) order.
     pub coords: Vec<(f64, f64)>,
+    /// Graph-vertex cut points as `(index into coords, node_id)`, ascending by index: the way's
+    /// start and end nodes (always), plus every interior node shared with another way (occurrence
+    /// count > 1). Segments = consecutive cut-point pairs; intermediate geometry nodes are not
+    /// retained. Lets a way be split into graph edges purely by index, no geometric matching.
+    pub cut_points: Vec<(u32, i64)>,
     pub tags: RawTags,
     pub meta: WayMeta,
 }

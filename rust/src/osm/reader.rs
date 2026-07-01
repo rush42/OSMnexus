@@ -77,7 +77,7 @@ where
                 let coords = collect_coords(path, node_offsets, &use_counts)?;
                 log_node_summary(&use_counts);
                 // Pass C — way region again: resolve + stream each way.
-                stream_way_region(path, way_offsets, filters, &coords, &for_each)?;
+                stream_way_region(path, way_offsets, filters, &coords, &use_counts, &for_each)?;
 
                 return Ok(find_intersections.then_some(NodeIndex { coords, use_counts }));
             }
@@ -135,6 +135,7 @@ fn stream_way_region<F>(
     way_offsets: &[ByteOffset],
     filters: &[ElementFilter],
     coords: &HashMap<i64, (f32, f32)>,
+    use_counts: &HashMap<i64, u32>,
     for_each: &F,
 ) -> anyhow::Result<()>
 where
@@ -145,7 +146,7 @@ where
         for group in block.groups() {
             for way in group.ways() {
                 if way_passes(filters, &way) {
-                    if let Some(w) = resolve_way(way_data(&way), coords) {
+                    if let Some(w) = resolve_way(way_data(&way), coords, use_counts) {
                         for_each(&w);
                     }
                 }
@@ -358,7 +359,7 @@ where
             |element| {
                 if let Element::Way(way) = element {
                     if way_passes(filters, &way) {
-                        if let Some(w) = resolve_way(way_data(&way), &coords) {
+                        if let Some(w) = resolve_way(way_data(&way), &coords, &use_counts) {
                             for_each(&w);
                         }
                     }
@@ -418,17 +419,34 @@ fn way_data(way: &Way) -> WayData {
 }
 
 /// Resolve a `WayData` into an `OsmWay` by looking up node coordinates.
-fn resolve_way(wd: WayData, coords: &HashMap<i64, (f32, f32)>) -> Option<OsmWay> {
-    let pts: Vec<(f64, f64)> = wd
-        .node_refs
-        .iter()
-        .filter_map(|id| coords.get(id))
-        .map(|&(lon, lat)| (lon as f64, lat as f64))
-        .collect();
+fn resolve_way(
+    wd: WayData,
+    coords: &HashMap<i64, (f32, f32)>,
+    use_counts: &HashMap<i64, u32>,
+) -> Option<OsmWay> {
+    // One pass: keep only nodes that have coords, tracking their ids so cut points stay aligned
+    // to `pts` indices (a dropped missing-coord node must not shift the indices).
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(wd.node_refs.len());
+    let mut kept_ids: Vec<i64> = Vec::with_capacity(wd.node_refs.len());
+    for &id in &wd.node_refs {
+        if let Some(&(lon, lat)) = coords.get(&id) {
+            pts.push((lon as f64, lat as f64));
+            kept_ids.push(id);
+        }
+    }
 
     if pts.len() < 2 {
         return None;
     }
 
-    Some(OsmWay { id: wd.id, coords: pts, tags: wd.tags, meta: wd.meta })
+    // Cut points: start + end (always), plus interior nodes shared with another way (count > 1).
+    let last = kept_ids.len() - 1;
+    let mut cut_points: Vec<(u32, i64)> = Vec::new();
+    for (i, &id) in kept_ids.iter().enumerate() {
+        if i == 0 || i == last || use_counts.get(&id).copied().unwrap_or(0) > 1 {
+            cut_points.push((i as u32, id));
+        }
+    }
+
+    Some(OsmWay { id: wd.id, coords: pts, cut_points, tags: wd.tags, meta: wd.meta })
 }
