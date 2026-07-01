@@ -118,7 +118,12 @@ pub fn build_topic_rows(
             sanitizers: &runner.sanitizers,
         };
 
-        let Some(category) = categorize(&ctx, categories) else { continue };
+        let category = match crate::profile::time(&crate::profile::CATEGORIZE, || categorize(&ctx, categories)) {
+            Some(c) => c,
+            None => continue,
+        };
+        // Times the rest of this iteration (field eval + const seeding + row build).
+        let _extract = crate::profile::scope(&crate::profile::EXTRACT);
 
         let id = match obj.side {
             Side::Self_ => format!("way/{}", way.id),

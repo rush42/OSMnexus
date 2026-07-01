@@ -22,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let cfg = Config::parse();
+    osm_pipeline::profile::init_from_env();
 
     // Size the rayon pool (CPU-bound decode/stream). `0` = rayon's default (logical CPU count).
     if cfg.threads > 0 {
@@ -131,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     producer.await.context("reader/processing task panicked")??;
+    osm_pipeline::profile::report();
 
     for (i, table) in tables.iter().enumerate() {
         info!("Wrote {} rows → {}", counts[i], table);

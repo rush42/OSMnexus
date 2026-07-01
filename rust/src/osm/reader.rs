@@ -150,12 +150,14 @@ fn stream_way_region<F>(
 where
     F: Fn(&OsmWay) + Sync,
 {
+    use crate::profile::{self, DECODE, RESOLVE, TAGBUILD};
     way_offsets.par_iter().try_for_each(|&off| -> anyhow::Result<()> {
-        let block = decode_block(path, off)?;
+        let block = profile::time(&DECODE, || decode_block(path, off))?;
         for group in block.groups() {
             for way in group.ways() {
                 if way_passes(filters, &way) {
-                    if let Some(w) = resolve_way(way_data(&way), coords, use_counts) {
+                    let wd = profile::time(&TAGBUILD, || way_data(&way));
+                    if let Some(w) = profile::time(&RESOLVE, || resolve_way(wd, coords, use_counts)) {
                         for_each(&w);
                     }
                 }

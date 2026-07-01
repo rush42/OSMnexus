@@ -4,6 +4,7 @@ use crate::output::{
     geometry::{haversine_length_m, project_line},
     types::OsmMeta,
 };
+use crate::profile::{self, CLASSIFY, GEOMETRY};
 
 /// Rows per topic (index matches the runners slice passed to process_way).
 pub struct WayOutput(pub Vec<Vec<TopicRow>>);
@@ -12,8 +13,9 @@ pub struct WayOutput(pub Vec<Vec<TopicRow>>);
 /// raw tags to every topic. Each topic owns its full pipeline (transforms → exclude →
 /// categorize → extract), all declared in its `topic.json`.
 pub fn process_way(way: &OsmWay, runners: &[TopicRunner]) -> WayOutput {
-    let length_m = haversine_length_m(&way.coords);
-    let geom = project_line(&way.coords);
+    let (length_m, geom) = profile::time(&GEOMETRY, || {
+        (haversine_length_m(&way.coords), project_line(&way.coords))
+    });
 
     let meta = OsmMeta {
         updated_at: way.meta.timestamp.and_then(|ts| {
@@ -24,10 +26,12 @@ pub fn process_way(way: &OsmWay, runners: &[TopicRunner]) -> WayOutput {
         changeset_id: way.meta.changeset,
     };
 
-    let rows = runners
-        .iter()
-        .map(|r| r.process(way, &way.tags, &geom, length_m, &meta))
-        .collect();
+    let rows = profile::time(&CLASSIFY, || {
+        runners
+            .iter()
+            .map(|r| r.process(way, &way.tags, &geom, length_m, &meta))
+            .collect()
+    });
 
     WayOutput(rows)
 }
