@@ -26,4 +26,10 @@ pub struct Config {
     /// Truncate tables before import
     #[arg(long, default_value_t = true)]
     pub truncate: bool,
+
+    /// Size of the rayon thread pool used for the CPU-bound PBF decode/stream passes.
+    /// `0` (default) uses rayon's default = the number of logical CPUs. Set to `1` for a fully
+    /// serial run, or a lower number to leave cores free for the rest of the system.
+    #[arg(long, default_value_t = 0)]
+    pub threads: usize,
 }

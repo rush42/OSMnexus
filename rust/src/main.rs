@@ -23,6 +23,15 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Config::parse();
 
+    // Size the rayon pool (CPU-bound decode/stream). `0` = rayon's default (logical CPU count).
+    if cfg.threads > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(cfg.threads)
+            .build_global()
+            .context("configuring rayon thread pool")?;
+        info!("rayon thread pool capped at {} threads", cfg.threads);
+    }
+
     // Load all topics.  Add a new topic name here — no other code changes needed.
     let runners: Vec<TopicRunner> = ["bikelanes", "roads", "barrierLines"]
         .iter()
