@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
 use crate::output::types::Side;
@@ -91,7 +89,7 @@ pub fn get_transformed_objects(
                 Side::Self_ => unreachable!(),
             };
 
-            let mut obj: HashMap<String, String> = HashMap::new();
+            let mut obj: RawTags = RawTags::default();
 
             // Priority (lowest to highest): bare < both < side-specific. Apply in that order,
             // tracking the highest-priority infix that contributed any data.

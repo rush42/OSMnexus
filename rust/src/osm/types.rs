@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-
 use serde::Deserialize;
 
-pub type RawTags = HashMap<String, String>;
+/// Way tags. FxHashMap (not the default SipHash) because categorize + extract do millions of
+/// `.get()` lookups and per-way/per-side-object clones of these maps — the hot path of Pass C.
+pub type RawTags = rustc_hash::FxHashMap<String, String>;
 
 pub struct OsmWay {
     pub id: i64,
