@@ -52,13 +52,3 @@ impl ElementFilter {
     }
 }
 
-/// In-memory index of the nodes referenced by the kept ways: where each referenced node is
-/// (`coords`) and how many ways use it (`use_counts`, ≥2 ⇒ intersection / crossing). Locates
-/// crossings; building actual graph edges (way→node mapping) is a separate step, since the
-/// streaming reader does not retain per-way node lists.
-pub struct NodeIndex {
-    /// Coordinates (lon, lat as f32, ~1 m precision) for every referenced node.
-    pub coords: HashMap<i64, (f32, f32)>,
-    /// How many kept ways reference each node. `>= 2` ⇒ intersection / crossing.
-    pub use_counts: HashMap<i64, u32>,
-}

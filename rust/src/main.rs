@@ -10,7 +10,7 @@ use config::Config;
 use db::{pool::build_pool, schema};
 use engine::topic_runner::{stream_rows, TopicRunner};
 use osm::reader::stream_ways;
-use osm::types::{ElementFilter, NodeIndex};
+use osm::types::ElementFilter;
 use processing::{process_way, WayOutput};
 
 const COPY_COLUMNS: &str =
@@ -71,9 +71,8 @@ async fn main() -> anyhow::Result<()> {
     // consumer below. Runs on the blocking pool because the reader is CPU-bound rayon work.
     // Ways are never materialized — peak memory tracks the node coordinates, not the way count.
     let pbf_file = cfg.pbf_file.clone();
-    let find_intersections = cfg.find_intersections;
-    let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<NodeIndex>> {
-        stream_ways(&pbf_file, &filters, find_intersections, |way| {
+    let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        stream_ways(&pbf_file, &filters, |way| {
             let _ = tx.blocking_send(process_way(way, &runners));
         })
     });
@@ -114,17 +113,7 @@ async fn main() -> anyhow::Result<()> {
         sink.as_mut().finish().await?;
     }
 
-    // NodeIndex (coords + per-node use counts) is returned only with --find-intersections;
-    // otherwise it's dropped inside the reader, keeping memory proportional to node coords.
-    let node_index = producer.await.context("reader/processing task panicked")??;
-    if let Some(ni) = &node_index {
-        let intersections = ni.use_counts.values().filter(|&&c| c >= 2).count();
-        info!(
-            "Node index ready: {} referenced nodes, {} intersections (≥2 ways)",
-            ni.use_counts.len(),
-            intersections
-        );
-    }
+    producer.await.context("reader/processing task panicked")??;
 
     for (i, table) in tables.iter().enumerate() {
         info!("Wrote {} rows → {}", counts[i], table);

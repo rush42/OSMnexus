@@ -26,11 +26,4 @@ pub struct Config {
     /// Truncate tables before import
     #[arg(long, default_value_t = true)]
     pub truncate: bool,
-
-    /// Retain the node index (per-node use counts + coordinates) for intersection / graph
-    /// analysis. Off by default so memory stays proportional to the way geometry only. Node
-    /// coordinates are always used transiently to resolve geometry; this only keeps them
-    /// (plus per-way node ids) afterward.
-    #[arg(long = "find-intersections", default_value_t = false)]
-    pub find_intersections: bool,
 }

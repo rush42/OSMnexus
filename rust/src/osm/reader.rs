@@ -5,7 +5,7 @@ use osmpbf::{BlobReader, BlobType, ByteOffset, Element, ElementReader, Primitive
 use rayon::prelude::*;
 use tracing::{info, warn};
 
-use super::types::{ElementFilter, NodeIndex, OsmWay, RawTags, WayMeta};
+use super::types::{ElementFilter, OsmWay, RawTags, WayMeta};
 
 /// Intermediate way data before geometry resolution.
 struct WayData {
@@ -16,8 +16,8 @@ struct WayData {
 }
 
 /// Stream OSM ways matching any of `filters` from a PBF file, invoking `for_each` on each
-/// resolved way. Returns a [`NodeIndex`] (coords + per-node use counts) when
-/// `find_intersections` is set, else `None`.
+/// resolved way. The per-node coordinate/use-count maps are reader-internal (geometry and
+/// graph cut-points are attached to each way), so nothing is returned.
 ///
 /// Ways are **streamed, not materialized**: each way is resolved, handed to `for_each`, and
 /// dropped — so peak memory is proportional to the referenced-node coordinates (the selected
@@ -36,9 +36,8 @@ struct WayData {
 pub fn stream_ways<F>(
     path: &str,
     filters: &[ElementFilter],
-    find_intersections: bool,
     for_each: F,
-) -> anyhow::Result<Option<NodeIndex>>
+) -> anyhow::Result<()>
 where
     F: Fn(&OsmWay) + Sync + Send,
 {
@@ -76,10 +75,12 @@ where
                 // Pass B — node region: coords for needed nodes only.
                 let coords = collect_coords(path, node_offsets, &use_counts)?;
                 log_node_summary(&use_counts);
-                // Pass C — way region again: resolve + stream each way.
+                // Pass C — way region again: resolve + stream each way. `coords`/`use_counts` are
+                // reader-internal: geometry + cut_points are attached to each way, so nothing needs
+                // the node maps afterwards — they drop here, freeing memory before index creation.
                 stream_way_region(path, way_offsets, filters, &coords, &use_counts, &for_each)?;
 
-                return Ok(find_intersections.then_some(NodeIndex { coords, use_counts }));
+                return Ok(());
             }
             Err(e) => {
                 warn!("ordered fast-path boundary check failed ({e:#}); falling back to full scan");
@@ -89,7 +90,7 @@ where
         warn!("PBF not declared Sort.Type_then_ID — using full-scan streaming reader");
     }
 
-    stream_ways_fallback(path, filters, find_intersections, for_each)
+    stream_ways_fallback(path, filters, for_each)
 }
 
 // ----------------------------------------------------------------------------------------
@@ -291,9 +292,8 @@ fn collect_coords(
 fn stream_ways_fallback<F>(
     path: &str,
     filters: &[ElementFilter],
-    find_intersections: bool,
     for_each: F,
-) -> anyhow::Result<Option<NodeIndex>>
+) -> anyhow::Result<()>
 where
     F: Fn(&OsmWay) + Sync + Send,
 {
@@ -370,7 +370,7 @@ where
         )
         .context("pass 3 parallel read")?;
 
-    Ok(find_intersections.then_some(NodeIndex { coords, use_counts }))
+    Ok(())
 }
 
 // ----------------------------------------------------------------------------------------
