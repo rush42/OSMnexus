@@ -218,7 +218,7 @@ impl TopicRunner {
         for t in &self.tag_transforms {
             t.apply(&mut tags);
         }
-        build_topic_rows(self, way, &tags, geom, length_m, meta)
+        build_topic_rows(self, way, tags, geom, length_m, meta)
     }
 }
 

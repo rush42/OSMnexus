@@ -87,7 +87,7 @@ fn const_entry(v: &Value) -> (&Value, Option<&Map<String, Value>>) {
 pub fn build_topic_rows(
     runner: &TopicRunner,
     way: &OsmWay,
-    tags: &RawTags,
+    tags: RawTags,
     geom: &geo::LineString<f64>,
     length_m: f64,
     meta: &OsmMeta,
@@ -97,16 +97,20 @@ pub fn build_topic_rows(
 
     // Evaluate optional way-level exclude condition before any categorization.
     if let Some(cond) = &topic.exclude_condition {
-        if eval_filter(cond, tags, &categories.macros, &runner.sanitizers) {
+        if eval_filter(cond, &tags, &categories.macros, &runner.sanitizers) {
             return Vec::new();
         }
     }
 
+    // Moves `tags` into the self object rather than cloning it (the common no-side-split case).
     let transformed = get_transformed_objects(tags, &runner.transformations);
     let mut rows = Vec::new();
 
     for obj in &transformed {
-        let parent_tags: Option<&RawTags> = obj.parent_highway.as_ref().map(|_| tags);
+        // Side objects read their parent (the self object, always index 0) for parent-highway
+        // tags; the self object owns the way's tags now that they're moved rather than cloned.
+        let parent_tags: Option<&RawTags> =
+            obj.parent_highway.as_ref().map(|_| &transformed[0].tags);
         let ctx = CategoryContext {
             tags: &obj.tags,
             side: obj.side,

@@ -32,20 +32,19 @@ const META_PREFIXES: &[&str] = &["source:", "note:"];
 ///
 /// Returns an ordered list: [self, left?, right?, ...] for all transformations.
 pub fn get_transformed_objects(
-    tags: &RawTags,
+    tags: RawTags,
     transformations: &[CenterLineTransformation],
 ) -> Vec<TransformedObject> {
     let highway = tags.get("highway").cloned().unwrap_or_default();
     let sidepath_classes = value_set("sidepath_highway");
 
-    // Self object — always included.
-    let mut center = tags.clone();
-
-    // For sidepath highways, unnest bare cycleway tags onto the self object.
+    // For sidepath highways, unnest bare cycleway tags onto the self object. This needs the
+    // original tags as a read source separate from the write destination, so clone once here.
     if sidepath_classes.contains(highway.as_str()) {
-        unnest_prefixed_tags(tags, "cycleway", "", None, &mut center);
+        let mut center = tags.clone();
+        unnest_prefixed_tags(&tags, "cycleway", "", None, &mut center);
         for meta in META_PREFIXES {
-            unnest_prefixed_tags(tags, "cycleway", "", Some(meta), &mut center);
+            unnest_prefixed_tags(&tags, "cycleway", "", Some(meta), &mut center);
         }
         // Directed traffic sign for oneway cycleways
         if center.get("oneway").map(|v| v == "yes").unwrap_or(false)
@@ -67,15 +66,9 @@ pub fn get_transformed_objects(
         }];
     }
 
-    let mut results = vec![TransformedObject {
-        side: Side::Self_,
-        prefix: None,
-        infix: None,
-        parent_highway: None,
-        highway: highway.clone(),
-        tags: center,
-    }];
-
+    // Build any side objects first (borrowing `tags`), then move `tags` into the self object
+    // rather than cloning it — the common case (roads, non-split ways) then does zero clones.
+    let mut side_objects = Vec::new();
     for transformation in transformations {
         // Don't split if the way is already the target highway type.
         if highway == transformation.highway {
@@ -97,7 +90,7 @@ pub fn get_transformed_objects(
             let mut matched_infix: &'static str = "";
             for infix in ["", "both", side_str] {
                 let before = obj.len();
-                unnest_prefixed_tags(tags, transformation.prefix, infix, None, &mut obj);
+                unnest_prefixed_tags(&tags, transformation.prefix, infix, None, &mut obj);
                 if obj.len() > before {
                     matched_infix = infix;
                 }
@@ -106,7 +99,7 @@ pub fn get_transformed_objects(
             // Meta-prefixed tags (source:, note:) — processed after, overwrite.
             for meta in META_PREFIXES {
                 for infix in ["", "both", side_str] {
-                    unnest_prefixed_tags(tags, transformation.prefix, infix, Some(meta), &mut obj);
+                    unnest_prefixed_tags(&tags, transformation.prefix, infix, Some(meta), &mut obj);
                 }
             }
 
@@ -120,9 +113,9 @@ pub fn get_transformed_objects(
             obj.insert("highway".into(), transformation.highway.to_owned());
 
             // Directed tag projection (traffic_sign:forward/backward → traffic_sign).
-            convert_directed_tags(&mut obj, tags, side);
+            convert_directed_tags(&mut obj, &tags, side);
 
-            results.push(TransformedObject {
+            side_objects.push(TransformedObject {
                 side,
                 prefix: Some(transformation.prefix),
                 infix: Some(matched_infix),
@@ -133,6 +126,17 @@ pub fn get_transformed_objects(
         }
     }
 
+    // Self object takes ownership of `tags` — no clone. Order stays [self, left?, right?, ...].
+    let mut results = Vec::with_capacity(1 + side_objects.len());
+    results.push(TransformedObject {
+        side: Side::Self_,
+        prefix: None,
+        infix: None,
+        parent_highway: None,
+        highway,
+        tags,
+    });
+    results.extend(side_objects);
     results
 }
 
