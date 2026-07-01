@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use anyhow::{anyhow, Context};
+use rustc_hash::FxHashMap;
 use osmpbf::{BlobReader, BlobType, ByteOffset, Element, ElementReader, PrimitiveBlock, Way};
 use rayon::prelude::*;
 use tracing::{info, warn};
@@ -112,7 +111,7 @@ fn collect_use_counts(
     path: &str,
     way_offsets: &[ByteOffset],
     filters: &[ElementFilter],
-) -> anyhow::Result<HashMap<i64, u32>> {
+) -> anyhow::Result<FxHashMap<i64, u32>> {
     let per_blob: Vec<Vec<i64>> = way_offsets
         .par_iter()
         .map(|&off| -> anyhow::Result<Vec<i64>> {
@@ -129,7 +128,7 @@ fn collect_use_counts(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    let mut counts: HashMap<i64, u32> = HashMap::new();
+    let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
     for refs in per_blob {
         for id in refs {
             *counts.entry(id).or_insert(0) += 1;
@@ -144,8 +143,8 @@ fn stream_way_region<F>(
     path: &str,
     way_offsets: &[ByteOffset],
     filters: &[ElementFilter],
-    coords: &HashMap<i64, (f32, f32)>,
-    use_counts: &HashMap<i64, u32>,
+    coords: &FxHashMap<i64, (f32, f32)>,
+    use_counts: &FxHashMap<i64, u32>,
     for_each: &F,
 ) -> anyhow::Result<()>
 where
@@ -265,8 +264,8 @@ fn decode_block(path: &str, off: ByteOffset) -> anyhow::Result<PrimitiveBlock> {
 fn collect_coords(
     path: &str,
     node_offsets: &[ByteOffset],
-    needed: &HashMap<i64, u32>,
-) -> anyhow::Result<HashMap<i64, (f32, f32)>> {
+    needed: &FxHashMap<i64, u32>,
+) -> anyhow::Result<FxHashMap<i64, (f32, f32)>> {
     let coords: Vec<(i64, f32, f32)> = node_offsets
         .par_iter()
         .map(|&off| -> anyhow::Result<Vec<(i64, f32, f32)>> {
@@ -327,7 +326,7 @@ where
         )
         .context("pass 1 parallel read")?;
 
-    let mut use_counts: HashMap<i64, u32> = HashMap::new();
+    let mut use_counts: FxHashMap<i64, u32> = FxHashMap::default();
     for id in all_refs {
         *use_counts.entry(id).or_insert(0) += 1;
     }
@@ -356,7 +355,7 @@ where
             },
         )
         .context("pass 2 parallel read")?;
-    let coords: HashMap<i64, (f32, f32)> =
+    let coords: FxHashMap<i64, (f32, f32)> =
         coords_vec.into_iter().map(|(id, lon, lat)| (id, (lon, lat))).collect();
 
     log_node_summary(&use_counts);
@@ -386,7 +385,7 @@ where
 // Shared helpers
 // ----------------------------------------------------------------------------------------
 
-fn log_node_summary(use_counts: &HashMap<i64, u32>) {
+fn log_node_summary(use_counts: &FxHashMap<i64, u32>) {
     let intersections = use_counts.values().filter(|&&c| c >= 2).count();
     info!(
         "{} referenced nodes, {} intersection nodes (≥2 ways)",
@@ -430,8 +429,8 @@ fn way_data(way: &Way) -> WayData {
 /// Resolve a `WayData` into an `OsmWay` by looking up node coordinates.
 fn resolve_way(
     wd: WayData,
-    coords: &HashMap<i64, (f32, f32)>,
-    use_counts: &HashMap<i64, u32>,
+    coords: &FxHashMap<i64, (f32, f32)>,
+    use_counts: &FxHashMap<i64, u32>,
 ) -> Option<OsmWay> {
     // One pass: keep only nodes that have coords, tracking their ids so cut points stay aligned
     // to `pts` indices (a dropped missing-coord node must not shift the indices).
