@@ -1,8 +1,5 @@
 {
   "parking_inference": "directional",
-  "private": {
-    "_implicit_oneway_confidence": "medium"
-  },
   "condition": {
     "macro": "is_advisory_or_exclusive"
   },
@@ -43,6 +40,11 @@
     }
   ],
   "consts": {
-    "oneway": "implicit_yes"
+    "oneway": {
+      "value": "implicit_yes",
+      "consts": {
+        "confidence": "medium"
+      }
+    }
   }
 }

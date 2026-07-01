@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde_json::{Map, Value};
 
 use crate::classify::categories::{categorize, eval_filter, resolve_minzoom, CategoryContext};
@@ -46,17 +48,38 @@ impl TopicRow {
 
 /// Evaluate each `Field`'s producer against `ctx`, inserting non-empty results into `map`.
 /// When a value carries provenance, also emit `<output>_source` / `<output>_confidence`.
+/// Each produced output key is recorded in `written` so the caller can tell which const
+/// defaults were overwritten (used to gate bundled-const companion emission).
 /// Used for `osm_fields`, sanitizers, and derivers alike.
-fn eval_fields(fields: &[Field], ctx: &ExtractCtx, map: &mut Map<String, Value>) {
+fn eval_fields(
+    fields: &[Field],
+    ctx: &ExtractCtx,
+    map: &mut Map<String, Value>,
+    written: &mut HashSet<String>,
+) {
     for field in fields {
         if let Some(p) = field.source.eval(ctx) {
             map.insert(field.output.clone(), p.value);
+            written.insert(field.output.clone());
             // Companion consts → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
             for (k, v) in p.consts {
                 map.insert(format!("{}_{}", field.output, k), v);
             }
         }
     }
+}
+
+/// Interpret a category/topic const entry. A JSON object carrying a `value` field is a *bundled*
+/// const: its `value` is the const itself, and its optional `consts` map holds companions emitted
+/// as `<key>_<companion>` — but only when the const "wins" (no sanitizer/deriver produced `key`),
+/// mirroring the branch-const provenance rule. Any other JSON is a bare literal with no companions.
+fn const_entry(v: &Value) -> (&Value, Option<&Map<String, Value>>) {
+    if let Value::Object(obj) = v {
+        if let Some(value) = obj.get("value") {
+            return (value, obj.get("consts").and_then(Value::as_object));
+        }
+    }
+    (v, None)
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -119,7 +142,8 @@ pub fn build_topic_rows(
         };
 
         let mut osm = Map::new();
-        eval_fields(&topic.osm_fields, &ectx, &mut osm);
+        let mut osm_written = HashSet::new();
+        eval_fields(&topic.osm_fields, &ectx, &mut osm, &mut osm_written);
 
         // Sanitizer + deriver outputs share one column. Sanitizers apply to every category;
         // derivers come from this category's effective set (topic defaults ± overrides).
@@ -129,11 +153,14 @@ pub fn build_topic_rows(
             .unwrap_or(&runner.topic_derivers);
         let mut derived = Map::new();
         let mut private = Map::new();
-        // Lowest-priority layer: category consts (defaults), overwritten by any sanitizer/deriver
-        // that produces the same key. `consts` feed `derived`; `private` feed the private column.
-        if let Some(consts) = runner.category_consts.get(&category.id) {
+        // Lowest-priority layer: seed category const *values* (bundled entries contribute only
+        // their `value` here). Any bundled companions are emitted after field evaluation, and
+        // only for keys no sanitizer/deriver overwrote ("the const wins").
+        let consts = runner.category_consts.get(&category.id);
+        if let Some(consts) = consts {
             for (k, v) in consts {
-                derived.insert(k.clone(), v.clone());
+                let (value, _) = const_entry(v);
+                derived.insert(k.clone(), value.clone());
             }
         }
         if let Some(privates) = runner.category_private.get(&category.id) {
@@ -141,8 +168,26 @@ pub fn build_topic_rows(
                 private.insert(k.clone(), v.clone());
             }
         }
-        eval_fields(&runner.sanitizer_fields, &ectx, &mut derived);
-        eval_fields(derivers, &ectx, &mut derived);
+        let mut written = HashSet::new();
+        eval_fields(&runner.sanitizer_fields, &ectx, &mut derived, &mut written);
+        eval_fields(derivers, &ectx, &mut derived, &mut written);
+
+        // Emit bundled-const companions for entries still holding their const default (not
+        // produced by a sanitizer/deriver): `<key>_<companion>` into `derived`, mirroring the
+        // branch-const provenance rule (e.g. oneway that fell through to the implicit default
+        // contributes `oneway_confidence`).
+        if let Some(consts) = consts {
+            for (k, v) in consts {
+                if written.contains(k) {
+                    continue;
+                }
+                if let (_, Some(companions)) = const_entry(v) {
+                    for (ck, cv) in companions {
+                        derived.insert(format!("{k}_{ck}"), cv.clone());
+                    }
+                }
+            }
+        }
 
         derived.insert("id".into(),       Value::String(id.clone()));
         derived.insert("category".into(), Value::String(category.id.clone()));

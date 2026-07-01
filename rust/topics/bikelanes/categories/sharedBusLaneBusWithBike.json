@@ -1,7 +1,4 @@
 {
-  "private": {
-    "_implicit_oneway_confidence": "high"
-  },
   "condition": {
     "and": [
       {
@@ -87,6 +84,11 @@
     }
   ],
   "consts": {
-    "oneway": "implicit_yes"
+    "oneway": {
+      "value": "implicit_yes",
+      "consts": {
+        "confidence": "high"
+      }
+    }
   }
 }

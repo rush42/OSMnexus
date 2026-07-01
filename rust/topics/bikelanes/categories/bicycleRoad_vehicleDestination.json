@@ -1,8 +1,5 @@
 {
   "parking_inference": "both",
-  "private": {
-    "_implicit_oneway_confidence": "high"
-  },
   "condition": {
     "and": [
       {
@@ -61,5 +58,13 @@
       "deriver": "smoothness_from_parent",
       "output": "smoothness"
     }
-  ]
+  ],
+  "consts": {
+    "oneway": {
+      "value": "assumed_no",
+      "consts": {
+        "confidence": "high"
+      }
+    }
+  }
 }

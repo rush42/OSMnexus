@@ -1,10 +1,12 @@
 {
   "table": "bikelanes",
   "consts": {
-    "oneway": "assumed_no"
-  },
-  "private": {
-    "_implicit_oneway_confidence": "not_applicable"
+    "oneway": {
+      "value": "assumed_no",
+      "consts": {
+        "confidence": "not_applicable"
+      }
+    }
   },
   "exclude_condition": {
     "macro": "standard_exclude"

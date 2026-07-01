@@ -1,7 +1,4 @@
 {
-  "private": {
-    "_implicit_oneway_confidence": "high"
-  },
   "condition": {
     "and": [
       {
@@ -25,5 +22,13 @@
     "data_no",
     "not_expected",
     "separate_geometry"
-  ]
+  ],
+  "consts": {
+    "oneway": {
+      "value": "assumed_no",
+      "consts": {
+        "confidence": "high"
+      }
+    }
+  }
 }
