@@ -139,7 +139,7 @@ impl TopicRunner {
         } else {
             // No categories/ dir → nothing matches, so the topic emits no rows.
             // Every shipped topic has a categories/ dir; this is just a safe fallback.
-            CategoriesFile { macros: Default::default(), categories: Vec::new() }
+            CategoriesFile { macros: Default::default(), categories: Vec::new(), order: Vec::new() }
         };
 
         // Merge shared cross-topic macros (topics/_shared/) into this topic's macro
@@ -150,6 +150,12 @@ impl TopicRunner {
         {
             categories.macros.entry(k).or_insert(v);
         }
+
+        // Compile the exclude relation into a priority order (needs macros fully merged first).
+        // categorize() is then pure first-match over this — no runtime excludes.
+        categories
+            .build_order()
+            .with_context(|| format!("building category order for topics/{name}"))?;
 
         // Split the declared transform pipeline into ordered no-arg tag transforms and
         // the (at most one) parameterized center-line split.
