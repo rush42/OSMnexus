@@ -32,4 +32,8 @@ pub struct Config {
     /// serial run, or a lower number to leave cores free for the rest of the system.
     #[arg(long, default_value_t = 0)]
     pub threads: usize,
+
+    /// Split each way at its intersection nodes, emitting one row per sub-linestring.
+    #[arg(long, default_value_t = false)]
+    pub split_at_intersections: bool,
 }

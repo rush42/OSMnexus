@@ -219,12 +219,12 @@ impl TopicRunner {
     /// Run the topic's pipeline for one way: apply this topic's tag transforms to a copy
     /// of the raw tags, then categorize/split/extract. `raw_tags` are the way's untouched
     /// tags — each topic transforms its own copy.
-    pub fn process(&self, way: &OsmWay, raw_tags: &RawTags, geom: &geo::LineString<f64>, length_m: f64, meta: &OsmMeta) -> Vec<TopicRow> {
+    pub fn process(&self, way: &OsmWay, raw_tags: &RawTags, geom: &geo::LineString<f64>, length_m: f64, meta: &OsmMeta, split: bool) -> Vec<TopicRow> {
         let mut tags = raw_tags.clone();
         for t in &self.tag_transforms {
             t.apply(&mut tags);
         }
-        build_topic_rows(self, way, tags, geom, length_m, meta)
+        build_topic_rows(self, way, tags, geom, length_m, meta, split)
     }
 }
 

@@ -12,7 +12,7 @@ pub struct WayOutput(pub Vec<Vec<TopicRow>>);
 /// Thin dispatcher: compute the shared geometry/length/metadata once, then hand the way's
 /// raw tags to every topic. Each topic owns its full pipeline (transforms → exclude →
 /// categorize → extract), all declared in its `topic.json`.
-pub fn process_way(way: &OsmWay, runners: &[TopicRunner]) -> WayOutput {
+pub fn process_way(way: &OsmWay, runners: &[TopicRunner], split: bool) -> WayOutput {
     let (length_m, geom) = profile::time(&GEOMETRY, || {
         (haversine_length_m(&way.coords), project_line(&way.coords))
     });
@@ -29,7 +29,7 @@ pub fn process_way(way: &OsmWay, runners: &[TopicRunner]) -> WayOutput {
     let rows = profile::time(&CLASSIFY, || {
         runners
             .iter()
-            .map(|r| r.process(way, &way.tags, &geom, length_m, &meta))
+            .map(|r| r.process(way, &way.tags, &geom, length_m, &meta, split))
             .collect()
     });
 

@@ -81,9 +81,10 @@ async fn main() -> anyhow::Result<()> {
     // consumer below. Runs on the blocking pool because the reader is CPU-bound rayon work.
     // Ways are never materialized — peak memory tracks the node coordinates, not the way count.
     let pbf_file = cfg.pbf_file.clone();
+    let split = cfg.split_at_intersections;
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         stream_ways(&pbf_file, &filters, |way| {
-            let _ = tx.blocking_send(process_way(way, &runners));
+            let _ = tx.blocking_send(process_way(way, &runners, split));
         })
     });
 
