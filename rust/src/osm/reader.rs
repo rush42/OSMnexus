@@ -6,6 +6,11 @@ use tracing::{info, warn};
 
 use super::types::{ElementFilter, OsmWay, RawTags, WayData, WayMeta};
 
+/// Node coordinate map for the geometry pass: `id → (lon, lat, shared)` where `shared` = the node
+/// is used by ≥2 filter-passing ways (an intersection cut-point). Folding the shared flag in here
+/// lets `use_counts` be dropped after Pass B, so the geometry pass holds only this one map.
+type NodeCoords = FxHashMap<i64, (f32, f32, bool)>;
+
 /// A compact, allocation-frugal store of the kept ways' node-id lists, built in Pass A and consumed
 /// by the geometry pass. CSR layout: one flat `refs` vector holds every kept way's node ids
 /// back-to-back; `ways` indexes into it as `(id, start, len, payload)`. Avoids one `Vec` per way.
@@ -94,11 +99,14 @@ where
                 let coords = collect_coords(path, node_offsets, &use_counts)?;
                 info!("[phase] Pass B (collect node coords): {:.1}s", t.elapsed().as_secs_f32());
                 log_node_summary(&use_counts);
+                // `use_counts` is no longer needed — the shared flag is baked into `coords` — so drop
+                // it before the geometry pass, which then holds only `coords` + the way index.
+                drop(use_counts);
                 // Geometry pass — resolve each indexed way + emit geom. No blob decode here; the
-                // node maps + index drop afterwards, freeing memory before index creation. Overlaps
+                // coords map + index drop afterwards, freeing memory before index creation. Overlaps
                 // with the DB-drain consumer, so its duration is the *producer* side only.
                 let t = std::time::Instant::now();
-                build_geometries(&index, &coords, &use_counts, &build_geom)?;
+                build_geometries(&index, &coords, &build_geom)?;
                 info!("[phase] Geometry pass (resolve + build geometry + emit geom, no decode): {:.1}s", t.elapsed().as_secs_f32());
 
                 return Ok(());
@@ -118,10 +126,39 @@ where
 // Sorted fast path
 // ----------------------------------------------------------------------------------------
 
+/// Merge two `(use_counts, WayIndex)` accumulators: sum the count maps (folding the smaller into
+/// the larger to minimise inserts) and concatenate the index segments (rebasing `b`'s ref offsets
+/// onto the end of `a`'s ref buffer). Used as the `try_reduce` combiner in Pass A.
+fn merge_acc<M>(
+    a: (FxHashMap<i64, u32>, WayIndex<M>),
+    b: (FxHashMap<i64, u32>, WayIndex<M>),
+) -> (FxHashMap<i64, u32>, WayIndex<M>) {
+    let (ca, ia) = a;
+    let (cb, ib) = b;
+
+    let mut counts = if ca.len() >= cb.len() { (ca, cb) } else { (cb, ca) };
+    let (big, small) = (&mut counts.0, counts.1);
+    for (k, v) in small {
+        *big.entry(k).or_insert(0) += v;
+    }
+    let counts = counts.0;
+
+    let mut index = ia;
+    let base = index.refs.len() as u32;
+    index.refs.extend_from_slice(&ib.refs);
+    for (id, start, len, m) in ib.ways {
+        index.ways.push((id, base + start, len, m));
+    }
+    (counts, index)
+}
+
 /// Pass A — decode the way-region blobs once (parallel). For every filter-passing way, tally its
-/// node refs into the global use-count map (intersection detection spans all filter-passing ways,
-/// not just classified-kept ones), classify it (side effect: emit tag rows), and — when kept —
-/// record its node ids in the `WayIndex` for the geometry pass. Tags/meta drop after classify.
+/// node refs into the use-count map (intersection detection spans all filter-passing ways, not just
+/// classified-kept ones), classify it (side effect: emit tag rows), and — when kept — record its
+/// node ids in the `WayIndex` for the geometry pass. Tags/meta drop after classify.
+///
+/// Counts are folded into per-blob maps and merged via `try_reduce`, so the raw node refs are never
+/// materialised in bulk (avoids a multi-GB transient on large imports).
 fn classify_and_index<C, M>(
     path: &str,
     way_offsets: &[ByteOffset],
@@ -134,50 +171,35 @@ where
 {
     use crate::profile::{self, DECODE, TAGBUILD};
 
-    // Each blob independently: all filter-passing refs (for counts) + a local kept index segment.
-    let per_blob: Vec<(Vec<i64>, WayIndex<M>)> = way_offsets
+    way_offsets
         .par_iter()
-        .map(|&off| -> anyhow::Result<(Vec<i64>, WayIndex<M>)> {
+        .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, WayIndex<M>)> {
             let block = profile::time(&DECODE, || decode_block(path, off))?;
-            let mut count_refs: Vec<i64> = Vec::new();
+            let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
             let mut seg = WayIndex::new();
             for group in block.groups() {
                 for way in group.ways() {
                     if way_passes(filters, &way) {
                         let wd = profile::time(&TAGBUILD, || way_data(&way));
-                        count_refs.extend_from_slice(&wd.node_refs);
+                        for &id in &wd.node_refs {
+                            *counts.entry(id).or_insert(0) += 1;
+                        }
                         if let Some(m) = classify(&wd) {
                             seg.push(wd.id, &wd.node_refs, m);
                         }
                     }
                 }
             }
-            Ok((count_refs, seg))
+            Ok((counts, seg))
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
-    // Merge: sum counts, and concatenate the per-blob index segments (rebasing their offsets).
-    let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
-    let mut index: WayIndex<M> = WayIndex::new();
-    for (count_refs, seg) in per_blob {
-        for id in count_refs {
-            *counts.entry(id).or_insert(0) += 1;
-        }
-        let base = index.refs.len() as u32;
-        index.refs.extend_from_slice(&seg.refs);
-        for (id, start, len, m) in seg.ways {
-            index.ways.push((id, base + start, len, m));
-        }
-    }
-    Ok((counts, index))
+        .try_reduce(|| (FxHashMap::default(), WayIndex::new()), |a, b| Ok(merge_acc(a, b)))
 }
 
 /// Geometry pass — resolve each indexed way against the coords map (parallel) and hand it to
 /// `build_geom`. No blob decode: the ways' node ids come straight from the in-memory `WayIndex`.
 fn build_geometries<G, M>(
     index: &WayIndex<M>,
-    coords: &FxHashMap<i64, (f32, f32)>,
-    use_counts: &FxHashMap<i64, u32>,
+    coords: &NodeCoords,
     build_geom: &G,
 ) -> anyhow::Result<()>
 where
@@ -187,7 +209,7 @@ where
     use crate::profile::{self, RESOLVE};
     index.ways.par_iter().try_for_each(|&(id, start, len, m)| -> anyhow::Result<()> {
         let refs = &index.refs[start as usize..(start + len) as usize];
-        if let Some(w) = profile::time(&RESOLVE, || resolve_geometry(id, refs, coords, use_counts)) {
+        if let Some(w) = profile::time(&RESOLVE, || resolve_geometry(id, refs, coords)) {
             build_geom(&w, m);
         }
         Ok(())
@@ -289,27 +311,29 @@ fn decode_block(path: &str, off: ByteOffset) -> anyhow::Result<PrimitiveBlock> {
 }
 
 /// Collect coordinates (as f32, ~1 m precision) for the needed nodes from the given node-region
-/// blobs, in parallel.
+/// blobs, in parallel. Each node's `shared` flag (used by ≥2 ways) is read from `use_counts` here
+/// and baked into the value, so the caller can drop `use_counts` before the geometry pass.
 fn collect_coords(
     path: &str,
     node_offsets: &[ByteOffset],
-    needed: &FxHashMap<i64, u32>,
-) -> anyhow::Result<FxHashMap<i64, (f32, f32)>> {
-    let coords: Vec<(i64, f32, f32)> = node_offsets
+    use_counts: &FxHashMap<i64, u32>,
+) -> anyhow::Result<NodeCoords> {
+    let coords: Vec<(i64, f32, f32, bool)> = node_offsets
         .par_iter()
-        .map(|&off| -> anyhow::Result<Vec<(i64, f32, f32)>> {
+        .map(|&off| -> anyhow::Result<Vec<(i64, f32, f32, bool)>> {
             let block = decode_block(path, off)?;
             let mut out = Vec::new();
+            let mut take = |id: i64, lon: f32, lat: f32| {
+                if let Some(&c) = use_counts.get(&id) {
+                    out.push((id, lon, lat, c > 1));
+                }
+            };
             for group in block.groups() {
                 for n in group.dense_nodes() {
-                    if needed.contains_key(&n.id()) {
-                        out.push((n.id(), n.lon() as f32, n.lat() as f32));
-                    }
+                    take(n.id(), n.lon() as f32, n.lat() as f32);
                 }
                 for n in group.nodes() {
-                    if needed.contains_key(&n.id()) {
-                        out.push((n.id(), n.lon() as f32, n.lat() as f32));
-                    }
+                    take(n.id(), n.lon() as f32, n.lat() as f32);
                 }
             }
             Ok(out)
@@ -319,7 +343,7 @@ fn collect_coords(
         .flatten()
         .collect();
 
-    Ok(coords.into_iter().map(|(id, lon, lat)| (id, (lon, lat))).collect())
+    Ok(coords.into_iter().map(|(id, lon, lat, shared)| (id, (lon, lat, shared))).collect())
 }
 
 // ----------------------------------------------------------------------------------------
@@ -387,10 +411,16 @@ where
             },
         )
         .context("pass 2 parallel read")?;
-    let coords: FxHashMap<i64, (f32, f32)> =
-        coords_vec.into_iter().map(|(id, lon, lat)| (id, (lon, lat))).collect();
+    let coords: NodeCoords = coords_vec
+        .into_iter()
+        .map(|(id, lon, lat)| {
+            let shared = use_counts.get(&id).copied().unwrap_or(0) > 1;
+            (id, (lon, lat, shared))
+        })
+        .collect();
 
     log_node_summary(&use_counts);
+    drop(use_counts);
 
     // Pass 3 re-decodes the ways (rare path) so it can classify + resolve + build geometry in one
     // go — coords are already in hand, so no node-id index is needed.
@@ -403,9 +433,7 @@ where
                     if way_passes(filters, &way) {
                         let wd = way_data(&way);
                         if let Some(m) = classify(&wd) {
-                            if let Some(w) =
-                                resolve_geometry(wd.id, &wd.node_refs, &coords, &use_counts)
-                            {
+                            if let Some(w) = resolve_geometry(wd.id, &wd.node_refs, &coords) {
                                 build_geom(&w, m);
                             }
                         }
@@ -467,20 +495,15 @@ fn way_data(way: &Way) -> WayData {
 
 /// Resolve a way's node ids into an `OsmWay` geometry by looking up node coordinates. Tag/meta are
 /// not involved — classification already ran in Pass A.
-fn resolve_geometry(
-    id: i64,
-    node_refs: &[i64],
-    coords: &FxHashMap<i64, (f32, f32)>,
-    use_counts: &FxHashMap<i64, u32>,
-) -> Option<OsmWay> {
-    // One pass: keep only nodes that have coords, tracking their ids so cut points stay aligned
-    // to `pts` indices (a dropped missing-coord node must not shift the indices).
+fn resolve_geometry(id: i64, node_refs: &[i64], coords: &NodeCoords) -> Option<OsmWay> {
+    // One pass: keep only nodes that have coords, tracking their id + shared flag so cut points stay
+    // aligned to `pts` indices (a dropped missing-coord node must not shift the indices).
     let mut pts: Vec<(f64, f64)> = Vec::with_capacity(node_refs.len());
-    let mut kept_ids: Vec<i64> = Vec::with_capacity(node_refs.len());
-    for &id in node_refs {
-        if let Some(&(lon, lat)) = coords.get(&id) {
+    let mut kept: Vec<(i64, bool)> = Vec::with_capacity(node_refs.len());
+    for &nid in node_refs {
+        if let Some(&(lon, lat, shared)) = coords.get(&nid) {
             pts.push((lon as f64, lat as f64));
-            kept_ids.push(id);
+            kept.push((nid, shared));
         }
     }
 
@@ -488,11 +511,11 @@ fn resolve_geometry(
         return None;
     }
 
-    // Cut points: start + end (always), plus interior nodes shared with another way (count > 1).
-    let last = kept_ids.len() - 1;
+    // Cut points: start + end (always), plus interior nodes shared with another way.
+    let last = kept.len() - 1;
     let mut cut_points: Vec<(u32, i64)> = Vec::new();
-    for (i, &nid) in kept_ids.iter().enumerate() {
-        if i == 0 || i == last || use_counts.get(&nid).copied().unwrap_or(0) > 1 {
+    for (i, &(nid, shared)) in kept.iter().enumerate() {
+        if i == 0 || i == last || shared {
             cut_points.push((i as u32, nid));
         }
     }
