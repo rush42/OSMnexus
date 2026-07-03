@@ -55,4 +55,10 @@ pub struct Config {
     /// when the tables are actually queried.
     #[arg(long, default_value_t = false)]
     pub create_index: bool,
+
+    /// Parallel COPY connections per table. Rows are round-robined across them, so the dominant
+    /// table (e.g. roads) isn't bottlenecked on a single connection's serialization + ingest.
+    /// Uses up to `2 × topics × db_writers` Postgres connections during load.
+    #[arg(long, default_value_t = 4)]
+    pub db_writers: usize,
 }

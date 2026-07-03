@@ -1,9 +1,14 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use osm_pipeline::{config, db, engine, osm, processing};
 
 use anyhow::Context;
 use bytes::Bytes;
 use clap::Parser;
+use deadpool_postgres::Pool;
 use futures::SinkExt;
+use tokio::sync::mpsc;
 use tracing::info;
 
 use config::Config;
@@ -14,18 +19,57 @@ use osm::reader::stream_ways;
 use osm::types::{ElementFilter, OsmWay, WayData};
 use processing::{classify_way, geom_rows_for};
 
-/// A batch of rows for the COPY consumer, tagged with its destination. `Tag(i, ..)` → tag sink of
-/// topic `i`; `Geom(mask, ..)` → geom sink of every topic whose bit is set in `mask` (geometry is
-/// shared across topics, so one build is fanned out to each surviving topic).
-enum RowBatch {
-    Tag(usize, Vec<TopicRow>),
-    Geom(u32, Vec<GeomRow>),
-}
-
 const TAG_COPY_COLUMNS: &str =
     "(osm_id, osm_type, id, osm, derived, private, meta, minzoom) FROM STDIN (FORMAT CSV)";
 const GEOM_COPY_COLUMNS: &str =
     "(osm_id, variant, seg_idx, start_id, end_id, geom, length_m, total_length_m) FROM STDIN (FORMAT CSV)";
+
+/// Per-writer channel capacity (rows/batches buffered before the producer blocks).
+const WRITER_CHAN_CAP: usize = 256;
+
+/// One COPY writer for the tag table `table`: owns its pooled connection for the whole COPY (so the
+/// deadpool `Object` can't be recycled mid-COPY — the pitfall that hangs the next `copy_in`),
+/// drains its channel, and returns the row count.
+async fn tag_writer(
+    pool: Pool,
+    table: String,
+    mut rx: mpsc::Receiver<Vec<TopicRow>>,
+) -> anyhow::Result<usize> {
+    let client = pool.get().await.context("getting tag writer connection")?;
+    let mut sink = Box::pin(client.copy_in(&format!("COPY {table} {TAG_COPY_COLUMNS}")).await?);
+    let mut buf = Vec::with_capacity(512 * 1024);
+    let mut count = 0;
+    while let Some(rows) = rx.recv().await {
+        count += stream_rows(rows, &mut buf, sink.as_mut()).await?;
+    }
+    if !buf.is_empty() {
+        sink.as_mut().send(Bytes::from(buf)).await?;
+    }
+    sink.as_mut().finish().await?;
+    Ok(count)
+}
+
+/// One COPY writer for `<table>_geom`. Receives `Arc`-shared geom-row batches (a batch may be
+/// written to several topics), so no cloning of the row data.
+async fn geom_writer(
+    pool: Pool,
+    table: String,
+    mut rx: mpsc::Receiver<Arc<Vec<GeomRow>>>,
+) -> anyhow::Result<usize> {
+    let client = pool.get().await.context("getting geom writer connection")?;
+    let mut sink =
+        Box::pin(client.copy_in(&format!("COPY {table}_geom {GEOM_COPY_COLUMNS}")).await?);
+    let mut buf = Vec::with_capacity(512 * 1024);
+    let mut count = 0;
+    while let Some(rows) = rx.recv().await {
+        count += stream_geom_rows(&rows, &mut buf, sink.as_mut()).await?;
+    }
+    if !buf.is_empty() {
+        sink.as_mut().send(Bytes::from(buf)).await?;
+    }
+    sink.as_mut().finish().await?;
+    Ok(count)
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -83,18 +127,48 @@ async fn main() -> anyhow::Result<()> {
         .map(|r| r.spec.element_filter.clone().unwrap_or_else(ElementFilter::highway))
         .collect();
 
+    let n = tables.len();
+    let k = cfg.db_writers.max(1);
+    // Ensure the pool can hand out every writer connection at once (2 tables/topic × k).
+    pool.resize(2 * n * k + 2);
+    info!("Using {k} COPY connection(s) per table ({} writers total)", 2 * n * k);
+
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<RowBatch>(2048);
+    // Sharded COPY writers: k connections per table, each its own task draining its own channel.
+    // Rows are round-robined across a table's k writers, so the dominant table (roads) gets k-way
+    // parallelism for both serialization and ingest instead of one serial connection.
+    let mut tag_senders: Vec<Vec<mpsc::Sender<Vec<TopicRow>>>> = Vec::with_capacity(n);
+    let mut geom_senders: Vec<Vec<mpsc::Sender<Arc<Vec<GeomRow>>>>> = Vec::with_capacity(n);
+    let mut tag_handles: Vec<Vec<tokio::task::JoinHandle<anyhow::Result<usize>>>> = Vec::with_capacity(n);
+    let mut geom_handles: Vec<Vec<tokio::task::JoinHandle<anyhow::Result<usize>>>> = Vec::with_capacity(n);
+    for table in &tables {
+        let (mut ts, mut th) = (Vec::with_capacity(k), Vec::with_capacity(k));
+        let (mut gs, mut gh) = (Vec::with_capacity(k), Vec::with_capacity(k));
+        for _ in 0..k {
+            let (tx, rx) = mpsc::channel::<Vec<TopicRow>>(WRITER_CHAN_CAP);
+            th.push(tokio::spawn(tag_writer(pool.clone(), table.clone(), rx)));
+            ts.push(tx);
+            let (tx, rx) = mpsc::channel::<Arc<Vec<GeomRow>>>(WRITER_CHAN_CAP);
+            gh.push(tokio::spawn(geom_writer(pool.clone(), table.clone(), rx)));
+            gs.push(tx);
+        }
+        tag_senders.push(ts);
+        tag_handles.push(th);
+        geom_senders.push(gs);
+        geom_handles.push(gh);
+    }
 
-    // Producer: the reader decodes the PBF once and drives two callbacks, both feeding the COPY
-    // consumer below. `classify` (Pass A) turns a way's tags into per-topic tag rows and returns a
-    // bitmask of which topics kept it; `build_geom` (geometry pass) turns the resolved way into geom
-    // rows. Runs on the blocking pool because the reader is CPU-bound rayon work. Peak memory tracks
-    // the node coordinates + the kept ways' node-id index, not the tag/geom row count.
+    // Producer: the reader decodes the PBF once and drives two callbacks. `classify` (Pass A) turns a
+    // way's tags into per-topic tag rows and returns a bitmask of which topics kept it; `build_geom`
+    // (geometry pass) turns the resolved way into geom rows. Both round-robin their output across the
+    // target table's writers. Runs on the blocking pool (CPU-bound rayon work). Dropping the producer
+    // drops all senders, closing the channels so writers finish.
     let pbf_file = cfg.pbf_file.clone();
     let split = cfg.split;
+    let tag_rr: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
+    let geom_rr: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let classify = |wd: &WayData| -> Option<u32> {
             let out = classify_way(&runners, wd);
@@ -103,95 +177,41 @@ async fn main() -> anyhow::Result<()> {
             }
             for (i, rows) in out.topic_rows.into_iter().enumerate() {
                 if !rows.is_empty() {
-                    let _ = tx.blocking_send(RowBatch::Tag(i, rows));
+                    let kk = tag_rr[i].fetch_add(1, Ordering::Relaxed) % k;
+                    let _ = tag_senders[i][kk].blocking_send(rows);
                 }
             }
             Some(out.mask)
         };
         let build_geom = |way: &OsmWay, mask: u32| {
-            let _ = tx.blocking_send(RowBatch::Geom(mask, geom_rows_for(way, split)));
+            let rows = Arc::new(geom_rows_for(way, split));
+            for i in 0..n {
+                if mask & (1 << i) != 0 {
+                    let kk = geom_rr[i].fetch_add(1, Ordering::Relaxed) % k;
+                    let _ = geom_senders[i][kk].blocking_send(rows.clone());
+                }
+            }
         };
         stream_ways(&pbf_file, &filters, classify, build_geom)
     });
 
-    // One COPY sink per topic, pinned in a Box so they can live in a Vec.
-    //
-    // The `CopyInSink` returned by `copy_in` does NOT keep its deadpool `Object`
-    // alive — it only holds a handle to the connection's driver. We must therefore
-    // retain each `Object` for as long as its sink is in use; otherwise the `Object`
-    // drops at the end of the loop iteration and the connection is recycled back into
-    // the pool *while still mid-COPY*. With `RecyclingMethod::Fast` (no validation) the
-    // next `pool.get()` would hand back that same connection, still in COPY-in mode, and
-    // the subsequent `copy_in` would hang forever waiting for a response that never comes.
-    // Two COPY sinks per topic: the tag table and its `<table>_geom` table. Both sets of pooled
-    // `Object`s (`clients`) must be retained for the sinks' lifetime — see the deadpool pitfall
-    // above; a recycled connection mid-COPY would hang the next `copy_in`.
-    let n = tables.len();
-    let mut clients = Vec::with_capacity(2 * n);
-    let mut tag_sinks: Vec<std::pin::Pin<Box<tokio_postgres::CopyInSink<Bytes>>>> =
-        Vec::with_capacity(n);
-    let mut geom_sinks: Vec<std::pin::Pin<Box<tokio_postgres::CopyInSink<Bytes>>>> =
-        Vec::with_capacity(n);
-    for table in &tables {
-        let tag_client = pool.get().await.context("getting topic DB connection")?;
-        let tag_sink = tag_client.copy_in(&format!("COPY {table} {TAG_COPY_COLUMNS}")).await?;
-        tag_sinks.push(Box::pin(tag_sink));
-        clients.push(tag_client);
-
-        let geom_client = pool.get().await.context("getting geom DB connection")?;
-        let geom_sink = geom_client
-            .copy_in(&format!("COPY {table}_geom {GEOM_COPY_COLUMNS}"))
-            .await?;
-        geom_sinks.push(Box::pin(geom_sink));
-        clients.push(geom_client);
-    }
-
-    let mut tag_bufs: Vec<Vec<u8>>  = (0..n).map(|_| Vec::with_capacity(512 * 1024)).collect();
-    let mut geom_bufs: Vec<Vec<u8>> = (0..n).map(|_| Vec::with_capacity(512 * 1024)).collect();
-    let mut tag_counts: Vec<usize>  = vec![0; n];
-    let mut geom_counts: Vec<usize> = vec![0; n];
-
-    // Consumer-active timer: started on the first row (not sink setup), so it excludes the
-    // reader's startup window. Compared against the reader's producer phases, this shows whether
-    // the producer or the DB drain is the wall.
-    let mut t_drain: Option<std::time::Instant> = None;
-    while let Some(batch) = rx.recv().await {
-        t_drain.get_or_insert_with(std::time::Instant::now);
-        match batch {
-            RowBatch::Tag(i, rows) => {
-                tag_counts[i] += stream_rows(rows, &mut tag_bufs[i], tag_sinks[i].as_mut()).await?;
-            }
-            // Geometry is shared across topics; write the one built set to each surviving topic's
-            // geom sink (bits set in `mask`), so no orphan geometry for topics that dropped the way.
-            RowBatch::Geom(mask, rows) => {
-                for i in 0..n {
-                    if mask & (1 << i) != 0 {
-                        geom_counts[i] +=
-                            stream_geom_rows(&rows, &mut geom_bufs[i], geom_sinks[i].as_mut()).await?;
-                    }
-                }
-            }
-        }
-    }
-
-    for (i, sink) in tag_sinks.iter_mut().enumerate() {
-        if !tag_bufs[i].is_empty() {
-            sink.as_mut().send(Bytes::from(std::mem::take(&mut tag_bufs[i]))).await?;
-        }
-        sink.as_mut().finish().await?;
-    }
-    for (i, sink) in geom_sinks.iter_mut().enumerate() {
-        if !geom_bufs[i].is_empty() {
-            sink.as_mut().send(Bytes::from(std::mem::take(&mut geom_bufs[i]))).await?;
-        }
-        sink.as_mut().finish().await?;
-    }
-    if let Some(t) = t_drain {
-        info!("[phase] DB drain + COPY finish (consumer-active): {:.1}s", t.elapsed().as_secs_f32());
-    }
-
+    // Await the producer first: it drops the senders, closing every writer channel so the writer
+    // tasks drain their tails, finish the COPY, and return their counts.
     producer.await.context("reader/processing task panicked")??;
     osm_pipeline::profile::report();
+
+    let mut tag_counts = vec![0usize; n];
+    let mut geom_counts = vec![0usize; n];
+    for (i, handles) in tag_handles.into_iter().enumerate() {
+        for h in handles {
+            tag_counts[i] += h.await.context("tag writer panicked")??;
+        }
+    }
+    for (i, handles) in geom_handles.into_iter().enumerate() {
+        for h in handles {
+            geom_counts[i] += h.await.context("geom writer panicked")??;
+        }
+    }
 
     for (i, table) in tables.iter().enumerate() {
         info!("Wrote {} tag rows → {}, {} geom rows → {}_geom", tag_counts[i], table, geom_counts[i], table);
