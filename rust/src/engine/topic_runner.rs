@@ -139,7 +139,7 @@ impl TopicRunner {
         } else {
             // No categories/ dir → nothing matches, so the topic emits no rows.
             // Every shipped topic has a categories/ dir; this is just a safe fallback.
-            CategoriesFile { macros: Default::default(), categories: Vec::new(), order: Vec::new(), tree: Default::default() }
+            CategoriesFile { macros: Default::default(), categories: Vec::new(), order: Vec::new() }
         };
 
         // Merge shared cross-topic macros (topics/_shared/) into this topic's macro
