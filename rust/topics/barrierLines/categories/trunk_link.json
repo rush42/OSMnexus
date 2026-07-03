@@ -1,6 +1,0 @@
-{
-  "condition": {
-    "tag": "highway",
-    "eq": "trunk_link"
-  }
-}

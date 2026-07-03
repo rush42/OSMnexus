@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Load all topics.  Add a new topic name here — no other code changes needed.
-    let runners: Vec<TopicRunner> = ["bikelanes", "roads", "barrierLines"]
+    let runners: Vec<TopicRunner> = ["bikelanes", "roads"]
         .iter()
         .map(|name| TopicRunner::load(name))
         .collect::<anyhow::Result<_>>()?;
