@@ -1,5 +1,4 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use osm_pipeline::{config, db, engine, osm, processing};
 
@@ -12,7 +11,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use config::Config;
-use db::{pool::build_pool, schema};
+use db::{pool::build_pool, schema, schema::GEOM_TABLE};
 use engine::runner::{GeomRow, TopicRow};
 use engine::topic_runner::{stream_geom_rows, stream_rows, TopicRunner};
 use osm::reader::stream_ways;
@@ -49,16 +48,16 @@ async fn tag_writer(
     Ok(count)
 }
 
-/// One COPY writer for `<table>_geom`. Receives `Arc`-shared geom-row batches (a batch may be
-/// written to several topics), so no cloning of the row data.
+/// One COPY writer for the shared `GEOM_TABLE`. Geometry is topic-independent (a way's line + its
+/// global intersection split are the same for every topic), so it is written once per way here
+/// rather than duplicated per topic.
 async fn geom_writer(
     pool: Pool,
-    table: String,
-    mut rx: mpsc::Receiver<Arc<Vec<GeomRow>>>,
+    mut rx: mpsc::Receiver<Vec<GeomRow>>,
 ) -> anyhow::Result<usize> {
     let client = pool.get().await.context("getting geom writer connection")?;
     let mut sink =
-        Box::pin(client.copy_in(&format!("COPY {table}_geom {GEOM_COPY_COLUMNS}")).await?);
+        Box::pin(client.copy_in(&format!("COPY {GEOM_TABLE} {GEOM_COPY_COLUMNS}")).await?);
     let mut buf = Vec::with_capacity(512 * 1024);
     let mut count = 0;
     while let Some(rows) = rx.recv().await {
@@ -129,48 +128,47 @@ async fn main() -> anyhow::Result<()> {
 
     let n = tables.len();
     let k = cfg.db_writers.max(1);
-    // Ensure the pool can hand out every writer connection at once (2 tables/topic × k).
-    pool.resize(2 * n * k + 2);
-    info!("Using {k} COPY connection(s) per table ({} writers total)", 2 * n * k);
+    // Pool must supply every writer connection at once: k per tag table + k for the shared geom table.
+    pool.resize((n + 1) * k + 2);
+    info!("Using {k} COPY connection(s) per table ({} writers total)", (n + 1) * k);
 
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
 
-    // Sharded COPY writers: k connections per table, each its own task draining its own channel.
-    // Rows are round-robined across a table's k writers, so the dominant table (roads) gets k-way
+    // Sharded COPY writers: k connections per tag table, plus k connections for the one shared geom
+    // table. Rows are round-robined across a table's k writers, so the dominant tables get k-way
     // parallelism for both serialization and ingest instead of one serial connection.
     let mut tag_senders: Vec<Vec<mpsc::Sender<Vec<TopicRow>>>> = Vec::with_capacity(n);
-    let mut geom_senders: Vec<Vec<mpsc::Sender<Arc<Vec<GeomRow>>>>> = Vec::with_capacity(n);
     let mut tag_handles: Vec<Vec<tokio::task::JoinHandle<anyhow::Result<usize>>>> = Vec::with_capacity(n);
-    let mut geom_handles: Vec<Vec<tokio::task::JoinHandle<anyhow::Result<usize>>>> = Vec::with_capacity(n);
     for table in &tables {
         let (mut ts, mut th) = (Vec::with_capacity(k), Vec::with_capacity(k));
-        let (mut gs, mut gh) = (Vec::with_capacity(k), Vec::with_capacity(k));
         for _ in 0..k {
             let (tx, rx) = mpsc::channel::<Vec<TopicRow>>(WRITER_CHAN_CAP);
             th.push(tokio::spawn(tag_writer(pool.clone(), table.clone(), rx)));
             ts.push(tx);
-            let (tx, rx) = mpsc::channel::<Arc<Vec<GeomRow>>>(WRITER_CHAN_CAP);
-            gh.push(tokio::spawn(geom_writer(pool.clone(), table.clone(), rx)));
-            gs.push(tx);
         }
         tag_senders.push(ts);
         tag_handles.push(th);
-        geom_senders.push(gs);
-        geom_handles.push(gh);
+    }
+    let mut geom_senders: Vec<mpsc::Sender<Vec<GeomRow>>> = Vec::with_capacity(k);
+    let mut geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(k);
+    for _ in 0..k {
+        let (tx, rx) = mpsc::channel::<Vec<GeomRow>>(WRITER_CHAN_CAP);
+        geom_handles.push(tokio::spawn(geom_writer(pool.clone(), rx)));
+        geom_senders.push(tx);
     }
 
     // Producer: the reader decodes the PBF once and drives two callbacks. `classify` (Pass A) turns a
-    // way's tags into per-topic tag rows and returns a bitmask of which topics kept it; `build_geom`
-    // (geometry pass) turns the resolved way into geom rows. Both round-robin their output across the
-    // target table's writers. Runs on the blocking pool (CPU-bound rayon work). Dropping the producer
-    // drops all senders, closing the channels so writers finish.
+    // way's tags into per-topic tag rows, routed round-robin to each topic's tag writers; it returns
+    // `Some(())` iff some topic kept the way. `build_geom` (geometry pass) writes the resolved way's
+    // geometry **once** to the shared geom table (topic-independent). Runs on the blocking pool
+    // (CPU-bound rayon work). Dropping the producer drops all senders, closing the writer channels.
     let pbf_file = cfg.pbf_file.clone();
     let split = cfg.split;
     let tag_rr: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
-    let geom_rr: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
+    let geom_rr = AtomicUsize::new(0);
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let classify = |wd: &WayData| -> Option<u32> {
+        let classify = |wd: &WayData| -> Option<()> {
             let out = classify_way(&runners, wd);
             if out.mask == 0 {
                 return None;
@@ -181,16 +179,11 @@ async fn main() -> anyhow::Result<()> {
                     let _ = tag_senders[i][kk].blocking_send(rows);
                 }
             }
-            Some(out.mask)
+            Some(())
         };
-        let build_geom = |way: &OsmWay, mask: u32| {
-            let rows = Arc::new(geom_rows_for(way, split));
-            for i in 0..n {
-                if mask & (1 << i) != 0 {
-                    let kk = geom_rr[i].fetch_add(1, Ordering::Relaxed) % k;
-                    let _ = geom_senders[i][kk].blocking_send(rows.clone());
-                }
-            }
+        let build_geom = |way: &OsmWay, _kept: ()| {
+            let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % k;
+            let _ = geom_senders[kk].blocking_send(geom_rows_for(way, split));
         };
         stream_ways(&pbf_file, &filters, classify, build_geom)
     });
@@ -201,21 +194,20 @@ async fn main() -> anyhow::Result<()> {
     osm_pipeline::profile::report();
 
     let mut tag_counts = vec![0usize; n];
-    let mut geom_counts = vec![0usize; n];
     for (i, handles) in tag_handles.into_iter().enumerate() {
         for h in handles {
             tag_counts[i] += h.await.context("tag writer panicked")??;
         }
     }
-    for (i, handles) in geom_handles.into_iter().enumerate() {
-        for h in handles {
-            geom_counts[i] += h.await.context("geom writer panicked")??;
-        }
+    let mut geom_count = 0usize;
+    for h in geom_handles {
+        geom_count += h.await.context("geom writer panicked")??;
     }
 
     for (i, table) in tables.iter().enumerate() {
-        info!("Wrote {} tag rows → {}, {} geom rows → {}_geom", tag_counts[i], table, geom_counts[i], table);
+        info!("Wrote {} tag rows → {}", tag_counts[i], table);
     }
+    info!("Wrote {geom_count} geom rows → {GEOM_TABLE}");
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 
     if cfg.create_index {
