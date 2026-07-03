@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use bytes::Bytes;
-use futures::SinkExt;
 
 use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
 use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
 use crate::engine::extract::Producer;
-use crate::engine::{runner::{build_topic_rows, GeomRow, TopicRow}, topic::{DeriverBinding, Field, Transform, TopicSpec}};
+use crate::engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, Transform, TopicSpec}};
 use crate::osm::types::RawTags;
+use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
 use crate::transform::TagTransform;
 use crate::transform::side_split::CenterLineTransformation;
@@ -227,74 +226,4 @@ impl TopicRunner {
         }
         build_topic_rows(self, way_id, tags, meta)
     }
-}
-
-const FLUSH_BYTES: usize = 512 * 1024;
-
-/// Write a slice of TopicRows into any COPY sink, flushing every 512 KB.
-pub async fn stream_rows<S>(
-    rows: Vec<TopicRow>,
-    buf: &mut Vec<u8>,
-    mut sink: std::pin::Pin<&mut S>,
-) -> anyhow::Result<usize>
-where
-    S: futures::Sink<Bytes, Error = tokio_postgres::Error>,
-{
-    let mut n = 0;
-    for row in rows {
-        let fields = row.to_csv_fields()?;
-        write_csv_row(buf, &fields);
-        n += 1;
-        if buf.len() >= FLUSH_BYTES {
-            sink.as_mut().send(Bytes::from(std::mem::take(buf))).await?;
-            *buf = Vec::with_capacity(FLUSH_BYTES);
-        }
-    }
-    Ok(n)
-}
-
-/// Write a slice of GeomRows into any COPY sink, flushing every 512 KB.
-pub async fn stream_geom_rows<S>(
-    rows: &[GeomRow],
-    buf: &mut Vec<u8>,
-    mut sink: std::pin::Pin<&mut S>,
-) -> anyhow::Result<usize>
-where
-    S: futures::Sink<Bytes, Error = tokio_postgres::Error>,
-{
-    let mut n = 0;
-    for row in rows {
-        let fields = row.to_csv_fields();
-        write_csv_row(buf, &fields);
-        n += 1;
-        if buf.len() >= FLUSH_BYTES {
-            sink.as_mut().send(Bytes::from(std::mem::take(buf))).await?;
-            *buf = Vec::with_capacity(FLUSH_BYTES);
-        }
-    }
-    Ok(n)
-}
-
-/// Append one CSV record (RFC-4180-ish quoting) to `buf`. Shared by the COPY sink writers and the
-/// CSV file writers.
-pub fn write_csv_row(buf: &mut Vec<u8>, fields: &[String]) {
-    for (i, field) in fields.iter().enumerate() {
-        if i > 0 { buf.push(b','); }
-        let needs_quoting = field.contains('"') || field.contains(',')
-            || field.contains('\n') || field.contains('\\');
-        if needs_quoting {
-            buf.push(b'"');
-            for ch in field.chars() {
-                if ch == '"' { buf.extend_from_slice(b"\"\""); }
-                else {
-                    let mut tmp = [0u8; 4];
-                    buf.extend_from_slice(ch.encode_utf8(&mut tmp).as_bytes());
-                }
-            }
-            buf.push(b'"');
-        } else {
-            buf.extend_from_slice(field.as_bytes());
-        }
-    }
-    buf.push(b'\n');
 }

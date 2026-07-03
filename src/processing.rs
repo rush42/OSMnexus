@@ -1,9 +1,10 @@
 use crate::config::SplitMode;
-use crate::engine::runner::{build_geom_rows, GeomRow, TopicRow};
+use crate::engine::runner::build_geom_rows;
 use crate::engine::topic_runner::TopicRunner;
 use crate::osm::types::{OsmWay, WayData};
 use crate::output::{
     geometry::{haversine_length_m, project_line},
+    rows::{GeomRow, TopicRow},
     types::OsmMeta,
 };
 use crate::profile::{self, CLASSIFY, GEOMETRY};

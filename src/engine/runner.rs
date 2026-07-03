@@ -9,72 +9,10 @@ use crate::engine::topic_runner::TopicRunner;
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::{
     geometry::{haversine_length_m, to_ewkb},
+    rows::{GeomRow, TopicRow},
     types::{OsmMeta, Side},
 };
 use crate::transform::side_split::get_transformed_objects;
-
-/// A single tag row produced by the topic engine — one per (way, side, prefix), independent of
-/// how the geometry is later cut. Geometry lives in the paired geom table (see `GeomRow`), joined
-/// on `osm_id` at tile-materialization time.
-/// All four data columns are runtime JSON maps — no per-topic typed structs needed.
-pub struct TopicRow {
-    pub osm_id: i64,
-    pub osm_type: &'static str,
-    pub id: String,
-    pub osm: Map<String, Value>,
-    /// Merged sanitizer + deriver outputs (the former `sanitized` ∪ `derived` columns).
-    pub derived: Map<String, Value>,
-    pub private: Map<String, Value>,
-    pub meta: OsmMeta,
-    pub minzoom: i32,
-}
-
-impl TopicRow {
-    /// CSV column order matches `TAG_COPY_COLUMNS` in main.rs.
-    pub fn to_csv_fields(&self) -> anyhow::Result<[String; 8]> {
-        Ok([
-            self.osm_id.to_string(),
-            self.osm_type.to_owned(),
-            self.id.clone(),
-            serde_json::to_string(&self.osm)?,
-            serde_json::to_string(&self.derived)?,
-            serde_json::to_string(&self.private)?,
-            serde_json::to_string(&self.meta)?,
-            self.minzoom.to_string(),
-        ])
-    }
-}
-
-/// A single geometry row. One per (way, variant, segment); `variant` is `"way"` (whole way,
-/// `seg_idx` None) or `"split"` (one per intersection sub-linestring). Shared across all topics
-/// and all side objects of a way (side-split is a tag-only operation), so keyed on `osm_id`.
-pub struct GeomRow {
-    pub osm_id: i64,
-    pub variant: &'static str,
-    pub seg_idx: Option<usize>,
-    pub start_id: i64,
-    pub end_id: i64,
-    pub geom_ewkb: Vec<u8>,
-    pub length_m: f64,
-    pub total_length_m: f64,
-}
-
-impl GeomRow {
-    /// CSV column order matches `GEOM_COPY_COLUMNS` in main.rs. A `None` `seg_idx` is emitted as
-    /// an empty field → SQL NULL (CSV default null marker).
-    pub fn to_csv_fields(&self) -> [String; 8] {
-        [
-            self.osm_id.to_string(),
-            self.variant.to_owned(),
-            self.seg_idx.map(|i| i.to_string()).unwrap_or_default(),
-            self.start_id.to_string(),
-            self.end_id.to_string(),
-            hex::encode(&self.geom_ewkb),
-            self.length_m.to_string(),
-            self.total_length_m.to_string(),
-        ]
-    }
-}
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 

@@ -1,129 +1,25 @@
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use osm_pipeline::{config, db, engine, osm, processing};
+use osm_pipeline::{config, db, engine, osm, output, processing};
 
 use anyhow::Context;
-use bytes::Bytes;
 use clap::Parser;
 use deadpool_postgres::Pool;
-use futures::SinkExt;
 use tokio::sync::mpsc;
 use tracing::info;
 
 use config::{Config, Output};
 use db::{pool::build_pool, schema, schema::GEOM_TABLE};
-use engine::runner::{GeomRow, TopicRow};
-use engine::topic_runner::{stream_geom_rows, stream_rows, write_csv_row, TopicRunner};
+use engine::topic_runner::TopicRunner;
 use osm::reader::stream_ways;
 use osm::types::{ElementFilter, OsmWay, WayData};
+use output::rows::{GeomRow, TopicRow, GEOM_COLUMNS, TAG_COLUMNS};
+use output::writers::{copy_writer, csv_writer};
 use processing::{classify_way, geom_rows_for};
-
-/// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
-const TAG_COLUMNS: &str = "osm_id,osm_type,id,osm,derived,private,meta,minzoom";
-const GEOM_COLUMNS: &str = "osm_id,variant,seg_idx,start_id,end_id,geom,length_m,total_length_m";
 
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
 const WRITER_CHAN_CAP: usize = 256;
-/// Flush the CSV byte buffer to the file once it reaches this size.
-const CSV_FLUSH_BYTES: usize = 512 * 1024;
-
-/// One COPY writer for the tag table `table`: owns its pooled connection for the whole COPY (so the
-/// deadpool `Object` can't be recycled mid-COPY — the pitfall that hangs the next `copy_in`),
-/// drains its channel, and returns the row count.
-async fn tag_writer(
-    pool: Pool,
-    table: String,
-    mut rx: mpsc::Receiver<Vec<TopicRow>>,
-) -> anyhow::Result<usize> {
-    let client = pool.get().await.context("getting tag writer connection")?;
-    let mut sink =
-        Box::pin(client.copy_in(&format!("COPY {table} ({TAG_COLUMNS}) FROM STDIN (FORMAT CSV)")).await?);
-    let mut buf = Vec::with_capacity(512 * 1024);
-    let mut count = 0;
-    while let Some(rows) = rx.recv().await {
-        count += stream_rows(rows, &mut buf, sink.as_mut()).await?;
-    }
-    if !buf.is_empty() {
-        sink.as_mut().send(Bytes::from(buf)).await?;
-    }
-    sink.as_mut().finish().await?;
-    Ok(count)
-}
-
-/// One COPY writer for the shared `GEOM_TABLE`. Geometry is topic-independent (a way's line + its
-/// global intersection split are the same for every topic), so it is written once per way here
-/// rather than duplicated per topic.
-async fn geom_writer(
-    pool: Pool,
-    mut rx: mpsc::Receiver<Vec<GeomRow>>,
-) -> anyhow::Result<usize> {
-    let client = pool.get().await.context("getting geom writer connection")?;
-    let mut sink = Box::pin(
-        client.copy_in(&format!("COPY {GEOM_TABLE} ({GEOM_COLUMNS}) FROM STDIN (FORMAT CSV)")).await?,
-    );
-    let mut buf = Vec::with_capacity(512 * 1024);
-    let mut count = 0;
-    while let Some(rows) = rx.recv().await {
-        count += stream_geom_rows(&rows, &mut buf, sink.as_mut()).await?;
-    }
-    if !buf.is_empty() {
-        sink.as_mut().send(Bytes::from(buf)).await?;
-    }
-    sink.as_mut().finish().await?;
-    Ok(count)
-}
-
-/// CSV file writer for a tag table: writes a header line, then each row's CSV record to a buffered
-/// file, reusing the same field serialization as the COPY path.
-async fn tag_csv_writer(
-    path: PathBuf,
-    mut rx: mpsc::Receiver<Vec<TopicRow>>,
-) -> anyhow::Result<usize> {
-    let mut f = BufWriter::new(File::create(&path).with_context(|| format!("creating {}", path.display()))?);
-    writeln!(f, "{TAG_COLUMNS}")?;
-    let mut buf = Vec::with_capacity(CSV_FLUSH_BYTES);
-    let mut count = 0;
-    while let Some(rows) = rx.recv().await {
-        for row in rows {
-            write_csv_row(&mut buf, &row.to_csv_fields()?);
-            count += 1;
-        }
-        if buf.len() >= CSV_FLUSH_BYTES {
-            f.write_all(&buf)?;
-            buf.clear();
-        }
-    }
-    f.write_all(&buf)?;
-    f.flush()?;
-    Ok(count)
-}
-
-/// CSV file writer for the shared geometry table.
-async fn geom_csv_writer(
-    path: PathBuf,
-    mut rx: mpsc::Receiver<Vec<GeomRow>>,
-) -> anyhow::Result<usize> {
-    let mut f = BufWriter::new(File::create(&path).with_context(|| format!("creating {}", path.display()))?);
-    writeln!(f, "{GEOM_COLUMNS}")?;
-    let mut buf = Vec::with_capacity(CSV_FLUSH_BYTES);
-    let mut count = 0;
-    while let Some(rows) = rx.recv().await {
-        for row in &rows {
-            write_csv_row(&mut buf, &row.to_csv_fields());
-            count += 1;
-        }
-        if buf.len() >= CSV_FLUSH_BYTES {
-            f.write_all(&buf)?;
-            buf.clear();
-        }
-    }
-    f.write_all(&buf)?;
-    f.flush()?;
-    Ok(count)
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -213,8 +109,8 @@ async fn main() -> anyhow::Result<()> {
         for _ in 0..w {
             let (tx, rx) = mpsc::channel::<Vec<TopicRow>>(WRITER_CHAN_CAP);
             let h = match cfg.output {
-                Output::Pg => tokio::spawn(tag_writer(pool.clone().unwrap(), table.clone(), rx)),
-                Output::Csv => tokio::spawn(tag_csv_writer(out_dir.join(format!("{table}.csv")), rx)),
+                Output::Pg => tokio::spawn(copy_writer::<TopicRow>(pool.clone().unwrap(), table.clone(), TAG_COLUMNS, rx)),
+                Output::Csv => tokio::spawn(csv_writer::<TopicRow>(out_dir.join(format!("{table}.csv")), TAG_COLUMNS, rx)),
             };
             th.push(h);
             ts.push(tx);
@@ -227,8 +123,8 @@ async fn main() -> anyhow::Result<()> {
     for _ in 0..w {
         let (tx, rx) = mpsc::channel::<Vec<GeomRow>>(WRITER_CHAN_CAP);
         let h = match cfg.output {
-            Output::Pg => tokio::spawn(geom_writer(pool.clone().unwrap(), rx)),
-            Output::Csv => tokio::spawn(geom_csv_writer(out_dir.join(format!("{GEOM_TABLE}.csv")), rx)),
+            Output::Pg => tokio::spawn(copy_writer::<GeomRow>(pool.clone().unwrap(), GEOM_TABLE.to_owned(), GEOM_COLUMNS, rx)),
+            Output::Csv => tokio::spawn(csv_writer::<GeomRow>(out_dir.join(format!("{GEOM_TABLE}.csv")), GEOM_COLUMNS, rx)),
         };
         geom_handles.push(h);
         geom_senders.push(tx);
