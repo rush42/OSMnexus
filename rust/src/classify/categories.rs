@@ -449,16 +449,29 @@ pub fn eval_filter(
 /// first-match: the first node whose condition matches wins — a `Category` node is the answer,
 /// a `Skip` (disqualifier-macro) node means the object has no category. No `excludes` are
 /// evaluated at runtime; the ordering already encodes them (see `build_order`).
+/// Runtime classifier selector: when set, `categorize` uses the discrimination net; otherwise it
+/// does the full linear first-match walk. Off by default; `main` flips it from `--classifier tree`.
+static USE_TREE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Select the tree-pruned classifier (`true`) or the linear walk (`false`). Call once at startup.
+pub fn set_use_tree(on: bool) {
+    USE_TREE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn categorize<'a>(ctx: &CategoryContext, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
-    // The discrimination net prunes the priority list to a small, order-preserving candidate set;
-    // first-match `eval` over it is identical to the full walk (the tree only drops provably-false
-    // nodes — see `decision_tree`).
-    for &i in cats.tree.candidates(ctx) {
-        if let Some(hit) = eval_node(&cats.order[i], ctx, cats) {
-            return hit;
+    if USE_TREE.load(std::sync::atomic::Ordering::Relaxed) {
+        // The discrimination net prunes the priority list to a small, order-preserving candidate set;
+        // first-match `eval` over it is identical to the full walk (the tree only drops provably-false
+        // nodes — see `decision_tree`).
+        for &i in cats.tree.candidates(ctx) {
+            if let Some(hit) = eval_node(&cats.order[i], ctx, cats) {
+                return hit;
+            }
         }
+        None
+    } else {
+        categorize_linear(ctx, cats)
     }
-    None
 }
 
 /// Full first-match walk over the whole `order`, bypassing the tree. Kept as the reference

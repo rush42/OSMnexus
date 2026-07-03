@@ -45,6 +45,33 @@ impl Default for DecisionTree {
 }
 
 impl DecisionTree {
+    /// Render the tree as JSON for documentation/plotting: branch nodes carry the `field` they test,
+    /// a `branches` map (value → subtree), and an `else` subtree (wildcard); leaves list the
+    /// candidate categories in priority order (`«skip»` for disqualifier nodes).
+    pub fn to_json(&self, cats: &CategoriesFile) -> serde_json::Value {
+        use serde_json::{Map, Value};
+        match self {
+            DecisionTree::Leaf(idxs) => {
+                let names: Vec<Value> =
+                    idxs.iter().map(|&i| Value::String(node_label(cats, i))).collect();
+                let mut m = Map::new();
+                m.insert("leaf".into(), Value::Array(names));
+                Value::Object(m)
+            }
+            DecisionTree::Branch { tag, children, wildcard } => {
+                let mut branches = Map::new(); // serde_json::Map is sorted → deterministic
+                for (v, sub) in children {
+                    branches.insert(v.clone(), sub.to_json(cats));
+                }
+                let mut m = Map::new();
+                m.insert("field".into(), Value::String(tag.clone()));
+                m.insert("branches".into(), Value::Object(branches));
+                m.insert("else".into(), wildcard.to_json(cats));
+                Value::Object(m)
+            }
+        }
+    }
+
     /// Descend to the leaf's candidate node-index slice for this object.
     pub fn candidates<'a>(&'a self, ctx: &CategoryContext) -> &'a [usize] {
         let mut node = self;
@@ -86,6 +113,15 @@ fn node_condition<'a>(cats: &'a CategoriesFile, n: &'a OrderedNode) -> &'a Filte
     match n {
         OrderedNode::Category { idx } => &cats.categories[*idx].condition,
         OrderedNode::Skip { condition } => condition,
+    }
+}
+
+/// Human-readable label for an order node (used by `to_json`): the category id, or `«skip»` for a
+/// disqualifier-macro node.
+fn node_label(cats: &CategoriesFile, i: usize) -> String {
+    match &cats.order[i] {
+        OrderedNode::Category { idx } => cats.categories[*idx].id.clone(),
+        OrderedNode::Skip { .. } => "«skip»".to_string(),
     }
 }
 
@@ -344,6 +380,7 @@ mod tests {
     /// object we can construct — the tree only drops provably-false nodes.
     #[test]
     fn tree_matches_linear() {
+        crate::classify::categories::set_use_tree(true); // exercise the tree path in `categorize`
         let sanitizers = SanitizerRegistry::new(HashMap::new());
 
         for (topic, dir) in topic_category_dirs() {

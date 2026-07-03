@@ -93,6 +93,19 @@ async fn main() -> anyhow::Result<()> {
         .map(|name| TopicRunner::load(name))
         .collect::<anyhow::Result<_>>()?;
 
+    // Dump the category decision tree(s) and exit — a documentation/plotting aid, no DB work.
+    if cfg.dump_category_tree {
+        let mut out = serde_json::Map::new();
+        for r in &runners {
+            out.insert(r.table().to_owned(), r.categories.tree.to_json(&r.categories));
+        }
+        println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(out))?);
+        return Ok(());
+    }
+
+    // Select the categorization strategy (identical results; tree prunes the first-match walk).
+    osm_pipeline::classify::categories::set_use_tree(matches!(cfg.classifier, config::Classifier::Tree));
+
     let tables: Vec<String> = runners.iter().map(|r| r.table().to_owned()).collect();
     let table_refs: Vec<&str> = tables.iter().map(String::as_str).collect();
 
