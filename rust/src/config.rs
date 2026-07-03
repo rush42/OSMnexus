@@ -61,20 +61,4 @@ pub struct Config {
     /// Uses up to `(topics + 1) × db_writers` Postgres connections during load.
     #[arg(long, default_value_t = 4)]
     pub db_writers: usize,
-
-    /// Categorization strategy: `linear` (first-match walk over the whole priority list) or `tree`
-    /// (a discrimination net that branches on discriminating tags to a small candidate set first).
-    /// Identical results; `tree` is faster on CPU-bound runs.
-    #[arg(long, value_enum, default_value_t = Classifier::Linear)]
-    pub classifier: Classifier,
-
-    /// Print each topic's category decision tree as JSON to stdout and exit (no DB work).
-    #[arg(long, default_value_t = false)]
-    pub dump_category_tree: bool,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum Classifier {
-    Linear,
-    Tree,
 }
