@@ -1,4 +1,16 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+/// How the geometry table is populated. Independent of the (tag-only) classification.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum SplitMode {
+    /// One whole-way linestring per way (`variant='way'`). Default.
+    Ways,
+    /// One sub-linestring per intersection segment (`variant='split'`).
+    Intersections,
+    /// Emit both the whole-way row and the intersection segments.
+    Both,
+}
 
 #[derive(Parser, Debug)]
 #[command(about = "Data-driven OSM PBF topic processing pipeline → PostgreSQL")]
@@ -33,7 +45,8 @@ pub struct Config {
     #[arg(long, default_value_t = 0)]
     pub threads: usize,
 
-    /// Split each way at its intersection nodes, emitting one row per sub-linestring.
-    #[arg(long, default_value_t = false)]
-    pub split_at_intersections: bool,
+    /// Geometry table variant(s) to emit: `ways` (whole ways, default), `intersections`
+    /// (one row per intersection segment), or `both`.
+    #[arg(long, value_enum, default_value_t = SplitMode::Ways)]
+    pub split: SplitMode,
 }

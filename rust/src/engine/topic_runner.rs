@@ -7,7 +7,7 @@ use futures::SinkExt;
 use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
 use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
 use crate::engine::extract::Producer;
-use crate::engine::{runner::{build_topic_rows, TopicRow}, topic::{DeriverBinding, Field, Transform, TopicSpec}};
+use crate::engine::{runner::{build_topic_rows, GeomRow, TopicRow}, topic::{DeriverBinding, Field, Transform, TopicSpec}};
 use crate::osm::types::{OsmWay, RawTags};
 use crate::output::types::OsmMeta;
 use crate::transform::TagTransform;
@@ -217,14 +217,15 @@ impl TopicRunner {
     }
 
     /// Run the topic's pipeline for one way: apply this topic's tag transforms to a copy
-    /// of the raw tags, then categorize/split/extract. `raw_tags` are the way's untouched
-    /// tags — each topic transforms its own copy.
-    pub fn process(&self, way: &OsmWay, raw_tags: &RawTags, geom: &geo::LineString<f64>, length_m: f64, meta: &OsmMeta, split: bool) -> Vec<TopicRow> {
+    /// of the raw tags, then categorize/split/extract into tag rows. `raw_tags` are the way's
+    /// untouched tags — each topic transforms its own copy. Geometry is produced separately
+    /// (topic-independent) via `build_geom_rows`.
+    pub fn process(&self, way: &OsmWay, raw_tags: &RawTags, meta: &OsmMeta) -> Vec<TopicRow> {
         let mut tags = raw_tags.clone();
         for t in &self.tag_transforms {
             t.apply(&mut tags);
         }
-        build_topic_rows(self, way, tags, geom, length_m, meta, split)
+        build_topic_rows(self, way, tags, meta)
     }
 }
 
@@ -242,6 +243,28 @@ where
     let mut n = 0;
     for row in rows {
         let fields = row.to_csv_fields()?;
+        write_csv_row(buf, &fields);
+        n += 1;
+        if buf.len() >= FLUSH_BYTES {
+            sink.as_mut().send(Bytes::from(std::mem::take(buf))).await?;
+            *buf = Vec::with_capacity(FLUSH_BYTES);
+        }
+    }
+    Ok(n)
+}
+
+/// Write a slice of GeomRows into any COPY sink, flushing every 512 KB.
+pub async fn stream_geom_rows<S>(
+    rows: &[GeomRow],
+    buf: &mut Vec<u8>,
+    mut sink: std::pin::Pin<&mut S>,
+) -> anyhow::Result<usize>
+where
+    S: futures::Sink<Bytes, Error = tokio_postgres::Error>,
+{
+    let mut n = 0;
+    for row in rows {
+        let fields = row.to_csv_fields();
         write_csv_row(buf, &fields);
         n += 1;
         if buf.len() >= FLUSH_BYTES {

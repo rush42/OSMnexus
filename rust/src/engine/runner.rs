@@ -13,7 +13,9 @@ use crate::output::{
 };
 use crate::transform::side_split::get_transformed_objects;
 
-/// A single output row produced by the topic engine.
+/// A single tag row produced by the topic engine — one per (way, side, prefix), independent of
+/// how the geometry is later cut. Geometry lives in the paired geom table (see `GeomRow`), joined
+/// on `osm_id` at tile-materialization time.
 /// All four data columns are runtime JSON maps — no per-topic typed structs needed.
 pub struct TopicRow {
     pub osm_id: i64,
@@ -24,12 +26,12 @@ pub struct TopicRow {
     pub derived: Map<String, Value>,
     pub private: Map<String, Value>,
     pub meta: OsmMeta,
-    pub geom_ewkb: Vec<u8>,
     pub minzoom: i32,
 }
 
 impl TopicRow {
-    pub fn to_csv_fields(&self) -> anyhow::Result<[String; 9]> {
+    /// CSV column order matches `TAG_COPY_COLUMNS` in main.rs.
+    pub fn to_csv_fields(&self) -> anyhow::Result<[String; 8]> {
         Ok([
             self.osm_id.to_string(),
             self.osm_type.to_owned(),
@@ -38,9 +40,39 @@ impl TopicRow {
             serde_json::to_string(&self.derived)?,
             serde_json::to_string(&self.private)?,
             serde_json::to_string(&self.meta)?,
-            hex::encode(&self.geom_ewkb),
             self.minzoom.to_string(),
         ])
+    }
+}
+
+/// A single geometry row. One per (way, variant, segment); `variant` is `"way"` (whole way,
+/// `seg_idx` None) or `"split"` (one per intersection sub-linestring). Shared across all topics
+/// and all side objects of a way (side-split is a tag-only operation), so keyed on `osm_id`.
+pub struct GeomRow {
+    pub osm_id: i64,
+    pub variant: &'static str,
+    pub seg_idx: Option<usize>,
+    pub start_id: i64,
+    pub end_id: i64,
+    pub geom_ewkb: Vec<u8>,
+    pub length_m: f64,
+    pub total_length_m: f64,
+}
+
+impl GeomRow {
+    /// CSV column order matches `GEOM_COPY_COLUMNS` in main.rs. A `None` `seg_idx` is emitted as
+    /// an empty field → SQL NULL (CSV default null marker).
+    pub fn to_csv_fields(&self) -> [String; 8] {
+        [
+            self.osm_id.to_string(),
+            self.variant.to_owned(),
+            self.seg_idx.map(|i| i.to_string()).unwrap_or_default(),
+            self.start_id.to_string(),
+            self.end_id.to_string(),
+            hex::encode(&self.geom_ewkb),
+            self.length_m.to_string(),
+            self.total_length_m.to_string(),
+        ]
     }
 }
 
@@ -88,10 +120,7 @@ pub fn build_topic_rows(
     runner: &TopicRunner,
     way: &OsmWay,
     tags: RawTags,
-    geom: &geo::LineString<f64>,
-    length_m: f64,
     meta: &OsmMeta,
-    split: bool,
 ) -> Vec<TopicRow> {
     let topic = &runner.spec;
     let categories = &runner.categories;
@@ -119,7 +148,6 @@ pub fn build_topic_rows(
             parent_highway: obj.parent_highway.as_deref(),
             parent_tags,
             infix: obj.infix,
-            length_m,
             sanitizers: &runner.sanitizers,
         };
 
@@ -193,7 +221,6 @@ pub fn build_topic_rows(
             }
         }
 
-        // `id`, `length_m`, and `total_length_m` are per-segment and set in the emission step below.
         derived.insert("category".into(), Value::String(category.id.clone()));
 
         private.insert("_side".into(), Value::String(side_str.to_owned()));
@@ -215,86 +242,98 @@ pub fn build_topic_rows(
             .map(|rule| resolve_minzoom(rule, &ctx, &categories.macros))
             .unwrap_or(0);
 
-        // Optionally split the way at its intersection nodes: one row per sub-linestring, each
-        // with its own geometry/`length_m` but sharing all tags. `total_length_m` always carries
-        // the full way length. When not splitting (or no interior intersections) there is a single
-        // segment and the maps are moved into the row — the hot path stays clone-free.
-        let segments = segment_geoms(way, geom, length_m, split);
-
-        // Insert the segment's `id` (before the side portion), `length_m`, and `total_length_m`.
-        let finalize = |derived: &mut Map<String, Value>, seg_idx: Option<usize>, seg_len: f64| -> String {
-            let seg = seg_idx.map(|i| format!("/{i}")).unwrap_or_default();
-            let id = match obj.side {
-                Side::Self_ => format!("way/{}{}", way.id, seg),
-                Side::Left  => format!("way/{}{}/{}/left",  way.id, seg, obj.prefix.unwrap_or("cycleway")),
-                Side::Right => format!("way/{}{}/{}/right", way.id, seg, obj.prefix.unwrap_or("cycleway")),
-            };
-            derived.insert("id".into(), Value::String(id.clone()));
-            derived.insert("length_m".into(), Value::Number(serde_json::Number::from_f64(seg_len).unwrap()));
-            derived.insert("total_length_m".into(), Value::Number(serde_json::Number::from_f64(length_m).unwrap()));
-            id
+        // One tag row per transformed object; geometry (and its per-segment length) lives in the
+        // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time.
+        let id = match obj.side {
+            Side::Self_ => format!("way/{}", way.id),
+            Side::Left  => format!("way/{}/{}/left",  way.id, obj.prefix.unwrap_or("cycleway")),
+            Side::Right => format!("way/{}/{}/right", way.id, obj.prefix.unwrap_or("cycleway")),
         };
+        derived.insert("id".into(), Value::String(id.clone()));
 
-        if segments.len() == 1 {
-            let (seg_idx, geom_ewkb, seg_len) = segments.into_iter().next().unwrap();
-            let id = finalize(&mut derived, seg_idx, seg_len);
-            rows.push(TopicRow {
-                osm_id: way.id,
-                osm_type: "W",
-                id,
-                osm,
-                derived,
-                private,
-                meta: meta.clone(),
-                geom_ewkb,
-                minzoom,
-            });
-        } else {
-            for (seg_idx, geom_ewkb, seg_len) in segments {
-                let mut d = derived.clone();
-                let id = finalize(&mut d, seg_idx, seg_len);
-                rows.push(TopicRow {
-                    osm_id: way.id,
-                    osm_type: "W",
-                    id,
-                    osm: osm.clone(),
-                    derived: d,
-                    private: private.clone(),
-                    meta: meta.clone(),
-                    geom_ewkb,
-                    minzoom,
-                });
-            }
-        }
+        rows.push(TopicRow {
+            osm_id: way.id,
+            osm_type: "W",
+            id,
+            osm,
+            derived,
+            private,
+            meta: meta.clone(),
+            minzoom,
+        });
     }
 
     rows
 }
 
-/// Segments a way's geometry for output: `(segment index, EWKB, length_m)` per row.
+/// Build the geometry rows for a way. Topic-independent (same geometry for every topic and every
+/// side object), so computed once per way and written to each surviving topic's geom table.
 ///
-/// When `split` is set and the way has interior intersection cut-points (more than the two
-/// start/end points), each consecutive `cut_points` pair becomes a sub-linestring
-/// (`geom.0[start..=end]`, inclusive so the shared node joins both neighbours), with its length
-/// measured on the WGS84 `way.coords` slice. Otherwise a single whole-way segment (index `None`).
-fn segment_geoms(
+/// `mode` selects the emitted variants:
+///   * `Ways`          → one `variant="way"` row: whole projected line, `seg_idx=None`,
+///                       endpoints = the way's first/last node, `length_m = total_length_m`.
+///   * `Intersections` → one `variant="split"` row per consecutive `cut_points` pair: the
+///                       sub-linestring `geom.0[s..=e]` (inclusive so the shared node joins both
+///                       neighbours), per-segment `start_id`/`end_id`/`length_m`. A way with no
+///                       interior cut-points yields a single segment spanning the whole way.
+///   * `Both`          → the `way` row plus all `split` rows.
+pub fn build_geom_rows(
     way: &OsmWay,
     geom: &geo::LineString<f64>,
     length_m: f64,
-    split: bool,
-) -> Vec<(Option<usize>, Vec<u8>, f64)> {
-    if split && way.cut_points.len() > 2 {
-        way.cut_points
-            .windows(2)
-            .enumerate()
-            .map(|(i, w)| {
+    mode: crate::config::SplitMode,
+) -> Vec<GeomRow> {
+    use crate::config::SplitMode;
+
+    let first_node = way.cut_points.first().map(|c| c.1).unwrap_or(0);
+    let last_node = way.cut_points.last().map(|c| c.1).unwrap_or(0);
+
+    let mut rows = Vec::new();
+
+    if matches!(mode, SplitMode::Ways | SplitMode::Both) {
+        rows.push(GeomRow {
+            osm_id: way.id,
+            variant: "way",
+            seg_idx: None,
+            start_id: first_node,
+            end_id: last_node,
+            geom_ewkb: to_ewkb(geom),
+            length_m,
+            total_length_m: length_m,
+        });
+    }
+
+    if matches!(mode, SplitMode::Intersections | SplitMode::Both) {
+        if way.cut_points.len() > 2 {
+            for (i, w) in way.cut_points.windows(2).enumerate() {
                 let (s, e) = (w[0].0 as usize, w[1].0 as usize);
                 let seg_line = geo::LineString::new(geom.0[s..=e].to_vec());
                 let seg_len = haversine_length_m(&way.coords[s..=e]);
-                (Some(i), to_ewkb(&seg_line), seg_len)
-            })
-            .collect()
-    } else {
-        vec![(None, to_ewkb(geom), length_m)]
+                rows.push(GeomRow {
+                    osm_id: way.id,
+                    variant: "split",
+                    seg_idx: Some(i),
+                    start_id: w[0].1,
+                    end_id: w[1].1,
+                    geom_ewkb: to_ewkb(&seg_line),
+                    length_m: seg_len,
+                    total_length_m: length_m,
+                });
+            }
+        } else {
+            // No interior intersections: the whole way is a single segment.
+            rows.push(GeomRow {
+                osm_id: way.id,
+                variant: "split",
+                seg_idx: Some(0),
+                start_id: first_node,
+                end_id: last_node,
+                geom_ewkb: to_ewkb(geom),
+                length_m,
+                total_length_m: length_m,
+            });
+        }
     }
+
+    rows
 }

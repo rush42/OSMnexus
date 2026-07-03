@@ -8,13 +8,15 @@ use tracing::info;
 
 use config::Config;
 use db::{pool::build_pool, schema};
-use engine::topic_runner::{stream_rows, TopicRunner};
+use engine::topic_runner::{stream_geom_rows, stream_rows, TopicRunner};
 use osm::reader::stream_ways;
 use osm::types::ElementFilter;
 use processing::{process_way, WayOutput};
 
-const COPY_COLUMNS: &str =
-    "(osm_id, osm_type, id, osm, derived, private, meta, geom, minzoom) FROM STDIN (FORMAT CSV)";
+const TAG_COPY_COLUMNS: &str =
+    "(osm_id, osm_type, id, osm, derived, private, meta, minzoom) FROM STDIN (FORMAT CSV)";
+const GEOM_COPY_COLUMNS: &str =
+    "(osm_id, variant, seg_idx, start_id, end_id, geom, length_m, total_length_m) FROM STDIN (FORMAT CSV)";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -81,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     // consumer below. Runs on the blocking pool because the reader is CPU-bound rayon work.
     // Ways are never materialized — peak memory tracks the node coordinates, not the way count.
     let pbf_file = cfg.pbf_file.clone();
-    let split = cfg.split_at_intersections;
+    let split = cfg.split;
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         stream_ways(&pbf_file, &filters, |way| {
             let _ = tx.blocking_send(process_way(way, &runners, split));
@@ -97,34 +99,61 @@ async fn main() -> anyhow::Result<()> {
     // the pool *while still mid-COPY*. With `RecyclingMethod::Fast` (no validation) the
     // next `pool.get()` would hand back that same connection, still in COPY-in mode, and
     // the subsequent `copy_in` would hang forever waiting for a response that never comes.
+    // Two COPY sinks per topic: the tag table and its `<table>_geom` table. Both sets of pooled
+    // `Object`s (`clients`) must be retained for the sinks' lifetime — see the deadpool pitfall
+    // above; a recycled connection mid-COPY would hang the next `copy_in`.
     let n = tables.len();
-    let mut clients = Vec::with_capacity(n);
-    let mut sinks: Vec<std::pin::Pin<Box<tokio_postgres::CopyInSink<Bytes>>>> =
+    let mut clients = Vec::with_capacity(2 * n);
+    let mut tag_sinks: Vec<std::pin::Pin<Box<tokio_postgres::CopyInSink<Bytes>>>> =
+        Vec::with_capacity(n);
+    let mut geom_sinks: Vec<std::pin::Pin<Box<tokio_postgres::CopyInSink<Bytes>>>> =
         Vec::with_capacity(n);
     for table in &tables {
-        let client = pool.get().await.context("getting topic DB connection")?;
-        let sink = client.copy_in(&format!("COPY {table} {COPY_COLUMNS}")).await?;
-        sinks.push(Box::pin(sink));
-        clients.push(client); // keep the connection out of the pool until COPY finishes
+        let tag_client = pool.get().await.context("getting topic DB connection")?;
+        let tag_sink = tag_client.copy_in(&format!("COPY {table} {TAG_COPY_COLUMNS}")).await?;
+        tag_sinks.push(Box::pin(tag_sink));
+        clients.push(tag_client);
+
+        let geom_client = pool.get().await.context("getting geom DB connection")?;
+        let geom_sink = geom_client
+            .copy_in(&format!("COPY {table}_geom {GEOM_COPY_COLUMNS}"))
+            .await?;
+        geom_sinks.push(Box::pin(geom_sink));
+        clients.push(geom_client);
     }
 
-    let mut bufs: Vec<Vec<u8>>  = (0..n).map(|_| Vec::with_capacity(512 * 1024)).collect();
-    let mut counts: Vec<usize>  = vec![0; n];
+    let mut tag_bufs: Vec<Vec<u8>>  = (0..n).map(|_| Vec::with_capacity(512 * 1024)).collect();
+    let mut geom_bufs: Vec<Vec<u8>> = (0..n).map(|_| Vec::with_capacity(512 * 1024)).collect();
+    let mut tag_counts: Vec<usize>  = vec![0; n];
+    let mut geom_counts: Vec<usize> = vec![0; n];
 
     // Consumer-active timer: started on the first row (not sink setup), so it excludes the
     // Pass A+B window during which the consumer is idle-blocked on recv. Compared against the
     // reader's Pass C duration, this shows whether the producer or the DB drain is the wall.
     let mut t_drain: Option<std::time::Instant> = None;
-    while let Some(WayOutput(topic_rows)) = rx.recv().await {
+    while let Some(WayOutput { topic_rows, geom_rows }) = rx.recv().await {
         t_drain.get_or_insert_with(std::time::Instant::now);
         for (i, rows) in topic_rows.into_iter().enumerate() {
-            counts[i] += stream_rows(rows, &mut bufs[i], sinks[i].as_mut()).await?;
+            // Only emit geometry for topics that kept this way (no orphan geometry). The geom
+            // rows are identical across topics, so write the shared set to each surviving topic.
+            let kept = !rows.is_empty();
+            tag_counts[i] += stream_rows(rows, &mut tag_bufs[i], tag_sinks[i].as_mut()).await?;
+            if kept {
+                geom_counts[i] +=
+                    stream_geom_rows(&geom_rows, &mut geom_bufs[i], geom_sinks[i].as_mut()).await?;
+            }
         }
     }
 
-    for (i, sink) in sinks.iter_mut().enumerate() {
-        if !bufs[i].is_empty() {
-            sink.as_mut().send(Bytes::from(std::mem::take(&mut bufs[i]))).await?;
+    for (i, sink) in tag_sinks.iter_mut().enumerate() {
+        if !tag_bufs[i].is_empty() {
+            sink.as_mut().send(Bytes::from(std::mem::take(&mut tag_bufs[i]))).await?;
+        }
+        sink.as_mut().finish().await?;
+    }
+    for (i, sink) in geom_sinks.iter_mut().enumerate() {
+        if !geom_bufs[i].is_empty() {
+            sink.as_mut().send(Bytes::from(std::mem::take(&mut geom_bufs[i]))).await?;
         }
         sink.as_mut().finish().await?;
     }
@@ -136,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
     osm_pipeline::profile::report();
 
     for (i, table) in tables.iter().enumerate() {
-        info!("Wrote {} rows → {}", counts[i], table);
+        info!("Wrote {} tag rows → {}, {} geom rows → {}_geom", tag_counts[i], table, geom_counts[i], table);
     }
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 

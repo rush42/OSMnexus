@@ -344,17 +344,5 @@
     "traffic_mode_left",
     "traffic_mode_right",
     "road"
-  ],
-  "minzoom": {
-    "default": 0,
-    "rules": [
-      {
-        "when": {
-          "num": "length",
-          "lt": 100
-        },
-        "zoom": 9
-      }
-    ]
-  }
+  ]
 }

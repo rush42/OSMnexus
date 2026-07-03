@@ -20,7 +20,6 @@ pub struct CategoryContext<'a> {
     pub parent_tags: Option<&'a RawTags>,
     /// The infix that matched during side splitting (e.g. "", "left", "both").
     pub infix: Option<&'a str>,
-    pub length_m: f64,
     /// Sanitizer registry — lets predicates normalize separation/traffic_mode via data.
     pub sanitizers: &'a SanitizerRegistry,
 }
@@ -225,10 +224,11 @@ pub enum Filter {
     /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
     HasParent { has_parent: bool },
 
-    // Numeric comparisons. `num` names the value: the reserved key `"length"` reads the context
-    // length in metres; any other key reads that tag, optionally run through a `sanitize` chain
+    // Numeric comparisons. `num` names the tag to read, optionally run through a `sanitize` chain
     // first (which may yield a JSON number, e.g. `parse_length`) before parsing to f64. Absent or
     // unparseable input makes the comparison false. The secondary field (lt/lte/gt/gte) is the op.
+    // Geometry-derived values (length, area, …) are NOT available here — classification is
+    // tag-only; length-based filtering is deferred to the geometry/graph stage.
     NumLt  { num: String, #[serde(default)] sanitize: Option<String>, lt:  f64 },
     NumLte { num: String, #[serde(default)] sanitize: Option<String>, lte: f64 },
     NumGt  { num: String, #[serde(default)] sanitize: Option<String>, gt:  f64 },
@@ -376,15 +376,12 @@ fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>
     }
 }
 
-/// Read a numeric value for a `num` predicate. The reserved key `"length"` yields the context
-/// length in metres; any other key reads that tag and, when `sanitize` is set, runs it through
-/// that sanitizer chain (which may yield a JSON number, e.g. `parse_length`) before coercing to
-/// f64. Returns None when the tag is absent or the value is unparseable — so every numeric
-/// comparison is false on missing/garbage input.
+/// Read a numeric value for a `num` predicate: reads tag `key` and, when `sanitize` is set, runs
+/// it through that sanitizer chain (which may yield a JSON number, e.g. `parse_length`) before
+/// coercing to f64. Returns None when the tag is absent or the value is unparseable — so every
+/// numeric comparison is false on missing/garbage input. No geometry-derived values (length, …)
+/// are available: classification is tag-only.
 fn read_num(ctx: &CategoryContext, key: &str, sanitize: &Option<String>) -> Option<f64> {
-    if key == "length" {
-        return Some(ctx.length_m);
-    }
     let raw = ctx.tags.get(key)?;
     match sanitize {
         Some(name) => num_from_value(&ctx.sanitizers.apply(name, raw)?),
@@ -437,7 +434,6 @@ pub fn eval_filter(
         parent_highway: None,
         parent_tags: None,
         infix: None,
-        length_m: 0.0,
         sanitizers,
     };
     eval(filter, &ctx, macros)
