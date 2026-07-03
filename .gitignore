@@ -1,15 +1,11 @@
-# Editor
-.vscode-test
-.idea
+# Rust build artifacts
+/target
 
+# OSM extracts (downloaded, not versioned)
 *.osm
 *.pbf
-*.log
+
+# Local env / logs
 .env
-.env.deploy.generated
+*.log
 *.DS_Store
-
-/node_modules
-processing/node_modules
-
-rust/target

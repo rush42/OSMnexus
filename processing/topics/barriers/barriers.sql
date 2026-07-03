@@ -1,1 +1,0 @@
---TODO: cut out all bridges with bicycle and footway acess

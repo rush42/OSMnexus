@@ -1,5 +1,0 @@
-app/.husky
-app/.output
-app/.env*
-.editorconfig
-processing/node_modules

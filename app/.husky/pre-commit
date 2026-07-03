@@ -1,4 +1,0 @@
-# Format staged-area targets via Biome (app)
-
-cd ./app
-bun run format
