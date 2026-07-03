@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::classify::categories::{load_categories_from_dir, CategoriesFile, Filter};
+use crate::classify::categories::{
+    load_categories_from_dir, load_shared_macros, CategoriesFile, Filter,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Predicate {
@@ -21,7 +23,6 @@ pub enum Predicate {
     Prefix(String),
     Infix(String),
     Side(String),
-    RustMacro(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -42,7 +43,6 @@ impl Predicate {
             Predicate::Prefix(_) => vec!["[prefix]".to_string()],
             Predicate::Infix(_) => vec!["[infix]".to_string()],
             Predicate::Side(_) => vec!["[side]".to_string()],
-            Predicate::RustMacro(m) => vec![format!("[macro]{}", m)],
         }
     }
 }
@@ -69,13 +69,14 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::Or { or } => Expr::Or(or.iter().map(|f| filter_to_expr(f, macros)).collect()),
         Filter::Not { not } => Expr::Not(Box::new(filter_to_expr(not, macros))),
 
+        // Every macro resolves to a JSON `Filter` (per-topic `categories/macros.json` + the shared
+        // `topics/_shared/macros/`, merged in by `find_all_topic_overlaps`). An unknown name is a
+        // config bug — `build_order` already hard-errors on it — so panic rather than model it as an
+        // opaque atom.
         Filter::Macro { r#macro } => {
-            if let Some(mac) = macros.get(r#macro) {
-                filter_to_expr(mac, macros)
-            } else {
-                // E.g., is_sidepath etc. which are Rust-implemented
-                Expr::Lit(Literal::Pos(Predicate::RustMacro(r#macro.clone())))
-            }
+            let mac = macros.get(r#macro)
+                .unwrap_or_else(|| panic!("unknown macro '{}' in overlap analysis", r#macro));
+            filter_to_expr(mac, macros)
         },
 
         // `sanitize` is ignored here: the overlap lint is a conservative heuristic and treats a
@@ -99,7 +100,6 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
             Expr::Or(exprs)
         },
 
-        // FirstTagEq was removed, skipping
         Filter::FirstTagIn { first_tag, r#in, .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(first_tag.clone(), r#in.clone()))),
         Filter::FirstTagInSet { first_tag, in_set, .. } => {
             let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
@@ -358,8 +358,17 @@ pub fn topic_category_dirs() -> Vec<(String, PathBuf)> {
 pub fn find_all_topic_overlaps() -> anyhow::Result<Vec<(String, Vec<Overlap>)>> {
     let mut out = Vec::new();
     for (topic, dir) in topic_category_dirs() {
-        let cats = load_categories_from_dir(&dir)
+        let mut cats = load_categories_from_dir(&dir)
             .map_err(|e| anyhow::anyhow!("loading {topic} categories: {e}"))?;
+        // Merge shared cross-topic macros so `filter_to_expr` can inline every `Macro` reference,
+        // mirroring the runtime merge in `topic_runner`. `dir` is `topics/<name>/categories`.
+        let shared_dir = dir.parent().and_then(|p| p.parent())
+            .expect("categories dir has topics/<name> ancestors").join("_shared");
+        for (k, v) in load_shared_macros(&shared_dir)
+            .map_err(|e| anyhow::anyhow!("loading topics/_shared/ macros: {e}"))?
+        {
+            cats.macros.entry(k).or_insert(v);
+        }
         out.push((topic, find_overlaps(&cats)));
     }
     Ok(out)
