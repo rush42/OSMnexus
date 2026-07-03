@@ -4,6 +4,9 @@ use serde::Deserialize;
 /// `.get()` lookups and per-way/per-side-object clones of these maps — the hot path of Pass C.
 pub type RawTags = rustc_hash::FxHashMap<String, String>;
 
+/// A way resolved to geometry. Tags/meta are *not* carried here — classification is tag-only and
+/// happens in Pass A from `WayData`; this type exists only for the geometry pass, which needs the
+/// projected coordinates and graph cut-points.
 pub struct OsmWay {
     pub id: i64,
     /// WGS84 coordinates in (lon, lat) order.
@@ -13,7 +16,14 @@ pub struct OsmWay {
     /// count > 1). Segments = consecutive cut-point pairs; intermediate geometry nodes are not
     /// retained. Lets a way be split into graph edges purely by index, no geometric matching.
     pub cut_points: Vec<(u32, i64)>,
+}
+
+/// A filter-passing way's tags + node refs + metadata, produced by the reader's single way-region
+/// decode (Pass A). Tag-only classification consumes this; the geometry pass keeps only `node_refs`.
+pub struct WayData {
+    pub id: i64,
     pub tags: RawTags,
+    pub node_refs: Vec<i64>,
     pub meta: WayMeta,
 }
 

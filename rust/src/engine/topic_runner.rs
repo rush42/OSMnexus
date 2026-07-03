@@ -8,7 +8,7 @@ use crate::classify::categories::{load_categories_from_dir, load_shared_macros, 
 use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
 use crate::engine::extract::Producer;
 use crate::engine::{runner::{build_topic_rows, GeomRow, TopicRow}, topic::{DeriverBinding, Field, Transform, TopicSpec}};
-use crate::osm::types::{OsmWay, RawTags};
+use crate::osm::types::RawTags;
 use crate::output::types::OsmMeta;
 use crate::transform::TagTransform;
 use crate::transform::side_split::CenterLineTransformation;
@@ -220,12 +220,12 @@ impl TopicRunner {
     /// of the raw tags, then categorize/split/extract into tag rows. `raw_tags` are the way's
     /// untouched tags — each topic transforms its own copy. Geometry is produced separately
     /// (topic-independent) via `build_geom_rows`.
-    pub fn process(&self, way: &OsmWay, raw_tags: &RawTags, meta: &OsmMeta) -> Vec<TopicRow> {
+    pub fn process(&self, way_id: i64, raw_tags: &RawTags, meta: &OsmMeta) -> Vec<TopicRow> {
         let mut tags = raw_tags.clone();
         for t in &self.tag_transforms {
             t.apply(&mut tags);
         }
-        build_topic_rows(self, way, tags, meta)
+        build_topic_rows(self, way_id, tags, meta)
     }
 }
 

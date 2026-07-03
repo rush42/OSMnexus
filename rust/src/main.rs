@@ -8,10 +8,19 @@ use tracing::info;
 
 use config::Config;
 use db::{pool::build_pool, schema};
+use engine::runner::{GeomRow, TopicRow};
 use engine::topic_runner::{stream_geom_rows, stream_rows, TopicRunner};
 use osm::reader::stream_ways;
-use osm::types::ElementFilter;
-use processing::{process_way, WayOutput};
+use osm::types::{ElementFilter, OsmWay, WayData};
+use processing::{classify_way, geom_rows_for};
+
+/// A batch of rows for the COPY consumer, tagged with its destination. `Tag(i, ..)` → tag sink of
+/// topic `i`; `Geom(mask, ..)` → geom sink of every topic whose bit is set in `mask` (geometry is
+/// shared across topics, so one build is fanned out to each surviving topic).
+enum RowBatch {
+    Tag(usize, Vec<TopicRow>),
+    Geom(u32, Vec<GeomRow>),
+}
 
 const TAG_COPY_COLUMNS: &str =
     "(osm_id, osm_type, id, osm, derived, private, meta, minzoom) FROM STDIN (FORMAT CSV)";
@@ -77,17 +86,32 @@ async fn main() -> anyhow::Result<()> {
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<WayOutput>(512);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<RowBatch>(2048);
 
-    // Producer: stream ways straight from the PBF and process each into rows, fed to the COPY
-    // consumer below. Runs on the blocking pool because the reader is CPU-bound rayon work.
-    // Ways are never materialized — peak memory tracks the node coordinates, not the way count.
+    // Producer: the reader decodes the PBF once and drives two callbacks, both feeding the COPY
+    // consumer below. `classify` (Pass A) turns a way's tags into per-topic tag rows and returns a
+    // bitmask of which topics kept it; `build_geom` (geometry pass) turns the resolved way into geom
+    // rows. Runs on the blocking pool because the reader is CPU-bound rayon work. Peak memory tracks
+    // the node coordinates + the kept ways' node-id index, not the tag/geom row count.
     let pbf_file = cfg.pbf_file.clone();
     let split = cfg.split;
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        stream_ways(&pbf_file, &filters, |way| {
-            let _ = tx.blocking_send(process_way(way, &runners, split));
-        })
+        let classify = |wd: &WayData| -> Option<u32> {
+            let out = classify_way(&runners, wd);
+            if out.mask == 0 {
+                return None;
+            }
+            for (i, rows) in out.topic_rows.into_iter().enumerate() {
+                if !rows.is_empty() {
+                    let _ = tx.blocking_send(RowBatch::Tag(i, rows));
+                }
+            }
+            Some(out.mask)
+        };
+        let build_geom = |way: &OsmWay, mask: u32| {
+            let _ = tx.blocking_send(RowBatch::Geom(mask, geom_rows_for(way, split)));
+        };
+        stream_ways(&pbf_file, &filters, classify, build_geom)
     });
 
     // One COPY sink per topic, pinned in a Box so they can live in a Vec.
@@ -128,19 +152,24 @@ async fn main() -> anyhow::Result<()> {
     let mut geom_counts: Vec<usize> = vec![0; n];
 
     // Consumer-active timer: started on the first row (not sink setup), so it excludes the
-    // Pass A+B window during which the consumer is idle-blocked on recv. Compared against the
-    // reader's Pass C duration, this shows whether the producer or the DB drain is the wall.
+    // reader's startup window. Compared against the reader's producer phases, this shows whether
+    // the producer or the DB drain is the wall.
     let mut t_drain: Option<std::time::Instant> = None;
-    while let Some(WayOutput { topic_rows, geom_rows }) = rx.recv().await {
+    while let Some(batch) = rx.recv().await {
         t_drain.get_or_insert_with(std::time::Instant::now);
-        for (i, rows) in topic_rows.into_iter().enumerate() {
-            // Only emit geometry for topics that kept this way (no orphan geometry). The geom
-            // rows are identical across topics, so write the shared set to each surviving topic.
-            let kept = !rows.is_empty();
-            tag_counts[i] += stream_rows(rows, &mut tag_bufs[i], tag_sinks[i].as_mut()).await?;
-            if kept {
-                geom_counts[i] +=
-                    stream_geom_rows(&geom_rows, &mut geom_bufs[i], geom_sinks[i].as_mut()).await?;
+        match batch {
+            RowBatch::Tag(i, rows) => {
+                tag_counts[i] += stream_rows(rows, &mut tag_bufs[i], tag_sinks[i].as_mut()).await?;
+            }
+            // Geometry is shared across topics; write the one built set to each surviving topic's
+            // geom sink (bits set in `mask`), so no orphan geometry for topics that dropped the way.
+            RowBatch::Geom(mask, rows) => {
+                for i in 0..n {
+                    if mask & (1 << i) != 0 {
+                        geom_counts[i] +=
+                            stream_geom_rows(&rows, &mut geom_bufs[i], geom_sinks[i].as_mut()).await?;
+                    }
+                }
             }
         }
     }

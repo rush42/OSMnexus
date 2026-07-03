@@ -118,7 +118,7 @@ fn const_entry(v: &Value) -> (&Value, Option<&Map<String, Value>>) {
 
 pub fn build_topic_rows(
     runner: &TopicRunner,
-    way: &OsmWay,
+    way_id: i64,
     tags: RawTags,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
@@ -245,14 +245,14 @@ pub fn build_topic_rows(
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time.
         let id = match obj.side {
-            Side::Self_ => format!("way/{}", way.id),
-            Side::Left  => format!("way/{}/{}/left",  way.id, obj.prefix.unwrap_or("cycleway")),
-            Side::Right => format!("way/{}/{}/right", way.id, obj.prefix.unwrap_or("cycleway")),
+            Side::Self_ => format!("way/{}", way_id),
+            Side::Left  => format!("way/{}/{}/left",  way_id, obj.prefix.unwrap_or("cycleway")),
+            Side::Right => format!("way/{}/{}/right", way_id, obj.prefix.unwrap_or("cycleway")),
         };
         derived.insert("id".into(), Value::String(id.clone()));
 
         rows.push(TopicRow {
-            osm_id: way.id,
+            osm_id: way_id,
             osm_type: "W",
             id,
             osm,

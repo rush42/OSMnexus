@@ -4,41 +4,55 @@ use osmpbf::{BlobReader, BlobType, ByteOffset, Element, ElementReader, Primitive
 use rayon::prelude::*;
 use tracing::{info, warn};
 
-use super::types::{ElementFilter, OsmWay, RawTags, WayMeta};
+use super::types::{ElementFilter, OsmWay, RawTags, WayData, WayMeta};
 
-/// Intermediate way data before geometry resolution.
-struct WayData {
-    id: i64,
-    tags: RawTags,
-    node_refs: Vec<i64>,
-    meta: WayMeta,
+/// A compact, allocation-frugal store of the kept ways' node-id lists, built in Pass A and consumed
+/// by the geometry pass. CSR layout: one flat `refs` vector holds every kept way's node ids
+/// back-to-back; `ways` indexes into it as `(id, start, len, payload)`. Avoids one `Vec` per way.
+struct WayIndex<M> {
+    refs: Vec<i64>,
+    ways: Vec<(i64, u32, u32, M)>,
 }
 
-/// Stream OSM ways matching any of `filters` from a PBF file, invoking `for_each` on each
-/// resolved way. The per-node coordinate/use-count maps are reader-internal (geometry and
-/// graph cut-points are attached to each way), so nothing is returned.
-///
-/// Ways are **streamed, not materialized**: each way is resolved, handed to `for_each`, and
-/// dropped — so peak memory is proportional to the referenced-node coordinates (the selected
-/// network), not the number of ways or their tags.
+impl<M> WayIndex<M> {
+    fn new() -> Self {
+        WayIndex { refs: Vec::new(), ways: Vec::new() }
+    }
+    fn push(&mut self, id: i64, node_refs: &[i64], payload: M) {
+        let start = self.refs.len() as u32;
+        self.refs.extend_from_slice(node_refs);
+        self.ways.push((id, start, node_refs.len() as u32, payload));
+    }
+}
+
+/// Stream OSM ways from a PBF, in two topic-agnostic callbacks:
+///   * `classify(&WayData)` runs in Pass A (tag-only, geometry-free) and returns `Some(payload)` for
+///     a kept way or `None` for a fully pruned one. Its side effect is emitting the tag rows.
+///   * `build_geom(&OsmWay, payload)` runs in the geometry pass on each kept way once its geometry is
+///     resolved, emitting the geom rows.
+/// The `payload: M` is opaque to the reader — the caller uses it to carry "which topics kept this
+/// way" from classify through to build_geom.
 ///
 /// Fast path (sorted `node → way → relation` files):
-///   * Pass A — decode the way region, collect per-node use counts (= the needed-node set).
-///   * Pass B — decode the node region once, collect coords for those nodes.
-///   * Pass C — decode the way region again, resolve + `for_each` each way, streaming.
+///   * Pass A — decode the way region **once**: filter, tally per-node use counts, classify (emit
+///     tags), and record each kept way's node ids in a `WayIndex`.
+///   * Pass B — decode the node region once, collect coords for the needed nodes.
+///   * Geometry pass — resolve each indexed way against the coords/use-counts and call `build_geom`.
+///     **No second way-region decode**; peak memory adds the kept ways' node-id lists.
 ///
-/// The way region (small — typically ~15% of blobs) is decoded twice; the heavy node region
-/// once. This trades ~14% extra decode for bounded, network-proportional memory.
-///
-/// Fallback (unsorted / boundary check fails / `PBF_FORCE_FALLBACK`): three full parallel
-/// scans (refs → coords → stream). Rare; still streams, still bounded memory.
-pub fn stream_ways<F>(
+/// Fallback (unsorted / boundary check fails / `PBF_FORCE_FALLBACK`): three full parallel scans
+/// (refs → coords → classify+geometry). Rare; re-decodes the way region in pass 3 rather than
+/// holding the node-id index, but is otherwise behaviorally identical.
+pub fn stream_ways<C, G, M>(
     path: &str,
     filters: &[ElementFilter],
-    for_each: F,
+    classify: C,
+    build_geom: G,
 ) -> anyhow::Result<()>
 where
-    F: Fn(&OsmWay) + Sync + Send,
+    C: Fn(&WayData) -> Option<M> + Sync + Send,
+    G: Fn(&OsmWay, M) + Sync + Send,
+    M: Copy + Send + Sync,
 {
     info!("Building blob index (no decompression)...");
     let t_idx = std::time::Instant::now();
@@ -71,22 +85,21 @@ where
                 let way_offsets = &data_offsets[way_start..];
                 let node_offsets = &data_offsets[..way_start];
 
-                // Pass A — way region: per-node use counts (keyset = needed-node set).
+                // Pass A — way region (decoded once): filter + counts + classify (emit tags) + index.
                 let t = std::time::Instant::now();
-                let use_counts = collect_use_counts(path, way_offsets, filters)?;
-                info!("[phase] Pass A (filter ways → node refs): {:.1}s", t.elapsed().as_secs_f32());
+                let (use_counts, index) = classify_and_index(path, way_offsets, filters, &classify)?;
+                info!("[phase] Pass A (filter + classify + emit tags): {:.1}s", t.elapsed().as_secs_f32());
                 // Pass B — node region: coords for needed nodes only.
                 let t = std::time::Instant::now();
                 let coords = collect_coords(path, node_offsets, &use_counts)?;
                 info!("[phase] Pass B (collect node coords): {:.1}s", t.elapsed().as_secs_f32());
                 log_node_summary(&use_counts);
-                // Pass C — way region again: resolve + stream each way. `coords`/`use_counts` are
-                // reader-internal: geometry + cut_points are attached to each way, so nothing needs
-                // the node maps afterwards — they drop here, freeing memory before index creation.
-                // Overlaps with the DB-drain consumer, so its duration is the *producer* side only.
+                // Geometry pass — resolve each indexed way + emit geom. No blob decode here; the
+                // node maps + index drop afterwards, freeing memory before index creation. Overlaps
+                // with the DB-drain consumer, so its duration is the *producer* side only.
                 let t = std::time::Instant::now();
-                stream_way_region(path, way_offsets, filters, &coords, &use_counts, &for_each)?;
-                info!("[phase] Pass C (build geometries + categorize + emit, producer): {:.1}s", t.elapsed().as_secs_f32());
+                build_geometries(&index, &coords, &use_counts, &build_geom)?;
+                info!("[phase] Geometry pass (resolve + build geometry + emit geom, no decode): {:.1}s", t.elapsed().as_secs_f32());
 
                 return Ok(());
             }
@@ -98,70 +111,84 @@ where
         warn!("PBF not declared Sort.Type_then_ID — using full-scan streaming reader");
     }
 
-    stream_ways_fallback(path, filters, for_each)
+    stream_ways_fallback(path, filters, classify, build_geom)
 }
 
 // ----------------------------------------------------------------------------------------
 // Sorted fast path
 // ----------------------------------------------------------------------------------------
 
-/// Pass A — decode the way-region blobs (parallel) and tally per-node use counts across all
-/// matching ways. The count map's keyset is exactly the needed-node set for Pass B.
-fn collect_use_counts(
+/// Pass A — decode the way-region blobs once (parallel). For every filter-passing way, tally its
+/// node refs into the global use-count map (intersection detection spans all filter-passing ways,
+/// not just classified-kept ones), classify it (side effect: emit tag rows), and — when kept —
+/// record its node ids in the `WayIndex` for the geometry pass. Tags/meta drop after classify.
+fn classify_and_index<C, M>(
     path: &str,
     way_offsets: &[ByteOffset],
     filters: &[ElementFilter],
-) -> anyhow::Result<FxHashMap<i64, u32>> {
-    let per_blob: Vec<Vec<i64>> = way_offsets
+    classify: &C,
+) -> anyhow::Result<(FxHashMap<i64, u32>, WayIndex<M>)>
+where
+    C: Fn(&WayData) -> Option<M> + Sync,
+    M: Copy + Send + Sync,
+{
+    use crate::profile::{self, DECODE, TAGBUILD};
+
+    // Each blob independently: all filter-passing refs (for counts) + a local kept index segment.
+    let per_blob: Vec<(Vec<i64>, WayIndex<M>)> = way_offsets
         .par_iter()
-        .map(|&off| -> anyhow::Result<Vec<i64>> {
-            let block = decode_block(path, off)?;
-            let mut refs = Vec::new();
+        .map(|&off| -> anyhow::Result<(Vec<i64>, WayIndex<M>)> {
+            let block = profile::time(&DECODE, || decode_block(path, off))?;
+            let mut count_refs: Vec<i64> = Vec::new();
+            let mut seg = WayIndex::new();
             for group in block.groups() {
                 for way in group.ways() {
                     if way_passes(filters, &way) {
-                        refs.extend(way.refs());
+                        let wd = profile::time(&TAGBUILD, || way_data(&way));
+                        count_refs.extend_from_slice(&wd.node_refs);
+                        if let Some(m) = classify(&wd) {
+                            seg.push(wd.id, &wd.node_refs, m);
+                        }
                     }
                 }
             }
-            Ok(refs)
+            Ok((count_refs, seg))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
+    // Merge: sum counts, and concatenate the per-blob index segments (rebasing their offsets).
     let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
-    for refs in per_blob {
-        for id in refs {
+    let mut index: WayIndex<M> = WayIndex::new();
+    for (count_refs, seg) in per_blob {
+        for id in count_refs {
             *counts.entry(id).or_insert(0) += 1;
         }
+        let base = index.refs.len() as u32;
+        index.refs.extend_from_slice(&seg.refs);
+        for (id, start, len, m) in seg.ways {
+            index.ways.push((id, base + start, len, m));
+        }
     }
-    Ok(counts)
+    Ok((counts, index))
 }
 
-/// Pass C — decode the way-region blobs again (parallel), resolve each matching way against the
-/// coords map, and stream it to `for_each`. Nothing accumulates; ways are dropped after the call.
-fn stream_way_region<F>(
-    path: &str,
-    way_offsets: &[ByteOffset],
-    filters: &[ElementFilter],
+/// Geometry pass — resolve each indexed way against the coords map (parallel) and hand it to
+/// `build_geom`. No blob decode: the ways' node ids come straight from the in-memory `WayIndex`.
+fn build_geometries<G, M>(
+    index: &WayIndex<M>,
     coords: &FxHashMap<i64, (f32, f32)>,
     use_counts: &FxHashMap<i64, u32>,
-    for_each: &F,
+    build_geom: &G,
 ) -> anyhow::Result<()>
 where
-    F: Fn(&OsmWay) + Sync,
+    G: Fn(&OsmWay, M) + Sync,
+    M: Copy + Sync,
 {
-    use crate::profile::{self, DECODE, RESOLVE, TAGBUILD};
-    way_offsets.par_iter().try_for_each(|&off| -> anyhow::Result<()> {
-        let block = profile::time(&DECODE, || decode_block(path, off))?;
-        for group in block.groups() {
-            for way in group.ways() {
-                if way_passes(filters, &way) {
-                    let wd = profile::time(&TAGBUILD, || way_data(&way));
-                    if let Some(w) = profile::time(&RESOLVE, || resolve_way(wd, coords, use_counts)) {
-                        for_each(&w);
-                    }
-                }
-            }
+    use crate::profile::{self, RESOLVE};
+    index.ways.par_iter().try_for_each(|&(id, start, len, m)| -> anyhow::Result<()> {
+        let refs = &index.refs[start as usize..(start + len) as usize];
+        if let Some(w) = profile::time(&RESOLVE, || resolve_geometry(id, refs, coords, use_counts)) {
+            build_geom(&w, m);
         }
         Ok(())
     })
@@ -299,13 +326,16 @@ fn collect_coords(
 // Fallback: full parallel scans (handles unsorted / non-seekable-ordered files)
 // ----------------------------------------------------------------------------------------
 
-fn stream_ways_fallback<F>(
+fn stream_ways_fallback<C, G, M>(
     path: &str,
     filters: &[ElementFilter],
-    for_each: F,
+    classify: C,
+    build_geom: G,
 ) -> anyhow::Result<()>
 where
-    F: Fn(&OsmWay) + Sync + Send,
+    C: Fn(&WayData) -> Option<M> + Sync + Send,
+    G: Fn(&OsmWay, M) + Sync + Send,
+    M: Copy + Send + Sync,
 {
     info!("Pass 1 (parallel): collecting referenced node ids...");
     let all_refs: Vec<i64> = ElementReader::from_path(path)
@@ -362,15 +392,22 @@ where
 
     log_node_summary(&use_counts);
 
-    info!("Pass 3 (parallel): streaming ways...");
+    // Pass 3 re-decodes the ways (rare path) so it can classify + resolve + build geometry in one
+    // go — coords are already in hand, so no node-id index is needed.
+    info!("Pass 3 (parallel): classify + build geometry, streaming...");
     ElementReader::from_path(path)
         .context("opening PBF for pass 3")?
         .par_map_reduce(
             |element| {
                 if let Element::Way(way) = element {
                     if way_passes(filters, &way) {
-                        if let Some(w) = resolve_way(way_data(&way), &coords, &use_counts) {
-                            for_each(&w);
+                        let wd = way_data(&way);
+                        if let Some(m) = classify(&wd) {
+                            if let Some(w) =
+                                resolve_geometry(wd.id, &wd.node_refs, &coords, &use_counts)
+                            {
+                                build_geom(&w, m);
+                            }
                         }
                     }
                 }
@@ -428,17 +465,19 @@ fn way_data(way: &Way) -> WayData {
     WayData { id: way.id(), tags, node_refs: refs, meta }
 }
 
-/// Resolve a `WayData` into an `OsmWay` by looking up node coordinates.
-fn resolve_way(
-    wd: WayData,
+/// Resolve a way's node ids into an `OsmWay` geometry by looking up node coordinates. Tag/meta are
+/// not involved — classification already ran in Pass A.
+fn resolve_geometry(
+    id: i64,
+    node_refs: &[i64],
     coords: &FxHashMap<i64, (f32, f32)>,
     use_counts: &FxHashMap<i64, u32>,
 ) -> Option<OsmWay> {
     // One pass: keep only nodes that have coords, tracking their ids so cut points stay aligned
     // to `pts` indices (a dropped missing-coord node must not shift the indices).
-    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(wd.node_refs.len());
-    let mut kept_ids: Vec<i64> = Vec::with_capacity(wd.node_refs.len());
-    for &id in &wd.node_refs {
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(node_refs.len());
+    let mut kept_ids: Vec<i64> = Vec::with_capacity(node_refs.len());
+    for &id in node_refs {
         if let Some(&(lon, lat)) = coords.get(&id) {
             pts.push((lon as f64, lat as f64));
             kept_ids.push(id);
@@ -452,11 +491,11 @@ fn resolve_way(
     // Cut points: start + end (always), plus interior nodes shared with another way (count > 1).
     let last = kept_ids.len() - 1;
     let mut cut_points: Vec<(u32, i64)> = Vec::new();
-    for (i, &id) in kept_ids.iter().enumerate() {
-        if i == 0 || i == last || use_counts.get(&id).copied().unwrap_or(0) > 1 {
-            cut_points.push((i as u32, id));
+    for (i, &nid) in kept_ids.iter().enumerate() {
+        if i == 0 || i == last || use_counts.get(&nid).copied().unwrap_or(0) > 1 {
+            cut_points.push((i as u32, nid));
         }
     }
 
-    Some(OsmWay { id: wd.id, coords: pts, cut_points, tags: wd.tags, meta: wd.meta })
+    Some(OsmWay { id, coords: pts, cut_points })
 }
