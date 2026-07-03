@@ -275,7 +275,9 @@ where
     Ok(n)
 }
 
-fn write_csv_row(buf: &mut Vec<u8>, fields: &[String]) {
+/// Append one CSV record (RFC-4180-ish quoting) to `buf`. Shared by the COPY sink writers and the
+/// CSV file writers.
+pub fn write_csv_row(buf: &mut Vec<u8>, fields: &[String]) {
     for (i, field) in fields.iter().enumerate() {
         if i > 0 { buf.push(b','); }
         let needs_quoting = field.contains('"') || field.contains(',')

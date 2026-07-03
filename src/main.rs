@@ -1,3 +1,6 @@
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use osm_pipeline::{config, db, engine, osm, processing};
@@ -10,21 +13,22 @@ use futures::SinkExt;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use config::Config;
+use config::{Config, Output};
 use db::{pool::build_pool, schema, schema::GEOM_TABLE};
 use engine::runner::{GeomRow, TopicRow};
-use engine::topic_runner::{stream_geom_rows, stream_rows, TopicRunner};
+use engine::topic_runner::{stream_geom_rows, stream_rows, write_csv_row, TopicRunner};
 use osm::reader::stream_ways;
 use osm::types::{ElementFilter, OsmWay, WayData};
 use processing::{classify_way, geom_rows_for};
 
-const TAG_COPY_COLUMNS: &str =
-    "(osm_id, osm_type, id, osm, derived, private, meta, minzoom) FROM STDIN (FORMAT CSV)";
-const GEOM_COPY_COLUMNS: &str =
-    "(osm_id, variant, seg_idx, start_id, end_id, geom, length_m, total_length_m) FROM STDIN (FORMAT CSV)";
+/// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
+const TAG_COLUMNS: &str = "osm_id,osm_type,id,osm,derived,private,meta,minzoom";
+const GEOM_COLUMNS: &str = "osm_id,variant,seg_idx,start_id,end_id,geom,length_m,total_length_m";
 
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
 const WRITER_CHAN_CAP: usize = 256;
+/// Flush the CSV byte buffer to the file once it reaches this size.
+const CSV_FLUSH_BYTES: usize = 512 * 1024;
 
 /// One COPY writer for the tag table `table`: owns its pooled connection for the whole COPY (so the
 /// deadpool `Object` can't be recycled mid-COPY — the pitfall that hangs the next `copy_in`),
@@ -35,7 +39,8 @@ async fn tag_writer(
     mut rx: mpsc::Receiver<Vec<TopicRow>>,
 ) -> anyhow::Result<usize> {
     let client = pool.get().await.context("getting tag writer connection")?;
-    let mut sink = Box::pin(client.copy_in(&format!("COPY {table} {TAG_COPY_COLUMNS}")).await?);
+    let mut sink =
+        Box::pin(client.copy_in(&format!("COPY {table} ({TAG_COLUMNS}) FROM STDIN (FORMAT CSV)")).await?);
     let mut buf = Vec::with_capacity(512 * 1024);
     let mut count = 0;
     while let Some(rows) = rx.recv().await {
@@ -56,8 +61,9 @@ async fn geom_writer(
     mut rx: mpsc::Receiver<Vec<GeomRow>>,
 ) -> anyhow::Result<usize> {
     let client = pool.get().await.context("getting geom writer connection")?;
-    let mut sink =
-        Box::pin(client.copy_in(&format!("COPY {GEOM_TABLE} {GEOM_COPY_COLUMNS}")).await?);
+    let mut sink = Box::pin(
+        client.copy_in(&format!("COPY {GEOM_TABLE} ({GEOM_COLUMNS}) FROM STDIN (FORMAT CSV)")).await?,
+    );
     let mut buf = Vec::with_capacity(512 * 1024);
     let mut count = 0;
     while let Some(rows) = rx.recv().await {
@@ -67,6 +73,55 @@ async fn geom_writer(
         sink.as_mut().send(Bytes::from(buf)).await?;
     }
     sink.as_mut().finish().await?;
+    Ok(count)
+}
+
+/// CSV file writer for a tag table: writes a header line, then each row's CSV record to a buffered
+/// file, reusing the same field serialization as the COPY path.
+async fn tag_csv_writer(
+    path: PathBuf,
+    mut rx: mpsc::Receiver<Vec<TopicRow>>,
+) -> anyhow::Result<usize> {
+    let mut f = BufWriter::new(File::create(&path).with_context(|| format!("creating {}", path.display()))?);
+    writeln!(f, "{TAG_COLUMNS}")?;
+    let mut buf = Vec::with_capacity(CSV_FLUSH_BYTES);
+    let mut count = 0;
+    while let Some(rows) = rx.recv().await {
+        for row in rows {
+            write_csv_row(&mut buf, &row.to_csv_fields()?);
+            count += 1;
+        }
+        if buf.len() >= CSV_FLUSH_BYTES {
+            f.write_all(&buf)?;
+            buf.clear();
+        }
+    }
+    f.write_all(&buf)?;
+    f.flush()?;
+    Ok(count)
+}
+
+/// CSV file writer for the shared geometry table.
+async fn geom_csv_writer(
+    path: PathBuf,
+    mut rx: mpsc::Receiver<Vec<GeomRow>>,
+) -> anyhow::Result<usize> {
+    let mut f = BufWriter::new(File::create(&path).with_context(|| format!("creating {}", path.display()))?);
+    writeln!(f, "{GEOM_COLUMNS}")?;
+    let mut buf = Vec::with_capacity(CSV_FLUSH_BYTES);
+    let mut count = 0;
+    while let Some(rows) = rx.recv().await {
+        for row in &rows {
+            write_csv_row(&mut buf, &row.to_csv_fields());
+            count += 1;
+        }
+        if buf.len() >= CSV_FLUSH_BYTES {
+            f.write_all(&buf)?;
+            buf.clear();
+        }
+    }
+    f.write_all(&buf)?;
+    f.flush()?;
     Ok(count)
 }
 
@@ -107,18 +162,6 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    info!("Connecting to database {}@{}/{}", cfg.db_user, cfg.db_host, cfg.db_name);
-    let pool = build_pool(&cfg)?;
-    let client_setup = pool.get().await.context("getting DB connection")?;
-
-    info!("Setting up schema...");
-    schema::create_tables(&client_setup, &table_refs).await?;
-    if cfg.truncate {
-        schema::truncate_tables(&client_setup, &table_refs).await?;
-    }
-    schema::drop_indexes(&client_setup, &table_refs).await?;
-    drop(client_setup);
-
     // Each topic declares which ways it needs (data-defined `element_filter` in topic.json,
     // defaulting to `highway`). The reader keeps any way matching any topic's filter.
     let filters: Vec<ElementFilter> = runners
@@ -127,34 +170,67 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     let n = tables.len();
-    let k = cfg.db_writers.max(1);
-    // Pool must supply every writer connection at once: k per tag table + k for the shared geom table.
-    pool.resize((n + 1) * k + 2);
-    info!("Using {k} COPY connection(s) per table ({} writers total)", (n + 1) * k);
+
+    // Output backend. `w` = parallel writers per table: k sharded COPY connections for Postgres, a
+    // single file writer for CSV. `pool` is `None` for CSV.
+    let (pool, w): (Option<Pool>, usize) = match cfg.output {
+        Output::Pg => {
+            info!("Connecting to database {}@{}/{}", cfg.db_user, cfg.db_host, cfg.db_name);
+            let pool = build_pool(&cfg)?;
+            let client_setup = pool.get().await.context("getting DB connection")?;
+            info!("Setting up schema...");
+            schema::create_tables(&client_setup, &table_refs).await?;
+            if cfg.truncate {
+                schema::truncate_tables(&client_setup, &table_refs).await?;
+            }
+            schema::drop_indexes(&client_setup, &table_refs).await?;
+            drop(client_setup);
+            let k = cfg.db_writers.max(1);
+            // Pool must supply every writer connection at once: k per tag table + k for geom.
+            pool.resize((n + 1) * k + 2);
+            info!("Postgres output · {k} COPY connection(s) per table");
+            (Some(pool), k)
+        }
+        Output::Csv => {
+            std::fs::create_dir_all(&cfg.out_dir)
+                .with_context(|| format!("creating output dir {}", cfg.out_dir))?;
+            info!("CSV output → {}/ (one file per tag table + {GEOM_TABLE}.csv)", cfg.out_dir);
+            (None, 1)
+        }
+    };
 
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
 
-    // Sharded COPY writers: k connections per tag table, plus k connections for the one shared geom
-    // table. Rows are round-robined across a table's k writers, so the dominant tables get k-way
-    // parallelism for both serialization and ingest instead of one serial connection.
+    // Spawn `w` writers per tag table + `w` for the shared geom table. For Postgres these are sharded
+    // COPY connections (rows round-robined for k-way parallel serialization + ingest); for CSV, w=1,
+    // so one buffered-file writer per table.
+    let out_dir = PathBuf::from(&cfg.out_dir);
     let mut tag_senders: Vec<Vec<mpsc::Sender<Vec<TopicRow>>>> = Vec::with_capacity(n);
     let mut tag_handles: Vec<Vec<tokio::task::JoinHandle<anyhow::Result<usize>>>> = Vec::with_capacity(n);
     for table in &tables {
-        let (mut ts, mut th) = (Vec::with_capacity(k), Vec::with_capacity(k));
-        for _ in 0..k {
+        let (mut ts, mut th) = (Vec::with_capacity(w), Vec::with_capacity(w));
+        for _ in 0..w {
             let (tx, rx) = mpsc::channel::<Vec<TopicRow>>(WRITER_CHAN_CAP);
-            th.push(tokio::spawn(tag_writer(pool.clone(), table.clone(), rx)));
+            let h = match cfg.output {
+                Output::Pg => tokio::spawn(tag_writer(pool.clone().unwrap(), table.clone(), rx)),
+                Output::Csv => tokio::spawn(tag_csv_writer(out_dir.join(format!("{table}.csv")), rx)),
+            };
+            th.push(h);
             ts.push(tx);
         }
         tag_senders.push(ts);
         tag_handles.push(th);
     }
-    let mut geom_senders: Vec<mpsc::Sender<Vec<GeomRow>>> = Vec::with_capacity(k);
-    let mut geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(k);
-    for _ in 0..k {
+    let mut geom_senders: Vec<mpsc::Sender<Vec<GeomRow>>> = Vec::with_capacity(w);
+    let mut geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
+    for _ in 0..w {
         let (tx, rx) = mpsc::channel::<Vec<GeomRow>>(WRITER_CHAN_CAP);
-        geom_handles.push(tokio::spawn(geom_writer(pool.clone(), rx)));
+        let h = match cfg.output {
+            Output::Pg => tokio::spawn(geom_writer(pool.clone().unwrap(), rx)),
+            Output::Csv => tokio::spawn(geom_csv_writer(out_dir.join(format!("{GEOM_TABLE}.csv")), rx)),
+        };
+        geom_handles.push(h);
         geom_senders.push(tx);
     }
 
@@ -175,14 +251,14 @@ async fn main() -> anyhow::Result<()> {
             }
             for (i, rows) in out.topic_rows.into_iter().enumerate() {
                 if !rows.is_empty() {
-                    let kk = tag_rr[i].fetch_add(1, Ordering::Relaxed) % k;
+                    let kk = tag_rr[i].fetch_add(1, Ordering::Relaxed) % w;
                     let _ = tag_senders[i][kk].blocking_send(rows);
                 }
             }
             Some(())
         };
         let build_geom = |way: &OsmWay, _kept: ()| {
-            let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % k;
+            let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
             let _ = geom_senders[kk].blocking_send(geom_rows_for(way, split));
         };
         stream_ways(&pbf_file, &filters, classify, build_geom)
@@ -210,13 +286,15 @@ async fn main() -> anyhow::Result<()> {
     info!("Wrote {geom_count} geom rows → {GEOM_TABLE}");
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 
-    if cfg.create_index {
-        info!("Creating indexes...");
-        let t_idx = std::time::Instant::now();
-        schema::create_indexes(&pool, &table_refs).await?;
-        info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
-    } else {
-        info!("Skipping index creation (pass --create-index to enable)");
+    match (cfg.output, cfg.create_index) {
+        (Output::Pg, true) => {
+            info!("Creating indexes...");
+            let t_idx = std::time::Instant::now();
+            schema::create_indexes(pool.as_ref().unwrap(), &table_refs).await?;
+            info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
+        }
+        (Output::Pg, false) => info!("Skipping index creation (pass --create-index to enable)"),
+        (Output::Csv, _) => {}
     }
 
     info!("Done. Total: {:.1}s", t0.elapsed().as_secs_f32());

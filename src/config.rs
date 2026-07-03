@@ -58,7 +58,21 @@ pub struct Config {
 
     /// Parallel COPY connections per table. Rows are round-robined across them, so the dominant
     /// table (e.g. roads) isn't bottlenecked on a single connection's serialization + ingest.
-    /// Uses up to `(topics + 1) × db_writers` Postgres connections during load.
+    /// Uses up to `(topics + 1) × db_writers` Postgres connections during load. Ignored for `csv`.
     #[arg(long, default_value_t = 4)]
     pub db_writers: usize,
+
+    /// Output backend: `pg` (COPY into PostGIS) or `csv` (one file per tag table + geometries.csv).
+    #[arg(long, value_enum, default_value_t = Output::Pg)]
+    pub output: Output,
+
+    /// Directory for CSV output (created if missing). Only used with `--output csv`.
+    #[arg(long, default_value = "out")]
+    pub out_dir: String,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Output {
+    Pg,
+    Csv,
 }

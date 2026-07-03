@@ -55,11 +55,18 @@ The tables (`roads`, `bikelanes`, `geometries`) are created and truncated automa
 | flag | default | meaning |
 |---|---|---|
 | `<pbf_file>` (or `PBF_FILE`) | — | input `.osm.pbf` |
+| `--output <backend>` | `pg` | `pg` (COPY into PostGIS) or `csv` (one file per tag table + `geometries.csv`) |
+| `--out-dir <path>` | `out` | directory for CSV output (`--output csv` only) |
 | `--split <mode>` | `ways` | geometry variant(s): `ways`, `intersections`, or `both` |
-| `--create-index` | off | build indexes after load (the split-geom GiST can dominate runtime) |
-| `--db-writers <k>` | `4` | parallel COPY connections per table (rows round-robined) |
-| `--truncate` | on | truncate tables before loading |
+| `--create-index` | off | build indexes after load (the split-geom GiST can dominate runtime; `pg` only) |
+| `--db-writers <k>` | `4` | parallel COPY connections per table, rows round-robined (`pg` only) |
+| `--truncate` | on | truncate tables before loading (`pg` only) |
 | `--threads <n>` | `0` | rayon pool size for the CPU-bound passes (`0` = all cores) |
+
+The `csv` backend writes the same schema as `pg` — `<topic>.csv` (tag tables) and `geometries.csv`
+— with a header row, JSON columns as quoted CSV, and geometry as hex-encoded EWKB. Load it anywhere
+(DuckDB, `ogr2ogr`, `COPY … FROM`, pandas, a graph library via the `osm_id`/`start_id`/`end_id`
+edge list).
 
 Database connection uses the standard libpq env vars, overridable per flag: `PGHOST`/`--db-host`
 (empty → Unix socket, peer auth), `PGDATABASE`/`--db-name`, `PGUSER`/`--db-user`,
