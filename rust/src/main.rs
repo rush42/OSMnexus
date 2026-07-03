@@ -169,10 +169,14 @@ async fn main() -> anyhow::Result<()> {
     }
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 
-    info!("Creating indexes...");
-    let t_idx = std::time::Instant::now();
-    schema::create_indexes(&pool, &table_refs).await?;
-    info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
+    if cfg.create_index {
+        info!("Creating indexes...");
+        let t_idx = std::time::Instant::now();
+        schema::create_indexes(&pool, &table_refs).await?;
+        info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
+    } else {
+        info!("Skipping index creation (pass --create-index to enable)");
+    }
 
     info!("Done. Total: {:.1}s", t0.elapsed().as_secs_f32());
     Ok(())

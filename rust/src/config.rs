@@ -49,4 +49,10 @@ pub struct Config {
     /// (one row per intersection segment), or `both`.
     #[arg(long, value_enum, default_value_t = SplitMode::Ways)]
     pub split: SplitMode,
+
+    /// Create indexes on the tag/geom tables after loading. Off by default: indexing a large
+    /// import (especially the split geom table's GiST) can dominate runtime, so it's opt-in for
+    /// when the tables are actually queried.
+    #[arg(long, default_value_t = false)]
+    pub create_index: bool,
 }
