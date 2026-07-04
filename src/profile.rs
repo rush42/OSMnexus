@@ -2,8 +2,9 @@
 //! when off, `time` just runs the closure with a single relaxed atomic load and no clock read.
 //!
 //! Pass C's per-way work is spread across the reader (decode + tag build + geometry resolve) and
-//! `process_way` (projection + classify), so the buckets are filled from both. Accumulation is via
-//! relaxed atomics across the rayon threads — fine for proportional attribution.
+//! `processing` (`classify_way` + `geom_rows_for`: projection + classify), so the buckets are
+//! filled from both. Accumulation is via relaxed atomics across the rayon threads — fine for
+//! proportional attribution.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;

@@ -147,7 +147,7 @@ impl Producer {
                         ctx.sanitizers,
                     ).map(|v| Produced::bare(Value::String(v)))
                 }
-                "smoothness_parent" => smoothness_parent(ctx),
+                "smoothness_parent" => derive::smoothness_parent(ctx),
                 other => { tracing::warn!("unknown deriver: {other}"); None }
             },
 
@@ -161,45 +161,6 @@ impl Producer {
                 Some(Produced { value, consts: consts.clone() })
             }
         }
-    }
-}
-
-/// `deriveBikelaneSmoothness`: re-evaluate the base `smoothness` fallback (the single source of
-/// truth for the 4-source derivation + provenance) against own and parent tags, then copy the
-/// parent's value under the Lua guards, prefixing its source with `parent_highway_`.
-fn smoothness_parent(ctx: &ExtractCtx) -> Option<Produced> {
-    let base = ctx.derivers.get("smoothness")?;
-    let own = base.eval(ctx);
-
-    let Some(parent) = ctx.parent_tags else { return own };
-    let mut pctx = *ctx;
-    pctx.obj_tags = parent;
-    let par = base.eval(&pctx);
-    if par.is_none() {
-        return own;
-    }
-
-    let own_surface = ctx.obj_tags.get("surface");
-    let surfaces_match = own_surface == parent.get("surface");
-    let own_source = own.as_ref().and_then(|p| p.consts.get("source")).and_then(Value::as_str);
-    let own_from_tag = matches!(own_source, Some("tag") | Some("tag_normalized"));
-
-    // A: own absent, and own surface absent or equal to the parent's.
-    let cond_a = own.is_none() && (own_surface.is_none() || surfaces_match);
-    // B: own not tag-sourced (derived or absent), own surface present and equal.
-    let cond_b = !own_from_tag && own_surface.is_some() && surfaces_match;
-
-    if cond_a || cond_b {
-        par.map(|mut p| {
-            // Prefix the copied source with `parent_highway_`.
-            if let Some(s) = p.consts.get("source").and_then(Value::as_str) {
-                let prefixed = Value::String(format!("parent_highway_{s}"));
-                p.consts.insert("source".into(), prefixed);
-            }
-            p
-        })
-    } else {
-        own
     }
 }
 
