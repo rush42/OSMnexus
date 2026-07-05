@@ -9,7 +9,7 @@ use deadpool_postgres::Pool;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use config::{Config, Output};
+use config::{Config, Output, Tiles};
 use db::{pool::build_pool, schema, schema::GEOM_TABLE};
 use engine::topic_runner::TopicRunner;
 use osm::reader::stream_ways;
@@ -38,11 +38,9 @@ async fn main() -> anyhow::Result<()> {
         info!("rayon thread pool capped at {} threads", cfg.threads);
     }
 
-    // Load all topics.  Add a new topic name here — no other code changes needed.
-    let runners: Vec<TopicRunner> = ["bikelanes", "roads"]
-        .iter()
-        .map(|name| TopicRunner::load(name))
-        .collect::<anyhow::Result<_>>()?;
+    // Discover topics by scanning `topics/` (skipping `_`-prefixed dirs like `_shared`).
+    // Drop a new `topics/<name>/` directory in and it's picked up — no code changes needed.
+    let runners: Vec<TopicRunner> = TopicRunner::load_all()?;
 
     let tables: Vec<String> = runners.iter().map(|r| r.table().to_owned()).collect();
     let table_refs: Vec<&str> = tables.iter().map(String::as_str).collect();
@@ -191,6 +189,23 @@ async fn main() -> anyhow::Result<()> {
         }
         (Output::Pg, false) => info!("Skipping index creation (pass --create-index to enable)"),
         (Output::Csv, _) => {}
+    }
+
+    if cfg.output == Output::Pg {
+        match cfg.tiles {
+            Tiles::None => {}
+            Tiles::View => {
+                info!("Creating tile views (<topic>_tiles)...");
+                let client = pool.as_ref().unwrap().get().await?;
+                db::tiles::create_tile_views(&client, &table_refs).await?;
+            }
+            Tiles::Materialized => {
+                info!("Materializing tile tables + spatial index (<topic>_tiles)...");
+                let t_tiles = std::time::Instant::now();
+                db::tiles::materialize_tiles(pool.as_ref().unwrap(), &table_refs).await?;
+                info!("Tile materialization: {:.1}s", t_tiles.elapsed().as_secs_f32());
+            }
+        }
     }
 
     info!("Done. Total: {:.1}s", t0.elapsed().as_secs_f32());
