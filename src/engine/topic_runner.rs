@@ -88,6 +88,25 @@ fn apply_overrides(base: &[Field], overrides: Vec<Field>) -> Vec<Field> {
 }
 
 impl TopicRunner {
+    /// Discover and load every topic under `topics/`, skipping `_`-prefixed directories
+    /// (e.g. `topics/_shared/`). Returned in sorted name order for deterministic output.
+    pub fn load_all() -> anyhow::Result<Vec<Self>> {
+        let topics_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("topics");
+        let mut names: Vec<String> = std::fs::read_dir(&topics_dir)
+            .with_context(|| format!("reading {}", topics_dir.display()))?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                if !entry.file_type().ok()?.is_dir() {
+                    return None;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                (!name.starts_with('_')).then_some(name)
+            })
+            .collect();
+        names.sort();
+        names.iter().map(|name| Self::load(name)).collect()
+    }
+
     /// Load a topic from its directory under `topics/<name>/`.
     pub fn load(name: &str) -> anyhow::Result<Self> {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("topics/{name}"));
