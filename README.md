@@ -1,13 +1,19 @@
-# tilda-geo — OSM topic engine (Rust)
+# OSMnexus — configurable OSM network extraction (Rust)
 
-A streaming OSM → PostGIS **network-extraction** tool. It reads an `.osm.pbf` extract, classifies
-ways into topics using data-defined JSON rules, and writes a normalized graph to PostgreSQL/PostGIS:
-per-topic **tag** tables plus one shared **geometry** table, joined on `osm_id`.
+A streaming OSM → PostGIS **network-extraction** engine. It reads an `.osm.pbf` extract, classifies
+ways into topics using **data-defined JSON rules**, and writes a normalized graph to
+PostgreSQL/PostGIS: per-topic **tag** tables plus one shared **geometry** table, joined on `osm_id`.
 
-This is a Rust reimplementation of the `roads_bikelanes` topic from
-[tilda-geo](https://github.com/tordans/tilda-geo) (the radverkehrsatlas processing pipeline). It
-produces the `roads` and `bikelanes` classifications; the other Lua topics (parking, transit, POIs,
-traffic signs, …) are not ported.
+Think of it as a general, unbiased alternative to tools like OSMnx: the engine hardcodes *no*
+particular network. What counts as an edge, how tags are normalized, and which attributes are
+derived all live in JSON config, so you can carve **any** kind of network out of OSM — streets,
+bike infrastructure, transit, footpaths, a power grid — by writing rules, not code.
+
+The bundled config reimplements the `roads_bikelanes` topic from
+[tilda-geo](https://github.com/tordans/tilda-geo) (the radverkehrsatlas processing pipeline),
+producing the `roads` and `bikelanes` classifications. Other tilda Lua topics (parking, transit,
+POIs, traffic signs, …) aren't bundled — but nothing in the engine is specific to roads; add a
+`topics/<name>/` directory to define your own.
 
 ## Data model
 
@@ -49,6 +55,30 @@ cargo run --release -- brandenburg-latest.osm.pbf --split both --create-index
 ```
 
 The tables (`roads`, `bikelanes`, `geometries`) are created and truncated automatically.
+
+### Example
+
+The two flags you'll reach for most are `--split` (which geometry variants to emit) and `--output`
+(where to write). A typical PostGIS run that produces both whole-way and intersection-split
+geometry and builds indexes afterwards:
+
+```bash
+cargo run --release -- brandenburg-latest.osm.pbf \
+    --split both \          # emit both whole-way and intersection-split geometry
+    --create-index \        # build the GiST/btree indexes after load
+    --db-writers 8          # parallel COPY connections per table
+```
+
+Prefer files over a database? Point it at the `csv` backend — same schema, no Postgres needed:
+
+```bash
+cargo run --release -- brandenburg-latest.osm.pbf \
+    --output csv \          # write CSV instead of COPY-ing into PostGIS
+    --out-dir ./out \       # roads.csv, bikelanes.csv, geometries.csv
+    --split ways            # whole-way geometry only
+```
+
+Add `RUST_LOG=info` in front of either command for per-phase timings.
 
 ## Configuration
 
