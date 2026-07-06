@@ -13,17 +13,18 @@ use crate::osm::types::{NodeData, OsmWay, RelData, WayData};
 use super::resolve::{
     dense_node_data, log_node_summary, node_data, rel_data, resolve_geometry, way_data, NodeCoords,
 };
-use super::Callbacks;
+use super::{assign_node_ids, Callbacks};
 
-pub(super) fn stream_osm_fallback<CR, CW, CN, G, M>(
+pub(super) fn stream_osm_fallback<CR, CW, CN, G, BN, M>(
     path: &str,
-    cb: Callbacks<CR, CW, CN, G>,
+    cb: Callbacks<CR, CW, CN, G, BN>,
 ) -> anyhow::Result<()>
 where
     CR: Fn(&RelData) -> bool + Sync + Send,
     CW: Fn(&WayData, bool) -> Option<M> + Sync + Send,
     CN: Fn(&NodeData) -> bool + Sync + Send,
-    G: Fn(&OsmWay, M) + Sync + Send,
+    G: Fn(&OsmWay, M, &FxHashMap<i64, i64>) + Sync + Send,
+    BN: FnOnce(Vec<(i64, i64, f32, f32)>),
     M: Copy + Send + Sync,
 {
     // Scan R — relations: emit rows + collect the member-way keep set.
@@ -53,14 +54,16 @@ where
         FxHashSet::default()
     };
 
-    // Scan 1 — ways: classify (emit tag rows), keep kept ways' (id, refs, payload) + tally use counts.
+    // Scan 1 — ways: classify (emit tag rows), keep kept ways' (id, refs, payload) + tally use counts
+    // + endpoints.
     info!("Fallback scan 1 (parallel): classify ways...");
-    let (use_counts, kept_ways): (FxHashMap<i64, u32>, Vec<(i64, Vec<i64>, M)>) =
+    let (use_counts, endpoints, kept_ways): (FxHashMap<i64, u32>, FxHashSet<i64>, Vec<(i64, Vec<i64>, M)>) =
         ElementReader::from_path(path)
             .context("opening PBF for way scan")?
             .par_map_reduce(
                 |element| {
                     let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
+                    let mut endpoints: FxHashSet<i64> = FxHashSet::default();
                     let mut ways: Vec<(i64, Vec<i64>, M)> = Vec::new();
                     if let Element::Way(way) = element {
                         let wd = way_data(&way);
@@ -69,12 +72,16 @@ where
                             for &id in &wd.node_refs {
                                 *counts.entry(id).or_insert(0) += 1;
                             }
+                            if let (Some(&first), Some(&last)) = (wd.node_refs.first(), wd.node_refs.last()) {
+                                endpoints.insert(first);
+                                endpoints.insert(last);
+                            }
                             ways.push((wd.id, wd.node_refs, m));
                         }
                     }
-                    (counts, ways)
+                    (counts, endpoints, ways)
                 },
-                || (FxHashMap::default(), Vec::new()),
+                || (FxHashMap::default(), FxHashSet::default(), Vec::new()),
                 |mut a, mut b| {
                     if a.0.len() < b.0.len() {
                         std::mem::swap(&mut a, &mut b);
@@ -83,6 +90,7 @@ where
                         *a.0.entry(k).or_insert(0) += v;
                     }
                     a.1.extend(b.1);
+                    a.2.extend(b.2);
                     a
                 },
             )
@@ -133,12 +141,19 @@ where
     log_node_summary(&use_counts);
     drop(use_counts);
 
+    // Assign internal node ids to every graph vertex + emit the `nodes` table rows (see
+    // `assign_node_ids` — sequential, so the resulting map is read-only across the parallel geometry
+    // pass below).
+    let (node_ids, node_rows) = assign_node_ids(&coords, &endpoints, &selected);
+    drop(endpoints);
+    (cb.build_nodes)(node_rows);
+
     // Geometry — resolve each kept way (held in memory) + build geometry. Selected nodes forced.
     info!("Fallback geometry pass: resolve + build geometry...");
     use rayon::prelude::*;
     kept_ways.par_iter().for_each(|(id, refs, m)| {
         if let Some(w) = resolve_geometry(*id, refs, &coords, &selected) {
-            (cb.build_geom)(&w, *m);
+            (cb.build_geom)(&w, *m, &node_ids);
         }
     });
 

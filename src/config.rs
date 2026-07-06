@@ -58,10 +58,6 @@ pub struct Config {
     #[arg(long, default_value_t = false)]
     pub emit_way_geometries: bool,
 
-    /// Emit one point row per classified node into a `node_geometries` table.
-    #[arg(long, default_value_t = false)]
-    pub emit_node_geometries: bool,
-
     /// Emit one merged-linestring row per kept relation into a `relation_geometries` table, built
     /// (as a post-processing SQL step) by merging each relation's member-way geometries — reusing
     /// `way_geometries` if `--emit-way-geometries` is also set, otherwise merging the split segments

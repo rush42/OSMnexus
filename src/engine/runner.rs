@@ -10,9 +10,10 @@ use crate::engine::topic_runner::TopicRunner;
 use crate::osm::types::{ElementKind, OsmWay, RawTags};
 use crate::output::{
     geometry::{haversine_length_m, point_to_ewkb, to_ewkb, wgs84_to_3857},
-    rows::{GeomRow, NodeGeomRow, TopicRow, WayGeomRow},
+    rows::{GeomRow, NodeRow, TopicRow, WayGeomRow},
     types::{OsmMeta, Side},
 };
+use rustc_hash::FxHashMap;
 use crate::transform::side_split::{apply_sidepath_self, get_transformed_objects};
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
@@ -232,9 +233,21 @@ pub fn build_topic_rows(
 /// per-segment `start_id`/`end_id`/`length_m`. A way with no interior cut-points yields a single
 /// edge spanning the whole way. Topic-independent (same for every topic and every side object), so
 /// computed once per way and written to the shared `edges` table.
-pub fn build_geom_rows(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> Vec<GeomRow> {
-    let first_node = way.cut_points.first().map(|c| c.1).unwrap_or(0);
-    let last_node = way.cut_points.last().map(|c| c.1).unwrap_or(0);
+///
+/// `node_ids` is the `osm node id -> internal id` map built once by `assign_node_ids` before the
+/// geometry pass starts; every cut-point node is guaranteed a spot in it (shared, endpoint, or
+/// selected), so `start_id`/`end_id` are always resolvable.
+pub fn build_geom_rows(
+    way: &OsmWay,
+    geom: &geo::LineString<f64>,
+    length_m: f64,
+    node_ids: &FxHashMap<i64, i64>,
+) -> Vec<GeomRow> {
+    let node_id = |osm_id: i64| -> i64 {
+        *node_ids.get(&osm_id).expect("cut-point node missing from internal node id map")
+    };
+    let first_node = way.cut_points.first().map(|c| node_id(c.1)).unwrap_or(0);
+    let last_node = way.cut_points.last().map(|c| node_id(c.1)).unwrap_or(0);
 
     let mut rows = Vec::new();
 
@@ -246,8 +259,8 @@ pub fn build_geom_rows(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64)
             rows.push(GeomRow {
                 osm_id: way.id,
                 seg_idx: i,
-                start_id: w[0].1,
-                end_id: w[1].1,
+                start_id: node_id(w[0].1),
+                end_id: node_id(w[1].1),
                 geom_ewkb: to_ewkb(&seg_line),
                 length_m: seg_len,
                 total_length_m: length_m,
@@ -274,8 +287,8 @@ pub fn build_way_geom_row(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f
     WayGeomRow { osm_id: way.id, geom_ewkb: to_ewkb(geom), length_m }
 }
 
-/// Build the point-geometry row for a classified node, emitted only with `--emit-node-geometries`.
-pub fn build_node_geom_row(id: i64, lon: f64, lat: f64) -> NodeGeomRow {
+/// Build a `nodes` table row for a graph vertex — always emitted (see `assign_node_ids`).
+pub fn build_node_row(id: i64, osm_id: i64, lon: f64, lat: f64) -> NodeRow {
     let (x, y) = wgs84_to_3857(lon, lat);
-    NodeGeomRow { osm_id: id, geom_ewkb: point_to_ewkb(x, y) }
+    NodeRow { id, osm_id, geom_ewkb: point_to_ewkb(x, y) }
 }

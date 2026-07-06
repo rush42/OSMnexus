@@ -32,15 +32,16 @@ impl<M> WayIndex<M> {
     }
 }
 
-/// Merge two `(use_counts, WayIndex)` accumulators: sum the count maps (folding the smaller into
-/// the larger to minimise inserts) and concatenate the index segments (rebasing `b`'s ref offsets
-/// onto the end of `a`'s ref buffer). Used as the `try_reduce` combiner in Pass A.
+/// Merge two `(use_counts, endpoints, WayIndex)` accumulators: sum the count maps (folding the
+/// smaller into the larger to minimise inserts), union the endpoint sets, and concatenate the index
+/// segments (rebasing `b`'s ref offsets onto the end of `a`'s ref buffer). Used as the `try_reduce`
+/// combiner in Pass A.
 fn merge_acc<M>(
-    a: (FxHashMap<i64, u32>, WayIndex<M>),
-    b: (FxHashMap<i64, u32>, WayIndex<M>),
-) -> (FxHashMap<i64, u32>, WayIndex<M>) {
-    let (ca, ia) = a;
-    let (cb, ib) = b;
+    a: (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>),
+    b: (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>),
+) -> (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>) {
+    let (ca, ea, ia) = a;
+    let (cb, eb, ib) = b;
 
     let mut counts = if ca.len() >= cb.len() { (ca, cb) } else { (cb, ca) };
     let (big, small) = (&mut counts.0, counts.1);
@@ -49,13 +50,16 @@ fn merge_acc<M>(
     }
     let counts = counts.0;
 
+    let mut endpoints = ea;
+    endpoints.extend(eb);
+
     let mut index = ia;
     let base = index.refs.len() as u32;
     index.refs.extend_from_slice(&ib.refs);
     for (id, start, len, m) in ib.ways {
         index.ways.push((id, base + start, len, m));
     }
-    (counts, index)
+    (counts, endpoints, index)
 }
 
 /// Relations pass — decode the relation region once (parallel). For every relation, extract its
@@ -101,7 +105,7 @@ pub(super) fn classify_and_index<C, M>(
     way_offsets: &[ByteOffset],
     keep_set: &FxHashSet<i64>,
     classify: &C,
-) -> anyhow::Result<(FxHashMap<i64, u32>, WayIndex<M>)>
+) -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>)>
 where
     C: Fn(&WayData, bool) -> Option<M> + Sync,
     M: Copy + Send + Sync,
@@ -110,9 +114,10 @@ where
 
     way_offsets
         .par_iter()
-        .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, WayIndex<M>)> {
+        .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>)> {
             let block = profile::time(&DECODE, || decode_block(path, off))?;
             let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
+            let mut endpoints: FxHashSet<i64> = FxHashSet::default();
             let mut seg = WayIndex::new();
             for group in block.groups() {
                 for way in group.ways() {
@@ -122,13 +127,20 @@ where
                         for &id in &wd.node_refs {
                             *counts.entry(id).or_insert(0) += 1;
                         }
+                        if let (Some(&first), Some(&last)) = (wd.node_refs.first(), wd.node_refs.last()) {
+                            endpoints.insert(first);
+                            endpoints.insert(last);
+                        }
                         seg.push(wd.id, &wd.node_refs, m);
                     }
                 }
             }
-            Ok((counts, seg))
+            Ok((counts, endpoints, seg))
         })
-        .try_reduce(|| (FxHashMap::default(), WayIndex::new()), |a, b| Ok(merge_acc(a, b)))
+        .try_reduce(
+            || (FxHashMap::default(), FxHashSet::default(), WayIndex::new()),
+            |a, b| Ok(merge_acc(a, b)),
+        )
 }
 
 /// Pass B — collect coordinates (as f32, ~1 m precision) for the needed nodes from the node-region
@@ -194,17 +206,18 @@ pub(super) fn build_geometries<G, M>(
     index: &WayIndex<M>,
     coords: &NodeCoords,
     selected: &FxHashSet<i64>,
+    node_ids: &FxHashMap<i64, i64>,
     build_geom: &G,
 ) -> anyhow::Result<()>
 where
-    G: Fn(&OsmWay, M) + Sync,
+    G: Fn(&OsmWay, M, &FxHashMap<i64, i64>) + Sync,
     M: Copy + Sync,
 {
     use crate::profile::{self, RESOLVE};
     index.ways.par_iter().try_for_each(|&(id, start, len, m)| -> anyhow::Result<()> {
         let refs = &index.refs[start as usize..(start + len) as usize];
         if let Some(w) = profile::time(&RESOLVE, || resolve_geometry(id, refs, coords, selected)) {
-            build_geom(&w, m);
+            build_geom(&w, m, node_ids);
         }
         Ok(())
     })

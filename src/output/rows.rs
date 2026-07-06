@@ -11,7 +11,7 @@ pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,osm,derived,private,meta,minzo
 pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m";
 pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
 pub const WAY_GEOM_COLUMNS: &str = "osm_id,geom,length_m";
-pub const NODE_GEOM_COLUMNS: &str = "osm_id,geom";
+pub const NODE_COLUMNS: &str = "id,osm_id,geom";
 
 /// A row that can be serialized into an ordered list of CSV fields. Implemented by both output row
 /// types so the writers (`output::writers`) can be generic over the row type.
@@ -54,7 +54,8 @@ impl CsvRow for TopicRow {
 
 /// A single graph-edge row: one per intersection sub-linestring of a way (`edges` table, always
 /// emitted — this *is* the extracted graph). Shared across all topics and all side objects of a way
-/// (side-split is a tag-only operation), so keyed on `osm_id`.
+/// (side-split is a tag-only operation), so keyed on `osm_id`. `start_id`/`end_id` are internal graph
+/// vertex ids (see `assign_node_ids`), not raw OSM node ids — they join `nodes.id`.
 pub struct GeomRow {
     pub osm_id: i64,
     pub seg_idx: usize,
@@ -94,16 +95,22 @@ impl CsvRow for WayGeomRow {
     }
 }
 
-/// A node point-geometry row (`node_geometries` table), emitted only with `--emit-node-geometries`.
-pub struct NodeGeomRow {
+/// A graph-vertex row (`nodes` table, always emitted): every node referenced as a `start_id`/
+/// `end_id` in `edges` — shared between ≥2 ways, a way endpoint, or forced by a node classifier. `id`
+/// is the internal sequential id `edges.start_id`/`end_id` join against; `osm_id` is the original OSM
+/// node id, kept for lookups/debugging. Was `--emit-node-geometries`'s `node_geometries` table —
+/// that flag is gone since this mapping is now load-bearing (pgRouting-style `source`/`target`), not
+/// just an optional debugging aid.
+pub struct NodeRow {
+    pub id: i64,
     pub osm_id: i64,
     pub geom_ewkb: Vec<u8>,
 }
 
-impl CsvRow for NodeGeomRow {
-    /// CSV field order matches `NODE_GEOM_COLUMNS`.
+impl CsvRow for NodeRow {
+    /// CSV field order matches `NODE_COLUMNS`.
     fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
-        Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
+        Ok(vec![self.id.to_string(), self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
     }
 }
 

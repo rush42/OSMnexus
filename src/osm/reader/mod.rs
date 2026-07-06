@@ -7,18 +7,47 @@ mod fallback;
 mod resolve;
 mod sorted;
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{info, warn};
 
 use crate::osm::types::{NodeData, OsmWay, RelData, WayData};
 
 use blob_index::{build_blob_index, find_relation_section_start, find_way_section_start, pbf_is_sorted};
 use fallback::stream_osm_fallback;
-use resolve::log_node_summary;
+use resolve::{log_node_summary, NodeCoords};
 use sorted::{build_geometries, classify_and_index, classify_relations, collect_coords};
+
+/// Assign a compact, sequential internal id to every graph vertex — a node that will appear as a
+/// `start_id`/`end_id` in the `edges` table: shared between ≥2 ways, a way endpoint, or forced by a
+/// node classifier (`selected`). Plain interior nodes of a single way never need an id since they're
+/// never referenced by more than the one edge they're already embedded in. Runs once, sequentially,
+/// between the coords/selected pass and the (parallel) geometry pass, so the resulting map is
+/// read-only by the time it's shared across geometry-pass threads — no locking needed.
+///
+/// Returns the `osm_id -> internal id` lookup (consumed by the geometry pass to fill `start_id`/
+/// `end_id`) and the `nodes` table rows (`internal id, osm_id, lon, lat`).
+pub(super) fn assign_node_ids(
+    coords: &NodeCoords,
+    endpoints: &FxHashSet<i64>,
+    selected: &FxHashSet<i64>,
+) -> (FxHashMap<i64, i64>, Vec<(i64, i64, f32, f32)>) {
+    let mut ids: FxHashMap<i64, i64> = FxHashMap::default();
+    let mut nodes: Vec<(i64, i64, f32, f32)> = Vec::new();
+    let mut next_id: i64 = 1;
+    for (&osm_id, &(lon, lat, shared)) in coords {
+        if shared || endpoints.contains(&osm_id) || selected.contains(&osm_id) {
+            let id = next_id;
+            next_id += 1;
+            ids.insert(osm_id, id);
+            nodes.push((id, osm_id, lon, lat));
+        }
+    }
+    (ids, nodes)
+}
 
 /// The topic-agnostic callbacks driving one PBF read. `M` is an opaque per-way payload the caller
 /// uses to carry "which topics kept this way" from classify through to build_geom.
-pub struct Callbacks<CR, CW, CN, G> {
+pub struct Callbacks<CR, CW, CN, G, BN> {
     /// Whether any topic declares relation categories — gates the relations pass entirely.
     pub has_relations: bool,
     /// Relations pass: emit relation tag rows + `relation_members`; return `true` if the relation
@@ -31,8 +60,14 @@ pub struct Callbacks<CR, CW, CN, G> {
     pub has_nodes: bool,
     /// Nodes pass: emit node tag rows; return `true` if the node was selected (a forced cut point).
     pub classify_node: CN,
-    /// Geometry pass: emit the geom rows for a resolved way.
+    /// Geometry pass: emit the geom rows for a resolved way. Also handed the `osm node id -> internal
+    /// id` map (see `assign_node_ids`) so `start_id`/`end_id` can be written as internal ids.
     pub build_geom: G,
+    /// Nodes-table pass: called once with every graph vertex (`internal id, osm_id, lon, lat`) after
+    /// Pass A/B, before the geometry pass. Always runs — replaces the old `--emit-node-geometries`
+    /// flag, since the `nodes` table is now load-bearing for the internal id ↔ osm_id mapping, not
+    /// just an optional debugging aid.
+    pub build_nodes: BN,
 }
 
 /// Stream an OSM PBF, classifying relations, ways, and nodes and resolving way geometry.
@@ -47,15 +82,16 @@ pub struct Callbacks<CR, CW, CN, G> {
 ///   * Geometry pass — resolve each indexed way, selected nodes forced as cut points.
 ///
 /// Fallback (unsorted / boundary check fails / `PBF_FORCE_FALLBACK`): full parallel scans.
-pub fn stream_osm<CR, CW, CN, G, M>(
+pub fn stream_osm<CR, CW, CN, G, BN, M>(
     path: &str,
-    cb: Callbacks<CR, CW, CN, G>,
+    cb: Callbacks<CR, CW, CN, G, BN>,
 ) -> anyhow::Result<()>
 where
     CR: Fn(&RelData) -> bool + Sync + Send,
     CW: Fn(&WayData, bool) -> Option<M> + Sync + Send,
     CN: Fn(&NodeData) -> bool + Sync + Send,
-    G: Fn(&OsmWay, M) + Sync + Send,
+    G: Fn(&OsmWay, M, &FxHashMap<i64, i64>) + Sync + Send,
+    BN: FnOnce(Vec<(i64, i64, f32, f32)>),
     M: Copy + Send + Sync,
 {
     info!("Building blob index (no decompression)...");
@@ -104,9 +140,10 @@ where
                     rustc_hash::FxHashSet::default()
                 };
 
-                // Pass A — way region (decoded once): classify + counts + index.
+                // Pass A — way region (decoded once): classify + counts + endpoints + index.
                 let t = std::time::Instant::now();
-                let (use_counts, index) = classify_and_index(path, way_offsets, &keep_set, &cb.classify_way)?;
+                let (use_counts, endpoints, index) =
+                    classify_and_index(path, way_offsets, &keep_set, &cb.classify_way)?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
                 drop(keep_set);
 
@@ -122,9 +159,22 @@ where
                 log_node_summary(&use_counts);
                 drop(use_counts);
 
+                // Assign internal node ids to every graph vertex (sequential, single-threaded — the
+                // resulting map is then read-only across the parallel geometry pass below) + emit the
+                // `nodes` table rows.
+                let t = std::time::Instant::now();
+                let (node_ids, node_rows) = assign_node_ids(&coords, &endpoints, &selected);
+                info!(
+                    "[phase] Node id assignment: {:.1}s ({} graph vertices)",
+                    t.elapsed().as_secs_f32(),
+                    node_rows.len()
+                );
+                drop(endpoints);
+                (cb.build_nodes)(node_rows);
+
                 // Geometry pass — resolve each indexed way + emit geom. No blob decode here.
                 let t = std::time::Instant::now();
-                build_geometries(&index, &coords, &selected, &cb.build_geom)?;
+                build_geometries(&index, &coords, &selected, &node_ids, &cb.build_geom)?;
                 info!("[phase] Geometry pass (resolve + build geometry, no decode): {:.1}s", t.elapsed().as_secs_f32());
 
                 return Ok(());

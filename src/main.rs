@@ -7,6 +7,7 @@ use osmnexus::{config, db, engine, osm, output, processing};
 use anyhow::Context;
 use clap::Parser;
 use deadpool_postgres::Pool;
+use rustc_hash::FxHashMap;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -14,17 +15,18 @@ use config::{Config, Output};
 use db::{
     pool::build_pool,
     schema,
-    schema::{GeomTables, EDGE_TABLE, MEMBER_TABLE, NODE_GEOM_TABLE, WAY_GEOM_TABLE},
+    schema::{GeomTables, EDGE_TABLE, MEMBER_TABLE, NODE_TABLE, WAY_GEOM_TABLE},
 };
+use engine::runner::build_node_row;
 use engine::topic_runner::TopicRunner;
 use osm::reader::{stream_osm, Callbacks};
 use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};
 use output::rows::{
-    GeomRow, MemberRow, NodeGeomRow, TopicRow, WayGeomRow, GEOM_COLUMNS, MEMBER_COLUMNS, NODE_GEOM_COLUMNS,
+    GeomRow, MemberRow, NodeRow, TopicRow, WayGeomRow, GEOM_COLUMNS, MEMBER_COLUMNS, NODE_COLUMNS,
     TAG_COLUMNS, WAY_GEOM_COLUMNS,
 };
 use output::writers::{copy_writer, csv_writer};
-use processing::{classify_node, classify_relation, classify_way, geom_rows_for, node_geom_row_for, way_geom_row_for};
+use processing::{classify_node, classify_relation, classify_way, geom_rows_for, way_geom_row_for};
 
 /// Round-robin a batch of per-topic tag rows to each topic's `w` writers. Returns whether any topic
 /// produced rows (i.e. the element was "kept" by some topic).
@@ -98,18 +100,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Which passes are active: gated by whether any topic declares node/relation categories (a
-    // `topics/<t>/{node,relation}/` subfolder), or `--emit-node-geometries` (needs node coords
-    // decoded regardless of any topic caring about node tags). Selection is the decision-tree
-    // classifier itself — there is no coarse element filter; an element is kept iff some topic
-    // categorizes it.
+    // `topics/<t>/{node,relation}/` subfolder). Selection is the decision-tree classifier itself —
+    // there is no coarse element filter; an element is kept iff some topic categorizes it. Node
+    // coords are always collected regardless (needed for the always-on `nodes` table).
     let has_relations = runners.iter().any(|r| r.has_kind(ElementKind::Relation));
-    let has_nodes = cfg.emit_node_geometries || runners.iter().any(|r| r.has_kind(ElementKind::Node));
-    let geom_tables = GeomTables { way: cfg.emit_way_geometries, node: cfg.emit_node_geometries };
+    let has_nodes = runners.iter().any(|r| r.has_kind(ElementKind::Node));
+    let geom_tables = GeomTables { way: cfg.emit_way_geometries };
 
     let n = tables.len();
-    // Extra sharded-writer tables beyond the per-topic tag tables: edges + members, plus optional
-    // way/node geom tables.
-    let extra_tables = 2 + geom_tables.way as usize + geom_tables.node as usize;
+    // Extra sharded-writer tables beyond the per-topic tag tables: edges + members + nodes, plus the
+    // optional way geom table.
+    let extra_tables = 3 + geom_tables.way as usize;
 
     // Output backend. `w` = parallel writers per table: k sharded COPY connections for Postgres, a
     // single file writer for CSV. `pool` is `None` for CSV.
@@ -198,19 +199,17 @@ async fn main() -> anyhow::Result<()> {
             way_geom_senders.push(tx);
         }
     }
-    // Optional: node point geometries (`--emit-node-geometries`).
-    let mut node_geom_senders: Vec<mpsc::Sender<Vec<NodeGeomRow>>> = Vec::with_capacity(w);
-    let mut node_geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
-    if cfg.emit_node_geometries {
-        for _ in 0..w {
-            let (tx, rx) = mpsc::channel::<Vec<NodeGeomRow>>(WRITER_CHAN_CAP);
-            let h = match cfg.output {
-                Output::Pg => tokio::spawn(copy_writer::<NodeGeomRow>(pool.clone().unwrap(), NODE_GEOM_TABLE.to_owned(), NODE_GEOM_COLUMNS, rx)),
-                Output::Csv => tokio::spawn(csv_writer::<NodeGeomRow>(out_dir.join(format!("{NODE_GEOM_TABLE}.csv")), NODE_GEOM_COLUMNS, rx)),
-            };
-            node_geom_handles.push(h);
-            node_geom_senders.push(tx);
-        }
+    // Graph-vertex table (always emitted — see `NODE_TABLE`).
+    let mut node_senders: Vec<mpsc::Sender<Vec<NodeRow>>> = Vec::with_capacity(w);
+    let mut node_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
+    for _ in 0..w {
+        let (tx, rx) = mpsc::channel::<Vec<NodeRow>>(WRITER_CHAN_CAP);
+        let h = match cfg.output {
+            Output::Pg => tokio::spawn(copy_writer::<NodeRow>(pool.clone().unwrap(), NODE_TABLE.to_owned(), NODE_COLUMNS, rx)),
+            Output::Csv => tokio::spawn(csv_writer::<NodeRow>(out_dir.join(format!("{NODE_TABLE}.csv")), NODE_COLUMNS, rx)),
+        };
+        node_handles.push(h);
+        node_senders.push(tx);
     }
 
     // Producer: the reader decodes the PBF once and drives the callbacks below. Runs on the blocking
@@ -218,18 +217,17 @@ async fn main() -> anyhow::Result<()> {
     // channels.
     let pbf_file = cfg.pbf_file.clone();
     let emit_way_geometries = cfg.emit_way_geometries;
-    let emit_node_geometries = cfg.emit_node_geometries;
     // Shared, thread-safe state captured by the reader's callbacks (called from rayon workers).
     let runners = Arc::new(runners);
     let tag_senders = Arc::new(tag_senders);
     let geom_senders = Arc::new(geom_senders);
     let member_senders = Arc::new(member_senders);
     let way_geom_senders = Arc::new(way_geom_senders);
-    let node_geom_senders = Arc::new(node_geom_senders);
+    let node_senders = Arc::new(node_senders);
     let tag_rr: Arc<Vec<AtomicUsize>> = Arc::new((0..n).map(|_| AtomicUsize::new(0)).collect());
     let geom_rr = Arc::new(AtomicUsize::new(0));
     let member_rr = Arc::new(AtomicUsize::new(0));
-    let node_geom_rr = Arc::new(AtomicUsize::new(0));
+    let node_rr = Arc::new(AtomicUsize::new(0));
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         // Ways pass: emit tag rows; keep the way if some topic categorized it OR it is a relation
         // member (`in_keep`). Payload is `()` — geometry is topic-independent (one shared table).
@@ -261,17 +259,24 @@ async fn main() -> anyhow::Result<()> {
             }
         };
         // Nodes pass: emit node tag rows; a node is "selected" (forced cut point) iff some topic
-        // categorized it. Also emits a point row per node when `--emit-node-geometries` is set.
+        // categorized it.
         let classify_node_cb = {
             let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
-            let (node_geom_senders, node_geom_rr) = (node_geom_senders.clone(), node_geom_rr.clone());
-            move |nd: &NodeData| -> bool {
-                let selected = route_tag_rows(classify_node(&runners, nd), &tag_senders, &tag_rr, w);
-                if emit_node_geometries {
-                    let kk = node_geom_rr.fetch_add(1, Ordering::Relaxed) % w;
-                    let _ = node_geom_senders[kk].blocking_send(vec![node_geom_row_for(nd)]);
+            move |nd: &NodeData| -> bool { route_tag_rows(classify_node(&runners, nd), &tag_senders, &tag_rr, w) }
+        };
+        // Graph-vertex pass: emit the `nodes` table rows, once, for every graph vertex (see
+        // `assign_node_ids`) — always runs, replacing the old `--emit-node-geometries` flag.
+        let build_nodes_cb = {
+            let (node_senders, node_rr) = (node_senders.clone(), node_rr.clone());
+            move |nodes: Vec<(i64, i64, f32, f32)>| {
+                for chunk in nodes.chunks(4096) {
+                    let rows: Vec<NodeRow> = chunk
+                        .iter()
+                        .map(|&(id, osm_id, lon, lat)| build_node_row(id, osm_id, lon as f64, lat as f64))
+                        .collect();
+                    let kk = node_rr.fetch_add(1, Ordering::Relaxed) % w;
+                    let _ = node_senders[kk].blocking_send(rows);
                 }
-                selected
             }
         };
         // Geometry pass: write the resolved way's graph edges to the shared table, plus the
@@ -279,9 +284,9 @@ async fn main() -> anyhow::Result<()> {
         let build_geom_cb = {
             let (geom_senders, geom_rr) = (geom_senders.clone(), geom_rr.clone());
             let way_geom_senders = way_geom_senders.clone();
-            move |way: &OsmWay, _kept: ()| {
+            move |way: &OsmWay, _kept: (), node_ids: &FxHashMap<i64, i64>| {
                 let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
-                let _ = geom_senders[kk].blocking_send(geom_rows_for(way));
+                let _ = geom_senders[kk].blocking_send(geom_rows_for(way, node_ids));
                 if emit_way_geometries {
                     let _ = way_geom_senders[kk].blocking_send(vec![way_geom_row_for(way)]);
                 }
@@ -296,6 +301,7 @@ async fn main() -> anyhow::Result<()> {
                 has_nodes,
                 classify_node: classify_node_cb,
                 build_geom: build_geom_cb,
+                build_nodes: build_nodes_cb,
             },
         )
     });
@@ -323,9 +329,9 @@ async fn main() -> anyhow::Result<()> {
     for h in way_geom_handles {
         way_geom_count += h.await.context("way-geom writer panicked")??;
     }
-    let mut node_geom_count = 0usize;
-    for h in node_geom_handles {
-        node_geom_count += h.await.context("node-geom writer panicked")??;
+    let mut node_count = 0usize;
+    for h in node_handles {
+        node_count += h.await.context("node writer panicked")??;
     }
 
     for (i, table) in tables.iter().enumerate() {
@@ -333,11 +339,9 @@ async fn main() -> anyhow::Result<()> {
     }
     info!("Wrote {geom_count} edge rows → {EDGE_TABLE}");
     info!("Wrote {member_count} relation-member links → {MEMBER_TABLE}");
+    info!("Wrote {node_count} node rows → {NODE_TABLE}");
     if cfg.emit_way_geometries {
         info!("Wrote {way_geom_count} way rows → {WAY_GEOM_TABLE}");
-    }
-    if cfg.emit_node_geometries {
-        info!("Wrote {node_geom_count} node rows → {NODE_GEOM_TABLE}");
     }
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 

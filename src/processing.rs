@@ -1,9 +1,11 @@
-use crate::engine::runner::{build_geom_rows, build_node_geom_row, build_way_geom_row};
+use rustc_hash::FxHashMap;
+
+use crate::engine::runner::{build_geom_rows, build_way_geom_row};
 use crate::engine::topic_runner::TopicRunner;
 use crate::osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData, WayMeta};
 use crate::output::{
     geometry::{haversine_length_m, project_line},
-    rows::{GeomRow, NodeGeomRow, TopicRow, WayGeomRow},
+    rows::{GeomRow, TopicRow, WayGeomRow},
     types::OsmMeta,
 };
 use crate::profile::{self, CLASSIFY, GEOMETRY};
@@ -74,12 +76,13 @@ pub fn classify_node(runners: &[TopicRunner], nd: &NodeData) -> Vec<Vec<TopicRow
 }
 
 /// Build the graph-edge rows for a resolved way (geometry pass): always emitted, one row per
-/// intersection segment. Projects the line + measures length once. Topic-independent.
-pub fn geom_rows_for(way: &OsmWay) -> Vec<GeomRow> {
+/// intersection segment. Projects the line + measures length once. Topic-independent. `node_ids` is
+/// the `osm node id -> internal id` map from `assign_node_ids`, used to resolve `start_id`/`end_id`.
+pub fn geom_rows_for(way: &OsmWay, node_ids: &FxHashMap<i64, i64>) -> Vec<GeomRow> {
     profile::time(&GEOMETRY, || {
         let length_m = haversine_length_m(&way.coords);
         let geom = project_line(&way.coords);
-        build_geom_rows(way, &geom, length_m)
+        build_geom_rows(way, &geom, length_m, node_ids)
     })
 }
 
@@ -90,9 +93,4 @@ pub fn way_geom_row_for(way: &OsmWay) -> WayGeomRow {
         let geom = project_line(&way.coords);
         build_way_geom_row(way, &geom, length_m)
     })
-}
-
-/// Build the point-geometry row for a classified node, only when `--emit-node-geometries` is set.
-pub fn node_geom_row_for(nd: &NodeData) -> NodeGeomRow {
-    build_node_geom_row(nd.id, nd.lon, nd.lat)
 }
