@@ -8,8 +8,8 @@ use crate::engine::topic::Field;
 use crate::engine::topic_runner::TopicRunner;
 use crate::osm::types::{ElementKind, OsmWay, RawTags};
 use crate::output::{
-    geometry::{haversine_length_m, to_ewkb},
-    rows::{GeomRow, TopicRow},
+    geometry::{haversine_length_m, point_to_ewkb, to_ewkb, wgs84_to_3857},
+    rows::{GeomRow, NodeGeomRow, TopicRow, WayGeomRow},
     types::{OsmMeta, Side},
 };
 use crate::transform::side_split::get_transformed_objects;
@@ -213,35 +213,37 @@ pub fn build_topic_rows(
     rows
 }
 
-/// Build the geometry rows for a way. Topic-independent (same geometry for every topic and every
-/// side object), so computed once per way and written to each surviving topic's geom table.
-///
-/// `mode` selects the emitted variants:
-///   * `Ways`          → one `variant="way"` row: whole projected line, `seg_idx=None`,
-///                       endpoints = the way's first/last node, `length_m = total_length_m`.
-///   * `Intersections` → one `variant="split"` row per consecutive `cut_points` pair: the
-///                       sub-linestring `geom.0[s..=e]` (inclusive so the shared node joins both
-///                       neighbours), per-segment `start_id`/`end_id`/`length_m`. A way with no
-///                       interior cut-points yields a single segment spanning the whole way.
-///   * `Both`          → the `way` row plus all `split` rows.
-pub fn build_geom_rows(
-    way: &OsmWay,
-    geom: &geo::LineString<f64>,
-    length_m: f64,
-    mode: crate::config::SplitMode,
-) -> Vec<GeomRow> {
-    use crate::config::SplitMode;
-
+/// Build the graph-edge rows for a way: one `GeomRow` per consecutive `cut_points` pair (the
+/// sub-linestring `geom.0[s..=e]`, inclusive so the shared node joins both neighbours), with
+/// per-segment `start_id`/`end_id`/`length_m`. A way with no interior cut-points yields a single
+/// edge spanning the whole way. Topic-independent (same for every topic and every side object), so
+/// computed once per way and written to the shared `edges` table.
+pub fn build_geom_rows(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> Vec<GeomRow> {
     let first_node = way.cut_points.first().map(|c| c.1).unwrap_or(0);
     let last_node = way.cut_points.last().map(|c| c.1).unwrap_or(0);
 
     let mut rows = Vec::new();
 
-    if matches!(mode, SplitMode::Ways | SplitMode::Both) {
+    if way.cut_points.len() > 2 {
+        for (i, w) in way.cut_points.windows(2).enumerate() {
+            let (s, e) = (w[0].0 as usize, w[1].0 as usize);
+            let seg_line = geo::LineString::new(geom.0[s..=e].to_vec());
+            let seg_len = haversine_length_m(&way.coords[s..=e]);
+            rows.push(GeomRow {
+                osm_id: way.id,
+                seg_idx: i,
+                start_id: w[0].1,
+                end_id: w[1].1,
+                geom_ewkb: to_ewkb(&seg_line),
+                length_m: seg_len,
+                total_length_m: length_m,
+            });
+        }
+    } else {
+        // No interior intersections: the whole way is a single edge.
         rows.push(GeomRow {
             osm_id: way.id,
-            variant: "way",
-            seg_idx: None,
+            seg_idx: 0,
             start_id: first_node,
             end_id: last_node,
             geom_ewkb: to_ewkb(geom),
@@ -250,37 +252,16 @@ pub fn build_geom_rows(
         });
     }
 
-    if matches!(mode, SplitMode::Intersections | SplitMode::Both) {
-        if way.cut_points.len() > 2 {
-            for (i, w) in way.cut_points.windows(2).enumerate() {
-                let (s, e) = (w[0].0 as usize, w[1].0 as usize);
-                let seg_line = geo::LineString::new(geom.0[s..=e].to_vec());
-                let seg_len = haversine_length_m(&way.coords[s..=e]);
-                rows.push(GeomRow {
-                    osm_id: way.id,
-                    variant: "split",
-                    seg_idx: Some(i),
-                    start_id: w[0].1,
-                    end_id: w[1].1,
-                    geom_ewkb: to_ewkb(&seg_line),
-                    length_m: seg_len,
-                    total_length_m: length_m,
-                });
-            }
-        } else {
-            // No interior intersections: the whole way is a single segment.
-            rows.push(GeomRow {
-                osm_id: way.id,
-                variant: "split",
-                seg_idx: Some(0),
-                start_id: first_node,
-                end_id: last_node,
-                geom_ewkb: to_ewkb(geom),
-                length_m,
-                total_length_m: length_m,
-            });
-        }
-    }
-
     rows
+}
+
+/// Build the whole-way linestring row for a way, emitted only with `--emit-way-geometries`.
+pub fn build_way_geom_row(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> WayGeomRow {
+    WayGeomRow { osm_id: way.id, geom_ewkb: to_ewkb(geom), length_m }
+}
+
+/// Build the point-geometry row for a classified node, emitted only with `--emit-node-geometries`.
+pub fn build_node_geom_row(id: i64, lon: f64, lat: f64) -> NodeGeomRow {
+    let (x, y) = wgs84_to_3857(lon, lat);
+    NodeGeomRow { osm_id: id, geom_ewkb: point_to_ewkb(x, y) }
 }

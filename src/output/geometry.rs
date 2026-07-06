@@ -31,6 +31,23 @@ pub fn haversine_length_m(coords: &[(f64, f64)]) -> f64 {
     ls.length::<Haversine>()
 }
 
+/// Encode a projected (EPSG:3857) Point as PostGIS EWKB with SRID.
+pub fn point_to_ewkb(x: f64, y: f64) -> Vec<u8> {
+    use std::io::Write;
+
+    // WKB type for Point with SRID flag: 0x20000001
+    let wkb_type: u32 = 0x2000_0001;
+    let srid: i32 = 3857;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(21);
+    buf.write_all(&[1u8]).unwrap();
+    buf.write_all(&wkb_type.to_le_bytes()).unwrap();
+    buf.write_all(&srid.to_le_bytes()).unwrap();
+    buf.write_all(&x.to_le_bytes()).unwrap();
+    buf.write_all(&y.to_le_bytes()).unwrap();
+    buf
+}
+
 /// Encode a projected (EPSG:3857) LineString as PostGIS EWKB with SRID.
 pub fn to_ewkb(line: &LineString<f64>) -> Vec<u8> {
     use std::io::Write;

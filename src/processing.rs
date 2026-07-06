@@ -1,10 +1,9 @@
-use crate::config::SplitMode;
-use crate::engine::runner::build_geom_rows;
+use crate::engine::runner::{build_geom_rows, build_node_geom_row, build_way_geom_row};
 use crate::engine::topic_runner::TopicRunner;
 use crate::osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData, WayMeta};
 use crate::output::{
     geometry::{haversine_length_m, project_line},
-    rows::{GeomRow, TopicRow},
+    rows::{GeomRow, NodeGeomRow, TopicRow, WayGeomRow},
     types::OsmMeta,
 };
 use crate::profile::{self, CLASSIFY, GEOMETRY};
@@ -74,12 +73,26 @@ pub fn classify_node(runners: &[TopicRunner], nd: &NodeData) -> Vec<Vec<TopicRow
     profile::time(&CLASSIFY, || classify_element(runners, ElementKind::Node, nd.id, &nd.tags, &meta))
 }
 
-/// Build the geometry rows for a resolved way (geometry pass). Projects the line + measures length
-/// once, then emits the variant rows per `split`. Topic-independent.
-pub fn geom_rows_for(way: &OsmWay, split: SplitMode) -> Vec<GeomRow> {
+/// Build the graph-edge rows for a resolved way (geometry pass): always emitted, one row per
+/// intersection segment. Projects the line + measures length once. Topic-independent.
+pub fn geom_rows_for(way: &OsmWay) -> Vec<GeomRow> {
     profile::time(&GEOMETRY, || {
         let length_m = haversine_length_m(&way.coords);
         let geom = project_line(&way.coords);
-        build_geom_rows(way, &geom, length_m, split)
+        build_geom_rows(way, &geom, length_m)
     })
+}
+
+/// Build the whole-way linestring row for a resolved way, only when `--emit-way-geometries` is set.
+pub fn way_geom_row_for(way: &OsmWay) -> WayGeomRow {
+    profile::time(&GEOMETRY, || {
+        let length_m = haversine_length_m(&way.coords);
+        let geom = project_line(&way.coords);
+        build_way_geom_row(way, &geom, length_m)
+    })
+}
+
+/// Build the point-geometry row for a classified node, only when `--emit-node-geometries` is set.
+pub fn node_geom_row_for(nd: &NodeData) -> NodeGeomRow {
+    build_node_geom_row(nd.id, nd.lon, nd.lat)
 }

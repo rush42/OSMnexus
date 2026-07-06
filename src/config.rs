@@ -1,18 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
-
-/// How the geometry table is populated. Independent of the (tag-only) classification.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "kebab-case")]
-pub enum SplitMode {
-    /// One whole-way linestring per way (`variant='way'`). Default.
-    Ways,
-    /// One sub-linestring per intersection segment (`variant='split'`).
-    Intersections,
-    /// Emit both the whole-way row and the intersection segments.
-    Both,
-}
+use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(about = "Data-driven OSM PBF topic processing pipeline → PostgreSQL")]
@@ -53,10 +41,22 @@ pub struct Config {
     #[arg(long, default_value_t = 1)]
     pub threads: usize,
 
-    /// Geometry table variant(s) to emit: `ways` (whole ways, default), `intersections`
-    /// (one row per intersection segment), or `both`.
-    #[arg(long, value_enum, default_value_t = SplitMode::Ways)]
-    pub split: SplitMode,
+    /// Also emit whole-way linestrings into a dedicated `way_geometries` table (in addition to the
+    /// always-emitted intersection-split `geometries` table). Needed to materialize relation
+    /// geometries without re-merging split segments at query time.
+    #[arg(long, default_value_t = false)]
+    pub emit_way_geometries: bool,
+
+    /// Emit one point row per classified node into a `node_geometries` table.
+    #[arg(long, default_value_t = false)]
+    pub emit_node_geometries: bool,
+
+    /// Emit one merged-linestring row per kept relation into a `relation_geometries` table, built
+    /// (as a post-processing SQL step) by merging each relation's member-way geometries — reusing
+    /// `way_geometries` if `--emit-way-geometries` is also set, otherwise merging the split segments
+    /// on the fly. Postgres output only.
+    #[arg(long, default_value_t = false)]
+    pub emit_relation_geometries: bool,
 
     /// Create indexes on the tag/geom tables after loading. Off by default: indexing a large
     /// import (especially the split geom table's GiST) can dominate runtime, so it's opt-in for

@@ -1,22 +1,21 @@
 use deadpool_postgres::Pool;
 use tokio_postgres::Client;
 
-use super::schema::GEOM_TABLE;
+use super::schema::EDGE_TABLE;
 
-/// Tile-server output for a topic: join its tag table to the shared geometry table on `osm_id`,
+/// Tile-server output for a topic: join its tag table to the shared edge table on `osm_id`,
 /// exposing attributes + geometry in one relation named `<topic>_tiles`.
 ///
 /// A view is free and always reflects the latest import; a materialized table is a physical copy
 /// with a GiST spatial index, which is what a tile server actually renders from (a view can't carry
-/// a spatial index). `geometries` fans each feature out across its geometry rows, keeping every
-/// `variant` so the consumer can filter as needed.
+/// a spatial index). `edges` fans each feature out across its intersection-split segments.
 fn tile_select_sql(table: &str) -> String {
     format!(
         "SELECT \
            t.id, t.osm_id, t.osm_type, t.osm, t.derived, t.meta, t.minzoom, \
-           g.variant, g.seg_idx, g.start_id, g.end_id, g.length_m, g.total_length_m, g.geom \
+           g.seg_idx, g.start_id, g.end_id, g.length_m, g.total_length_m, g.geom \
          FROM {table} AS t \
-         JOIN {GEOM_TABLE} AS g ON g.osm_id = t.osm_id"
+         JOIN {EDGE_TABLE} AS g ON g.osm_id = t.osm_id"
     )
 }
 

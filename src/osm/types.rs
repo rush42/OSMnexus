@@ -79,11 +79,15 @@ pub struct RelData {
     pub meta: WayMeta,
 }
 
-/// A node's tags + metadata, produced by the nodes pass for nodes that are members of a kept way.
-/// Classification is tag-only; a selected node becomes a forced graph-vertex cut point.
+/// A node's tags + metadata + coords, produced by the nodes pass for nodes that are members of a
+/// kept way. Classification is tag-only; a selected node becomes a forced graph-vertex cut point.
+/// `lon`/`lat` (WGS84) ride along so `--emit-node-geometries` can build a point row without a
+/// second lookup.
 pub struct NodeData {
     pub id: i64,
     pub tags: RawTags,
     pub meta: WayMeta,
+    pub lon: f64,
+    pub lat: f64,
 }
 

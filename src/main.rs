@@ -11,13 +11,20 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use config::{Config, Output, Tiles};
-use db::{pool::build_pool, schema, schema::{GEOM_TABLE, MEMBER_TABLE}};
+use db::{
+    pool::build_pool,
+    schema,
+    schema::{GeomTables, EDGE_TABLE, MEMBER_TABLE, NODE_GEOM_TABLE, WAY_GEOM_TABLE},
+};
 use engine::topic_runner::TopicRunner;
 use osm::reader::{stream_osm, Callbacks};
 use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};
-use output::rows::{GeomRow, MemberRow, TopicRow, GEOM_COLUMNS, MEMBER_COLUMNS, TAG_COLUMNS};
+use output::rows::{
+    GeomRow, MemberRow, NodeGeomRow, TopicRow, WayGeomRow, GEOM_COLUMNS, MEMBER_COLUMNS, NODE_GEOM_COLUMNS,
+    TAG_COLUMNS, WAY_GEOM_COLUMNS,
+};
 use output::writers::{copy_writer, csv_writer};
-use processing::{classify_node, classify_relation, classify_way, geom_rows_for};
+use processing::{classify_node, classify_relation, classify_way, geom_rows_for, node_geom_row_for, way_geom_row_for};
 
 /// Round-robin a batch of per-topic tag rows to each topic's `w` writers. Returns whether any topic
 /// produced rows (i.e. the element was "kept" by some topic).
@@ -79,13 +86,19 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // Which passes are active: gated by whether any topic declares node/relation categories
-    // (a `topics/<t>/{node,relation}/` subfolder). Selection is the decision-tree classifier itself
-    // — there is no coarse element filter; an element is kept iff some topic categorizes it.
+    // Which passes are active: gated by whether any topic declares node/relation categories (a
+    // `topics/<t>/{node,relation}/` subfolder), or `--emit-node-geometries` (needs node coords
+    // decoded regardless of any topic caring about node tags). Selection is the decision-tree
+    // classifier itself — there is no coarse element filter; an element is kept iff some topic
+    // categorizes it.
     let has_relations = runners.iter().any(|r| r.has_kind(ElementKind::Relation));
-    let has_nodes = runners.iter().any(|r| r.has_kind(ElementKind::Node));
+    let has_nodes = cfg.emit_node_geometries || runners.iter().any(|r| r.has_kind(ElementKind::Node));
+    let geom_tables = GeomTables { way: cfg.emit_way_geometries, node: cfg.emit_node_geometries };
 
     let n = tables.len();
+    // Extra sharded-writer tables beyond the per-topic tag tables: edges + members, plus optional
+    // way/node geom tables.
+    let extra_tables = 2 + geom_tables.way as usize + geom_tables.node as usize;
 
     // Output backend. `w` = parallel writers per table: k sharded COPY connections for Postgres, a
     // single file writer for CSV. `pool` is `None` for CSV.
@@ -95,22 +108,22 @@ async fn main() -> anyhow::Result<()> {
             let pool = build_pool(&cfg)?;
             let client_setup = pool.get().await.context("getting DB connection")?;
             info!("Setting up schema...");
-            schema::create_tables(&client_setup, &table_refs).await?;
+            schema::create_tables(&client_setup, &table_refs, geom_tables).await?;
             if cfg.truncate {
-                schema::truncate_tables(&client_setup, &table_refs).await?;
+                schema::truncate_tables(&client_setup, &table_refs, geom_tables).await?;
             }
-            schema::drop_indexes(&client_setup, &table_refs).await?;
+            schema::drop_indexes(&client_setup, &table_refs, geom_tables).await?;
             drop(client_setup);
             let k = cfg.db_writers.max(1);
-            // Pool must supply every writer connection at once: k per tag table + k geom + k member.
-            pool.resize((n + 2) * k + 2);
+            // Pool must supply every writer connection at once: k per tag table + k per extra table.
+            pool.resize((n + extra_tables) * k + 2);
             info!("Postgres output · {k} COPY connection(s) per table");
             (Some(pool), k)
         }
         Output::Csv => {
             std::fs::create_dir_all(&cfg.out_dir)
                 .with_context(|| format!("creating output dir {}", cfg.out_dir))?;
-            info!("CSV output → {}/ (one file per tag table + {GEOM_TABLE}.csv)", cfg.out_dir);
+            info!("CSV output → {}/ (one file per tag table + {EDGE_TABLE}.csv)", cfg.out_dir);
             (None, 1)
         }
     };
@@ -118,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
 
-    // Spawn `w` writers per tag table + `w` for the shared geom table. For Postgres these are sharded
+    // Spawn `w` writers per tag table + `w` for each shared table. For Postgres these are sharded
     // COPY connections (rows round-robined for k-way parallel serialization + ingest); for CSV, w=1,
     // so one buffered-file writer per table.
     let out_dir = PathBuf::from(&cfg.out_dir);
@@ -143,8 +156,8 @@ async fn main() -> anyhow::Result<()> {
     for _ in 0..w {
         let (tx, rx) = mpsc::channel::<Vec<GeomRow>>(WRITER_CHAN_CAP);
         let h = match cfg.output {
-            Output::Pg => tokio::spawn(copy_writer::<GeomRow>(pool.clone().unwrap(), GEOM_TABLE.to_owned(), GEOM_COLUMNS, rx)),
-            Output::Csv => tokio::spawn(csv_writer::<GeomRow>(out_dir.join(format!("{GEOM_TABLE}.csv")), GEOM_COLUMNS, rx)),
+            Output::Pg => tokio::spawn(copy_writer::<GeomRow>(pool.clone().unwrap(), EDGE_TABLE.to_owned(), GEOM_COLUMNS, rx)),
+            Output::Csv => tokio::spawn(csv_writer::<GeomRow>(out_dir.join(format!("{EDGE_TABLE}.csv")), GEOM_COLUMNS, rx)),
         };
         geom_handles.push(h);
         geom_senders.push(tx);
@@ -160,22 +173,52 @@ async fn main() -> anyhow::Result<()> {
         member_handles.push(h);
         member_senders.push(tx);
     }
+    // Optional: whole-way linestrings (`--emit-way-geometries`).
+    let mut way_geom_senders: Vec<mpsc::Sender<Vec<WayGeomRow>>> = Vec::with_capacity(w);
+    let mut way_geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
+    if cfg.emit_way_geometries {
+        for _ in 0..w {
+            let (tx, rx) = mpsc::channel::<Vec<WayGeomRow>>(WRITER_CHAN_CAP);
+            let h = match cfg.output {
+                Output::Pg => tokio::spawn(copy_writer::<WayGeomRow>(pool.clone().unwrap(), WAY_GEOM_TABLE.to_owned(), WAY_GEOM_COLUMNS, rx)),
+                Output::Csv => tokio::spawn(csv_writer::<WayGeomRow>(out_dir.join(format!("{WAY_GEOM_TABLE}.csv")), WAY_GEOM_COLUMNS, rx)),
+            };
+            way_geom_handles.push(h);
+            way_geom_senders.push(tx);
+        }
+    }
+    // Optional: node point geometries (`--emit-node-geometries`).
+    let mut node_geom_senders: Vec<mpsc::Sender<Vec<NodeGeomRow>>> = Vec::with_capacity(w);
+    let mut node_geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
+    if cfg.emit_node_geometries {
+        for _ in 0..w {
+            let (tx, rx) = mpsc::channel::<Vec<NodeGeomRow>>(WRITER_CHAN_CAP);
+            let h = match cfg.output {
+                Output::Pg => tokio::spawn(copy_writer::<NodeGeomRow>(pool.clone().unwrap(), NODE_GEOM_TABLE.to_owned(), NODE_GEOM_COLUMNS, rx)),
+                Output::Csv => tokio::spawn(csv_writer::<NodeGeomRow>(out_dir.join(format!("{NODE_GEOM_TABLE}.csv")), NODE_GEOM_COLUMNS, rx)),
+            };
+            node_geom_handles.push(h);
+            node_geom_senders.push(tx);
+        }
+    }
 
-    // Producer: the reader decodes the PBF once and drives two callbacks. `classify` (Pass A) turns a
-    // way's tags into per-topic tag rows, routed round-robin to each topic's tag writers; it returns
-    // `Some(())` iff some topic kept the way. `build_geom` (geometry pass) writes the resolved way's
-    // geometry **once** to the shared geom table (topic-independent). Runs on the blocking pool
-    // (CPU-bound rayon work). Dropping the producer drops all senders, closing the writer channels.
+    // Producer: the reader decodes the PBF once and drives the callbacks below. Runs on the blocking
+    // pool (CPU-bound rayon work). Dropping the producer drops all senders, closing the writer
+    // channels.
     let pbf_file = cfg.pbf_file.clone();
-    let split = cfg.split;
+    let emit_way_geometries = cfg.emit_way_geometries;
+    let emit_node_geometries = cfg.emit_node_geometries;
     // Shared, thread-safe state captured by the reader's callbacks (called from rayon workers).
     let runners = Arc::new(runners);
     let tag_senders = Arc::new(tag_senders);
     let geom_senders = Arc::new(geom_senders);
     let member_senders = Arc::new(member_senders);
+    let way_geom_senders = Arc::new(way_geom_senders);
+    let node_geom_senders = Arc::new(node_geom_senders);
     let tag_rr: Arc<Vec<AtomicUsize>> = Arc::new((0..n).map(|_| AtomicUsize::new(0)).collect());
     let geom_rr = Arc::new(AtomicUsize::new(0));
     let member_rr = Arc::new(AtomicUsize::new(0));
+    let node_geom_rr = Arc::new(AtomicUsize::new(0));
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         // Ways pass: emit tag rows; keep the way if some topic categorized it OR it is a relation
         // member (`in_keep`). Payload is `()` — geometry is topic-independent (one shared table).
@@ -207,19 +250,30 @@ async fn main() -> anyhow::Result<()> {
             }
         };
         // Nodes pass: emit node tag rows; a node is "selected" (forced cut point) iff some topic
-        // categorized it.
+        // categorized it. Also emits a point row per node when `--emit-node-geometries` is set.
         let classify_node_cb = {
             let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
+            let (node_geom_senders, node_geom_rr) = (node_geom_senders.clone(), node_geom_rr.clone());
             move |nd: &NodeData| -> bool {
-                route_tag_rows(classify_node(&runners, nd), &tag_senders, &tag_rr, w)
+                let selected = route_tag_rows(classify_node(&runners, nd), &tag_senders, &tag_rr, w);
+                if emit_node_geometries {
+                    let kk = node_geom_rr.fetch_add(1, Ordering::Relaxed) % w;
+                    let _ = node_geom_senders[kk].blocking_send(vec![node_geom_row_for(nd)]);
+                }
+                selected
             }
         };
-        // Geometry pass: write the resolved way's geometry once to the shared geom table.
+        // Geometry pass: write the resolved way's graph edges to the shared table, plus the
+        // whole-way linestring when `--emit-way-geometries` is set.
         let build_geom_cb = {
             let (geom_senders, geom_rr) = (geom_senders.clone(), geom_rr.clone());
+            let way_geom_senders = way_geom_senders.clone();
             move |way: &OsmWay, _kept: ()| {
                 let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
-                let _ = geom_senders[kk].blocking_send(geom_rows_for(way, split));
+                let _ = geom_senders[kk].blocking_send(geom_rows_for(way));
+                if emit_way_geometries {
+                    let _ = way_geom_senders[kk].blocking_send(vec![way_geom_row_for(way)]);
+                }
             }
         };
         stream_osm(
@@ -254,23 +308,45 @@ async fn main() -> anyhow::Result<()> {
     for h in member_handles {
         member_count += h.await.context("member writer panicked")??;
     }
+    let mut way_geom_count = 0usize;
+    for h in way_geom_handles {
+        way_geom_count += h.await.context("way-geom writer panicked")??;
+    }
+    let mut node_geom_count = 0usize;
+    for h in node_geom_handles {
+        node_geom_count += h.await.context("node-geom writer panicked")??;
+    }
 
     for (i, table) in tables.iter().enumerate() {
         info!("Wrote {} tag rows → {}", tag_counts[i], table);
     }
-    info!("Wrote {geom_count} geom rows → {GEOM_TABLE}");
+    info!("Wrote {geom_count} edge rows → {EDGE_TABLE}");
     info!("Wrote {member_count} relation-member links → {MEMBER_TABLE}");
+    if cfg.emit_way_geometries {
+        info!("Wrote {way_geom_count} way rows → {WAY_GEOM_TABLE}");
+    }
+    if cfg.emit_node_geometries {
+        info!("Wrote {node_geom_count} node rows → {NODE_GEOM_TABLE}");
+    }
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 
     match (cfg.output, cfg.create_index) {
         (Output::Pg, true) => {
             info!("Creating indexes...");
             let t_idx = std::time::Instant::now();
-            schema::create_indexes(pool.as_ref().unwrap(), &table_refs).await?;
+            schema::create_indexes(pool.as_ref().unwrap(), &table_refs, geom_tables).await?;
             info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
         }
         (Output::Pg, false) => info!("Skipping index creation (pass --create-index to enable)"),
         (Output::Csv, _) => {}
+    }
+
+    if cfg.output == Output::Pg && cfg.emit_relation_geometries {
+        info!("Materializing relation geometries...");
+        let t_rel = std::time::Instant::now();
+        let client = pool.as_ref().unwrap().get().await?;
+        db::relations::materialize_relation_geometries(&client, cfg.emit_way_geometries).await?;
+        info!("Relation geometry materialization: {:.1}s", t_rel.elapsed().as_secs_f32());
     }
 
     if cfg.output == Output::Pg {

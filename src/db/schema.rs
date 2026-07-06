@@ -1,15 +1,25 @@
 use deadpool_postgres::Pool;
 use tokio_postgres::Client;
 
-/// The single shared geometry table. A way's geometry (and its intersection split, computed from
-/// the *global* node use-counts) is topic-independent, so every topic's tag table joins to this one
-/// table on `osm_id`. Conceptually: one extracted graph, with the per-topic tag tables as disjoint
+/// The single shared graph-edge table: one row per intersection-split sub-linestring of every kept
+/// way (the extracted graph). Topic-independent, so every topic's tag table joins to this one table
+/// on `osm_id`. Conceptually: one extracted graph, with the per-topic tag tables as disjoint
 /// attribute layers over it.
-pub const GEOM_TABLE: &str = "geometries";
+pub const EDGE_TABLE: &str = "edges";
 
 /// Relation → member-way link table. Relations have no materialized geometry; a relation's tag row
-/// joins here to reach its member ways' rows in the shared `GEOM_TABLE`.
+/// joins here to reach its member ways' rows in `EDGE_TABLE` (or `WAY_GEOM_TABLE`).
 pub const MEMBER_TABLE: &str = "relation_members";
+
+/// Whole-way linestring table, populated only with `--emit-way-geometries`.
+pub const WAY_GEOM_TABLE: &str = "way_geometries";
+
+/// Node point-geometry table, populated only with `--emit-node-geometries`.
+pub const NODE_GEOM_TABLE: &str = "node_geometries";
+
+/// Merged relation-geometry table, populated only with `--emit-relation-geometries` (a post-COPY SQL
+/// step — see `main.rs`).
+pub const RELATION_GEOM_TABLE: &str = "relation_geometries";
 
 fn create_member_table_sql() -> String {
     format!(r#"
@@ -33,8 +43,8 @@ fn member_index_stmts() -> [String; 2] {
     ]
 }
 
-/// Tag table: one row per (way, side, prefix). No geometry — that lives in the shared `GEOM_TABLE`,
-/// joined at tile-materialization time on `osm_id`.
+/// Tag table: one row per (way, side, prefix). No geometry — that lives in `EDGE_TABLE`, joined at
+/// tile-materialization time on `osm_id`.
 fn create_tag_table_sql(table: &str) -> String {
     format!(r#"
 CREATE TABLE IF NOT EXISTS {table} (
@@ -49,20 +59,35 @@ CREATE TABLE IF NOT EXISTS {table} (
 )"#)
 }
 
-/// Shared geometry table: one row per (way, variant, segment). `variant` is `way` (whole way,
-/// `seg_idx` NULL) or `split` (one row per intersection sub-linestring). `start_id`/`end_id`
-/// are the OSM node ids at each end of the (sub-)linestring — the seeds of the graph topology.
-fn create_geom_table_sql() -> String {
+/// Shared graph-edge table: one row per (way, segment). `start_id`/`end_id` are the OSM node ids at
+/// each end of the sub-linestring — the seeds of the graph topology.
+fn create_edge_table_sql() -> String {
     format!(r#"
-CREATE TABLE IF NOT EXISTS {GEOM_TABLE} (
+CREATE TABLE IF NOT EXISTS {EDGE_TABLE} (
   osm_id         bigint,
-  variant        text NOT NULL,
   seg_idx        integer,
   start_id       bigint,
   end_id         bigint,
   geom           geometry(LineString, 3857),
   length_m       double precision,
   total_length_m double precision
+)"#)
+}
+
+fn create_way_geom_table_sql() -> String {
+    format!(r#"
+CREATE TABLE IF NOT EXISTS {WAY_GEOM_TABLE} (
+  osm_id   bigint,
+  geom     geometry(LineString, 3857),
+  length_m double precision
+)"#)
+}
+
+fn create_node_geom_table_sql() -> String {
+    format!(r#"
+CREATE TABLE IF NOT EXISTS {NODE_GEOM_TABLE} (
+  osm_id bigint,
+  geom   geometry(Point, 3857)
 )"#)
 }
 
@@ -74,10 +99,24 @@ fn drop_tag_indexes_sql(table: &str) -> String {
     )
 }
 
-fn drop_geom_indexes_sql() -> String {
+fn drop_edge_indexes_sql() -> String {
     format!(
-        "DROP INDEX IF EXISTS {GEOM_TABLE}_geom_idx;\n\
-         DROP INDEX IF EXISTS {GEOM_TABLE}_osm_id_idx"
+        "DROP INDEX IF EXISTS {EDGE_TABLE}_geom_idx;\n\
+         DROP INDEX IF EXISTS {EDGE_TABLE}_osm_id_idx"
+    )
+}
+
+fn drop_way_geom_indexes_sql() -> String {
+    format!(
+        "DROP INDEX IF EXISTS {WAY_GEOM_TABLE}_geom_idx;\n\
+         DROP INDEX IF EXISTS {WAY_GEOM_TABLE}_osm_id_idx"
+    )
+}
+
+fn drop_node_geom_indexes_sql() -> String {
+    format!(
+        "DROP INDEX IF EXISTS {NODE_GEOM_TABLE}_geom_idx;\n\
+         DROP INDEX IF EXISTS {NODE_GEOM_TABLE}_osm_id_idx"
     )
 }
 
@@ -90,52 +129,98 @@ fn tag_index_stmts(table: &str) -> [String; 3] {
     ]
 }
 
-/// Geom-table indexes: spatial index + join key on osm_id.
-fn geom_index_stmts() -> [String; 2] {
+/// Edge-table indexes: spatial index + join key on osm_id.
+fn edge_index_stmts() -> [String; 2] {
     [
-        format!("CREATE INDEX IF NOT EXISTS {GEOM_TABLE}_geom_idx ON {GEOM_TABLE} USING GIST (geom)"),
-        format!("CREATE INDEX IF NOT EXISTS {GEOM_TABLE}_osm_id_idx ON {GEOM_TABLE} (osm_id)"),
+        format!("CREATE INDEX IF NOT EXISTS {EDGE_TABLE}_geom_idx ON {EDGE_TABLE} USING GIST (geom)"),
+        format!("CREATE INDEX IF NOT EXISTS {EDGE_TABLE}_osm_id_idx ON {EDGE_TABLE} (osm_id)"),
     ]
 }
 
-pub async fn create_tables(client: &Client, tables: &[&str]) -> anyhow::Result<()> {
+fn way_geom_index_stmts() -> [String; 2] {
+    [
+        format!("CREATE INDEX IF NOT EXISTS {WAY_GEOM_TABLE}_geom_idx ON {WAY_GEOM_TABLE} USING GIST (geom)"),
+        format!("CREATE INDEX IF NOT EXISTS {WAY_GEOM_TABLE}_osm_id_idx ON {WAY_GEOM_TABLE} (osm_id)"),
+    ]
+}
+
+fn node_geom_index_stmts() -> [String; 2] {
+    [
+        format!("CREATE INDEX IF NOT EXISTS {NODE_GEOM_TABLE}_geom_idx ON {NODE_GEOM_TABLE} USING GIST (geom)"),
+        format!("CREATE INDEX IF NOT EXISTS {NODE_GEOM_TABLE}_osm_id_idx ON {NODE_GEOM_TABLE} (osm_id)"),
+    ]
+}
+
+/// Which optional geometry tables to create/index/truncate, alongside the always-present
+/// `EDGE_TABLE` + `MEMBER_TABLE`. Mirrors `Config`'s `emit_*` flags.
+#[derive(Copy, Clone)]
+pub struct GeomTables {
+    pub way: bool,
+    pub node: bool,
+}
+
+pub async fn create_tables(client: &Client, tables: &[&str], geom: GeomTables) -> anyhow::Result<()> {
     for table in tables {
         client.batch_execute(&create_tag_table_sql(table)).await?;
     }
-    client.batch_execute(&create_geom_table_sql()).await?;
+    client.batch_execute(&create_edge_table_sql()).await?;
     client.batch_execute(&create_member_table_sql()).await?;
+    if geom.way {
+        client.batch_execute(&create_way_geom_table_sql()).await?;
+    }
+    if geom.node {
+        client.batch_execute(&create_node_geom_table_sql()).await?;
+    }
     Ok(())
 }
 
-pub async fn truncate_tables(client: &Client, tables: &[&str]) -> anyhow::Result<()> {
+pub async fn truncate_tables(client: &Client, tables: &[&str], geom: GeomTables) -> anyhow::Result<()> {
     let mut all: Vec<String> = tables.iter().map(|t| t.to_string()).collect();
-    all.push(GEOM_TABLE.to_string());
+    all.push(EDGE_TABLE.to_string());
     all.push(MEMBER_TABLE.to_string());
+    if geom.way {
+        all.push(WAY_GEOM_TABLE.to_string());
+    }
+    if geom.node {
+        all.push(NODE_GEOM_TABLE.to_string());
+    }
     client.batch_execute(&format!("TRUNCATE TABLE {}", all.join(", "))).await?;
     Ok(())
 }
 
-pub async fn drop_indexes(client: &Client, tables: &[&str]) -> anyhow::Result<()> {
+pub async fn drop_indexes(client: &Client, tables: &[&str], geom: GeomTables) -> anyhow::Result<()> {
     for table in tables {
         client.batch_execute(&drop_tag_indexes_sql(table)).await?;
     }
-    client.batch_execute(&drop_geom_indexes_sql()).await?;
+    client.batch_execute(&drop_edge_indexes_sql()).await?;
     client.batch_execute(&drop_member_indexes_sql()).await?;
+    if geom.way {
+        client.batch_execute(&drop_way_geom_indexes_sql()).await?;
+    }
+    if geom.node {
+        client.batch_execute(&drop_node_geom_indexes_sql()).await?;
+    }
     Ok(())
 }
 
 /// Build the indexes, one build-unit per pooled connection (= one Postgres backend each)
-/// **concurrently**: each tag table is a unit, and the shared geom table is one more. Indexes
+/// **concurrently**: each tag table is a unit, and the shared edge table is one more. Indexes
 /// *within* a unit run serially (avoids concurrent re-scans of the same heap).
 ///
 /// Two levers, both measured on a Germany import (8 cores): each session raises
 /// `maintenance_work_mem` + `max_parallel_maintenance_workers` (parallel sort / GiST build), and
-/// the units build in parallel so the small tables hide under the dominant geom GiST.
-pub async fn create_indexes(pool: &Pool, tables: &[&str]) -> anyhow::Result<()> {
-    // One build unit per tag table, plus the shared geom table.
+/// the units build in parallel so the small tables hide under the dominant edge-table GiST.
+pub async fn create_indexes(pool: &Pool, tables: &[&str], geom: GeomTables) -> anyhow::Result<()> {
+    // One build unit per tag table, plus the shared edge table.
     let mut units: Vec<Vec<String>> = tables.iter().map(|t| tag_index_stmts(t).to_vec()).collect();
-    units.push(geom_index_stmts().to_vec());
+    units.push(edge_index_stmts().to_vec());
     units.push(member_index_stmts().to_vec());
+    if geom.way {
+        units.push(way_geom_index_stmts().to_vec());
+    }
+    if geom.node {
+        units.push(node_geom_index_stmts().to_vec());
+    }
 
     let handles: Vec<_> = units
         .into_iter()

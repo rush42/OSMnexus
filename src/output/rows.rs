@@ -8,8 +8,10 @@ use crate::output::types::OsmMeta;
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `csv_fields` implementation below.
 pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,osm,derived,private,meta,minzoom";
-pub const GEOM_COLUMNS: &str = "osm_id,variant,seg_idx,start_id,end_id,geom,length_m,total_length_m";
+pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m";
 pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
+pub const WAY_GEOM_COLUMNS: &str = "osm_id,geom,length_m";
+pub const NODE_GEOM_COLUMNS: &str = "osm_id,geom";
 
 /// A row that can be serialized into an ordered list of CSV fields. Implemented by both output row
 /// types so the writers (`output::writers`) can be generic over the row type.
@@ -50,13 +52,12 @@ impl CsvRow for TopicRow {
     }
 }
 
-/// A single geometry row. One per (way, variant, segment); `variant` is `"way"` (whole way,
-/// `seg_idx` None) or `"split"` (one per intersection sub-linestring). Shared across all topics
-/// and all side objects of a way (side-split is a tag-only operation), so keyed on `osm_id`.
+/// A single graph-edge row: one per intersection sub-linestring of a way (`edges` table, always
+/// emitted — this *is* the extracted graph). Shared across all topics and all side objects of a way
+/// (side-split is a tag-only operation), so keyed on `osm_id`.
 pub struct GeomRow {
     pub osm_id: i64,
-    pub variant: &'static str,
-    pub seg_idx: Option<usize>,
+    pub seg_idx: usize,
     pub start_id: i64,
     pub end_id: i64,
     pub geom_ewkb: Vec<u8>,
@@ -65,19 +66,44 @@ pub struct GeomRow {
 }
 
 impl CsvRow for GeomRow {
-    /// CSV field order matches `GEOM_COLUMNS`. A `None` `seg_idx` is emitted as an empty field →
-    /// SQL NULL (CSV default null marker).
+    /// CSV field order matches `GEOM_COLUMNS`.
     fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
         Ok(vec![
             self.osm_id.to_string(),
-            self.variant.to_owned(),
-            self.seg_idx.map(|i| i.to_string()).unwrap_or_default(),
+            self.seg_idx.to_string(),
             self.start_id.to_string(),
             self.end_id.to_string(),
             hex::encode(&self.geom_ewkb),
             self.length_m.to_string(),
             self.total_length_m.to_string(),
         ])
+    }
+}
+
+/// A whole-way linestring row (`way_geometries` table), emitted only with `--emit-way-geometries`.
+pub struct WayGeomRow {
+    pub osm_id: i64,
+    pub geom_ewkb: Vec<u8>,
+    pub length_m: f64,
+}
+
+impl CsvRow for WayGeomRow {
+    /// CSV field order matches `WAY_GEOM_COLUMNS`.
+    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb), self.length_m.to_string()])
+    }
+}
+
+/// A node point-geometry row (`node_geometries` table), emitted only with `--emit-node-geometries`.
+pub struct NodeGeomRow {
+    pub osm_id: i64,
+    pub geom_ewkb: Vec<u8>,
+}
+
+impl CsvRow for NodeGeomRow {
+    /// CSV field order matches `NODE_GEOM_COLUMNS`.
+    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
     }
 }
 

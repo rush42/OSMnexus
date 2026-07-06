@@ -65,13 +65,13 @@ pub(super) fn dense_node_data(n: &DenseNode) -> NodeData {
         },
         None => WayMeta { timestamp: None, user: None, changeset: None },
     };
-    NodeData { id: n.id(), tags, meta }
+    NodeData { id: n.id(), tags, meta, lon: n.lon(), lat: n.lat() }
 }
 
 /// Extract a [`NodeData`] from an osmpbf (non-dense) node.
 pub(super) fn node_data(n: &Node) -> NodeData {
     let tags: RawTags = n.tags().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
-    NodeData { id: n.id(), tags, meta: extract_meta(n.info()) }
+    NodeData { id: n.id(), tags, meta: extract_meta(n.info()), lon: n.lon(), lat: n.lat() }
 }
 
 /// Resolve a way's node ids into an `OsmWay` geometry by looking up node coordinates. Tag/meta are
