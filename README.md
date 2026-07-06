@@ -4,15 +4,17 @@ A streaming OSM → PostGIS **network-extraction** engine. It reads an `.osm.pbf
 elements into topics using **data-defined JSON rules**, and writes a normalized graph to
 PostgreSQL/PostGIS: per-topic **tag** tables plus shared **geometry** tables, joined on `osm_id`.
 
-Think of it as a general, unbiased alternative to tools like OSMnx: the engine hardcodes *no*
+It is a configurable alternative to tools like [OSMnx](https://github.com/gboeing/osmnx): the engine hardcodes *no*
 particular network. What counts as an edge, how tags are normalized, and which attributes are
 derived all live in JSON config, so you can carve **any** kind of network out of OSM — streets,
 bike infrastructure, transit, footpaths, a power grid — by writing rules, not code.
 
-The bundled config (`configs/tilda`) reimplements the `roads_bikelanes` topic from
-[tilda-geo](https://github.com/tordans/tilda-geo) (the radverkehrsatlas processing pipeline),
-producing the `roads` and `bikelanes` classifications. Nothing in the engine is specific to roads;
-point `--config-dir` at your own folder to define a different network.
+Two bundled configs show that range: [`configs/tilda`](configs/tilda) reimplements the
+`roads_bikelanes` topic from [tilda-geo](https://github.com/FixMyBerlin/tilda-geo/) (the
+radverkehrsatlas processing pipeline), producing the `roads` and `bikelanes` classifications;
+[`configs/osmnx`](configs/osmnx) reimplements an [OSMnx](https://github.com/gboeing/osmnx)-style
+driveable-streets network. Nothing in the engine is specific to roads; point `--config-dir` at
+your own folder to define a different network.
 
 ## How it works
 
@@ -120,7 +122,7 @@ Add `RUST_LOG=info` in front of either command for per-phase timings.
 | flag | default | meaning |
 |---|---|---|
 | `<pbf_file>` (or `PBF_FILE`) | — | input `.osm.pbf` |
-| `--config-dir <path>` | `configs/tilda` | topic config folder to run (e.g. `configs/example`) |
+| `--config-dir <path>` | `configs/tilda` | topic config folder to run (e.g. [`configs/osmnx`](configs/osmnx)) |
 | `--output <backend>` | `pg` | `pg` (COPY into PostGIS) or `csv` (one file per tag table + geometry tables) |
 | `--out-dir <path>` | `out` | directory for CSV output (`--output csv` only) |
 | `--emit-way-geometries` | off | also emit uncut whole-way linestrings (`way_geometries`) |
