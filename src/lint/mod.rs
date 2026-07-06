@@ -54,7 +54,7 @@ pub enum Literal {
     Neg(Predicate),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     True,
     False,
