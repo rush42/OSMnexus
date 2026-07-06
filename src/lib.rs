@@ -8,5 +8,6 @@ pub mod output;
 pub mod paths;
 pub mod processing;
 pub mod profile;
+pub mod traffic;
 pub mod transform;
 pub mod value_sets;

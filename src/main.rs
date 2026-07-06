@@ -62,6 +62,11 @@ async fn main() -> anyhow::Result<()> {
          post-import SQL step, which needs a live database — CSV output has no table to merge from)"
     );
 
+    osmnexus::traffic::set_left_hand_traffic(cfg.left_hand_traffic);
+    if cfg.left_hand_traffic {
+        info!("Left-hand traffic: forward/backward directed tags read from the opposite side");
+    }
+
     // Size the rayon pool (CPU-bound decode/stream). `0` = rayon's default (logical CPU count).
     if cfg.threads > 0 {
         rayon::ThreadPoolBuilder::new()

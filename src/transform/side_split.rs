@@ -206,13 +206,16 @@ pub(crate) fn unnest_prefixed_tags(
 
 /// Port of `convertDirectedTags` from transformations.lua.
 ///
-/// For left/right side objects, pick the correct `:forward`/`:backward` variant
-/// of directed tags from the parent way.
+/// For left/right side objects, pick the correct `:forward`/`:backward` variant of directed tags
+/// from the parent way. Under right-hand traffic (the default), the way's `forward` direction runs
+/// along its right side, so `Side::Right` reads `:forward` and `Side::Left` reads `:backward`;
+/// `--left-hand-traffic` flips this.
 fn convert_directed_tags(obj: &mut RawTags, parent: &RawTags, side: Side, directed_keys: &[&str]) {
-    let direction_suffix = match side {
-        Side::Left => ":backward",
-        Side::Right => ":forward",
-        Side::Self_ => return,
+    let left_hand = crate::traffic::is_left_hand_traffic();
+    let direction_suffix = match (side, left_hand) {
+        (Side::Left, false) | (Side::Right, true) => ":backward",
+        (Side::Right, false) | (Side::Left, true) => ":forward",
+        (Side::Self_, _) => return,
     };
 
     // Tags from the parent that are direction-sensitive.

@@ -41,6 +41,12 @@ pub struct Config {
     #[arg(long, default_value_t = 1)]
     pub threads: usize,
 
+    /// The import region drives on the left (UK, Japan, Australia, ...). Flips which physical side
+    /// (`left`/`right`) a side-split object's `forward`/`backward` directed tags are read from.
+    /// Right-hand traffic (the OSM/global default) is assumed unless set.
+    #[arg(long, default_value_t = false)]
+    pub left_hand_traffic: bool,
+
     /// Also emit whole-way linestrings into a dedicated `way_geometries` table (in addition to the
     /// always-emitted intersection-split `geometries` table). Needed to materialize relation
     /// geometries without re-merging split segments at query time.
