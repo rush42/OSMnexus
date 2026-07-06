@@ -21,8 +21,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::classify::categories::{CategoriesFile, CategoryContext, Filter, OrderedNode};
 use crate::lint::{filter_to_expr, to_nnf, Expr, Literal, NumOp, Predicate};
 
-/// Stop branching past this depth or once a candidate set is this small.
-const MAX_DEPTH: usize = 6;
+/// Stop branching once a candidate set shrinks to this size — below this, the eval cost of a leaf
+/// walk is already cheap, so a further branch's overhead isn't worth the diminishing prune.
 const LEAF_MAX: usize = 2;
 
 #[derive(Debug, Clone)]
@@ -63,8 +63,9 @@ impl DecisionTree {
     }
 }
 
-/// Build the discrimination net from a topic's compiled `order` (+ categories/macros for conditions).
-pub fn build(cats: &CategoriesFile) -> DecisionTree {
+/// Build the discrimination net from a topic's compiled `order` (+ categories/macros for
+/// conditions). `max_depth` caps how many tags deep a branch chain may go (see `build_rec`).
+pub fn build(cats: &CategoriesFile, max_depth: usize) -> DecisionTree {
     // NNF condition per order node (index-aligned with `cats.order`).
     let exprs: Vec<Expr> = cats
         .order
@@ -79,7 +80,7 @@ pub fn build(cats: &CategoriesFile) -> DecisionTree {
     }
 
     let all: Vec<usize> = (0..cats.order.len()).collect();
-    build_rec(&exprs, &banned, all, &mut FxHashSet::default(), 0)
+    build_rec(&exprs, &banned, all, &mut FxHashSet::default(), 0, max_depth)
 }
 
 fn node_condition<'a>(cats: &'a CategoriesFile, n: &'a OrderedNode) -> &'a Filter {
@@ -95,8 +96,9 @@ fn build_rec(
     candidates: Vec<usize>,
     used: &mut FxHashSet<String>,
     depth: usize,
+    max_depth: usize,
 ) -> DecisionTree {
-    if candidates.len() <= LEAF_MAX || depth >= MAX_DEPTH {
+    if candidates.len() <= LEAF_MAX || depth >= max_depth {
         return DecisionTree::Leaf(candidates);
     }
     let Some(tag) = choose_branch_tag(exprs, banned, &candidates, used) else {
@@ -110,11 +112,11 @@ fn build_rec(
     for v in &values {
         let kept: Vec<usize> =
             candidates.iter().copied().filter(|&i| keep_for_value(&exprs[i], &tag, v)).collect();
-        children.insert(v.clone(), build_rec(exprs, banned, kept, used, depth + 1));
+        children.insert(v.clone(), build_rec(exprs, banned, kept, used, depth + 1, max_depth));
     }
     let wild: Vec<usize> =
         candidates.iter().copied().filter(|&i| keep_for_wildcard(&exprs[i], &tag)).collect();
-    let wildcard = Box::new(build_rec(exprs, banned, wild, used, depth + 1));
+    let wildcard = Box::new(build_rec(exprs, banned, wild, used, depth + 1, max_depth));
 
     used.remove(&tag);
     DecisionTree::Branch { tag, children, wildcard }
@@ -353,7 +355,7 @@ mod tests {
             for (k, v) in &shared_macros {
                 cats.macros.entry(k.clone()).or_insert_with(|| v.clone());
             }
-            cats.build_order().expect("build order + tree");
+            cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
 
             let refs = referenced_eq(&cats);
             let hw_vals: Vec<Option<String>> = {

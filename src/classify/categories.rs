@@ -77,7 +77,7 @@ impl CategoriesFile {
     /// (categories ∪ macro sinks); a cycle is a contradictory priority and is a hard error.
     /// Correctness relies on the disjointness invariant (`categories_are_disjoint`): any two nodes
     /// that can co-match have an exclude edge, so first-match-in-order picks the same winner.
-    pub fn build_order(&mut self) -> anyhow::Result<()> {
+    pub fn build_order(&mut self, tree_max_depth: usize) -> anyhow::Result<()> {
         use std::collections::{BTreeMap, BTreeSet};
 
         let catset: BTreeSet<&str> = self.categories.iter().map(|c| c.id.as_str()).collect();
@@ -136,7 +136,7 @@ impl CategoriesFile {
             }
         }
         self.order = order;
-        self.tree = decision_tree::build(self);
+        self.tree = decision_tree::build(self, tree_max_depth);
         Ok(())
     }
 }

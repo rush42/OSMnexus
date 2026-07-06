@@ -2,6 +2,11 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+/// Default max branch depth of the `categorize` discrimination net (`classify::decision_tree`).
+/// The single source of truth for this default — also read by `decision_tree` as the fallback for
+/// callers (e.g. tests) that build a tree without going through CLI parsing.
+pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
+
 #[derive(Parser, Debug)]
 #[command(about = "Data-driven OSM PBF topic processing pipeline → PostgreSQL")]
 pub struct Config {
@@ -83,6 +88,12 @@ pub struct Config {
     /// Directory for CSV output (created if missing). Only used with `--output csv`.
     #[arg(long, default_value = "out")]
     pub out_dir: String,
+
+    /// Max branch depth of the `categorize` discrimination net (see `classify::decision_tree`).
+    /// Deeper trees prune more aggressively at the cost of build time; shallower trees fall back to
+    /// larger leaves sooner.
+    #[arg(long, default_value_t = DEFAULT_TREE_MAX_DEPTH)]
+    pub tree_max_depth: usize,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]

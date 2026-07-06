@@ -100,7 +100,7 @@ fn apply_overrides(base: &[Field], overrides: Vec<Field>) -> Vec<Field> {
 impl TopicRunner {
     /// Discover and load every topic under the active config directory, skipping `_`-prefixed
     /// directories (e.g. `_shared/`). Returned in sorted name order for deterministic output.
-    pub fn load_all() -> anyhow::Result<Vec<Self>> {
+    pub fn load_all(tree_max_depth: usize) -> anyhow::Result<Vec<Self>> {
         let topics_dir = crate::paths::config_root();
         let mut names: Vec<String> = std::fs::read_dir(&topics_dir)
             .with_context(|| format!("reading {}", topics_dir.display()))?
@@ -114,11 +114,11 @@ impl TopicRunner {
             })
             .collect();
         names.sort();
-        names.iter().map(|name| Self::load(name)).collect()
+        names.iter().map(|name| Self::load(name, tree_max_depth)).collect()
     }
 
     /// Load a topic from its directory `<config_root>/<name>/`.
-    pub fn load(name: &str) -> anyhow::Result<Self> {
+    pub fn load(name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
         let base = crate::paths::config_root().join(name);
 
         let spec: TopicSpec = serde_json::from_str(
@@ -174,7 +174,7 @@ impl TopicRunner {
             }
             // Compile the exclude relation into a priority order + discrimination tree (needs macros
             // fully merged first). categorize() is then pure first-match over this — no runtime excludes.
-            cats.build_order()
+            cats.build_order(tree_max_depth)
                 .with_context(|| format!("building category order for topics/{name}"))?;
         }
 
