@@ -74,12 +74,6 @@ pub struct Config {
     #[arg(long, value_enum, default_value_t = Output::Pg)]
     pub output: Output,
 
-    /// Tile-server output joining each topic's tag table to `geometries` on `osm_id`, exposed as
-    /// `<topic>_tiles`: `none` (default), `view` (cheap, always fresh), or `materialized` (physical
-    /// table + GiST spatial index, what a tile server renders from). Ignored for `csv`.
-    #[arg(long, value_enum, default_value_t = Tiles::None)]
-    pub tiles: Tiles,
-
     /// Directory for CSV output (created if missing). Only used with `--output csv`.
     #[arg(long, default_value = "out")]
     pub out_dir: String,
@@ -89,15 +83,4 @@ pub struct Config {
 pub enum Output {
     Pg,
     Csv,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
-#[value(rename_all = "kebab-case")]
-pub enum Tiles {
-    /// Don't create any tile relation. Default.
-    None,
-    /// Create a `<topic>_tiles` view per topic.
-    View,
-    /// Materialize a `<topic>_tiles` table per topic + GiST spatial index.
-    Materialized,
 }

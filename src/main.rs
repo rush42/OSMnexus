@@ -10,7 +10,7 @@ use deadpool_postgres::Pool;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use config::{Config, Output, Tiles};
+use config::{Config, Output};
 use db::{
     pool::build_pool,
     schema,
@@ -353,23 +353,6 @@ async fn main() -> anyhow::Result<()> {
         let client = pool.as_ref().unwrap().get().await?;
         db::relations::materialize_relation_geometries(&client, cfg.emit_way_geometries).await?;
         info!("Relation geometry materialization: {:.1}s", t_rel.elapsed().as_secs_f32());
-    }
-
-    if cfg.output == Output::Pg {
-        match cfg.tiles {
-            Tiles::None => {}
-            Tiles::View => {
-                info!("Creating tile views (<topic>_tiles)...");
-                let client = pool.as_ref().unwrap().get().await?;
-                db::tiles::create_tile_views(&client, &table_refs).await?;
-            }
-            Tiles::Materialized => {
-                info!("Materializing tile tables + spatial index (<topic>_tiles)...");
-                let t_tiles = std::time::Instant::now();
-                db::tiles::materialize_tiles(pool.as_ref().unwrap(), &table_refs).await?;
-                info!("Tile materialization: {:.1}s", t_tiles.elapsed().as_secs_f32());
-            }
-        }
     }
 
     info!("Done. Total: {:.1}s", t0.elapsed().as_secs_f32());
