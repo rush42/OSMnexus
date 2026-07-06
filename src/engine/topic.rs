@@ -41,16 +41,52 @@ pub struct TopicSpec {
 }
 
 /// One entry in a topic's `transforms` list.
-/// A JSON string is a no-arg tag transform; a JSON object is a parameterized transform.
+/// A JSON string is a no-arg native transform; a JSON object is a parameterized transform
+/// dispatched on its `transform` field.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Transform {
-    /// e.g. "lifecycle", "cycleway_opposite", "construction_prefix", "cycleway_both".
+    /// The one remaining native no-arg transform: "lifecycle".
     Named(String),
+    /// A parameterized transform object, e.g. `{ "transform": "split_sides", ... }`.
+    Param(ParamTransform),
+}
+
+/// The parameterized (object-form) transforms, dispatched on the `transform` field.
+/// `split_sides` changes object cardinality (handled by `side_split`); the rest are in-place
+/// tag rewrites (handled by `TagTransform`).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "transform", rename_all = "snake_case")]
+pub enum ParamTransform {
     /// One center-line split: unnest tags with `prefix` onto a side object whose effective
     /// highway becomes `highway`. List the entry once per projection, e.g.
     /// `{ "transform": "split_sides", "highway": "cycleway", "prefix": "cycleway" }`.
-    SplitSides { transform: String, highway: String, prefix: String },
+    SplitSides { highway: String, prefix: String },
+    /// Move `from` → `to`, optionally gated on `when_value`. (Replaces `cycleway_both`.)
+    RenameKey {
+        from: String,
+        to: String,
+        #[serde(default)]
+        when_value: Option<String>,
+    },
+    /// Match `tag`'s value against `cases`; the matched case's writes are applied, and the source
+    /// tag removed when `remove_tag`. (Replaces `cycleway_opposite`.)
+    ValueCases {
+        tag: String,
+        #[serde(default)]
+        remove_tag: bool,
+        cases: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    },
+    /// Strip `prefix` from matching keys, re-key onto the base tag, and stamp a lifecycle-style
+    /// marker (`<base>:<stamp_key>` when nested under one of `stamp_nested_under`, else `stamp_key`).
+    /// (Replaces `construction_prefix`.)
+    StripPrefix {
+        prefix: String,
+        stamp_key: String,
+        stamp_value: String,
+        #[serde(default)]
+        stamp_nested_under: Vec<String>,
+    },
 }
 
 /// One produced field: `{ "output": ..., "source": <Producer> }`. Used for `osm_fields`,

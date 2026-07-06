@@ -5,7 +5,7 @@ use anyhow::Context;
 use crate::classify::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
 use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
 use crate::engine::extract::Producer;
-use crate::engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, Transform, TopicSpec}};
+use crate::engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, Transform, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
@@ -91,10 +91,10 @@ fn apply_overrides(base: &[Field], overrides: Vec<Field>) -> Vec<Field> {
 }
 
 impl TopicRunner {
-    /// Discover and load every topic under `topics/`, skipping `_`-prefixed directories
-    /// (e.g. `topics/_shared/`). Returned in sorted name order for deterministic output.
+    /// Discover and load every topic under the active config directory, skipping `_`-prefixed
+    /// directories (e.g. `_shared/`). Returned in sorted name order for deterministic output.
     pub fn load_all() -> anyhow::Result<Vec<Self>> {
-        let topics_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("topics");
+        let topics_dir = crate::paths::config_root();
         let mut names: Vec<String> = std::fs::read_dir(&topics_dir)
             .with_context(|| format!("reading {}", topics_dir.display()))?
             .filter_map(|entry| {
@@ -110,9 +110,9 @@ impl TopicRunner {
         names.iter().map(|name| Self::load(name)).collect()
     }
 
-    /// Load a topic from its directory under `topics/<name>/`.
+    /// Load a topic from its directory `<config_root>/<name>/`.
     pub fn load(name: &str) -> anyhow::Result<Self> {
-        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("topics/{name}"));
+        let base = crate::paths::config_root().join(name);
 
         let spec: TopicSpec = serde_json::from_str(
             &std::fs::read_to_string(base.join("topic.json"))
@@ -171,24 +171,47 @@ impl TopicRunner {
                 .with_context(|| format!("building category order for topics/{name}"))?;
         }
 
-        // Split the declared transform pipeline into ordered no-arg tag transforms and
-        // the (at most one) parameterized center-line split.
+        // Split the declared transform pipeline into ordered in-place tag transforms and the
+        // parameterized center-line splits (which change object cardinality, handled separately).
         let mut tag_transforms = Vec::new();
         let mut transformations = Vec::new();
         for t in &spec.transforms {
             match t {
-                Transform::Named(tname) => tag_transforms.push(
-                    TagTransform::from_name(tname)
-                        .with_context(|| format!("topics/{name}/topic.json transforms"))?,
-                ),
-                Transform::SplitSides { transform, highway, prefix } => {
+                Transform::Named(tname) => {
                     anyhow::ensure!(
-                        transform == "split_sides",
-                        "unknown parameterized transform '{transform}' in topics/{name}/topic.json",
+                        tname == "lifecycle",
+                        "unknown named transform '{tname}' in topics/{name}/topic.json",
                     );
+                    tag_transforms.push(TagTransform::Lifecycle);
+                }
+                Transform::Param(ParamTransform::SplitSides { highway, prefix }) => {
                     transformations.push(CenterLineTransformation {
                         highway: Box::leak(highway.clone().into_boxed_str()),
                         prefix:  Box::leak(prefix.clone().into_boxed_str()),
+                    });
+                }
+                Transform::Param(ParamTransform::RenameKey { from, to, when_value }) => {
+                    tag_transforms.push(TagTransform::RenameKey {
+                        from: from.clone(),
+                        to: to.clone(),
+                        when_value: when_value.clone(),
+                    });
+                }
+                Transform::Param(ParamTransform::ValueCases { tag, remove_tag, cases }) => {
+                    tag_transforms.push(TagTransform::ValueCases {
+                        tag: tag.clone(),
+                        remove_tag: *remove_tag,
+                        cases: cases.clone(),
+                    });
+                }
+                Transform::Param(ParamTransform::StripPrefix {
+                    prefix, stamp_key, stamp_value, stamp_nested_under,
+                }) => {
+                    tag_transforms.push(TagTransform::StripPrefix {
+                        prefix: prefix.clone(),
+                        stamp_key: stamp_key.clone(),
+                        stamp_value: stamp_value.clone(),
+                        stamp_nested_under: stamp_nested_under.clone(),
                     });
                 }
             }
