@@ -56,6 +56,12 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::parse();
     osmnexus::profile::init_from_env();
 
+    anyhow::ensure!(
+        cfg.output == Output::Pg || !cfg.emit_relation_geometries,
+        "--emit-relation-geometries requires --output pg (it merges member-way geometries with a \
+         post-import SQL step, which needs a live database — CSV output has no table to merge from)"
+    );
+
     // Size the rayon pool (CPU-bound decode/stream). `0` = rayon's default (logical CPU count).
     if cfg.threads > 0 {
         rayon::ThreadPoolBuilder::new()
