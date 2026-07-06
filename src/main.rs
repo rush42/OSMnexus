@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use osm_pipeline::{config, db, engine, osm, output, processing};
+use osmnexus::{config, db, engine, osm, output, processing};
 
 use anyhow::Context;
 use clap::Parser;
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let cfg = Config::parse();
-    osm_pipeline::profile::init_from_env();
+    osmnexus::profile::init_from_env();
 
     // Size the rayon pool (CPU-bound decode/stream). `0` = rayon's default (logical CPU count).
     if cfg.threads > 0 {
@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     // Select the config directory (a self-contained set of topics + its `_shared/` library) and
     // discover its topics (skipping `_`-prefixed dirs). Drop a new `<config>/<name>/` dir in and
     // it's picked up — no code changes needed.
-    osm_pipeline::paths::set_config_root(cfg.config_dir.clone());
+    osmnexus::paths::set_config_root(cfg.config_dir.clone());
     info!("Config directory: {}", cfg.config_dir.display());
     let runners: Vec<TopicRunner> = TopicRunner::load_all()?;
 
@@ -292,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
     // Await the producer first: it drops the senders, closing every writer channel so the writer
     // tasks drain their tails, finish the COPY, and return their counts.
     producer.await.context("reader/processing task panicked")??;
-    osm_pipeline::profile::report();
+    osmnexus::profile::report();
 
     let mut tag_counts = vec![0usize; n];
     for (i, handles) in tag_handles.into_iter().enumerate() {
