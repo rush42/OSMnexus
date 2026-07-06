@@ -1,0 +1,29 @@
+{
+  "rules": [
+    { "when": { "tag": "bicycle_road", "eq": "yes" }, "value": "bicycle_road" },
+
+    { "when": { "and": [ { "tag": "highway", "eq": "service" }, { "tag": "service", "eq": "driveway" }, { "tag": "emergency", "in": ["yes", "designated"] } ] }, "value": "service_emergency_access" },
+    { "when": { "and": [ { "tag": "highway", "eq": "service" }, { "tag": "service", "eq": "alley" } ] }, "value": "service_alley" },
+    { "when": { "and": [ { "tag": "highway", "eq": "service" }, { "tag": "service", "eq": "driveway" } ] }, "value": "service_driveway" },
+    { "when": { "and": [ { "tag": "highway", "eq": "service" }, { "tag": "service", "eq": "emergency_access" } ] }, "value": "service_emergency_access" },
+    { "when": { "and": [ { "tag": "highway", "eq": "service" }, { "tag": "service", "eq": "parking_isle" } ] }, "value": "service_parking_aisle" },
+    { "when": { "and": [ { "tag": "highway", "eq": "service" }, { "tag": "service", "exists": false } ] }, "value": "service_road" },
+    { "when": { "tag": "highway", "eq": "service" }, "value": "service_uncategorized" },
+
+    { "when": { "and": [ { "tag": "highway", "eq": "residential" }, { "tag": "priority_road", "in": ["designated", "yes_unposted"] } ] }, "value": "residential_priority_road" },
+
+    { "when": { "and": [ { "tag": "highway", "eq": "path" }, { "tag": "path", "in": ["crossing", "traffic_island"] } ] }, "value": "footway_cycleway_crossing" },
+    { "when": { "and": [ { "tag": "highway", "eq": "cycleway" }, { "tag": "cycleway", "in": ["crossing", "traffic_island"] } ] }, "value": "cycleway_crossing" },
+    { "when": { "and": [ { "tag": "highway", "eq": "footway" }, { "tag": "footway", "in": ["crossing", "traffic_island"] } ] }, "value": "footway_crossing" },
+
+    { "when": { "or": [
+        { "and": [ { "tag": "highway", "eq": "footway" }, { "tag": "footway", "eq": "sidewalk" } ] },
+        { "and": [ { "tag": "highway", "eq": "path" }, { "tag": "is_sidepath", "eq": "yes" } ] },
+        { "and": [ { "tag": "highway", "eq": "path" }, { "tag": "path", "in": ["sidewalk", "sidepath"] } ] }
+      ] }, "value": "footway_sidewalk" },
+
+    { "when": { "tag": "highway", "eq": "road" }, "value": "unspecified_road" },
+    { "when": { "tag": "highway", "eq": "steps" }, "value": "footway_steps" },
+    { "when": { "tag": "highway", "exists": true }, "value": { "tag": "highway" } }
+  ]
+}

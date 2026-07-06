@@ -73,9 +73,10 @@ pub fn classify_rules(
 fn shared_classifiers() -> &'static HashMap<String, Classifier> {
     static CLASSIFIERS: OnceLock<HashMap<String, Classifier>> = OnceLock::new();
     CLASSIFIERS.get_or_init(|| {
-        const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/topics/_shared/classifiers");
+        let dir = crate::paths::shared_dir().join("classifiers");
+        let dir = dir.display().to_string();
         let mut map = HashMap::new();
-        let entries = std::fs::read_dir(DIR).unwrap_or_else(|e| panic!("reading {DIR}: {e}"));
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("reading {dir}: {e}"));
         for entry in entries {
             let path = entry.unwrap().path();
             if path.extension().and_then(|s| s.to_str()) != Some("json") {

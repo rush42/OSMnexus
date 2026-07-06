@@ -5,6 +5,7 @@ pub mod engine;
 pub mod lint;
 pub mod osm;
 pub mod output;
+pub mod paths;
 pub mod processing;
 pub mod profile;
 pub mod transform;

@@ -58,8 +58,11 @@ async fn main() -> anyhow::Result<()> {
         info!("rayon thread pool capped at {} threads", cfg.threads);
     }
 
-    // Discover topics by scanning `topics/` (skipping `_`-prefixed dirs like `_shared`).
-    // Drop a new `topics/<name>/` directory in and it's picked up — no code changes needed.
+    // Select the config directory (a self-contained set of topics + its `_shared/` library) and
+    // discover its topics (skipping `_`-prefixed dirs). Drop a new `<config>/<name>/` dir in and
+    // it's picked up — no code changes needed.
+    osm_pipeline::paths::set_config_root(cfg.config_dir.clone());
+    info!("Config directory: {}", cfg.config_dir.display());
     let runners: Vec<TopicRunner> = TopicRunner::load_all()?;
 
     let tables: Vec<String> = runners.iter().map(|r| r.table().to_owned()).collect();

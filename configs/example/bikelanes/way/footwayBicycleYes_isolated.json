@@ -1,0 +1,26 @@
+{
+  "condition": {
+    "and": [
+      {
+        "macro": "is_footway_bicycle_yes_base"
+      },
+      {
+        "macro": "sidepath_isolated"
+      }
+    ]
+  },
+  "excludes": [
+    "cycleway_isolated",
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ],
+  "consts": {
+    "oneway": {
+      "value": "implicit_yes",
+      "consts": {
+        "confidence": "low"
+      }
+    }
+  }
+}

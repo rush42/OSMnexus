@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, ValueEnum};
 
 /// How the geometry table is populated. Independent of the (tag-only) classification.
@@ -18,6 +20,12 @@ pub struct Config {
     /// Path to the .osm.pbf file
     #[arg(env = "PBF_FILE")]
     pub pbf_file: String,
+
+    /// Config directory: a self-contained folder of topic dirs plus a `_shared/` library
+    /// (macros, sanitizers, value_sets.json, classifiers/). Selects which set of topics to run,
+    /// e.g. `configs/tilda`, `configs/example`, `configs/public_transport`.
+    #[arg(long, default_value = "configs/tilda")]
+    pub config_dir: PathBuf,
 
     /// DB host; leave empty to connect via Unix socket (peer auth)
     #[arg(long, env = "PGHOST", default_value = "")]

@@ -1,0 +1,20 @@
+{
+  "allowed_highway": [
+    "motorway", "motorway_link", "trunk", "trunk_link",
+    "primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link",
+    "unclassified", "residential", "road", "living_street", "pedestrian", "service",
+    "track", "path", "footway", "cycleway", "steps"
+  ],
+  "sidepath_highway": [
+    "track", "path", "footway", "cycleway", "steps", "pedestrian"
+  ],
+  "physical_separation": [
+    "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter",
+    "fence", "jersey_barrier", "guard_rail"
+  ],
+  "blocking_separation": [
+    "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter", "kerb",
+    "fence", "jersey_barrier", "guard_rail", "structure", "ditch", "greenery", "hedge",
+    "tree_row", "cone", "kerb;parking_lane", "kerb;bollard", "yes"
+  ]
+}

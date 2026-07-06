@@ -13,9 +13,29 @@
   },
   "transforms": [
     "lifecycle",
-    "cycleway_opposite",
-    "construction_prefix",
-    "cycleway_both",
+    {
+      "transform": "value_cases",
+      "tag": "cycleway",
+      "remove_tag": true,
+      "cases": {
+        "opposite": { "oneway:bicycle": "no" },
+        "opposite_lane": { "cycleway:left": "lane", "oneway:bicycle": "no" },
+        "opposite_track": { "cycleway:left": "track", "oneway:bicycle": "no" }
+      }
+    },
+    {
+      "transform": "strip_prefix",
+      "prefix": "construction:",
+      "stamp_key": "lifecycle",
+      "stamp_value": "construction",
+      "stamp_nested_under": ["cycleway:", "sidewalk:"]
+    },
+    {
+      "transform": "rename_key",
+      "from": "cycleway",
+      "to": "cycleway:both",
+      "when_value": "no"
+    },
     {
       "transform": "split_sides",
       "highway": "cycleway",

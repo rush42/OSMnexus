@@ -1,0 +1,25 @@
+{
+  "condition": {
+    "and": [
+      {
+        "macro": "is_cycleway_separated_base"
+      },
+      {
+        "macro": "sidepath_isolated"
+      }
+    ]
+  },
+  "excludes": [
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ],
+  "consts": {
+    "oneway": {
+      "value": "assumed_no",
+      "consts": {
+        "confidence": "low"
+      }
+    }
+  }
+}

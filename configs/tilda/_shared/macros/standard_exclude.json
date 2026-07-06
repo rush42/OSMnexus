@@ -1,0 +1,9 @@
+{
+  "or": [
+    { "not": { "macro": "is_allowed_highway" } },
+    { "tag": "area",     "eq": "yes" },
+    { "tag": "man_made", "eq": "pier" },
+    { "tag": "leisure",  "eq": "track" },
+    { "tag": "indoor",   "eq": "yes" }
+  ]
+}

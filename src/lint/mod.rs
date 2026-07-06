@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::classify::categories::{
     load_shared_macros, load_topic_categories, CategoriesFile, Filter,
@@ -343,7 +343,7 @@ pub fn find_overlaps(cats: &CategoriesFile) -> Vec<Overlap> {
 /// Every topic directory holding at least one category kind subfolder, as `(topic name, topic dir)`,
 /// sorted by name (skips `_shared` and any topic without categories). Used by lint + tests.
 pub fn topic_category_dirs() -> Vec<(String, PathBuf)> {
-    let topics = Path::new(env!("CARGO_MANIFEST_DIR")).join("topics");
+    let topics = crate::paths::config_root();
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&topics).into_iter().flatten().flatten() {
         let dir = entry.path();

@@ -9,13 +9,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/topics/_shared/value_sets.json");
-
 fn all_sets() -> &'static HashMap<String, HashSet<String>> {
     static SETS: OnceLock<HashMap<String, HashSet<String>>> = OnceLock::new();
     SETS.get_or_init(|| {
-        let raw = std::fs::read_to_string(PATH).unwrap_or_else(|e| panic!("reading {PATH}: {e}"));
-        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parsing {PATH}: {e}"))
+        let path = crate::paths::shared_dir().join("value_sets.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()))
     })
 }
 
