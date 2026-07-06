@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
-use crate::classify::categories::{categorize, eval_filter, resolve_minzoom, CategoryContext};
+use crate::classify::categories::{categorize, eval_filter, CategoryContext};
 use crate::classify::classifier::classify_rules;
 use crate::engine::extract::ExtractCtx;
 use crate::engine::topic::Field;
@@ -195,14 +195,6 @@ pub fn build_topic_rows(
             private.insert("_parent_highway".into(), Value::String(ph.clone()));
         }
 
-        // Category override wins over the topic-level default; absent → 0.
-        let minzoom = category
-            .minzoom
-            .as_ref()
-            .or(topic.minzoom.as_ref())
-            .map(|rule| resolve_minzoom(rule, &ctx, &categories.macros))
-            .unwrap_or(0);
-
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time.
         let prefix = kind.id_prefix();
@@ -221,7 +213,6 @@ pub fn build_topic_rows(
             derived,
             private,
             meta: meta.clone(),
-            minzoom,
         });
     }
 

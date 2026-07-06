@@ -44,5 +44,5 @@
     { "output": "bridge", "source": { "key": "bridge" } },
     { "output": "tunnel", "source": { "key": "tunnel" } }
   ],
-  "minzoom": 0
+  "consts": { "minzoom": 0 }
 }

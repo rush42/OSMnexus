@@ -1,5 +1,4 @@
 {
-  "minzoom": 11,
   "condition": {
     "and": [
       {
@@ -20,5 +19,8 @@
     "service_driveway",
     "service_emergency_access",
     "service_parking_aisle"
-  ]
+  ],
+  "consts": {
+    "minzoom": 11
+  }
 }

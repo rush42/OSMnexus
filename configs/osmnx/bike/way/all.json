@@ -1,4 +1,4 @@
 {
-  "minzoom": 0,
-  "condition": { "tag": "highway", "exists": true }
+  "condition": { "tag": "highway", "exists": true },
+  "consts": { "minzoom": 0 }
 }

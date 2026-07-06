@@ -221,5 +221,7 @@
     "lifecycle",
     "road"
   ],
-  "minzoom": 0
+  "consts": {
+    "minzoom": 0
+  }
 }

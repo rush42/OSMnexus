@@ -1,5 +1,4 @@
 {
-  "minzoom": 11,
   "condition": {
     "tag": "highway",
     "eq": "living_street"
@@ -19,5 +18,8 @@
     "service_road",
     "service_uncategorized",
     "unspecified_road"
-  ]
+  ],
+  "consts": {
+    "minzoom": 11
+  }
 }

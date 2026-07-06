@@ -1,7 +1,6 @@
-//! The `Filter` predicate AST and its evaluator, plus the categorization context and the
-//! declarative minzoom rule that reuses the same evaluator. The category *data model* and the
-//! priority-order compiler live in `categories`; this module is purely "given a context, does a
-//! predicate hold".
+//! The `Filter` predicate AST and its evaluator, plus the categorization context. The category
+//! *data model* and the priority-order compiler live in `categories`; this module is purely
+//! "given a context, does a predicate hold".
 
 use std::collections::HashMap;
 
@@ -27,36 +26,12 @@ pub struct CategoryContext<'a> {
     pub sanitizers: &'a SanitizerRegistry,
 }
 
-/// Declarative minzoom: a constant, or an ordered list of conditional cases with a default.
-/// Cases are evaluated in order against the same `CategoryContext` used for categorization,
-/// reusing the `Filter` evaluator; the first matching case wins, else `default`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum MinzoomRule {
-    Const(i32),
-    Conditional { default: i32, rules: Vec<MinzoomCase> },
-}
-
+/// One conditional case in a `Producer::FilterZoom` rule list: evaluated with the same `Filter`
+/// engine as every other producer, first match wins.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MinzoomCase {
     pub when: Filter,
     pub zoom: i32,
-}
-
-/// Resolve a minzoom rule against a categorization context.
-pub fn resolve_minzoom(
-    rule: &MinzoomRule,
-    ctx: &CategoryContext,
-    macros: &HashMap<String, Filter>,
-) -> i32 {
-    match rule {
-        MinzoomRule::Const(z) => *z,
-        MinzoomRule::Conditional { default, rules } => rules
-            .iter()
-            .find(|case| eval(&case.when, ctx, macros))
-            .map(|case| case.zoom)
-            .unwrap_or(*default),
-    }
 }
 
 /// Filter expression. Variants are tried in declaration order by serde's untagged deserializer,
@@ -118,8 +93,8 @@ pub enum Filter {
 
 // ── Filter evaluator ──────────────────────────────────────────────────────────
 
-/// Evaluate `filter` against `ctx`. Shared by categorization, minzoom cases, and the way-level
-/// exclude check (`eval_filter`).
+/// Evaluate `filter` against `ctx`. Shared by categorization and the way-level exclude check
+/// (`eval_filter`, which builds a neutral `ctx`).
 pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
     match filter {
         Filter::And { and } => and.iter().all(|f| eval(f, ctx, macros)),

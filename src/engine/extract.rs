@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::classify::filter::{eval_filter, MinzoomCase};
 use crate::classify::sanitize::SanitizerRegistry;
 use crate::classify::{derive, sanitize};
 use crate::osm::types::RawTags;
@@ -102,6 +103,16 @@ pub enum Producer {
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
     },
+    /// A constant zoom, or first-matching-`Filter`-case zoom with a default — the `minzoom`
+    /// shape, reusing the same `Filter`/`eval_filter` engine as `Classify` (neutral, obj-only
+    /// context; no macro support, matching `Classify`'s existing limitation). Must be tried
+    /// before `Extract` below: `Extract`'s fields are all optional, so it would otherwise
+    /// match (and silently produce nothing) before `default`/`rules` ever get a look-in.
+    FilterZoom {
+        default: i32,
+        #[serde(default)] rules: Vec<MinzoomCase>,
+        #[serde(default)] from: TagSet,
+    },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
@@ -159,6 +170,16 @@ impl Producer {
                     None => Value::String(raw.to_owned()),
                 };
                 Some(Produced { value, consts: consts.clone() })
+            }
+
+            Producer::FilterZoom { default, rules, from } => {
+                let tags = from.resolve(ctx)?;
+                let zoom = rules
+                    .iter()
+                    .find(|case| eval_filter(&case.when, tags, &HashMap::new(), ctx.sanitizers))
+                    .map(|case| case.zoom)
+                    .unwrap_or(*default);
+                Some(Produced::bare(Value::Number(zoom.into())))
             }
         }
     }

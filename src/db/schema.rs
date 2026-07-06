@@ -57,8 +57,7 @@ CREATE TABLE IF NOT EXISTS {table} (
   osm       jsonb,
   derived   jsonb,
   private   jsonb,
-  meta      jsonb,
-  minzoom   integer NOT NULL
+  meta      jsonb
 )"#)
 }
 
@@ -103,8 +102,7 @@ CREATE TABLE IF NOT EXISTS {NODE_TABLE} (
 fn drop_tag_indexes_sql(table: &str) -> String {
     format!(
         "DROP INDEX IF EXISTS {table}_id_idx;\n\
-         DROP INDEX IF EXISTS {table}_osm_id_idx;\n\
-         DROP INDEX IF EXISTS {table}_minzoom_idx"
+         DROP INDEX IF EXISTS {table}_osm_id_idx"
     )
 }
 
@@ -130,12 +128,11 @@ fn drop_node_indexes_sql() -> String {
     )
 }
 
-/// Tag-table indexes: unique feature id, join key on osm_id, minzoom filter.
-fn tag_index_stmts(table: &str) -> [String; 3] {
+/// Tag-table indexes: unique feature id, join key on osm_id.
+fn tag_index_stmts(table: &str) -> [String; 2] {
     [
         format!("CREATE UNIQUE INDEX IF NOT EXISTS {table}_id_idx ON {table} (id)"),
         format!("CREATE INDEX IF NOT EXISTS {table}_osm_id_idx ON {table} (osm_id)"),
-        format!("CREATE INDEX IF NOT EXISTS {table}_minzoom_idx ON {table} (minzoom)"),
     ]
 }
 

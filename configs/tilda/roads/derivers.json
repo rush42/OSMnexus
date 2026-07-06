@@ -6,5 +6,14 @@
       { "key": "lifecycle", "from": "parent" }
     ]
   },
-  "road": { "shared": "road", "from": "parent_or_obj" }
+  "road": { "shared": "road", "from": "parent_or_obj" },
+  "track_minzoom": {
+    "default": 0,
+    "rules": [
+      {
+        "when": { "not": { "tag": "tracktype", "in": ["grade1", "grade2"] } },
+        "zoom": 11
+      }
+    ]
+  }
 }

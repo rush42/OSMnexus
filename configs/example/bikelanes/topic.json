@@ -6,7 +6,8 @@
       "consts": {
         "confidence": "not_applicable"
       }
-    }
+    },
+    "minzoom": 0
   },
   "exclude_condition": {
     "macro": "standard_exclude"

@@ -7,7 +7,7 @@ use crate::output::types::OsmMeta;
 
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `csv_fields` implementation below.
-pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,osm,derived,private,meta,minzoom";
+pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,osm,derived,private,meta";
 pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m,cost,reverse_cost";
 pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
 pub const WAY_GEOM_COLUMNS: &str = "osm_id,geom,length_m";
@@ -33,7 +33,6 @@ pub struct TopicRow {
     pub derived: Map<String, Value>,
     pub private: Map<String, Value>,
     pub meta: OsmMeta,
-    pub minzoom: i32,
 }
 
 impl CsvRow for TopicRow {
@@ -47,7 +46,6 @@ impl CsvRow for TopicRow {
             serde_json::to_string(&self.derived)?,
             serde_json::to_string(&self.private)?,
             serde_json::to_string(&self.meta)?,
-            self.minzoom.to_string(),
         ])
     }
 }

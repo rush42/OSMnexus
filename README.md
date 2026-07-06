@@ -49,7 +49,8 @@ which deriver feeds a given output column.
 One extracted graph; each topic is a disjoint attribute layer over it.
 
 - **`<topic>`** — one tag row per (element, side, prefix). Tag-only classification, no geometry.
-  Columns: `osm_id, osm_type, id, osm, derived, private, meta, minzoom`. `id` = `way/{id}` (or
+  Columns: `osm_id, osm_type, id, osm, derived, private, meta` (`derived.minzoom` is an ordinary
+  derived field). `id` = `way/{id}` (or
   `way/{id}/{prefix}/left|right` for side objects, `node/{id}`, `relation/{id}`). An element can
   appear in several topics with *different* classifications, so tag tables are per-topic.
 - **`edges`** — one row per (way, segment), shared across all topics: the graph's edges, cut at

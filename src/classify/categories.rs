@@ -6,9 +6,7 @@ use crate::engine::topic::DeriverBinding;
 
 // Re-export the predicate/minzoom types + loaders so existing `classify::categories::*` import
 // paths keep working after the split into `filter` and `loader`.
-pub use crate::classify::filter::{
-    eval_filter, resolve_minzoom, CategoryContext, Filter, MinzoomCase, MinzoomRule,
-};
+pub use crate::classify::filter::{eval_filter, CategoryContext, Filter, MinzoomCase};
 pub use crate::classify::loader::{load_categories_dir, load_topic_categories, load_shared_macros};
 
 use crate::classify::decision_tree::{self, DecisionTree};
@@ -21,9 +19,6 @@ pub struct CategoryDef {
     pub id: String,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
-    /// Per-category minzoom override. Falls back to the topic-level default when absent.
-    #[serde(default)]
-    pub minzoom: Option<MinzoomRule>,
     /// Per-category deriver overrides: re-bind a different deriver to an output (replacing the
     /// topic default for that output). E.g. surface/smoothness sourced from the parent highway.
     #[serde(default)]

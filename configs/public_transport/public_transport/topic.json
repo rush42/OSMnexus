@@ -108,5 +108,7 @@
       "name": "yes_flag"
     }
   ],
-  "minzoom": 0
+  "consts": {
+    "minzoom": 0
+  }
 }

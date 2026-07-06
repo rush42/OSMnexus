@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use crate::classify::categories::{Filter, MinzoomRule};
+use crate::classify::categories::Filter;
 use crate::classify::sanitize::StrOrVec;
 use crate::engine::extract::{Producer, TagSet};
 
@@ -26,9 +26,6 @@ pub struct TopicSpec {
     /// Uses the same Filter JSON syntax as category conditions.
     #[serde(default)]
     pub exclude_condition: Option<Filter>,
-    /// Topic-level default minzoom rule, used for any category without its own `minzoom`.
-    #[serde(default)]
-    pub minzoom: Option<MinzoomRule>,
     /// Topic-level default constants seeded into `derived` (lowest priority — any sanitizer/
     /// deriver producing the same key overrides them). Categories override per-key via their own
     /// `consts`.

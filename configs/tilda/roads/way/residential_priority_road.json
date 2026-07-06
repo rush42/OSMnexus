@@ -1,5 +1,4 @@
 {
-  "minzoom": 11,
   "condition": {
     "and": [
       {
@@ -17,5 +16,8 @@
   },
   "excludes": [
     "bicycle_road"
-  ]
+  ],
+  "consts": {
+    "minzoom": 11
+  }
 }
