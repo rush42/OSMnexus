@@ -48,9 +48,9 @@ pub struct Config {
     pub truncate: bool,
 
     /// Size of the rayon thread pool used for the CPU-bound PBF decode/stream passes.
-    /// `0` (default) uses rayon's default = the number of logical CPUs. Set to `1` for a fully
-    /// serial run, or a lower number to leave cores free for the rest of the system.
-    #[arg(long, default_value_t = 0)]
+    /// Defaults to `1` (fully serial) so an unqualified run never saturates the machine; pass a
+    /// higher number to parallelize, or `0` to use rayon's default = all logical CPUs.
+    #[arg(long, default_value_t = 1)]
     pub threads: usize,
 
     /// Geometry table variant(s) to emit: `ways` (whole ways, default), `intersections`
