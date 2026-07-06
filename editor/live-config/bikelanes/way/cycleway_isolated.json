@@ -1,0 +1,36 @@
+{
+  "condition": {
+    "and": [
+      {
+        "macro": "is_cycleway_separated_base"
+      },
+      {
+        "macro": "sidepath_isolated"
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "cyclewayLink",
+    "cyclewayOnHighwayBetweenLanes",
+    "cyclewayOnHighwayProtected",
+    "data_no",
+    "footAndCyclewaySegregated_isolated",
+    "footAndCyclewayShared_isolated",
+    "not_expected",
+    "pedestrianAreaBicycleYes",
+    "separate_geometry",
+    "sharedBusLaneBikeWithBus",
+    "sharedBusLaneBusWithBike",
+    "sharedMotorVehicleLane"
+  ],
+  "consts": {
+    "oneway": {
+      "value": "assumed_no",
+      "consts": {
+        "confidence": "low"
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "condition": {
+    "tag": "highway",
+    "eq": "service"
+  },
+  "excludes": [
+    "bicycle_road",
+    "service_alley",
+    "service_driveway",
+    "service_emergency_access",
+    "service_parking_aisle",
+    "service_road"
+  ]
+}

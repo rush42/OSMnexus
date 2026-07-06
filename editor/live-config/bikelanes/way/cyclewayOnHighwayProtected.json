@@ -1,0 +1,56 @@
+{
+  "parking_inference": "directional",
+  "condition": {
+    "and": [
+      {
+        "not": {
+          "macro": "is_crossing_pattern"
+        }
+      },
+      {
+        "macro": "is_sidepath"
+      },
+      {
+        "not": {
+          "tag": "lane",
+          "eq": "advisory"
+        }
+      },
+      {
+        "not": {
+          "tag": "cycleway",
+          "in": [
+            "share_busway",
+            "opposite_share_busway"
+          ]
+        }
+      },
+      {
+        "macro": "is_protected_bikelane_separation"
+      }
+    ]
+  },
+  "excludes": [
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ],
+  "derivers": [
+    {
+      "deriver": "surface_from_parent",
+      "output": "surface"
+    },
+    {
+      "deriver": "smoothness_from_parent",
+      "output": "smoothness"
+    }
+  ],
+  "consts": {
+    "oneway": {
+      "value": "implicit_yes",
+      "consts": {
+        "confidence": "medium"
+      }
+    }
+  }
+}

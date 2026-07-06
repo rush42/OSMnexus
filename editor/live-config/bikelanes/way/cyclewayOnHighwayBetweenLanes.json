@@ -1,0 +1,53 @@
+{
+  "parking_inference": "directional",
+  "condition": {
+    "and": [
+      {
+        "side": "self"
+      },
+      {
+        "or": [
+          {
+            "tag": "cycleway:lanes",
+            "contains": "|lane|"
+          },
+          {
+            "tag": "bicycle:lanes",
+            "contains": "|designated|"
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "crossing",
+    "cyclewayLink",
+    "cyclewayOnHighwayProtected",
+    "data_no",
+    "pedestrianAreaBicycleYes",
+    "separate_geometry",
+    "sharedBusLaneBikeWithBus",
+    "sharedBusLaneBusWithBike",
+    "sharedMotorVehicleLane"
+  ],
+  "derivers": [
+    {
+      "deriver": "surface_from_parent",
+      "output": "surface"
+    },
+    {
+      "deriver": "smoothness_from_parent",
+      "output": "smoothness"
+    }
+  ],
+  "consts": {
+    "oneway": {
+      "value": "implicit_yes",
+      "consts": {
+        "confidence": "high"
+      }
+    }
+  }
+}

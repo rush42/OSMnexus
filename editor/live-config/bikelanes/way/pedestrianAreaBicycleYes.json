@@ -1,0 +1,34 @@
+{
+  "condition": {
+    "and": [
+      {
+        "tag": "highway",
+        "eq": "pedestrian"
+      },
+      {
+        "tag": "bicycle",
+        "in": [
+          "yes",
+          "designated"
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "crossing",
+    "cyclewayOnHighwayProtected",
+    "data_no",
+    "not_expected",
+    "separate_geometry"
+  ],
+  "consts": {
+    "oneway": {
+      "value": "assumed_no",
+      "consts": {
+        "confidence": "high"
+      }
+    }
+  }
+}

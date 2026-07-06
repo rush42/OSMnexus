@@ -1,0 +1,29 @@
+{
+  "temporary": { "mapping": { "yes": "temporary" }, "on_miss": "drop" },
+  "yes_flag": { "mapping": { "yes": true }, "on_miss": "drop" },
+  "traffic_sign": [
+    { "drop": [""] },
+    { "cases": { "none": ["no", "none"] }, "on_miss": "keep" },
+    { "replace": [
+        { "from": ", ", "to": "," },
+        { "from": "; ", "to": ";" },
+        { "from": "DE: ", "to": "DE:",  "at": "prefix" },
+        { "from": "DE.",  "to": "DE:",  "at": "prefix" },
+        { "from": "D:",   "to": "DE:",  "at": "prefix" },
+        { "from": "D.",   "to": "DE:",  "at": "prefix" },
+        { "from": "de:",  "to": "DE:",  "at": "prefix" },
+        { "from": "DE1",  "to": "DE:1", "at": "prefix" },
+        { "from": "DE2",  "to": "DE:2", "at": "prefix" },
+        { "from": "0", "to": "DE:0", "at": "prefix" },
+        { "from": "1", "to": "DE:1", "at": "prefix" },
+        { "from": "2", "to": "DE:2", "at": "prefix" },
+        { "from": "3", "to": "DE:3", "at": "prefix" },
+        { "from": "4", "to": "DE:4", "at": "prefix" },
+        { "from": "5", "to": "DE:5", "at": "prefix" },
+        { "from": "6", "to": "DE:6", "at": "prefix" },
+        { "from": "7", "to": "DE:7", "at": "prefix" },
+        { "from": "8", "to": "DE:8", "at": "prefix" },
+        { "from": "9", "to": "DE:9", "at": "prefix" }
+    ] }
+  ]
+}

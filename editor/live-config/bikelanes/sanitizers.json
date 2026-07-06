@@ -1,0 +1,248 @@
+{
+  "mtb_scale": [
+    { "replace": [ { "from": "+", "to": "" }, { "from": "-", "to": "" }, { "from": " ", "to": "" } ] }
+  ],
+  "marking": {
+    "filter": [
+      "solid_line",
+      "dashed_line",
+      "double_solid_line",
+      "barred_area",
+      "pictogram",
+      "surface"
+    ]
+  },
+  "separation": [
+    {
+      "cases": {
+        "bump": ["separation_kerb", "lane_separator"],
+        "no": ["surface"],
+        "tree_row": ["tree_row;kerb", "kerb;tree_row", "tree_row;kerb;parking_lane", "grass_verge;tree_row"],
+        "kerb": ["kerb;greenery"],
+        "parking_lane": ["parking_lane;kerb", "solid_line;parking_lane"]
+      },
+      "on_miss": "keep"
+    },
+    {
+      "filter": ["no", "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter", "kerb",
+                 "fence", "jersey_barrier", "guard_rail", "structure", "ditch", "greenery", "hedge",
+                 "tree_row", "cone", "kerb;parking_lane", "kerb;bollard", "yes"]
+    }
+  ],
+  "traffic_mode": [
+    {
+      "cases": { "foot": "foot;bicycle", "motor_vehicle": "motorized", "no": "none" },
+      "on_miss": "keep"
+    },
+    {
+      "filter": ["no", "motor_vehicle", "parking", "psv", "bicycle", "foot"]
+    }
+  ],
+  "parking": {
+    "cases": { "parking": ["yes", "lane", "street_side", "on_kerb", "half_on_kerb", "shoulder", "separate"] },
+    "on_miss": "drop"
+  },
+  "buffer": [
+    { "cases": { "0": ["no", "none"] }, "on_miss": "keep" },
+    "parse_length"
+  ],
+  "surface_color": {
+    "cases": {
+      "no": [
+        "none",
+        "grey",
+        "gray",
+        "silver",
+        "dimgray",
+        "#888888",
+        "no"
+      ],
+      "red": [
+        "#b5565a",
+        "orange",
+        "red"
+      ],
+      "red;green": [
+        "green;red",
+        "red;green"
+      ],
+      "green": "green"
+    },
+    "on_miss": "drop"
+  },
+  "surface": {
+    "cases": {
+      "ground": [
+        "earth",
+        "mud",
+        "clay",
+        "dirt",
+        "dirt/sand",
+        "ground"
+      ],
+      "large_sett": [
+        "cobblestone",
+        "unhewn_cobblestone",
+        "cobblestone:flattened"
+      ],
+      "stone": [
+        "rock",
+        "stone:plates",
+        "stone"
+      ],
+      "paving_stones": [
+        "paving_stones:20",
+        "paving_stones:30",
+        "paving_stones"
+      ],
+      "rubber": [
+        "tartan",
+        "rubber"
+      ],
+      "asphalt": "asphalt",
+      "paved": "paved",
+      "unpaved": "unpaved",
+      "concrete": "concrete",
+      "concrete:plates": "concrete:plates",
+      "concrete:lanes": "concrete:lanes",
+      "paving_stones:lanes": "paving_stones:lanes",
+      "sett": "sett",
+      "bricks": "bricks",
+      "grass": "grass",
+      "sand": "sand",
+      "compacted": "compacted",
+      "fine_gravel": "fine_gravel",
+      "gravel": "gravel",
+      "pebblestone": "pebblestone",
+      "wood": "wood",
+      "woodchips": "woodchips",
+      "metal": "metal",
+      "metal_grid": "metal_grid",
+      "plastic": "plastic",
+      "grass_paver": "grass_paver"
+    },
+    "on_miss": "drop"
+  },
+  "smoothness_direct": {
+    "filter": [
+      "excellent",
+      "good",
+      "intermediate",
+      "bad",
+      "very_bad"
+    ]
+  },
+  "smoothness_norm": {
+    "mapping": {
+      "very_good": "excellent",
+      "impassable": "very_bad",
+      "horrible": "very_bad",
+      "very_horrible": "very_bad"
+    },
+    "on_miss": "drop"
+  },
+  "surface_to_smoothness": {
+    "cases": {
+      "bad": [
+        "cobblestone:flattened",
+        "brick",
+        "dirt",
+        "earth",
+        "grass_paver",
+        "grass",
+        "gravel",
+        "gravel:lanes",
+        "ground",
+        "metal_grid",
+        "sett",
+        "stepping_stones",
+        "stone",
+        "unpaved",
+        "cobblestone;ground",
+        "cobblestone;asphalt",
+        "compacted;paving_s",
+        "dirt;grass",
+        "3",
+        "grass;gravel",
+        "ground;grass",
+        "grass;ground",
+        "gravel:tracks",
+        "gravel;grass",
+        "fine_gravel;grass",
+        "fine_gravel;ground",
+        "gravel;ground",
+        "gravel; grass",
+        "clay",
+        "paving_s;sett",
+        "paving_stones;sett",
+        "sett;paving_s",
+        "sett;paving_stones;cobblestone:flattened",
+        "sett;paving_stones",
+        "grass_unpaved",
+        "grund",
+        "tiles"
+      ],
+      "intermediate": [
+        "concrete:lanes",
+        "concrete:plates",
+        "stone:plates",
+        "compacted",
+        "concrete",
+        "fine_gravel",
+        "granite",
+        "paved",
+        "paving_stones",
+        "wood",
+        ":plates",
+        "asphalt;compacted",
+        "asphalt;paving_stones",
+        "sandstone",
+        "asphalt:lanes",
+        "compacted;paving_stones",
+        "paving_stones;asphalt",
+        "paving_stones:30",
+        "macadam",
+        "paving_stonees"
+      ],
+      "good": [
+        "asphalt",
+        "metal",
+        "rubber",
+        "tartan"
+      ],
+      "very_bad": [
+        "cobblestone",
+        "mud",
+        "pebblestone",
+        "rock",
+        "sand",
+        "unhewn_cobblestone",
+        "woodchips",
+        "asphalt|sett",
+        "dirt/sand",
+        "dirt;sand"
+      ]
+    },
+    "on_miss": "drop"
+  },
+  "tracktype_to_smoothness": {
+    "cases": {
+      "good": "grade1",
+      "intermediate": "grade2",
+      "bad": [
+        "grade3",
+        "grade4"
+      ],
+      "very_bad": "grade5"
+    },
+    "on_miss": "drop"
+  },
+  "mtb_scale_to_smoothness": {
+    "mapping": {
+      "0": "bad",
+      "0+": "bad",
+      "0-": "bad"
+    },
+    "on_miss": "very_bad"
+  }
+}

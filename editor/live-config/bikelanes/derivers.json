@@ -1,0 +1,57 @@
+{
+  "oneway": {
+    "rules": [
+      { "when": { "tag": "oneway:bicycle", "eq": "yes" }, "value": "yes" },
+      { "when": { "and": [ { "tag": "oneway:bicycle", "eq": "no" }, { "tag": "oneway", "eq": "yes" } ] }, "value": "car_not_bike" },
+      { "when": { "tag": "oneway:bicycle", "eq": "no" }, "value": "no" },
+      { "when": { "tag": "oneway", "in": ["yes", "no"] }, "value": { "tag": "oneway" } },
+      { "when": { "tag": "highway", "in": ["service", "track"] }, "value": "assumed_no" }
+    ]
+  },
+  "road": { "shared": "road", "from": "parent_or_obj" },
+  "traffic_mode_left":  { "derive": "traffic_mode", "out_side": "left" },
+  "traffic_mode_right": { "derive": "traffic_mode", "out_side": "right" },
+  "lifecycle": {
+    "fallback": [
+      { "key": "temporary", "sanitize": "temporary" },
+      { "key": "lifecycle" },
+      { "key": "lifecycle", "from": "parent" }
+    ]
+  },
+  "surface": {
+    "fallback": [
+      { "rules": [
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+        ], "consts": { "source": "tag", "confidence": "high" } },
+      { "key": "surface", "sanitize": "surface", "consts": { "source": "tag", "confidence": "high" } }
+    ]
+  },
+  "surface_from_parent": {
+    "fallback": [
+      { "rules": [
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+        ], "consts": { "source": "tag", "confidence": "high" } },
+      { "key": "surface", "sanitize": "surface", "consts": { "source": "tag", "confidence": "high" } },
+      { "rules": [
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+        ], "from": "parent", "consts": { "source": "parent_highway_tag", "confidence": "high" } },
+      { "key": "surface", "sanitize": "surface", "from": "parent", "consts": { "source": "parent_highway_tag", "confidence": "high" } }
+    ]
+  },
+  "smoothness": {
+    "fallback": [
+      { "key": "smoothness", "sanitize": "smoothness_direct", "consts": { "source": "tag",            "confidence": "high" } },
+      { "key": "smoothness", "sanitize": "smoothness_norm",   "consts": { "source": "tag_normalized", "confidence": "high" } },
+      { "key": "surface",    "sanitize": "surface_to_smoothness",   "consts": { "source": "surface_to_smoothness",   "confidence": "medium" } },
+      { "key": "tracktype",  "sanitize": "tracktype_to_smoothness", "consts": { "source": "tracktype_to_smoothness", "confidence": "medium" } },
+      { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness", "consts": { "source": "mtb:scale_to_smoothness", "confidence": "medium" } }
+    ]
+  },
+  "smoothness_from_parent": { "derive": "smoothness_parent" }
+}

@@ -1,0 +1,9 @@
+{
+  "condition": {
+    "tag": "highway",
+    "eq": "steps"
+  },
+  "excludes": [
+    "bicycle_road"
+  ]
+}

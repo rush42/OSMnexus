@@ -1,0 +1,9 @@
+{
+  "table": "bikelanes_simple",
+  "osm_fields": [
+    { "output": "highway", "source": { "key": "highway" } },
+    { "output": "cycleway", "source": { "key": "cycleway" } },
+    { "output": "bicycle", "source": { "key": "bicycle" } },
+    { "output": "name", "source": { "key": "name" } }
+  ]
+}

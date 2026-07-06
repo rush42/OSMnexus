@@ -1,0 +1,56 @@
+{
+  "parking_inference": "directional",
+  "condition": {
+    "and": [
+      {
+        "macro": "is_advisory_or_exclusive"
+      },
+      {
+        "tag": "lane",
+        "eq": "exclusive"
+      }
+    ]
+  },
+  "excludes": [
+    "bicycleRoad",
+    "bicycleRoad_vehicleDestination",
+    "crossing",
+    "cyclewayLink",
+    "cyclewayOnHighwayBetweenLanes",
+    "cyclewayOnHighwayProtected",
+    "cycleway_adjoining",
+    "cycleway_adjoiningOrIsolated",
+    "cycleway_isolated",
+    "data_no",
+    "footAndCyclewaySegregated_adjoining",
+    "footAndCyclewaySegregated_adjoiningOrIsolated",
+    "footAndCyclewaySegregated_isolated",
+    "footAndCyclewayShared_adjoining",
+    "footAndCyclewayShared_adjoiningOrIsolated",
+    "footAndCyclewayShared_isolated",
+    "not_expected",
+    "pedestrianAreaBicycleYes",
+    "separate_geometry",
+    "sharedBusLaneBikeWithBus",
+    "sharedBusLaneBusWithBike",
+    "sharedMotorVehicleLane"
+  ],
+  "derivers": [
+    {
+      "deriver": "surface_from_parent",
+      "output": "surface"
+    },
+    {
+      "deriver": "smoothness_from_parent",
+      "output": "smoothness"
+    }
+  ],
+  "consts": {
+    "oneway": {
+      "value": "implicit_yes",
+      "consts": {
+        "confidence": "high"
+      }
+    }
+  }
+}

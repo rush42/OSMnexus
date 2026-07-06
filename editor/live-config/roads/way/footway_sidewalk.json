@@ -1,0 +1,49 @@
+{
+  "condition": {
+    "or": [
+      {
+        "and": [
+          {
+            "tag": "highway",
+            "eq": "footway"
+          },
+          {
+            "tag": "footway",
+            "eq": "sidewalk"
+          }
+        ]
+      },
+      {
+        "and": [
+          {
+            "tag": "highway",
+            "eq": "path"
+          },
+          {
+            "tag": "is_sidepath",
+            "eq": "yes"
+          }
+        ]
+      },
+      {
+        "and": [
+          {
+            "tag": "highway",
+            "eq": "path"
+          },
+          {
+            "tag": "path",
+            "in": [
+              "sidewalk",
+              "sidepath"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycle_road",
+    "footway_crossing"
+  ]
+}

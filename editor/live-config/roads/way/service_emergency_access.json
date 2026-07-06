@@ -1,0 +1,36 @@
+{
+  "condition": {
+    "and": [
+      {
+        "tag": "highway",
+        "eq": "service"
+      },
+      {
+        "or": [
+          {
+            "tag": "service",
+            "eq": "emergency_access"
+          },
+          {
+            "and": [
+              {
+                "tag": "service",
+                "eq": "driveway"
+              },
+              {
+                "tag": "emergency",
+                "in": [
+                  "yes",
+                  "designated"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycle_road"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "condition": {
+    "and": [
+      {
+        "tag": "highway",
+        "eq": "cycleway"
+      },
+      {
+        "tag": "cycleway",
+        "in": [
+          "crossing",
+          "traffic_island"
+        ]
+      }
+    ]
+  },
+  "excludes": [
+    "bicycle_road"
+  ]
+}

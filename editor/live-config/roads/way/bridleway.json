@@ -1,0 +1,22 @@
+{
+  "condition": {
+    "tag": "highway",
+    "eq": "bridleway"
+  },
+  "excludes": [
+    "bicycle_road",
+    "cycleway_crossing",
+    "footway_crossing",
+    "footway_cycleway_crossing",
+    "footway_sidewalk",
+    "footway_steps",
+    "residential_priority_road",
+    "service_alley",
+    "service_driveway",
+    "service_emergency_access",
+    "service_parking_aisle",
+    "service_road",
+    "service_uncategorized",
+    "unspecified_road"
+  ]
+}

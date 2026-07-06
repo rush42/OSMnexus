@@ -1,0 +1,26 @@
+{
+  "condition": {
+    "and": [
+      {
+        "tag": "highway",
+        "eq": "cycleway"
+      },
+      {
+        "tag": "cycleway",
+        "eq": "link"
+      }
+    ]
+  },
+  "excludes": [
+    "cyclewayOnHighwayProtected",
+    "not_expected"
+  ],
+  "consts": {
+    "oneway": {
+      "value": "implicit_yes",
+      "consts": {
+        "confidence": "low"
+      }
+    }
+  }
+}

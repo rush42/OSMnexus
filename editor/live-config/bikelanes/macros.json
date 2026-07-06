@@ -1,0 +1,463 @@
+{
+  "is_protected_bikelane_separation": {
+    "or": [
+      { "and": [
+        { "first_tag": ["separation:left", "separation:both", "separation"], "sanitize": "separation", "in_set": "physical_separation" },
+        { "not": { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["motor_vehicle"] } },
+        { "tag": "segregated", "exists": false }
+      ] },
+      { "and": [
+        { "first_tag": ["traffic_mode:left", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["parking"] },
+        { "tag": "segregated", "exists": false }
+      ] },
+      { "and": [
+        { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["motor_vehicle"] },
+        { "first_tag": ["separation:right", "separation:both"], "sanitize": "separation", "in_set": "physical_separation" }
+      ] }
+    ]
+  },
+  "is_foot_and_cycleway_segregated_edge_case": {
+    "and": [
+      { "tag": "highway", "eq": "cycleway" },
+      { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["foot"] },
+      { "not": { "first_tag": ["separation:right", "separation:both"], "sanitize": "separation", "in_set": "blocking_separation" } }
+    ]
+  },
+  "is_advisory_or_exclusive": {
+    "and": [
+      { "tag": "highway", "eq": "cycleway" },
+      { "tag": "cycleway", "in": ["lane", "opposite_lane"] },
+      { "not": { "and": [
+        { "macro": "has_between_lanes_conditions" },
+        { "or": [
+          { "and": [ { "tag": "lanes", "contains": "|lane|" }, { "not": { "tag": "lanes", "ends_with": "|lane" } } ] },
+          { "and": [ { "parent_tag": "bicycle:lanes", "contains": "|designated|" }, { "not": { "parent_tag": "bicycle:lanes", "ends_with": "|designated" } } ] }
+        ] }
+      ] } }
+    ]
+  },
+  "data_no": {
+    "tag": "cycleway",
+    "in": ["no", "none"]
+  },
+  "separate_geometry": {
+    "tag": "cycleway",
+    "eq": "separate"
+  },
+  "not_expected": {
+    "and": [
+      { "prefix": "cycleway" },
+      { "infix": "" },
+      { "side": "left" },
+      { "parent_tag": "oneway", "eq": "yes" },
+      { "not": { "parent_tag": "oneway:bicycle", "eq": "no" } }
+    ]
+  },
+  "is_crossing_pattern": {
+    "or": [
+      {
+        "and": [
+          { "tag": "highway", "eq": "cycleway" },
+          { "tag": "cycleway", "eq": "lane" },
+          { "tag": "lane", "eq": "crossing" }
+        ]
+      },
+      {
+        "and": [
+          { "tag": "highway", "eq": "cycleway" },
+          { "tag": "cycleway", "in": ["crossing", "traffic_island"] }
+        ]
+      },
+      {
+        "and": [
+          { "tag": "highway", "eq": "path" },
+          { "tag": "path", "in": ["crossing", "traffic_island"] },
+          { "tag": "bicycle", "in": ["yes", "designated"] }
+        ]
+      },
+      {
+        "and": [
+          { "tag": "highway", "eq": "footway" },
+          { "tag": "footway", "in": ["crossing", "traffic_island"] },
+          { "tag": "bicycle", "in": ["yes", "designated"] }
+        ]
+      }
+    ]
+  },
+  "is_sidepath": {
+    "and": [
+      { "not": { "tag": "is_sidepath", "eq": "no" } },
+      {
+        "or": [
+          { "tag": "is_sidepath", "eq": "yes" },
+          { "has_parent": true },
+          { "tag": "footway", "eq": "sidewalk" },
+          { "tag": "path", "eq": "sidewalk" },
+          { "tag": "path", "eq": "sidepath" },
+          { "tag": "cycleway", "eq": "sidepath" },
+          { "tag": "steps", "eq": "sidewalk" }
+        ]
+      }
+    ]
+  },
+  "is_footway_bicycle_yes_base": {
+    "and": [
+      { "not": { "macro": "is_crossing_pattern" } },
+      { "tag": "highway", "in": ["footway", "path"] },
+      {
+        "or": [
+          { "tag": "bicycle", "eq": "yes" },
+          { "tag": "traffic_sign", "contains": "1022-10" }
+        ]
+      },
+      {
+        "or": [
+          { "tag": "mtb:scale", "exists": false },
+          {
+            "and": [
+              { "num": "mtb:scale", "sanitize": "mtb_scale", "lte": 1.0 },
+              {
+                "or": [
+                  { "tag": "traffic_sign", "exists": true },
+                  { "tag": "is_sidepath", "exists": true }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "has_between_lanes_conditions": {
+    "and": [
+      { "not": { "side": "self" } },
+      {
+        "or": [
+          { "tag": "lanes", "contains": "|lane|" },
+          { "parent_tag": "bicycle:lanes", "contains": "|designated|" }
+        ]
+      }
+    ]
+  },
+  "is_bicycle_road": {
+    "or": [
+      {
+        "tag": "bicycle_road",
+        "eq": "yes"
+      },
+      {
+        "tag": "traffic_sign",
+        "starts_with": "DE:244"
+      }
+    ]
+  },
+  "sidepath_isolated": {
+    "or": [
+      {
+        "tag": "is_sidepath",
+        "eq": "no"
+      },
+      {
+        "tag": "highway",
+        "in": [
+          "service",
+          "track"
+        ]
+      }
+    ]
+  },
+  "sidepath_adjoining": {
+    "and": [
+      {
+        "not": {
+          "macro": "sidepath_isolated"
+        }
+      },
+      {
+        "macro": "is_sidepath"
+      }
+    ]
+  },
+  "sidepath_unknown": {
+    "and": [
+      {
+        "not": {
+          "macro": "sidepath_isolated"
+        }
+      },
+      {
+        "not": {
+          "macro": "is_sidepath"
+        }
+      }
+    ]
+  },
+  "is_foot_and_cycleway_shared_base": {
+    "and": [
+      {
+        "not": {
+          "macro": "is_crossing_pattern"
+        }
+      },
+      {
+        "or": [
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "eq": "cycleway"
+              },
+              {
+                "tag": "cycleway",
+                "eq": "track"
+              },
+              {
+                "or": [
+                  {
+                    "tag": "segregated",
+                    "eq": "no"
+                  },
+                  {
+                    "tag": "traffic_sign",
+                    "contains": "240"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "in": [
+                  "cycleway",
+                  "path",
+                  "footway",
+                  "service",
+                  "track"
+                ]
+              },
+              {
+                "or": [
+                  {
+                    "and": [
+                      {
+                        "tag": "segregated",
+                        "eq": "no"
+                      },
+                      {
+                        "or": [
+                          {
+                            "and": [
+                              {
+                                "tag": "bicycle",
+                                "eq": "designated"
+                              },
+                              {
+                                "tag": "foot",
+                                "eq": "designated"
+                              }
+                            ]
+                          },
+                          {
+                            "and": [
+                              {
+                                "tag": "bicycle",
+                                "eq": "yes"
+                              },
+                              {
+                                "tag": "foot",
+                                "eq": "yes"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "tag": "traffic_sign",
+                    "contains": "240"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "is_foot_and_cycleway_segregated_base": {
+    "and": [
+      {
+        "not": {
+          "macro": "is_crossing_pattern"
+        }
+      },
+      {
+        "or": [
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "eq": "cycleway"
+              },
+              {
+                "tag": "cycleway",
+                "eq": "track"
+              },
+              {
+                "or": [
+                  {
+                    "tag": "segregated",
+                    "eq": "yes"
+                  },
+                  {
+                    "tag": "traffic_sign",
+                    "contains": "241"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "in": [
+                  "cycleway",
+                  "path",
+                  "footway"
+                ]
+              },
+              {
+                "or": [
+                  {
+                    "and": [
+                      {
+                        "tag": "segregated",
+                        "eq": "yes"
+                      },
+                      {
+                        "or": [
+                          {
+                            "and": [
+                              {
+                                "tag": "bicycle",
+                                "eq": "designated"
+                              },
+                              {
+                                "tag": "foot",
+                                "eq": "designated"
+                              }
+                            ]
+                          },
+                          {
+                            "and": [
+                              {
+                                "tag": "bicycle",
+                                "eq": "yes"
+                              },
+                              {
+                                "tag": "foot",
+                                "eq": "yes"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "and": [
+                      {
+                        "tag": "traffic_sign",
+                        "contains": "241"
+                      },
+                      {
+                        "not": {
+                          "tag": "highway",
+                          "eq": "footway"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "macro": "is_foot_and_cycleway_segregated_edge_case"
+          }
+        ]
+      }
+    ]
+  },
+  "is_cycleway_separated_base": {
+    "and": [
+      {
+        "not": {
+          "tag": "cycleway",
+          "eq": "lane"
+        }
+      },
+      {
+        "not": {
+          "macro": "is_crossing_pattern"
+        }
+      },
+      {
+        "or": [
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "eq": "cycleway"
+              },
+              {
+                "tag": "cycleway",
+                "in": [
+                  "track",
+                  "opposite_track"
+                ]
+              }
+            ]
+          },
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "eq": "cycleway"
+              },
+              {
+                "tag": "is_sidepath",
+                "exists": true
+              }
+            ]
+          },
+          {
+            "and": [
+              {
+                "tag": "highway",
+                "in": [
+                  "living_street",
+                  "pedestrian",
+                  "service",
+                  "track",
+                  "bridleway",
+                  "path",
+                  "footway",
+                  "cycleway"
+                ]
+              },
+              {
+                "tag": "traffic_sign",
+                "contains": "237"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "minzoom": 11,
+  "condition": {
+    "and": [
+      {
+        "tag": "highway",
+        "eq": "service"
+      },
+      {
+        "tag": "service",
+        "eq": "alley"
+      }
+    ]
+  },
+  "excludes": [
+    "bicycle_road"
+  ]
+}
