@@ -7,6 +7,32 @@ use tokio_postgres::Client;
 /// attribute layers over it.
 pub const GEOM_TABLE: &str = "geometries";
 
+/// Relation → member-way link table. Relations have no materialized geometry; a relation's tag row
+/// joins here to reach its member ways' rows in the shared `GEOM_TABLE`.
+pub const MEMBER_TABLE: &str = "relation_members";
+
+fn create_member_table_sql() -> String {
+    format!(r#"
+CREATE TABLE IF NOT EXISTS {MEMBER_TABLE} (
+  relation_osm_id bigint,
+  way_osm_id      bigint
+)"#)
+}
+
+fn drop_member_indexes_sql() -> String {
+    format!(
+        "DROP INDEX IF EXISTS {MEMBER_TABLE}_relation_idx;\n\
+         DROP INDEX IF EXISTS {MEMBER_TABLE}_way_idx"
+    )
+}
+
+fn member_index_stmts() -> [String; 2] {
+    [
+        format!("CREATE INDEX IF NOT EXISTS {MEMBER_TABLE}_relation_idx ON {MEMBER_TABLE} (relation_osm_id)"),
+        format!("CREATE INDEX IF NOT EXISTS {MEMBER_TABLE}_way_idx ON {MEMBER_TABLE} (way_osm_id)"),
+    ]
+}
+
 /// Tag table: one row per (way, side, prefix). No geometry — that lives in the shared `GEOM_TABLE`,
 /// joined at tile-materialization time on `osm_id`.
 fn create_tag_table_sql(table: &str) -> String {
@@ -77,12 +103,14 @@ pub async fn create_tables(client: &Client, tables: &[&str]) -> anyhow::Result<(
         client.batch_execute(&create_tag_table_sql(table)).await?;
     }
     client.batch_execute(&create_geom_table_sql()).await?;
+    client.batch_execute(&create_member_table_sql()).await?;
     Ok(())
 }
 
 pub async fn truncate_tables(client: &Client, tables: &[&str]) -> anyhow::Result<()> {
     let mut all: Vec<String> = tables.iter().map(|t| t.to_string()).collect();
     all.push(GEOM_TABLE.to_string());
+    all.push(MEMBER_TABLE.to_string());
     client.batch_execute(&format!("TRUNCATE TABLE {}", all.join(", "))).await?;
     Ok(())
 }
@@ -92,6 +120,7 @@ pub async fn drop_indexes(client: &Client, tables: &[&str]) -> anyhow::Result<()
         client.batch_execute(&drop_tag_indexes_sql(table)).await?;
     }
     client.batch_execute(&drop_geom_indexes_sql()).await?;
+    client.batch_execute(&drop_member_indexes_sql()).await?;
     Ok(())
 }
 
@@ -106,6 +135,7 @@ pub async fn create_indexes(pool: &Pool, tables: &[&str]) -> anyhow::Result<()> 
     // One build unit per tag table, plus the shared geom table.
     let mut units: Vec<Vec<String>> = tables.iter().map(|t| tag_index_stmts(t).to_vec()).collect();
     units.push(geom_index_stmts().to_vec());
+    units.push(member_index_stmts().to_vec());
 
     let handles: Vec<_> = units
         .into_iter()

@@ -1,4 +1,38 @@
-use serde::Deserialize;
+/// Which OSM primitive an element (and a topic's category set) is. A topic organizes its categories
+/// into per-kind subfolders (`topics/<t>/{node,way,relation}/`); each pass classifies one kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElementKind {
+    Node,
+    Way,
+    Relation,
+}
+
+impl ElementKind {
+    pub const ALL: [ElementKind; 3] = [ElementKind::Node, ElementKind::Way, ElementKind::Relation];
+
+    /// The `osm_type` column value: `N` / `W` / `R`.
+    pub fn osm_type(self) -> &'static str {
+        match self {
+            ElementKind::Node => "N",
+            ElementKind::Way => "W",
+            ElementKind::Relation => "R",
+        }
+    }
+
+    /// The `id` string prefix (`node` / `way` / `relation`), e.g. `way/123`.
+    pub fn id_prefix(self) -> &'static str {
+        match self {
+            ElementKind::Node => "node",
+            ElementKind::Way => "way",
+            ElementKind::Relation => "relation",
+        }
+    }
+
+    /// The category subfolder name under a topic dir.
+    pub fn subdir(self) -> &'static str {
+        self.id_prefix()
+    }
+}
 
 /// Way tags. FxHashMap (not the default SipHash) because categorize + extract do millions of
 /// `.get()` lookups and per-way/per-side-object clones of these maps — the hot path of Pass C.
@@ -34,31 +68,22 @@ pub struct WayMeta {
     pub changeset: Option<i64>,
 }
 
-/// A data-defined predicate over a way's tags, declared in each topic's `topic.json`
-/// (`"element_filter": { "tag": "highway" }` or `{ "tag": "railway", "in": ["rail", ...] }`).
-/// Presence-only when `any_of` is absent; otherwise the tag value must be in the list.
-/// There is no hardcoded tag logic in Rust — the reader keeps any way matching *any*
-/// topic's filter.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ElementFilter {
-    pub tag: String,
-    #[serde(default, rename = "in")]
-    pub any_of: Option<Vec<String>>,
+/// A relation's tags + metadata + member **way** ids, produced by the relations pass. Node/relation
+/// members are ignored — only way members are pulled into the graph. Classification is tag-only;
+/// the member ids feed the reader's relation-member keep set (member ways are kept even if their own
+/// tags match nothing) and the `relation_members` link output.
+pub struct RelData {
+    pub id: i64,
+    pub tags: RawTags,
+    pub member_ways: Vec<i64>,
+    pub meta: WayMeta,
 }
 
-impl ElementFilter {
-    /// The default filter, used when a topic declares none: presence of `highway`.
-    /// Keeps the existing three topics byte-identical without editing their JSON.
-    pub fn highway() -> Self {
-        ElementFilter { tag: "highway".to_owned(), any_of: None }
-    }
-
-    pub fn matches(&self, tags: &RawTags) -> bool {
-        match (tags.get(&self.tag), &self.any_of) {
-            (None, _) => false,
-            (Some(_), None) => true,
-            (Some(v), Some(allowed)) => allowed.iter().any(|a| a == v),
-        }
-    }
+/// A node's tags + metadata, produced by the nodes pass for nodes that are members of a kept way.
+/// Classification is tag-only; a selected node becomes a forced graph-vertex cut point.
+pub struct NodeData {
+    pub id: i64,
+    pub tags: RawTags,
+    pub meta: WayMeta,
 }
 

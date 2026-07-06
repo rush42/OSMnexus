@@ -6,7 +6,7 @@ use crate::classify::categories::{categorize, eval_filter, resolve_minzoom, Cate
 use crate::engine::extract::ExtractCtx;
 use crate::engine::topic::Field;
 use crate::engine::topic_runner::TopicRunner;
-use crate::osm::types::{OsmWay, RawTags};
+use crate::osm::types::{ElementKind, OsmWay, RawTags};
 use crate::output::{
     geometry::{haversine_length_m, to_ewkb},
     rows::{GeomRow, TopicRow},
@@ -56,12 +56,17 @@ fn const_entry(v: &Value) -> (&Value, Option<&Map<String, Value>>) {
 
 pub fn build_topic_rows(
     runner: &TopicRunner,
-    way_id: i64,
+    kind: ElementKind,
+    osm_id: i64,
     tags: RawTags,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
     let topic = &runner.spec;
-    let categories = &runner.categories;
+    // The category set for this element kind. Absent → the topic has no categories for this kind.
+    let categories = match runner.categories.get(&kind) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
 
     // Evaluate optional way-level exclude condition before any categorization.
     if let Some(cond) = &topic.exclude_condition {
@@ -70,8 +75,11 @@ pub fn build_topic_rows(
         }
     }
 
+    // Side-split (center-line) transforms are way-oriented; nodes/relations are never side-split.
+    let no_transforms = Vec::new();
+    let transformations = if kind == ElementKind::Way { &runner.transformations } else { &no_transforms };
     // Moves `tags` into the self object rather than cloning it (the common no-side-split case).
-    let transformed = get_transformed_objects(tags, &runner.transformations);
+    let transformed = get_transformed_objects(tags, transformations);
     let mut rows = Vec::new();
 
     for obj in &transformed {
@@ -182,16 +190,17 @@ pub fn build_topic_rows(
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time.
+        let prefix = kind.id_prefix();
         let id = match obj.side {
-            Side::Self_ => format!("way/{}", way_id),
-            Side::Left  => format!("way/{}/{}/left",  way_id, obj.prefix.unwrap_or("cycleway")),
-            Side::Right => format!("way/{}/{}/right", way_id, obj.prefix.unwrap_or("cycleway")),
+            Side::Self_ => format!("{}/{}", prefix, osm_id),
+            Side::Left  => format!("{}/{}/{}/left",  prefix, osm_id, obj.prefix.unwrap_or("cycleway")),
+            Side::Right => format!("{}/{}/{}/right", prefix, osm_id, obj.prefix.unwrap_or("cycleway")),
         };
         derived.insert("id".into(), Value::String(id.clone()));
 
         rows.push(TopicRow {
-            osm_id: way_id,
-            osm_type: "W",
+            osm_id,
+            osm_type: kind.osm_type(),
             id,
             osm,
             derived,

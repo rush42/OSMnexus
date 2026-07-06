@@ -9,8 +9,9 @@ use crate::engine::topic::DeriverBinding;
 pub use crate::classify::filter::{
     eval_filter, resolve_minzoom, CategoryContext, Filter, MinzoomCase, MinzoomRule,
 };
-pub use crate::classify::loader::{load_categories_from_dir, load_shared_macros};
+pub use crate::classify::loader::{load_categories_dir, load_topic_categories, load_shared_macros};
 
+use crate::classify::decision_tree::{self, DecisionTree};
 use crate::classify::filter::eval;
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -52,6 +53,10 @@ pub struct CategoriesFile {
     /// each node's condition is tried in order; the first match wins. Not part of the JSON.
     #[serde(skip)]
     pub order: Vec<OrderedNode>,
+    /// Discrimination net over `order`, compiled by `build_order` after the priority order is
+    /// known. Prunes `categorize`'s first-match walk to a small candidate set; identical results.
+    #[serde(skip)]
+    pub tree: DecisionTree,
 }
 
 /// One entry in the compiled priority order: try `condition`; on match, either select the
@@ -131,6 +136,7 @@ impl CategoriesFile {
             }
         }
         self.order = order;
+        self.tree = decision_tree::build(self);
         Ok(())
     }
 }
@@ -140,21 +146,41 @@ impl CategoriesFile {
 /// a `Skip` (disqualifier-macro) node means the object has no category. No `excludes` are
 /// evaluated at runtime; the ordering already encodes them (see `build_order`).
 pub fn categorize<'a>(ctx: &CategoryContext, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
-    for node in &cats.order {
-        match node {
-            OrderedNode::Category { idx } => {
-                let cat = &cats.categories[*idx];
-                if eval(&cat.condition, ctx, &cats.macros) {
-                    return Some(cat);
-                }
-            }
-            OrderedNode::Skip { condition } => {
-                if eval(condition, ctx, &cats.macros) {
-                    return None;
-                }
-            }
+    // The discrimination net prunes the priority list to a small, order-preserving candidate set;
+    // first-match `eval` over it is identical to the full walk (the tree only drops provably-false
+    // nodes — see `decision_tree`).
+    for &i in cats.tree.candidates(ctx) {
+        if let Some(hit) = eval_node(&cats.order[i], ctx, cats) {
+            return hit;
         }
     }
     None
+}
+
+/// Full first-match walk over the whole `order`, bypassing the tree. Kept as the reference
+/// implementation for the differential test (`categorize` must agree with it for every object).
+pub fn categorize_linear<'a>(ctx: &CategoryContext, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
+    for node in &cats.order {
+        if let Some(hit) = eval_node(node, ctx, cats) {
+            return hit;
+        }
+    }
+    None
+}
+
+/// Evaluate one order node against `ctx`. `Some(Some(cat))` = category matched (answer);
+/// `Some(None)` = disqualifier matched (no category); `None` = no match, continue.
+fn eval_node<'a>(
+    node: &OrderedNode,
+    ctx: &CategoryContext,
+    cats: &'a CategoriesFile,
+) -> Option<Option<&'a CategoryDef>> {
+    match node {
+        OrderedNode::Category { idx } => {
+            let cat = &cats.categories[*idx];
+            eval(&cat.condition, ctx, &cats.macros).then_some(Some(cat))
+        }
+        OrderedNode::Skip { condition } => eval(condition, ctx, &cats.macros).then_some(None),
+    }
 }
 

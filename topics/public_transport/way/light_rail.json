@@ -1,0 +1,6 @@
+{
+  "condition": {
+    "tag": "railway",
+    "eq": "light_rail"
+  }
+}

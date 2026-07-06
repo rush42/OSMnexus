@@ -1,0 +1,8 @@
+{
+  "condition": {
+    "and": [
+      { "tag": "type", "eq": "route" },
+      { "tag": "route", "in": ["tram", "subway", "light_rail"] }
+    ]
+  }
+}

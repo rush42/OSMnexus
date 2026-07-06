@@ -1,0 +1,8 @@
+{
+  "condition": {
+    "or": [
+      { "tag": "railway", "in": ["tram_stop", "stop"] },
+      { "tag": "public_transport", "eq": "stop_position" }
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use osm_pipeline::{config, db, engine, osm, output, processing};
 
@@ -10,13 +11,32 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use config::{Config, Output, Tiles};
-use db::{pool::build_pool, schema, schema::GEOM_TABLE};
+use db::{pool::build_pool, schema, schema::{GEOM_TABLE, MEMBER_TABLE}};
 use engine::topic_runner::TopicRunner;
-use osm::reader::stream_ways;
-use osm::types::{ElementFilter, OsmWay, WayData};
-use output::rows::{GeomRow, TopicRow, GEOM_COLUMNS, TAG_COLUMNS};
+use osm::reader::{stream_osm, Callbacks};
+use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};
+use output::rows::{GeomRow, MemberRow, TopicRow, GEOM_COLUMNS, MEMBER_COLUMNS, TAG_COLUMNS};
 use output::writers::{copy_writer, csv_writer};
-use processing::{classify_way, geom_rows_for};
+use processing::{classify_node, classify_relation, classify_way, geom_rows_for};
+
+/// Round-robin a batch of per-topic tag rows to each topic's `w` writers. Returns whether any topic
+/// produced rows (i.e. the element was "kept" by some topic).
+fn route_tag_rows(
+    rows: Vec<Vec<TopicRow>>,
+    senders: &[Vec<mpsc::Sender<Vec<TopicRow>>>],
+    rr: &[AtomicUsize],
+    w: usize,
+) -> bool {
+    let mut any = false;
+    for (i, r) in rows.into_iter().enumerate() {
+        if !r.is_empty() {
+            any = true;
+            let kk = rr[i].fetch_add(1, Ordering::Relaxed) % w;
+            let _ = senders[i][kk].blocking_send(r);
+        }
+    }
+    any
+}
 
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
 const WRITER_CHAN_CAP: usize = 256;
@@ -49,19 +69,18 @@ async fn main() -> anyhow::Result<()> {
         info!(
             "Loaded topic '{}' ({} categories, {} osm fields, {} sanitizers, {} derivers)",
             r.table(),
-            r.categories.categories.len(),
+            r.categories.values().map(|c| c.categories.len()).sum::<usize>(),
             r.spec.osm_fields.len(),
             r.sanitizer_fields.len(),
             r.topic_derivers.len()
         );
     }
 
-    // Each topic declares which ways it needs (data-defined `element_filter` in topic.json,
-    // defaulting to `highway`). The reader keeps any way matching any topic's filter.
-    let filters: Vec<ElementFilter> = runners
-        .iter()
-        .map(|r| r.spec.element_filter.clone().unwrap_or_else(ElementFilter::highway))
-        .collect();
+    // Which passes are active: gated by whether any topic declares node/relation categories
+    // (a `topics/<t>/{node,relation}/` subfolder). Selection is the decision-tree classifier itself
+    // — there is no coarse element filter; an element is kept iff some topic categorizes it.
+    let has_relations = runners.iter().any(|r| r.has_kind(ElementKind::Relation));
+    let has_nodes = runners.iter().any(|r| r.has_kind(ElementKind::Node));
 
     let n = tables.len();
 
@@ -80,8 +99,8 @@ async fn main() -> anyhow::Result<()> {
             schema::drop_indexes(&client_setup, &table_refs).await?;
             drop(client_setup);
             let k = cfg.db_writers.max(1);
-            // Pool must supply every writer connection at once: k per tag table + k for geom.
-            pool.resize((n + 1) * k + 2);
+            // Pool must supply every writer connection at once: k per tag table + k geom + k member.
+            pool.resize((n + 2) * k + 2);
             info!("Postgres output · {k} COPY connection(s) per table");
             (Some(pool), k)
         }
@@ -127,6 +146,17 @@ async fn main() -> anyhow::Result<()> {
         geom_handles.push(h);
         geom_senders.push(tx);
     }
+    let mut member_senders: Vec<mpsc::Sender<Vec<MemberRow>>> = Vec::with_capacity(w);
+    let mut member_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
+    for _ in 0..w {
+        let (tx, rx) = mpsc::channel::<Vec<MemberRow>>(WRITER_CHAN_CAP);
+        let h = match cfg.output {
+            Output::Pg => tokio::spawn(copy_writer::<MemberRow>(pool.clone().unwrap(), MEMBER_TABLE.to_owned(), MEMBER_COLUMNS, rx)),
+            Output::Csv => tokio::spawn(csv_writer::<MemberRow>(out_dir.join(format!("{MEMBER_TABLE}.csv")), MEMBER_COLUMNS, rx)),
+        };
+        member_handles.push(h);
+        member_senders.push(tx);
+    }
 
     // Producer: the reader decodes the PBF once and drives two callbacks. `classify` (Pass A) turns a
     // way's tags into per-topic tag rows, routed round-robin to each topic's tag writers; it returns
@@ -135,27 +165,71 @@ async fn main() -> anyhow::Result<()> {
     // (CPU-bound rayon work). Dropping the producer drops all senders, closing the writer channels.
     let pbf_file = cfg.pbf_file.clone();
     let split = cfg.split;
-    let tag_rr: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
-    let geom_rr = AtomicUsize::new(0);
+    // Shared, thread-safe state captured by the reader's callbacks (called from rayon workers).
+    let runners = Arc::new(runners);
+    let tag_senders = Arc::new(tag_senders);
+    let geom_senders = Arc::new(geom_senders);
+    let member_senders = Arc::new(member_senders);
+    let tag_rr: Arc<Vec<AtomicUsize>> = Arc::new((0..n).map(|_| AtomicUsize::new(0)).collect());
+    let geom_rr = Arc::new(AtomicUsize::new(0));
+    let member_rr = Arc::new(AtomicUsize::new(0));
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let classify = |wd: &WayData| -> Option<()> {
-            let out = classify_way(&runners, wd);
-            if out.mask == 0 {
-                return None;
+        // Ways pass: emit tag rows; keep the way if some topic categorized it OR it is a relation
+        // member (`in_keep`). Payload is `()` — geometry is topic-independent (one shared table).
+        let classify_way_cb = {
+            let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
+            move |wd: &WayData, in_keep: bool| -> Option<()> {
+                let out = classify_way(&runners, wd);
+                let kept_by_topic = route_tag_rows(out.topic_rows, &tag_senders, &tag_rr, w);
+                (kept_by_topic || in_keep).then_some(())
             }
-            for (i, rows) in out.topic_rows.into_iter().enumerate() {
-                if !rows.is_empty() {
-                    let kk = tag_rr[i].fetch_add(1, Ordering::Relaxed) % w;
-                    let _ = tag_senders[i][kk].blocking_send(rows);
+        };
+        // Relations pass: emit relation tag rows + `relation_members` links; kept iff some topic
+        // categorized the relation. Member ways of a kept relation join the graph keep set.
+        let classify_rel_cb = {
+            let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
+            let (member_senders, member_rr) = (member_senders.clone(), member_rr.clone());
+            move |rd: &RelData| -> bool {
+                let kept = route_tag_rows(classify_relation(&runners, rd), &tag_senders, &tag_rr, w);
+                if kept && !rd.member_ways.is_empty() {
+                    let links: Vec<MemberRow> = rd
+                        .member_ways
+                        .iter()
+                        .map(|&wid| MemberRow { relation_osm_id: rd.id, way_osm_id: wid })
+                        .collect();
+                    let kk = member_rr.fetch_add(1, Ordering::Relaxed) % w;
+                    let _ = member_senders[kk].blocking_send(links);
                 }
+                kept
             }
-            Some(())
         };
-        let build_geom = |way: &OsmWay, _kept: ()| {
-            let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
-            let _ = geom_senders[kk].blocking_send(geom_rows_for(way, split));
+        // Nodes pass: emit node tag rows; a node is "selected" (forced cut point) iff some topic
+        // categorized it.
+        let classify_node_cb = {
+            let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
+            move |nd: &NodeData| -> bool {
+                route_tag_rows(classify_node(&runners, nd), &tag_senders, &tag_rr, w)
+            }
         };
-        stream_ways(&pbf_file, &filters, classify, build_geom)
+        // Geometry pass: write the resolved way's geometry once to the shared geom table.
+        let build_geom_cb = {
+            let (geom_senders, geom_rr) = (geom_senders.clone(), geom_rr.clone());
+            move |way: &OsmWay, _kept: ()| {
+                let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
+                let _ = geom_senders[kk].blocking_send(geom_rows_for(way, split));
+            }
+        };
+        stream_osm(
+            &pbf_file,
+            Callbacks {
+                has_relations,
+                classify_rel: classify_rel_cb,
+                classify_way: classify_way_cb,
+                has_nodes,
+                classify_node: classify_node_cb,
+                build_geom: build_geom_cb,
+            },
+        )
     });
 
     // Await the producer first: it drops the senders, closing every writer channel so the writer
@@ -173,11 +247,16 @@ async fn main() -> anyhow::Result<()> {
     for h in geom_handles {
         geom_count += h.await.context("geom writer panicked")??;
     }
+    let mut member_count = 0usize;
+    for h in member_handles {
+        member_count += h.await.context("member writer panicked")??;
+    }
 
     for (i, table) in tables.iter().enumerate() {
         info!("Wrote {} tag rows → {}", tag_counts[i], table);
     }
     info!("Wrote {geom_count} geom rows → {GEOM_TABLE}");
+    info!("Wrote {member_count} relation-member links → {MEMBER_TABLE}");
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 
     match (cfg.output, cfg.create_index) {

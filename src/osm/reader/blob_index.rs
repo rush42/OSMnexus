@@ -46,8 +46,8 @@ pub(super) fn find_way_section_start(path: &str, data: &[ByteOffset]) -> anyhow:
     let (mut lo, mut hi) = (0usize, data.len());
     while lo < hi {
         let mid = (lo + hi) / 2;
-        let (_, has_wr) = blob_kind(&decode_block(path, data[mid])?);
-        if has_wr {
+        let k = blob_kind(&decode_block(path, data[mid])?);
+        if k.has_ways || k.has_relations {
             hi = mid;
         } else {
             lo = mid + 1;
@@ -57,14 +57,14 @@ pub(super) fn find_way_section_start(path: &str, data: &[ByteOffset]) -> anyhow:
 
     // Sanity: the boundary must hold (guards a file that lies about its sort order).
     if way_start < data.len() {
-        let (_, wr) = blob_kind(&decode_block(path, data[way_start])?);
-        if !wr {
+        let k = blob_kind(&decode_block(path, data[way_start])?);
+        if !(k.has_ways || k.has_relations) {
             return Err(anyhow!("boundary blob {way_start} has no ways/relations"));
         }
     }
     if way_start > 0 {
-        let (nodes, wr) = blob_kind(&decode_block(path, data[way_start - 1])?);
-        if wr || !nodes {
+        let k = blob_kind(&decode_block(path, data[way_start - 1])?);
+        if k.has_ways || k.has_relations || !k.has_nodes {
             return Err(anyhow!("blob {} before boundary is not node-only", way_start - 1));
         }
     }
@@ -72,22 +72,71 @@ pub(super) fn find_way_section_start(path: &str, data: &[ByteOffset]) -> anyhow:
     Ok(way_start)
 }
 
-/// Returns `(has_nodes, has_ways_or_relations)` for a primitive block.
-fn blob_kind(block: &PrimitiveBlock) -> (bool, bool) {
-    let mut has_nodes = false;
-    let mut has_wr = false;
+/// Binary-search, within the way+relation tail `data[way_start..]`, the first blob that contains
+/// relations. Valid because sorted files lay out way blobs before relation blobs. Returns an index
+/// into the *full* `data` slice (so `data[rel_start..]` is the relation region). If no relations
+/// exist, returns `data.len()`. Errors on a layout that interleaves ways after relations (the caller
+/// falls back). `way_start` is the boundary from `find_way_section_start`.
+pub(super) fn find_relation_section_start(
+    path: &str,
+    data: &[ByteOffset],
+    way_start: usize,
+) -> anyhow::Result<usize> {
+    let (mut lo, mut hi) = (way_start, data.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let k = blob_kind(&decode_block(path, data[mid])?);
+        if k.has_relations {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    let rel_start = lo;
+
+    // Sanity: the boundary must hold — a relation region blob has relations, and the blob before it
+    // (if inside the tail) must be way-only (no relations). Guards an interleaved/mislabeled file.
+    if rel_start < data.len() {
+        let k = blob_kind(&decode_block(path, data[rel_start])?);
+        if !k.has_relations {
+            return Err(anyhow!("boundary blob {rel_start} has no relations"));
+        }
+    }
+    if rel_start > way_start {
+        let k = blob_kind(&decode_block(path, data[rel_start - 1])?);
+        if k.has_relations {
+            return Err(anyhow!("blob {} before relation boundary still has relations", rel_start - 1));
+        }
+    }
+
+    Ok(rel_start)
+}
+
+/// Which primitive kinds a block contains.
+struct BlobKind {
+    has_nodes: bool,
+    has_ways: bool,
+    has_relations: bool,
+}
+
+/// Classify a primitive block by the kinds of primitives it holds.
+fn blob_kind(block: &PrimitiveBlock) -> BlobKind {
+    let mut k = BlobKind { has_nodes: false, has_ways: false, has_relations: false };
     for g in block.groups() {
-        if g.ways().next().is_some() || g.relations().next().is_some() {
-            has_wr = true;
+        if g.ways().next().is_some() {
+            k.has_ways = true;
+        }
+        if g.relations().next().is_some() {
+            k.has_relations = true;
         }
         if g.nodes().next().is_some() || g.dense_nodes().next().is_some() {
-            has_nodes = true;
+            k.has_nodes = true;
         }
-        if has_nodes && has_wr {
+        if k.has_nodes && k.has_ways && k.has_relations {
             break;
         }
     }
-    (has_nodes, has_wr)
+    k
 }
 
 /// Decode the `OSMData` primitive block at `off`. Opens its own file handle so this is safe

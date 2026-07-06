@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::classify::categories::{
-    load_categories_from_dir, load_shared_macros, CategoriesFile, Filter,
+    load_shared_macros, load_topic_categories, CategoriesFile, Filter,
 };
+use crate::osm::types::ElementKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Predicate {
@@ -339,37 +340,39 @@ pub fn find_overlaps(cats: &CategoriesFile) -> Vec<Overlap> {
     overlaps
 }
 
-/// Every `topics/<name>/categories` directory (skips `_shared` and any topic without categories),
-/// as `(topic name, categories dir)`, sorted by name. Used by both the lint binary and the test.
+/// Every topic directory holding at least one category kind subfolder, as `(topic name, topic dir)`,
+/// sorted by name (skips `_shared` and any topic without categories). Used by lint + tests.
 pub fn topic_category_dirs() -> Vec<(String, PathBuf)> {
     let topics = Path::new(env!("CARGO_MANIFEST_DIR")).join("topics");
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&topics).into_iter().flatten().flatten() {
-        let cats = entry.path().join("categories");
-        if cats.is_dir() {
-            out.push((entry.file_name().to_string_lossy().into_owned(), cats));
+        let dir = entry.path();
+        let has_kind = ElementKind::ALL.iter().any(|k| dir.join(k.subdir()).is_dir());
+        if has_kind {
+            out.push((entry.file_name().to_string_lossy().into_owned(), dir));
         }
     }
     out.sort();
     out
 }
 
-/// Load every topic's categories and collect overlaps per topic. Shared entry point.
+/// Load every topic's per-kind categories and collect overlaps per (topic, kind). Shared entry point.
 pub fn find_all_topic_overlaps() -> anyhow::Result<Vec<(String, Vec<Overlap>)>> {
     let mut out = Vec::new();
     for (topic, dir) in topic_category_dirs() {
-        let mut cats = load_categories_from_dir(&dir)
+        let per_kind = load_topic_categories(&dir)
             .map_err(|e| anyhow::anyhow!("loading {topic} categories: {e}"))?;
         // Merge shared cross-topic macros so `filter_to_expr` can inline every `Macro` reference,
-        // mirroring the runtime merge in `topic_runner`. `dir` is `topics/<name>/categories`.
-        let shared_dir = dir.parent().and_then(|p| p.parent())
-            .expect("categories dir has topics/<name> ancestors").join("_shared");
-        for (k, v) in load_shared_macros(&shared_dir)
-            .map_err(|e| anyhow::anyhow!("loading topics/_shared/ macros: {e}"))?
-        {
-            cats.macros.entry(k).or_insert(v);
+        // mirroring the runtime merge in `topic_runner`. `dir` is `topics/<name>`.
+        let shared = load_shared_macros(&dir.parent().expect("topics/<name> has parent").join("_shared"))
+            .map_err(|e| anyhow::anyhow!("loading topics/_shared/ macros: {e}"))?;
+        for (kind, mut cats) in per_kind {
+            for (k, v) in &shared {
+                cats.macros.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            let label = format!("{topic}/{}", kind.subdir());
+            out.push((label, find_overlaps(&cats)));
         }
-        out.push((topic, find_overlaps(&cats)));
     }
     Ok(out)
 }

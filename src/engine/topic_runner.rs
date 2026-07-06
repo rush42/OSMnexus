@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 
-use crate::classify::categories::{load_categories_from_dir, load_shared_macros, CategoriesFile};
+use crate::classify::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
 use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
 use crate::engine::extract::Producer;
 use crate::engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, Transform, TopicSpec}};
-use crate::osm::types::RawTags;
+use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
 use crate::transform::TagTransform;
@@ -28,7 +28,10 @@ fn overlay(
 /// A fully loaded topic ready to process ways.
 pub struct TopicRunner {
     pub spec: TopicSpec,
-    pub categories: CategoriesFile,
+    /// Category sets keyed by element kind — one per `topics/<t>/{node,way,relation}/` subfolder
+    /// that exists. Each pass (relations → ways → nodes) classifies with its kind's set; a topic
+    /// with only a `way/` folder has just the `Way` entry. `categorize` is the same function for all.
+    pub categories: HashMap<ElementKind, CategoriesFile>,
     /// No-arg tag transforms applied (in order) to each way's tags before categorization.
     pub tag_transforms: Vec<TagTransform>,
     /// Center-line side split (from a `split_sides` entry); empty if the topic has none.
@@ -150,30 +153,23 @@ impl TopicRunner {
         // Resolve the topic-default deriver bindings (validates references).
         let topic_derivers = resolve_bindings(&deriver_lib, &spec.derivers, name)?;
 
-        let cats_dir = base.join("categories");
-        let mut categories = if cats_dir.exists() {
-            load_categories_from_dir(&cats_dir)
-                .with_context(|| format!("loading topics/{name}/categories/"))?
-        } else {
-            // No categories/ dir → nothing matches, so the topic emits no rows.
-            // Every shipped topic has a categories/ dir; this is just a safe fallback.
-            CategoriesFile { macros: Default::default(), categories: Vec::new(), order: Vec::new() }
-        };
+        // Load per-kind category sets from topics/<name>/{node,way,relation}/.
+        let mut categories = load_topic_categories(&base)
+            .with_context(|| format!("loading topics/{name}/ categories"))?;
 
-        // Merge shared cross-topic macros (topics/_shared/) into this topic's macro
-        // namespace. Topic-local macros win on name conflict.
+        // Merge shared cross-topic macros (topics/_shared/) into each kind's macro namespace.
+        // Topic-local macros win on name conflict.
         let shared_dir = base.parent().expect("topics/<name> has a parent").join("_shared");
-        for (k, v) in load_shared_macros(&shared_dir)
-            .with_context(|| "loading topics/_shared/")?
-        {
-            categories.macros.entry(k).or_insert(v);
+        let shared_macros = load_shared_macros(&shared_dir).with_context(|| "loading topics/_shared/")?;
+        for cats in categories.values_mut() {
+            for (k, v) in &shared_macros {
+                cats.macros.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            // Compile the exclude relation into a priority order + discrimination tree (needs macros
+            // fully merged first). categorize() is then pure first-match over this — no runtime excludes.
+            cats.build_order()
+                .with_context(|| format!("building category order for topics/{name}"))?;
         }
-
-        // Compile the exclude relation into a priority order (needs macros fully merged first).
-        // categorize() is then pure first-match over this — no runtime excludes.
-        categories
-            .build_order()
-            .with_context(|| format!("building category order for topics/{name}"))?;
 
         // Split the declared transform pipeline into ordered no-arg tag transforms and
         // the (at most one) parameterized center-line split.
@@ -198,21 +194,22 @@ impl TopicRunner {
             }
         }
 
-        // Precompute effective derivers for categories that override one (validates references).
+        // Precompute per-category effective derivers/consts/private across every kind. Category ids
+        // are expected unique within a topic (they're file stems); a node and a way category sharing
+        // a stem would collide here — keep stems distinct per topic.
         let mut category_derivers = HashMap::new();
-        for cat in &categories.categories {
-            if let Some(bindings) = &cat.derivers {
-                let overrides = resolve_bindings(&deriver_lib, bindings, name)?;
-                category_derivers.insert(cat.id.clone(), apply_overrides(&topic_derivers, overrides));
-            }
-        }
-
-        // Precompute effective consts/private per category: topic-level defaults overlaid per-key.
         let mut category_consts = HashMap::new();
         let mut category_private = HashMap::new();
-        for cat in &categories.categories {
-            category_consts.insert(cat.id.clone(), overlay(&spec.consts, &cat.consts));
-            category_private.insert(cat.id.clone(), overlay(&spec.private, &cat.private));
+        for cats in categories.values() {
+            for cat in &cats.categories {
+                if let Some(bindings) = &cat.derivers {
+                    let overrides = resolve_bindings(&deriver_lib, bindings, name)?;
+                    category_derivers
+                        .insert(cat.id.clone(), apply_overrides(&topic_derivers, overrides));
+                }
+                category_consts.insert(cat.id.clone(), overlay(&spec.consts, &cat.consts));
+                category_private.insert(cat.id.clone(), overlay(&spec.private, &cat.private));
+            }
         }
 
         Ok(Self {
@@ -234,15 +231,31 @@ impl TopicRunner {
         &self.spec.table
     }
 
-    /// Run the topic's pipeline for one way: apply this topic's tag transforms to a copy
-    /// of the raw tags, then categorize/split/extract into tag rows. `raw_tags` are the way's
-    /// untouched tags — each topic transforms its own copy. Geometry is produced separately
-    /// (topic-independent) via `build_geom_rows`.
-    pub fn process(&self, way_id: i64, raw_tags: &RawTags, meta: &OsmMeta) -> Vec<TopicRow> {
-        let mut tags = raw_tags.clone();
-        for t in &self.tag_transforms {
-            t.apply(&mut tags);
+    /// Whether this topic has any categories for `kind` (i.e. a `topics/<t>/<kind>/` folder).
+    pub fn has_kind(&self, kind: ElementKind) -> bool {
+        self.categories.contains_key(&kind)
+    }
+
+    /// Run the topic's pipeline for one element of `kind`: apply this topic's tag transforms to a
+    /// copy of the raw tags (way kind only — side-split/lifecycle transforms are way-oriented),
+    /// then categorize/split/extract into tag rows against the kind's category set. `raw_tags` are
+    /// the element's untouched tags. Geometry is produced separately (way-only) via `build_geom_rows`.
+    pub fn process(
+        &self,
+        kind: ElementKind,
+        osm_id: i64,
+        raw_tags: &RawTags,
+        meta: &OsmMeta,
+    ) -> Vec<TopicRow> {
+        if !self.has_kind(kind) {
+            return Vec::new();
         }
-        build_topic_rows(self, way_id, tags, meta)
+        let mut tags = raw_tags.clone();
+        if kind == ElementKind::Way {
+            for t in &self.tag_transforms {
+                t.apply(&mut tags);
+            }
+        }
+        build_topic_rows(self, kind, osm_id, tags, meta)
     }
 }

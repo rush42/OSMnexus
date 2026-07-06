@@ -1,4 +1,8 @@
 //! Loading categories and shared macros from the `topics/` tree.
+//!
+//! Layout: a topic organizes its categories into per-kind subfolders directly under the topic dir
+//! — `topics/<t>/{node,way,relation}/*.json` (one category per file, id = file stem). Topic-wide
+//! macros live in `topics/<t>/macros.json`. Each present kind subfolder becomes one `CategoriesFile`.
 
 use std::collections::HashMap;
 
@@ -7,25 +11,48 @@ use serde_json::{Map, Value};
 
 use crate::classify::categories::CategoriesFile;
 use crate::classify::filter::Filter;
+use crate::osm::types::ElementKind;
 
-/// Load a topic's categories from its `categories/` directory.
-/// Reads `macros.json` (optional) + all other `*.json` files (sorted), injecting the
-/// category `id` from each file stem.
-pub fn load_categories_from_dir(dir: &std::path::Path) -> anyhow::Result<CategoriesFile> {
-    let macros_path = dir.join("macros.json");
-    let macros: Map<String, Value> = if macros_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&macros_path)?)
-            .with_context(|| format!("parsing {}", macros_path.display()))?
+/// Load a topic's per-kind category sets from its directory. Reads the optional topic-wide
+/// `macros.json`, then for each of `node`/`way`/`relation` that exists as a subfolder, loads its
+/// `*.json` category files into a `CategoriesFile` (seeded with the topic macros). Only present
+/// kinds appear in the returned map — a topic with just a `way/` folder yields a single entry.
+pub fn load_topic_categories(
+    topic_dir: &std::path::Path,
+) -> anyhow::Result<HashMap<ElementKind, CategoriesFile>> {
+    let macros = read_macros(&topic_dir.join("macros.json"))?;
+
+    let mut out = HashMap::new();
+    for kind in ElementKind::ALL {
+        let dir = topic_dir.join(kind.subdir());
+        if dir.is_dir() {
+            let cats = load_categories_dir(&dir, &macros)
+                .with_context(|| format!("loading {}", dir.display()))?;
+            out.insert(kind, cats);
+        }
+    }
+    Ok(out)
+}
+
+/// Read a macros JSON file (`{ name: Filter }`) if it exists, else an empty map.
+fn read_macros(path: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
+    if path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(path)?)
+            .with_context(|| format!("parsing {}", path.display()))
     } else {
-        Map::new()
-    };
+        Ok(Map::new())
+    }
+}
 
+/// Load all `*.json` category files (sorted) in one kind subfolder into a `CategoriesFile`, seeding
+/// its macro namespace with `macros` (the topic-wide macros). The category `id` is the file stem.
+pub fn load_categories_dir(
+    dir: &std::path::Path,
+    macros: &Map<String, Value>,
+) -> anyhow::Result<CategoriesFile> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path().extension().and_then(|s| s.to_str()) == Some("json")
-                && e.file_name() != std::ffi::OsStr::new("macros.json")
-        })
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
@@ -41,7 +68,7 @@ pub fn load_categories_from_dir(dir: &std::path::Path) -> anyhow::Result<Categor
     }
 
     let combined = Value::Object(Map::from_iter([
-        ("macros".to_owned(), Value::Object(macros)),
+        ("macros".to_owned(), Value::Object(macros.clone())),
         ("categories".to_owned(), Value::Array(categories)),
     ]));
     Ok(serde_json::from_value(combined)?)

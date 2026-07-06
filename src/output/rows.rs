@@ -9,6 +9,7 @@ use crate::output::types::OsmMeta;
 /// The field order here **must** match each row type's `csv_fields` implementation below.
 pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,osm,derived,private,meta,minzoom";
 pub const GEOM_COLUMNS: &str = "osm_id,variant,seg_idx,start_id,end_id,geom,length_m,total_length_m";
+pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
 
 /// A row that can be serialized into an ordered list of CSV fields. Implemented by both output row
 /// types so the writers (`output::writers`) can be generic over the row type.
@@ -77,6 +78,21 @@ impl CsvRow for GeomRow {
             self.length_m.to_string(),
             self.total_length_m.to_string(),
         ])
+    }
+}
+
+/// A relation → member-way link row, emitted for every way member of a kept relation. Lets a
+/// relation's tag row be joined downstream to the geometries of its member ways (relations have no
+/// materialized geometry of their own).
+pub struct MemberRow {
+    pub relation_osm_id: i64,
+    pub way_osm_id: i64,
+}
+
+impl CsvRow for MemberRow {
+    /// CSV field order matches `MEMBER_COLUMNS`.
+    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec![self.relation_osm_id.to_string(), self.way_osm_id.to_string()])
     }
 }
 

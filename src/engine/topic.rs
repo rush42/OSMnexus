@@ -2,16 +2,10 @@ use serde::Deserialize;
 use crate::classify::categories::{Filter, MinzoomRule};
 use crate::classify::sanitize::StrOrVec;
 use crate::engine::extract::{Producer, TagSet};
-use crate::osm::types::ElementFilter;
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
     pub table: String,
-    /// Which OSM ways this topic reads, declared as data (e.g. `{ "tag": "highway" }` or
-    /// `{ "tag": "railway", "in": ["rail", "light_rail"] }`). Absent → `highway` presence,
-    /// so existing topics stay unchanged. The reader keeps any way matching *any* topic's filter.
-    #[serde(default)]
-    pub element_filter: Option<ElementFilter>,
     /// Ordered transform pipeline. Each entry is either a bare string naming a no-arg
     /// tag transform (e.g. "lifecycle") or a parameterized object such as
     /// `{ "transform": "split_sides", "sides": [{ "highway": ..., "prefix": ... }] }`.
