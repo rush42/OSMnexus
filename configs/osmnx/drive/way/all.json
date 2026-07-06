@@ -1,0 +1,4 @@
+{
+  "minzoom": 0,
+  "condition": { "tag": "highway", "exists": true }
+}
