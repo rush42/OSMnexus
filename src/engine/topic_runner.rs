@@ -36,6 +36,10 @@ pub struct TopicRunner {
     pub tag_transforms: Vec<TagTransform>,
     /// Center-line side split (from a `split_sides` entry); empty if the topic has none.
     pub transformations: Vec<CenterLineTransformation>,
+    /// Prefixes to self-unnest onto sidepath-class ways (from `unnest_sidepath_self` entries).
+    /// Applied after `exclude_condition` but before `transformations`, mirroring the pre-split
+    /// stage `split_sides` also runs at — see `side_split::apply_sidepath_self`.
+    pub sidepath_self_prefixes: Vec<&'static str>,
     /// Desugared `sanitizers` — applied to every object regardless of category.
     pub sanitizer_fields: Vec<Field>,
     /// Data-defined sanitizer chains (sanitizers.json) layered over the built-in registry.
@@ -175,6 +179,7 @@ impl TopicRunner {
         // parameterized center-line splits (which change object cardinality, handled separately).
         let mut tag_transforms = Vec::new();
         let mut transformations = Vec::new();
+        let mut sidepath_self_prefixes = Vec::new();
         for t in &spec.transforms {
             match t {
                 Transform::Named(tname) => {
@@ -184,11 +189,19 @@ impl TopicRunner {
                     );
                     tag_transforms.push(TagTransform::Lifecycle);
                 }
-                Transform::Param(ParamTransform::SplitSides { highway, prefix }) => {
+                Transform::Param(ParamTransform::SplitSides { highway, prefix, directed_keys }) => {
+                    let directed_keys: Vec<&'static str> = directed_keys
+                        .iter()
+                        .map(|k| -> &'static str { Box::leak(k.clone().into_boxed_str()) })
+                        .collect();
                     transformations.push(CenterLineTransformation {
                         highway: Box::leak(highway.clone().into_boxed_str()),
                         prefix:  Box::leak(prefix.clone().into_boxed_str()),
+                        directed_keys: Box::leak(directed_keys.into_boxed_slice()),
                     });
+                }
+                Transform::Param(ParamTransform::UnnestSidepathSelf { prefix }) => {
+                    sidepath_self_prefixes.push(Box::leak(prefix.clone().into_boxed_str()) as &'static str);
                 }
                 Transform::Param(ParamTransform::RenameKey { from, to, when_value }) => {
                     tag_transforms.push(TagTransform::RenameKey {
@@ -240,6 +253,7 @@ impl TopicRunner {
             categories,
             tag_transforms,
             transformations,
+            sidepath_self_prefixes,
             sanitizer_fields,
             sanitizers,
             deriver_lib,

@@ -12,7 +12,7 @@ use crate::output::{
     rows::{GeomRow, NodeGeomRow, TopicRow, WayGeomRow},
     types::{OsmMeta, Side},
 };
-use crate::transform::side_split::get_transformed_objects;
+use crate::transform::side_split::{apply_sidepath_self, get_transformed_objects};
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ pub fn build_topic_rows(
     runner: &TopicRunner,
     kind: ElementKind,
     osm_id: i64,
-    tags: RawTags,
+    mut tags: RawTags,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
     let topic = &runner.spec;
@@ -73,6 +73,11 @@ pub fn build_topic_rows(
         if eval_filter(cond, &tags, &categories.macros, &runner.sanitizers) {
             return Vec::new();
         }
+    }
+
+    // Sidepath self-unnest is way-oriented; nodes/relations never carry it.
+    if kind == ElementKind::Way && !runner.sidepath_self_prefixes.is_empty() {
+        apply_sidepath_self(&mut tags, &runner.sidepath_self_prefixes);
     }
 
     // Side-split (center-line) transforms are way-oriented; nodes/relations are never side-split.

@@ -4,7 +4,11 @@
     "_implicit_oneway_confidence": "not_applicable"
   },
   "transforms": [
-    "lifecycle"
+    "lifecycle",
+    {
+      "transform": "unnest_sidepath_self",
+      "prefix": "cycleway"
+    }
   ],
   "exclude_condition": {
     "or": [

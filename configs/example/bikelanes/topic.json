@@ -37,9 +37,14 @@
       "when_value": "no"
     },
     {
+      "transform": "unnest_sidepath_self",
+      "prefix": "cycleway"
+    },
+    {
       "transform": "split_sides",
       "highway": "cycleway",
-      "prefix": "cycleway"
+      "prefix": "cycleway",
+      "directed_keys": ["cycleway:lanes", "bicycle:lanes"]
     },
     {
       "transform": "split_sides",

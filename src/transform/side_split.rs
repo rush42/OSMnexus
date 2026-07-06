@@ -1,6 +1,6 @@
 use crate::osm::types::RawTags;
-use crate::value_sets::value_set;
 use crate::output::types::Side;
+use crate::value_sets::value_set;
 
 /// A way object after center-line splitting.
 pub struct TransformedObject {
@@ -24,9 +24,42 @@ pub struct CenterLineTransformation {
     pub highway: &'static str,
     /// The tag prefix to look for (e.g. "cycleway").
     pub prefix: &'static str,
+    /// Parent-way tag keys that are direction-sensitive (`:forward`/`:backward` variants),
+    /// projected onto the side object by `convert_directed_tags` (e.g. `"cycleway:lanes"`).
+    pub directed_keys: &'static [&'static str],
 }
 
-const META_PREFIXES: &[&str] = &["source:", "note:"];
+pub(crate) const META_PREFIXES: &[&str] = &["source:", "note:"];
+
+/// For ways whose own `highway` is a sidepath class (the `sidepath_highway` value set), unnest
+/// bare `prefix`-prefixed tags (and `source:`/`note:` meta variants) onto the way itself, plus
+/// derive `traffic_sign` from `traffic_sign:forward` for oneway cycleways. Models the OSM
+/// convention of tagging a way's own cycling function directly on it (e.g. `highway=path` +
+/// `cycleway=track`), as opposed to `split_sides` projecting side tags onto separate child
+/// objects. Must run after `exclude_condition` and before `get_transformed_objects`, mirroring
+/// where this used to run inline (see topic.json's `unnest_sidepath_self` transform).
+pub fn apply_sidepath_self(tags: &mut RawTags, prefixes: &[&str]) {
+    let highway = tags.get("highway").cloned().unwrap_or_default();
+    if !value_set("sidepath_highway").contains(highway.as_str()) {
+        return;
+    }
+
+    for prefix in prefixes {
+        let source = tags.clone();
+        unnest_prefixed_tags(&source, prefix, "", None, tags);
+        for meta in META_PREFIXES {
+            unnest_prefixed_tags(&source, prefix, "", Some(meta), tags);
+        }
+
+        if tags.get("oneway").map(|v| v == "yes").unwrap_or(false)
+            && source.get("oneway:bicycle").map(|v| v != "no").unwrap_or(true)
+        {
+            let forward = tags.get("traffic_sign:forward").cloned();
+            tags.entry("traffic_sign".into())
+                .or_insert_with(|| forward.unwrap_or_default());
+        }
+    }
+}
 
 /// Port of `GetTransformedObjects` from transformations.lua.
 ///
@@ -36,33 +69,17 @@ pub fn get_transformed_objects(
     transformations: &[CenterLineTransformation],
 ) -> Vec<TransformedObject> {
     let highway = tags.get("highway").cloned().unwrap_or_default();
-    let sidepath_classes = value_set("sidepath_highway");
 
-    // For sidepath highways, unnest bare cycleway tags onto the self object. This needs the
-    // original tags as a read source separate from the write destination, so clone once here.
-    if sidepath_classes.contains(highway.as_str()) {
-        let mut center = tags.clone();
-        unnest_prefixed_tags(&tags, "cycleway", "", None, &mut center);
-        for meta in META_PREFIXES {
-            unnest_prefixed_tags(&tags, "cycleway", "", Some(meta), &mut center);
-        }
-        // Directed traffic sign for oneway cycleways
-        if center.get("oneway").map(|v| v == "yes").unwrap_or(false)
-            && tags.get("oneway:bicycle").map(|v| v != "no").unwrap_or(true)
-        {
-            let forward = center.get("traffic_sign:forward").cloned();
-            center
-                .entry("traffic_sign".into())
-                .or_insert_with(|| forward.unwrap_or_default());
-        }
-
+    // Sidepath-class ways (see `apply_sidepath_self`) are never split into sides — any side
+    // tagging they carry describes their own alignment, already folded onto this way's own tags.
+    if value_set("sidepath_highway").contains(highway.as_str()) {
         return vec![TransformedObject {
             side: Side::Self_,
             prefix: None,
             infix: None,
             parent_highway: None,
             highway,
-            tags: center,
+            tags,
         }];
     }
 
@@ -113,7 +130,7 @@ pub fn get_transformed_objects(
             obj.insert("highway".into(), transformation.highway.to_owned());
 
             // Directed tag projection (traffic_sign:forward/backward → traffic_sign).
-            convert_directed_tags(&mut obj, &tags, side);
+            convert_directed_tags(&mut obj, &tags, side, transformation.directed_keys);
 
             side_objects.push(TransformedObject {
                 side,
@@ -152,7 +169,7 @@ pub fn get_transformed_objects(
 /// Example (meta="source:", same prefix/infix), full prefix "source:cycleway:left":
 ///   key == "source:cycleway:left"        → dest["source"]       = val
 ///   key == "source:cycleway:left:width"  → dest["source:width"] = val
-fn unnest_prefixed_tags(
+pub(crate) fn unnest_prefixed_tags(
     tags: &RawTags,
     prefix: &str,
     infix: &str,
@@ -200,7 +217,7 @@ fn unnest_prefixed_tags(
 ///
 /// For left/right side objects, pick the correct `:forward`/`:backward` variant
 /// of directed tags from the parent way.
-fn convert_directed_tags(obj: &mut RawTags, parent: &RawTags, side: Side) {
+fn convert_directed_tags(obj: &mut RawTags, parent: &RawTags, side: Side, directed_keys: &[&str]) {
     let direction_suffix = match side {
         Side::Left => ":backward",
         Side::Right => ":forward",
@@ -208,7 +225,7 @@ fn convert_directed_tags(obj: &mut RawTags, parent: &RawTags, side: Side) {
     };
 
     // Tags from the parent that are direction-sensitive.
-    for key in &["cycleway:lanes", "bicycle:lanes"] {
+    for key in directed_keys {
         let directed_key = format!("{key}{direction_suffix}");
         if !obj.contains_key(*key) {
             if let Some(val) = parent.get(*key).or_else(|| parent.get(&directed_key)) {

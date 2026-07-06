@@ -60,8 +60,24 @@ pub enum Transform {
 pub enum ParamTransform {
     /// One center-line split: unnest tags with `prefix` onto a side object whose effective
     /// highway becomes `highway`. List the entry once per projection, e.g.
-    /// `{ "transform": "split_sides", "highway": "cycleway", "prefix": "cycleway" }`.
-    SplitSides { highway: String, prefix: String },
+    /// `{ "transform": "split_sides", "highway": "cycleway", "prefix": "cycleway",
+    ///    "directed_keys": ["cycleway:lanes", "bicycle:lanes"] }`.
+    /// `directed_keys` lists parent-way tags that are direction-sensitive (have `:forward`/
+    /// `:backward` variants); each is projected onto the side object, preferring the directed
+    /// variant matching that side.
+    SplitSides {
+        highway: String,
+        prefix: String,
+        #[serde(default)]
+        directed_keys: Vec<String>,
+    },
+    /// For ways whose own `highway` is a sidepath class (see the `sidepath_highway` value set),
+    /// unnest bare `prefix`-prefixed tags (and their `source:`/`note:` meta variants) onto the way
+    /// itself, plus derive `traffic_sign` from `traffic_sign:forward` for oneway cycleways. Models
+    /// the OSM convention of tagging a way's own cycling function directly on it (e.g.
+    /// `highway=path` + `cycleway=track`), as opposed to `split_sides` projecting side tags onto
+    /// separate child objects.
+    UnnestSidepathSelf { prefix: String },
     /// Move `from` → `to`, optionally gated on `when_value`. (Replaces `cycleway_both`.)
     RenameKey {
         from: String,
