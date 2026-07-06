@@ -57,10 +57,14 @@ One extracted graph; each topic is a disjoint attribute layer over it.
   appear in several topics with *different* classifications, so tag tables are per-topic.
 - **`edges`** — one row per (way, segment), shared across all topics: the graph's edges, cut at
   intersections and at any classified node. Columns: `osm_id, seg_idx, start_id, end_id,
-  geom(LineString,3857), length_m, total_length_m`.
+  geom(LineString,3857), length_m, total_length_m, cost, reverse_cost`. `start_id`/`end_id` join
+  `nodes.id`; `cost`/`reverse_cost` (pgRouting-style) currently always equal `length_m`.
+- **`nodes`** — always emitted, one row per graph vertex: every node referenced as a `start_id`/
+  `end_id` in `edges` (shared by ≥2 ways, a way endpoint, or forced by a node classifier). Columns:
+  `id, osm_id, geom(Point,3857)`. `id` is the internal sequential vertex id; `osm_id` is the
+  original OSM node id, kept for lookups/debugging.
 - **`way_geometries`** (opt-in, `--emit-way-geometries`) — one whole-way linestring per way,
   uncut. Needed to materialize relation geometries without re-merging split segments.
-- **`node_geometries`** (opt-in, `--emit-node-geometries`) — one point row per classified node.
 - **`relation_geometries`** (opt-in, `--emit-relation-geometries`, Postgres output only) — one
   merged linestring per kept relation, built as a post-load SQL step from its member ways'
   geometries (reusing `way_geometries` if present, otherwise merging split segments on the fly).
@@ -91,7 +95,7 @@ export PGHOST=/var/run/postgresql PGDATABASE=geo PGUSER=me
 cargo run --release -- brandenburg-latest.osm.pbf --create-index
 ```
 
-The tables (`roads`, `bikelanes`, `edges`, `relation_members`) are created and truncated
+The tables (`roads`, `bikelanes`, `edges`, `nodes`, `relation_members`) are created and truncated
 automatically.
 
 ### Example
@@ -112,7 +116,7 @@ Prefer files over a database? Point it at the `csv` backend — same schema, no 
 ```bash
 cargo run --release -- brandenburg-latest.osm.pbf \
     --output csv \          # write CSV instead of COPY-ing into PostGIS
-    --out-dir ./out          # roads.csv, bikelanes.csv, edges.csv, ...
+    --out-dir ./out          # roads.csv, bikelanes.csv, edges.csv, nodes.csv, ...
 ```
 
 Add `RUST_LOG=info` in front of either command for per-phase timings.
@@ -126,7 +130,6 @@ Add `RUST_LOG=info` in front of either command for per-phase timings.
 | `--output <backend>` | `pg` | `pg` (COPY into PostGIS) or `csv` (one file per tag table + geometry tables) |
 | `--out-dir <path>` | `out` | directory for CSV output (`--output csv` only) |
 | `--emit-way-geometries` | off | also emit uncut whole-way linestrings (`way_geometries`) |
-| `--emit-node-geometries` | off | also emit one point row per classified node (`node_geometries`) |
 | `--emit-relation-geometries` | off | also emit one merged linestring per kept relation (`relation_geometries`, `pg` only) |
 | `--create-index` | off | build indexes after load (the split-geom GiST can dominate runtime; `pg` only) |
 | `--db-writers <k>` | `4` | parallel COPY connections per table, rows round-robined (`pg` only) |
