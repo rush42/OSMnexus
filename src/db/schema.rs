@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS {table} (
 
 /// Shared graph-edge table: one row per (way, segment). `start_id`/`end_id` are internal node ids
 /// (see `NODE_TABLE`), the seeds of the graph topology — pgRouting-style `source`/`target`.
+/// `cost`/`reverse_cost` are always equal (symmetric/undirected) — this pipeline doesn't bake in
+/// oneway semantics; a consumer wanting directed routing derives it at query time from the tag
+/// table's `oneway` field (joined on `osm_id`).
 fn create_edge_table_sql() -> String {
     format!(r#"
 CREATE TABLE IF NOT EXISTS {EDGE_TABLE} (
@@ -73,7 +76,9 @@ CREATE TABLE IF NOT EXISTS {EDGE_TABLE} (
   end_id         bigint,
   geom           geometry(LineString, 3857),
   length_m       double precision,
-  total_length_m double precision
+  total_length_m double precision,
+  cost           double precision,
+  reverse_cost   double precision
 )"#)
 }
 

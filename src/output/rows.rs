@@ -8,7 +8,7 @@ use crate::output::types::OsmMeta;
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `csv_fields` implementation below.
 pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,osm,derived,private,meta,minzoom";
-pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m";
+pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m,cost,reverse_cost";
 pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
 pub const WAY_GEOM_COLUMNS: &str = "osm_id,geom,length_m";
 pub const NODE_COLUMNS: &str = "id,osm_id,geom";
@@ -55,7 +55,8 @@ impl CsvRow for TopicRow {
 /// A single graph-edge row: one per intersection sub-linestring of a way (`edges` table, always
 /// emitted — this *is* the extracted graph). Shared across all topics and all side objects of a way
 /// (side-split is a tag-only operation), so keyed on `osm_id`. `start_id`/`end_id` are internal graph
-/// vertex ids (see `assign_node_ids`), not raw OSM node ids — they join `nodes.id`.
+/// vertex ids (see `assign_node_ids`), not raw OSM node ids — they join `nodes.id`. `cost`/
+/// `reverse_cost` are always equal to `length_m` — see `create_edge_table_sql`'s doc comment for why.
 pub struct GeomRow {
     pub osm_id: i64,
     pub seg_idx: usize,
@@ -64,6 +65,8 @@ pub struct GeomRow {
     pub geom_ewkb: Vec<u8>,
     pub length_m: f64,
     pub total_length_m: f64,
+    pub cost: f64,
+    pub reverse_cost: f64,
 }
 
 impl CsvRow for GeomRow {
@@ -77,6 +80,8 @@ impl CsvRow for GeomRow {
             hex::encode(&self.geom_ewkb),
             self.length_m.to_string(),
             self.total_length_m.to_string(),
+            self.cost.to_string(),
+            self.reverse_cost.to_string(),
         ])
     }
 }

@@ -264,6 +264,8 @@ pub fn build_geom_rows(
                 geom_ewkb: to_ewkb(&seg_line),
                 length_m: seg_len,
                 total_length_m: length_m,
+                cost: seg_len,
+                reverse_cost: seg_len,
             });
         }
     } else {
@@ -276,6 +278,8 @@ pub fn build_geom_rows(
             geom_ewkb: to_ewkb(geom),
             length_m,
             total_length_m: length_m,
+            cost: length_m,
+            reverse_cost: length_m,
         });
     }
 
