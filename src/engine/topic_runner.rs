@@ -193,15 +193,21 @@ impl TopicRunner {
                     );
                     tag_transforms.push(TagTransform::Lifecycle);
                 }
-                Transform::Param(ParamTransform::SplitSides { highway, prefix, directed_keys }) => {
-                    let directed_keys: Vec<&'static str> = directed_keys
-                        .iter()
-                        .map(|k| -> &'static str { Box::leak(k.clone().into_boxed_str()) })
-                        .collect();
+                Transform::Param(ParamTransform::SplitSides {
+                    highway, prefix, directed_keys, self_directed_keys,
+                }) => {
+                    let leak_keys = |keys: &[String]| -> &'static [&'static str] {
+                        let leaked: Vec<&'static str> = keys
+                            .iter()
+                            .map(|k| -> &'static str { Box::leak(k.clone().into_boxed_str()) })
+                            .collect();
+                        Box::leak(leaked.into_boxed_slice())
+                    };
                     transformations.push(CenterLineTransformation {
                         highway: Box::leak(highway.clone().into_boxed_str()),
                         prefix:  Box::leak(prefix.clone().into_boxed_str()),
-                        directed_keys: Box::leak(directed_keys.into_boxed_slice()),
+                        directed_keys: leak_keys(directed_keys),
+                        self_directed_keys: leak_keys(self_directed_keys),
                     });
                 }
                 Transform::Param(ParamTransform::UnnestSidepathSelf { prefix }) => {

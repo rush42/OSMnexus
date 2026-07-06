@@ -64,12 +64,17 @@ pub enum ParamTransform {
     ///    "directed_keys": ["cycleway:lanes", "bicycle:lanes"] }`.
     /// `directed_keys` lists parent-way tags that are direction-sensitive (have `:forward`/
     /// `:backward` variants); each is projected onto the side object, preferring the directed
-    /// variant matching that side.
+    /// variant matching that side, read from the *parent* way's tags.
+    /// `self_directed_keys` is the same idea but read from the side object's *own* tags instead —
+    /// for tags that arrive on the object already suffixed (e.g. a `cycleway:both:traffic_sign:
+    /// forward` tag unnests to the object's own `traffic_sign:forward` key, not the parent's).
     SplitSides {
         highway: String,
         prefix: String,
         #[serde(default)]
         directed_keys: Vec<String>,
+        #[serde(default)]
+        self_directed_keys: Vec<String>,
     },
     /// For ways whose own `highway` is a sidepath class (see the `sidepath_highway` value set),
     /// unnest bare `prefix`-prefixed tags (and their `source:`/`note:` meta variants) onto the way

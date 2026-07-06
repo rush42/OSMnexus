@@ -27,6 +27,10 @@ pub struct CenterLineTransformation {
     /// Parent-way tag keys that are direction-sensitive (`:forward`/`:backward` variants),
     /// projected onto the side object by `convert_directed_tags` (e.g. `"cycleway:lanes"`).
     pub directed_keys: &'static [&'static str],
+    /// Like `directed_keys`, but read from the side object's own tags rather than the parent way's
+    /// (e.g. `"traffic_sign"`, which arrives on the object as `traffic_sign:forward`/`:backward`
+    /// when unnested from a suffixed parent tag like `cycleway:both:traffic_sign:forward`).
+    pub self_directed_keys: &'static [&'static str],
 }
 
 pub(crate) const META_PREFIXES: &[&str] = &["source:", "note:"];
@@ -121,7 +125,13 @@ pub fn get_transformed_objects(
             obj.insert("highway".into(), transformation.highway.to_owned());
 
             // Directed tag projection (traffic_sign:forward/backward → traffic_sign).
-            convert_directed_tags(&mut obj, &tags, side, transformation.directed_keys);
+            convert_directed_tags(
+                &mut obj,
+                &tags,
+                side,
+                transformation.directed_keys,
+                transformation.self_directed_keys,
+            );
 
             side_objects.push(TransformedObject {
                 side,
@@ -206,11 +216,18 @@ pub(crate) fn unnest_prefixed_tags(
 
 /// Port of `convertDirectedTags` from transformations.lua.
 ///
-/// For left/right side objects, pick the correct `:forward`/`:backward` variant of directed tags
-/// from the parent way. Under right-hand traffic (the default), the way's `forward` direction runs
-/// along its right side, so `Side::Right` reads `:forward` and `Side::Left` reads `:backward`;
-/// `--left-hand-traffic` flips this.
-fn convert_directed_tags(obj: &mut RawTags, parent: &RawTags, side: Side, directed_keys: &[&str]) {
+/// For left/right side objects, pick the correct `:forward`/`:backward` variant of directed tags.
+/// Under right-hand traffic (the default), the way's `forward` direction runs along its right side,
+/// so `Side::Right` reads `:forward` and `Side::Left` reads `:backward`; `--left-hand-traffic`
+/// flips this. `directed_keys` are read from the parent way's tags; `self_directed_keys` from the
+/// side object's own tags (see `CenterLineTransformation::self_directed_keys`).
+fn convert_directed_tags(
+    obj: &mut RawTags,
+    parent: &RawTags,
+    side: Side,
+    directed_keys: &[&str],
+    self_directed_keys: &[&str],
+) {
     let left_hand = crate::traffic::is_left_hand_traffic();
     let direction_suffix = match (side, left_hand) {
         (Side::Left, false) | (Side::Right, true) => ":backward",
@@ -228,11 +245,14 @@ fn convert_directed_tags(obj: &mut RawTags, parent: &RawTags, side: Side, direct
         }
     }
 
-    // traffic_sign: prefer the directed variant from the side object itself.
-    let directed_sign_key = format!("traffic_sign{direction_suffix}");
-    if !obj.contains_key("traffic_sign") {
-        if let Some(val) = obj.get(&directed_sign_key).cloned() {
-            obj.insert("traffic_sign".into(), val);
+    // Tags that are direction-sensitive on the side object itself (e.g. traffic_sign, which
+    // arrives as `traffic_sign:forward`/`:backward` when unnested from a suffixed parent tag).
+    for key in self_directed_keys {
+        let directed_key = format!("{key}{direction_suffix}");
+        if !obj.contains_key(*key) {
+            if let Some(val) = obj.get(&directed_key).cloned() {
+                obj.insert((*key).to_owned(), val);
+            }
         }
     }
 }

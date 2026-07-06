@@ -61,12 +61,14 @@
       "transform": "split_sides",
       "highway": "cycleway",
       "prefix": "cycleway",
-      "directed_keys": ["cycleway:lanes", "bicycle:lanes"]
+      "directed_keys": ["cycleway:lanes", "bicycle:lanes"],
+      "self_directed_keys": ["traffic_sign"]
     },
     {
       "transform": "split_sides",
       "highway": "footway",
-      "prefix": "sidewalk"
+      "prefix": "sidewalk",
+      "self_directed_keys": ["traffic_sign"]
     }
   ],
   "osm_fields": [
