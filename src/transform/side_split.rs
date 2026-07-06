@@ -32,10 +32,9 @@ pub struct CenterLineTransformation {
 pub(crate) const META_PREFIXES: &[&str] = &["source:", "note:"];
 
 /// For ways whose own `highway` is a sidepath class (the `sidepath_highway` value set), unnest
-/// bare `prefix`-prefixed tags (and `source:`/`note:` meta variants) onto the way itself, plus
-/// derive `traffic_sign` from `traffic_sign:forward` for oneway cycleways. Models the OSM
-/// convention of tagging a way's own cycling function directly on it (e.g. `highway=path` +
-/// `cycleway=track`), as opposed to `split_sides` projecting side tags onto separate child
+/// bare `prefix`-prefixed tags (and `source:`/`note:` meta variants) onto the way itself. Models
+/// the OSM convention of tagging a way's own cycling function directly on it (e.g. `highway=path`
+/// + `cycleway=track`), as opposed to `split_sides` projecting side tags onto separate child
 /// objects. Must run after `exclude_condition` and before `get_transformed_objects`, mirroring
 /// where this used to run inline (see topic.json's `unnest_sidepath_self` transform).
 pub fn apply_sidepath_self(tags: &mut RawTags, prefixes: &[&str]) {
@@ -49,14 +48,6 @@ pub fn apply_sidepath_self(tags: &mut RawTags, prefixes: &[&str]) {
         unnest_prefixed_tags(&source, prefix, "", None, tags);
         for meta in META_PREFIXES {
             unnest_prefixed_tags(&source, prefix, "", Some(meta), tags);
-        }
-
-        if tags.get("oneway").map(|v| v == "yes").unwrap_or(false)
-            && source.get("oneway:bicycle").map(|v| v != "no").unwrap_or(true)
-        {
-            let forward = tags.get("traffic_sign:forward").cloned();
-            tags.entry("traffic_sign".into())
-                .or_insert_with(|| forward.unwrap_or_default());
         }
     }
 }

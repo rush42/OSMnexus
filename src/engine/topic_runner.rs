@@ -40,6 +40,9 @@ pub struct TopicRunner {
     /// Applied after `exclude_condition` but before `transformations`, mirroring the pre-split
     /// stage `split_sides` also runs at — see `side_split::apply_sidepath_self`.
     pub sidepath_self_prefixes: Vec<&'static str>,
+    /// `tag_rules` entries: `(output, rules)`, applied at the same pre-categorization stage as
+    /// `sidepath_self_prefixes` (see `classify::classifier::classify_rules`).
+    pub tag_rules: Vec<(String, Vec<crate::classify::classifier::Rule>)>,
     /// Desugared `sanitizers` — applied to every object regardless of category.
     pub sanitizer_fields: Vec<Field>,
     /// Data-defined sanitizer chains (sanitizers.json) layered over the built-in registry.
@@ -180,6 +183,7 @@ impl TopicRunner {
         let mut tag_transforms = Vec::new();
         let mut transformations = Vec::new();
         let mut sidepath_self_prefixes = Vec::new();
+        let mut tag_rules = Vec::new();
         for t in &spec.transforms {
             match t {
                 Transform::Named(tname) => {
@@ -202,6 +206,9 @@ impl TopicRunner {
                 }
                 Transform::Param(ParamTransform::UnnestSidepathSelf { prefix }) => {
                     sidepath_self_prefixes.push(Box::leak(prefix.clone().into_boxed_str()) as &'static str);
+                }
+                Transform::Param(ParamTransform::TagRules { output, rules }) => {
+                    tag_rules.push((output.clone(), rules.clone()));
                 }
                 Transform::Param(ParamTransform::RenameKey { from, to, when_value }) => {
                     tag_transforms.push(TagTransform::RenameKey {
@@ -254,6 +261,7 @@ impl TopicRunner {
             tag_transforms,
             transformations,
             sidepath_self_prefixes,
+            tag_rules,
             sanitizer_fields,
             sanitizers,
             deriver_lib,

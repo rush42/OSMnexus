@@ -41,6 +41,23 @@
       "prefix": "cycleway"
     },
     {
+      "transform": "tag_rules",
+      "output": "traffic_sign",
+      "rules": [
+        {
+          "when": {
+            "and": [
+              { "tag": "highway", "in_set": "sidepath_highway" },
+              { "tag": "traffic_sign", "exists": false },
+              { "tag": "oneway", "eq": "yes" },
+              { "not": { "tag": "oneway:bicycle", "eq": "no" } }
+            ]
+          },
+          "value": { "tag_or": "traffic_sign:forward", "or": "" }
+        }
+      ]
+    },
+    {
       "transform": "split_sides",
       "highway": "cycleway",
       "prefix": "cycleway",

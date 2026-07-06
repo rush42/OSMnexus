@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 use crate::classify::categories::{categorize, eval_filter, resolve_minzoom, CategoryContext};
+use crate::classify::classifier::classify_rules;
 use crate::engine::extract::ExtractCtx;
 use crate::engine::topic::Field;
 use crate::engine::topic_runner::TopicRunner;
@@ -75,9 +76,17 @@ pub fn build_topic_rows(
         }
     }
 
-    // Sidepath self-unnest is way-oriented; nodes/relations never carry it.
-    if kind == ElementKind::Way && !runner.sidepath_self_prefixes.is_empty() {
-        apply_sidepath_self(&mut tags, &runner.sidepath_self_prefixes);
+    // Sidepath self-unnest and tag_rules are way-oriented; nodes/relations never carry them.
+    // Both run pre-categorization (unlike derivers) so they can influence which category matches.
+    if kind == ElementKind::Way {
+        if !runner.sidepath_self_prefixes.is_empty() {
+            apply_sidepath_self(&mut tags, &runner.sidepath_self_prefixes);
+        }
+        for (output, rules) in &runner.tag_rules {
+            if let Some(v) = classify_rules(rules, &tags, &categories.macros, &runner.sanitizers) {
+                tags.insert(output.clone(), v);
+            }
+        }
     }
 
     // Side-split (center-line) transforms are way-oriented; nodes/relations are never side-split.

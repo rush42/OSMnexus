@@ -21,6 +21,8 @@ use crate::osm::types::RawTags;
 pub enum ValueSpec {
     /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
     Tag { tag: String },
+    /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
+    TagOr { tag_or: String, or: String },
     /// A literal value.
     Const(String),
 }
@@ -61,6 +63,8 @@ pub fn classify_rules(
             return match &rule.value {
                 ValueSpec::Const(s) => Some(s.clone()),
                 ValueSpec::Tag { tag } => tags.get(tag).cloned(),
+                ValueSpec::TagOr { tag_or, or } =>
+                    Some(tags.get(tag_or).cloned().unwrap_or_else(|| or.clone())),
             };
         }
     }

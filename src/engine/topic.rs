@@ -78,6 +78,20 @@ pub enum ParamTransform {
     /// `highway=path` + `cycleway=track`), as opposed to `split_sides` projecting side tags onto
     /// separate child objects.
     UnnestSidepathSelf { prefix: String },
+    /// Write `output` from the first matching `{when, value}` rule (same engine as the `road`
+    /// classifier / derivers' `rules` producer), evaluated against the way's own tags and applied
+    /// as a raw-tag mutation *before* categorization — so, unlike a deriver, this can influence
+    /// which category a way matches. Only the matching branch writes; no match leaves `output`
+    /// untouched. e.g. deriving `traffic_sign` from `traffic_sign:forward` for oneway sidepaths:
+    /// `{ "transform": "tag_rules", "output": "traffic_sign", "rules": [
+    ///      { "when": { "and": [ { "tag": "highway", "in_set": "sidepath_highway" },
+    ///          { "tag": "traffic_sign", "exists": false }, { "tag": "oneway", "eq": "yes" },
+    ///          { "not": { "tag": "oneway:bicycle", "eq": "no" } } ] },
+    ///        "value": { "tag_or": "traffic_sign:forward", "or": "" } } ] }`.
+    TagRules {
+        output: String,
+        rules: Vec<crate::classify::classifier::Rule>,
+    },
     /// Move `from` → `to`, optionally gated on `when_value`. (Replaces `cycleway_both`.)
     RenameKey {
         from: String,
