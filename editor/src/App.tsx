@@ -5,6 +5,20 @@ import Editor from "./Editor";
 const DEFAULT_KIND = "way";
 const DEBOUNCE_MS = 300;
 const NEW_CATEGORY_JSON = '{"condition":{}}';
+const MIN_BBOX_M = 100;
+const MAX_BBOX_M = 3000;
+const METERS_PER_DEG_LAT = 111_320;
+
+// Approximate bbox extents in meters (equirectangular — fine at this scale/precision, no need for
+// a real geodesic library just to sanity-check a manually-dragged selection size).
+function bboxSizeMeters(box: [number, number, number, number]): { widthM: number; heightM: number } {
+  const [west, south, east, north] = box;
+  const midLatRad = ((south + north) / 2) * (Math.PI / 180);
+  return {
+    widthM: (east - west) * METERS_PER_DEG_LAT * Math.cos(midLatRad),
+    heightM: (north - south) * METERS_PER_DEG_LAT,
+  };
+}
 
 type Category = { topic: string; kind: string; name: string };
 // A "selection" is either a category (kind/name point at a way/node/relation category file) or the
@@ -110,6 +124,15 @@ export default function App() {
   }
 
   async function selectBbox(box: [number, number, number, number]) {
+    const { widthM, heightM } = bboxSizeMeters(box);
+    if (widthM < MIN_BBOX_M || heightM < MIN_BBOX_M) {
+      setError(`Selected area is too small (${Math.round(widthM)}m × ${Math.round(heightM)}m) — must be at least ${MIN_BBOX_M}m × ${MIN_BBOX_M}m.`);
+      return;
+    }
+    if (widthM > MAX_BBOX_M || heightM > MAX_BBOX_M) {
+      setError(`Selected area is too large (${Math.round(widthM)}m × ${Math.round(heightM)}m) — must be at most ${MAX_BBOX_M}m × ${MAX_BBOX_M}m.`);
+      return;
+    }
     setExtracting(true);
     setError(null);
     try {
