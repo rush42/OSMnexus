@@ -16,13 +16,30 @@
         {
           "when": {
             "and": [
-              { "tag": "highway", "in_set": "sidepath_highway" },
-              { "tag": "traffic_sign", "exists": false },
-              { "tag": "oneway", "eq": "yes" },
-              { "not": { "tag": "oneway:bicycle", "eq": "no" } }
+              {
+                "tag": "highway",
+                "in_set": "sidepath_highway"
+              },
+              {
+                "tag": "traffic_sign",
+                "exists": false
+              },
+              {
+                "tag": "oneway",
+                "eq": "yes"
+              },
+              {
+                "not": {
+                  "tag": "oneway:bicycle",
+                  "eq": "no"
+                }
+              }
             ]
           },
-          "value": { "tag_or": "traffic_sign:forward", "or": "" }
+          "value": {
+            "tag_or": "traffic_sign:forward",
+            "or": ""
+          }
         }
       ]
     }
@@ -112,96 +129,21 @@
     ]
   },
   "osm_fields": [
-    {
-      "output": "highway",
-      "source": {
-        "key": "highway"
-      }
-    },
-    {
-      "output": "name",
-      "source": {
-        "key": "name"
-      }
-    },
-    {
-      "output": "ref",
-      "source": {
-        "key": "ref"
-      }
-    },
-    {
-      "output": "surface",
-      "source": {
-        "key": "surface"
-      }
-    },
-    {
-      "output": "smoothness",
-      "source": {
-        "key": "smoothness"
-      }
-    },
-    {
-      "output": "maxspeed",
-      "source": {
-        "key": "maxspeed"
-      }
-    },
-    {
-      "output": "oneway",
-      "source": {
-        "key": "oneway"
-      }
-    },
-    {
-      "output": "oneway:bicycle",
-      "source": {
-        "key": "oneway:bicycle"
-      }
-    },
-    {
-      "output": "lit",
-      "source": {
-        "key": "lit"
-      }
-    },
-    {
-      "output": "bridge",
-      "source": {
-        "key": "bridge"
-      }
-    },
-    {
-      "output": "tunnel",
-      "source": {
-        "key": "tunnel"
-      }
-    },
-    {
-      "output": "operator_type",
-      "source": {
-        "key": "operator_type"
-      }
-    },
-    {
-      "output": "informal",
-      "source": {
-        "key": "informal"
-      }
-    },
-    {
-      "output": "covered",
-      "source": {
-        "key": "covered"
-      }
-    },
-    {
-      "output": "traffic_sign",
-      "source": {
-        "key": "traffic_sign"
-      }
-    }
+    "highway",
+    "name",
+    "ref",
+    "surface",
+    "smoothness",
+    "maxspeed",
+    "oneway",
+    "oneway:bicycle",
+    "lit",
+    "bridge",
+    "tunnel",
+    "operator_type",
+    "informal",
+    "covered",
+    "traffic_sign"
   ],
   "sanitizers": [
     {

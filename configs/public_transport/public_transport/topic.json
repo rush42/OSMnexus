@@ -1,102 +1,22 @@
 {
   "table": "public_transport",
   "osm_fields": [
-    {
-      "output": "route",
-      "source": {
-        "key": "route"
-      }
-    },
-    {
-      "output": "public_transport",
-      "source": {
-        "key": "public_transport"
-      }
-    },
-    {
-      "output": "railway",
-      "source": {
-        "key": "railway"
-      }
-    },
-    {
-      "output": "name",
-      "source": {
-        "key": "name"
-      }
-    },
-    {
-      "output": "ref",
-      "source": {
-        "key": "ref"
-      }
-    },
-    {
-      "output": "operator",
-      "source": {
-        "key": "operator"
-      }
-    },
-    {
-      "output": "network",
-      "source": {
-        "key": "network"
-      }
-    },
-    {
-      "output": "usage",
-      "source": {
-        "key": "usage"
-      }
-    },
-    {
-      "output": "service",
-      "source": {
-        "key": "service"
-      }
-    },
-    {
-      "output": "electrified",
-      "source": {
-        "key": "electrified"
-      }
-    },
-    {
-      "output": "gauge",
-      "source": {
-        "key": "gauge"
-      }
-    },
-    {
-      "output": "maxspeed",
-      "source": {
-        "key": "maxspeed"
-      }
-    },
-    {
-      "output": "tracks",
-      "source": {
-        "key": "tracks"
-      }
-    },
-    {
-      "output": "bridge",
-      "source": {
-        "key": "bridge"
-      }
-    },
-    {
-      "output": "tunnel",
-      "source": {
-        "key": "tunnel"
-      }
-    },
-    {
-      "output": "layer",
-      "source": {
-        "key": "layer"
-      }
-    }
+    "route",
+    "public_transport",
+    "railway",
+    "name",
+    "ref",
+    "operator",
+    "network",
+    "usage",
+    "service",
+    "electrified",
+    "gauge",
+    "maxspeed",
+    "tracks",
+    "bridge",
+    "tunnel",
+    "layer"
   ],
   "sanitizers": [
     {

@@ -19,9 +19,17 @@
       "tag": "cycleway",
       "remove_tag": true,
       "cases": {
-        "opposite": { "oneway:bicycle": "no" },
-        "opposite_lane": { "cycleway:left": "lane", "oneway:bicycle": "no" },
-        "opposite_track": { "cycleway:left": "track", "oneway:bicycle": "no" }
+        "opposite": {
+          "oneway:bicycle": "no"
+        },
+        "opposite_lane": {
+          "cycleway:left": "lane",
+          "oneway:bicycle": "no"
+        },
+        "opposite_track": {
+          "cycleway:left": "track",
+          "oneway:bicycle": "no"
+        }
       }
     },
     {
@@ -29,7 +37,10 @@
       "prefix": "construction:",
       "stamp_key": "lifecycle",
       "stamp_value": "construction",
-      "stamp_nested_under": ["cycleway:", "sidewalk:"]
+      "stamp_nested_under": [
+        "cycleway:",
+        "sidewalk:"
+      ]
     },
     {
       "transform": "rename_key",
@@ -48,13 +59,30 @@
         {
           "when": {
             "and": [
-              { "tag": "highway", "in_set": "sidepath_highway" },
-              { "tag": "traffic_sign", "exists": false },
-              { "tag": "oneway", "eq": "yes" },
-              { "not": { "tag": "oneway:bicycle", "eq": "no" } }
+              {
+                "tag": "highway",
+                "in_set": "sidepath_highway"
+              },
+              {
+                "tag": "traffic_sign",
+                "exists": false
+              },
+              {
+                "tag": "oneway",
+                "eq": "yes"
+              },
+              {
+                "not": {
+                  "tag": "oneway:bicycle",
+                  "eq": "no"
+                }
+              }
             ]
           },
-          "value": { "tag_or": "traffic_sign:forward", "or": "" }
+          "value": {
+            "tag_or": "traffic_sign:forward",
+            "or": ""
+          }
         }
       ]
     },
@@ -62,14 +90,21 @@
       "transform": "split_sides",
       "highway": "cycleway",
       "prefix": "cycleway",
-      "directed_keys": ["cycleway:lanes", "bicycle:lanes"],
-      "self_directed_keys": ["traffic_sign"]
+      "directed_keys": [
+        "cycleway:lanes",
+        "bicycle:lanes"
+      ],
+      "self_directed_keys": [
+        "traffic_sign"
+      ]
     },
     {
       "transform": "split_sides",
       "highway": "footway",
       "prefix": "sidewalk",
-      "self_directed_keys": ["traffic_sign"]
+      "self_directed_keys": [
+        "traffic_sign"
+      ]
     }
   ],
   "osm_fields": [
@@ -87,30 +122,10 @@
         ]
       }
     },
-    {
-      "output": "surface",
-      "source": {
-        "key": "surface"
-      }
-    },
-    {
-      "output": "smoothness",
-      "source": {
-        "key": "smoothness"
-      }
-    },
-    {
-      "output": "width",
-      "source": {
-        "key": "width"
-      }
-    },
-    {
-      "output": "source:width",
-      "source": {
-        "key": "source:width"
-      }
-    },
+    "surface",
+    "smoothness",
+    "width",
+    "source:width",
     {
       "output": "bridge",
       "source": {
@@ -125,12 +140,7 @@
         "from": "parent"
       }
     },
-    {
-      "output": "oneway",
-      "source": {
-        "key": "oneway"
-      }
-    },
+    "oneway",
     {
       "output": "oneway:bicycle",
       "source": {
@@ -145,12 +155,7 @@
         ]
       }
     },
-    {
-      "output": "traffic_sign",
-      "source": {
-        "key": "traffic_sign"
-      }
-    },
+    "traffic_sign",
     {
       "output": "informal",
       "source": {
@@ -179,114 +184,24 @@
         "from": "parent"
       }
     },
-    {
-      "output": "segregated",
-      "source": {
-        "key": "segregated"
-      }
-    },
-    {
-      "output": "bicycle",
-      "source": {
-        "key": "bicycle"
-      }
-    },
-    {
-      "output": "foot",
-      "source": {
-        "key": "foot"
-      }
-    },
-    {
-      "output": "description",
-      "source": {
-        "key": "description"
-      }
-    },
-    {
-      "output": "note",
-      "source": {
-        "key": "note"
-      }
-    },
-    {
-      "output": "temporary",
-      "source": {
-        "key": "temporary"
-      }
-    },
-    {
-      "output": "separation:left",
-      "source": {
-        "key": "separation:left"
-      }
-    },
-    {
-      "output": "separation:right",
-      "source": {
-        "key": "separation:right"
-      }
-    },
-    {
-      "output": "separation:both",
-      "source": {
-        "key": "separation:both"
-      }
-    },
-    {
-      "output": "marking:left",
-      "source": {
-        "key": "marking:left"
-      }
-    },
-    {
-      "output": "marking:right",
-      "source": {
-        "key": "marking:right"
-      }
-    },
-    {
-      "output": "marking:both",
-      "source": {
-        "key": "marking:both"
-      }
-    },
-    {
-      "output": "traffic_mode:left",
-      "source": {
-        "key": "traffic_mode:left"
-      }
-    },
-    {
-      "output": "traffic_mode:right",
-      "source": {
-        "key": "traffic_mode:right"
-      }
-    },
-    {
-      "output": "traffic_mode:both",
-      "source": {
-        "key": "traffic_mode:both"
-      }
-    },
-    {
-      "output": "buffer:left",
-      "source": {
-        "key": "buffer:left"
-      }
-    },
-    {
-      "output": "buffer:right",
-      "source": {
-        "key": "buffer:right"
-      }
-    },
-    {
-      "output": "buffer:both",
-      "source": {
-        "key": "buffer:both"
-      }
-    },
+    "segregated",
+    "bicycle",
+    "foot",
+    "description",
+    "note",
+    "temporary",
+    "separation:left",
+    "separation:right",
+    "separation:both",
+    "marking:left",
+    "marking:right",
+    "marking:both",
+    "traffic_mode:left",
+    "traffic_mode:right",
+    "traffic_mode:both",
+    "buffer:left",
+    "buffer:right",
+    "buffer:both",
     {
       "output": "surface:colour",
       "source": {
