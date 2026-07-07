@@ -9,6 +9,8 @@ const DEBOUNCE_MS = 300;
 
 export default function App() {
   const [bounds, setBounds] = useState<[number, number, number, number] | null>(null);
+  const [selected, setSelected] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -17,11 +19,37 @@ export default function App() {
   useEffect(() => {
     fetch("/api/bounds")
       .then((r) => r.json())
-      .then((d) => setBounds(d.bounds));
+      .then((d) => {
+        setBounds(d.bounds);
+        setSelected(d.selected);
+      });
     fetch(`/api/category/${TOPIC}/${KIND}/${NAME}`)
       .then((r) => r.json())
       .then((d) => setText(d.json));
   }, []);
+
+  async function selectBbox(box: [number, number, number, number]) {
+    setExtracting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bounds: box }),
+      });
+      const body = await res.json();
+      if (res.ok) {
+        setBounds(body.bounds);
+        setSelected(true);
+        setData(null);
+        if (text) classify(text);
+      } else {
+        setError(body.error || "Unknown error");
+      }
+    } finally {
+      setExtracting(false);
+    }
+  }
 
   useEffect(() => {
     if (!text) return;
@@ -58,8 +86,26 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
-      <div style={{ flex: "1 1 60%" }}>
-        <Map bounds={bounds} data={data} />
+      <div style={{ flex: "1 1 60%", position: "relative" }}>
+        <Map bounds={bounds} data={data} onBboxSelected={selectBbox} />
+        {(!selected || extracting) && (
+          <div
+            style={{
+              position: "absolute",
+              top: 10,
+              left: 10,
+              padding: "6px 10px",
+              background: "rgba(0,0,0,0.7)",
+              color: "#fff",
+              fontFamily: "sans-serif",
+              fontSize: 13,
+              borderRadius: 4,
+              pointerEvents: "none",
+            }}
+          >
+            {extracting ? "Extracting…" : "Shift+drag on the map to select an area to edit"}
+          </div>
+        )}
       </div>
       <div style={{ flex: "1 1 40%", display: "flex", flexDirection: "column", borderLeft: "1px solid #ccc" }}>
         <div style={{ padding: "6px 10px", fontFamily: "sans-serif", fontSize: 13, borderBottom: "1px solid #ccc" }}>

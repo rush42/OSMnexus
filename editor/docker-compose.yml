@@ -3,6 +3,9 @@ services:
     build: .
     volumes:
       - ..:/repo
+      - ${BASE_PBF:-../berlin.osm.pbf}:/data/base.osm.pbf:ro
     working_dir: /repo/editor
+    environment:
+      - BASE_PBF_PATH=/data/base.osm.pbf
     ports:
       - "5173:5173"

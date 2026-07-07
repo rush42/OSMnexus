@@ -8,12 +8,57 @@ import wkx from "wkx";
 
 const EDITOR_DIR = path.resolve(__dirname);
 const REPO_DIR = path.resolve(__dirname, "..");
-const PIPELINE_BIN = path.join(REPO_DIR, "target", "release", "osm-pipeline");
-const EXTRACT_PBF = path.join(EDITOR_DIR, "fixtures", "tiny.osm.pbf");
+const PIPELINE_BIN = path.join(REPO_DIR, "target", "release", "osmnexus");
 const LIVE_CONFIG_DIR = path.join(EDITOR_DIR, "live-config");
+const BASE_PBF = process.env.BASE_PBF_PATH || path.join(EDITOR_DIR, "fixtures", "tiny.osm.pbf");
+const EXTRACT_DIR = path.join(EDITOR_DIR, "live-extract");
 
-// Bounding box used to cut fixtures/tiny.osm.pbf (west,south,east,north).
-const EXTRACT_BOUNDS = [13.275301, 52.506165, 13.338215, 52.52771];
+// The extract currently in use for the map/pipeline. Starts out unset until
+// the user picks a bbox (or, for the bundled fixture, defaults to it).
+let currentExtractPath: string | null = null;
+let currentBounds: [number, number, number, number] | null = null;
+
+function run(bin: string, args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; message: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d.toString()));
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("error", (err) => resolve({ ok: false, message: String(err) }));
+    child.on("close", (code) => {
+      if (code === 0) resolve({ ok: true, stdout });
+      else resolve({ ok: false, message: stderr || `${bin} exited with code ${code}` });
+    });
+  });
+}
+
+async function baseFileBounds(): Promise<[number, number, number, number]> {
+  const result = await run("osmium", ["fileinfo", "-e", "-j", BASE_PBF]);
+  if (!result.ok) throw new Error(result.message);
+  const info = JSON.parse(result.stdout);
+  return info.data.bbox;
+}
+
+async function extractBbox(bounds: [number, number, number, number]): Promise<{ ok: true } | { ok: false; message: string }> {
+  await fs.mkdir(EXTRACT_DIR, { recursive: true });
+  const outPath = path.join(EXTRACT_DIR, "extract.osm.pbf");
+  const result = await run("osmium", [
+    "extract",
+    "-b",
+    bounds.join(","),
+    "-s",
+    "complete_ways",
+    "-o",
+    outPath,
+    "--overwrite",
+    BASE_PBF,
+  ]);
+  if (!result.ok) return result;
+  currentExtractPath = outPath;
+  currentBounds = bounds;
+  return { ok: true };
+}
 
 function readBody(req: any): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -31,21 +76,9 @@ function sendJson(res: any, status: number, body: unknown) {
   res.end(text);
 }
 
-function runPipeline(outDir: string): Promise<{ ok: true } | { ok: false; message: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(
-      PIPELINE_BIN,
-      [EXTRACT_PBF, "--config-dir", LIVE_CONFIG_DIR, "--output", "csv", "--out-dir", outDir],
-      { stdio: ["ignore", "pipe", "pipe"] }
-    );
-    let stderr = "";
-    child.stderr.on("data", (d) => (stderr += d.toString()));
-    child.on("error", (err) => resolve({ ok: false, message: String(err) }));
-    child.on("close", (code) => {
-      if (code === 0) resolve({ ok: true });
-      else resolve({ ok: false, message: stderr || `osm-pipeline exited with code ${code}` });
-    });
-  });
+async function runPipeline(pbfPath: string, outDir: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  const result = await run(PIPELINE_BIN, [pbfPath, "--config-dir", LIVE_CONFIG_DIR, "--output", "csv", "--out-dir", outDir]);
+  return result.ok ? { ok: true } : result;
 }
 
 // Minimal CSV parser: no embedded newlines in fields except JSON-stringified
@@ -113,7 +146,7 @@ function reprojectGeometry(geometry: any): any {
 async function buildFeatureCollection(outDir: string, topic: string) {
   const [topicCsv, geomCsv] = await Promise.all([
     fs.readFile(path.join(outDir, `${topic}.csv`), "utf-8"),
-    fs.readFile(path.join(outDir, "geometries.csv"), "utf-8"),
+    fs.readFile(path.join(outDir, "edges.csv"), "utf-8"),
   ]);
   const topicRows = parseCsv(topicCsv);
   const geomRows = parseCsv(geomCsv);
@@ -167,7 +200,30 @@ function liveEditorApi(): Plugin {
         const url = new URL(req.url, "http://localhost");
 
         if (url.pathname === "/api/bounds" && req.method === "GET") {
-          return sendJson(res, 200, { bounds: EXTRACT_BOUNDS });
+          if (currentBounds) return sendJson(res, 200, { bounds: currentBounds, selected: true });
+          try {
+            const bounds = await baseFileBounds();
+            return sendJson(res, 200, { bounds, selected: false });
+          } catch (err) {
+            return sendJson(res, 500, { error: String(err) });
+          }
+        }
+
+        if (url.pathname === "/api/extract" && req.method === "POST") {
+          const body = await readBody(req);
+          let payload: { bounds: [number, number, number, number] };
+          try {
+            payload = JSON.parse(body);
+          } catch {
+            return sendJson(res, 400, { error: "request body is not valid JSON" });
+          }
+          const bounds = payload.bounds;
+          if (!Array.isArray(bounds) || bounds.length !== 4 || bounds.some((n) => typeof n !== "number")) {
+            return sendJson(res, 400, { error: "bounds must be [west, south, east, north]" });
+          }
+          const result = await extractBbox(bounds as [number, number, number, number]);
+          if (!result.ok) return sendJson(res, 400, { error: result.message });
+          return sendJson(res, 200, { bounds: currentBounds });
         }
 
         const categoryMatch = url.pathname.match(/^\/api\/category\/([^/]+)\/([^/]+)\/([^/]+)$/);
@@ -191,6 +247,10 @@ function liveEditorApi(): Plugin {
           }
           const { topic, kind, name, json } = payload;
 
+          if (!currentExtractPath) {
+            return sendJson(res, 400, { error: "no extract selected yet: pick a bbox on the map first" });
+          }
+
           try {
             JSON.parse(json);
           } catch (err) {
@@ -201,7 +261,7 @@ function liveEditorApi(): Plugin {
           await fs.writeFile(categoryFilePath(topic, kind, name), json, "utf-8");
 
           const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-"));
-          const result = await runPipeline(outDir);
+          const result = await runPipeline(currentExtractPath, outDir);
           if (!result.ok) {
             return sendJson(res, 400, { error: result.message });
           }
