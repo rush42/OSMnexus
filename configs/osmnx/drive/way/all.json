@@ -1,6 +1,3 @@
 {
-  "condition": true,
-  "consts": {
-    "minzoom": 0
-  }
+  "condition": true
 }

@@ -73,8 +73,5 @@
     "landuse",
     "bridge",
     "tunnel"
-  ],
-  "consts": {
-    "minzoom": 0
-  }
+  ]
 }
