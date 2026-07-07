@@ -143,13 +143,15 @@ async function runPipelineAndRespond(res: any) {
     return sendJson(res, 400, { error: "no extract selected yet: pick a bbox on the map first" });
   }
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-"));
+  const t0 = performance.now();
   const result = await runPipeline(currentExtractPath, outDir);
+  const pipelineMs = Math.round(performance.now() - t0);
   if (!result.ok) {
     return sendJson(res, 400, { error: result.message });
   }
   try {
     const fc = await readMergedFeatureCollections(outDir, await listTopics());
-    return sendJson(res, 200, fc);
+    return sendJson(res, 200, { ...fc, pipelineMs });
   } catch (err) {
     return sendJson(res, 500, { error: String(err) });
   } finally {
@@ -187,9 +189,11 @@ function liveEditorApi(): Plugin {
           if (!Array.isArray(bounds) || bounds.length !== 4 || bounds.some((n) => typeof n !== "number")) {
             return sendJson(res, 400, { error: "bounds must be [west, south, east, north]" });
           }
+          const t0 = performance.now();
           const result = await extractBbox(bounds as [number, number, number, number]);
+          const extractMs = Math.round(performance.now() - t0);
           if (!result.ok) return sendJson(res, 400, { error: result.message });
-          return sendJson(res, 200, { bounds: currentBounds });
+          return sendJson(res, 200, { bounds: currentBounds, extractMs });
         }
 
         if (url.pathname === "/api/topics" && req.method === "GET") {

@@ -7,7 +7,10 @@ const DEBOUNCE_MS = 300;
 const NEW_CATEGORY_JSON = '{"condition":{}}';
 
 type Category = { topic: string; kind: string; name: string };
-const NO_CATEGORY: Category = { topic: "", kind: DEFAULT_KIND, name: "" };
+// A "selection" is either a category (kind/name point at a way/node/relation category file) or the
+// topic's own topic.json (table/exclude_condition/osm_fields) — same editor pane, different file.
+type Selection = Category & { isTopicConfig?: boolean };
+const NO_SELECTION: Selection = { topic: "", kind: DEFAULT_KIND, name: "" };
 
 // Deterministic (not reshuffled every render) but effectively-random hue per key, so each
 // topic/category pair gets a stable color on the map without needing a maintained palette.
@@ -28,15 +31,16 @@ export default function App() {
   const [hiddenTopics, setHiddenTopics] = useState<Set<string>>(new Set());
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
   const [categoriesByTopic, setCategoriesByTopic] = useState<Record<string, Category[]>>({});
-  const [active, setActive] = useState<Category>(NO_CATEGORY);
+  const [active, setActive] = useState<Selection>(NO_SELECTION);
   const [newNameByTopic, setNewNameByTopic] = useState<Record<string, string>>({});
-  const [topicJson, setTopicJson] = useState<Record<string, string>>({});
-  const topicJsonDebounceRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [collapsed, setCollapsed] = useState(false);
+  const [showNodes, setShowNodes] = useState(true);
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [cutPoints, setCutPoints] = useState<GeoJSON.FeatureCollection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [extractMs, setExtractMs] = useState<number | null>(null);
+  const [pipelineMs, setPipelineMs] = useState<number | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -62,13 +66,20 @@ export default function App() {
         const cats = d.categories.map((c) => ({ topic, ...c }));
         setCategoriesByTopic((prev) => ({ ...prev, [topic]: cats }));
         // Auto-select the first category loaded, for any topic, as long as nothing is selected yet —
-        // `cur.topic === topic` doesn't work here since `cur` starts as NO_CATEGORY (topic: ""),
+        // `cur.topic === topic` doesn't work here since `cur` starts as NO_SELECTION (topic: ""),
         // which never equals a real topic name, so nothing was ever auto-selected on load.
         setActive((cur) => (!cur.topic && !cur.name && cats[0] ? cats[0] : cur));
       });
   }
 
   useEffect(() => {
+    if (active.isTopicConfig) {
+      fetch(`/api/topic/${encodeURIComponent(active.topic)}`)
+        .then((r) => r.json())
+        .then((d) => setText(d.json))
+        .catch(() => setText("{}"));
+      return;
+    }
     if (!active.topic || !active.name) {
       setText(NEW_CATEGORY_JSON);
       return;
@@ -79,25 +90,13 @@ export default function App() {
       .catch(() => setText(NEW_CATEGORY_JSON));
   }, [active]);
 
-  // Load a topic's topic.json the first time its panel is expanded.
-  useEffect(() => {
-    for (const topic of expandedTopics) {
-      if (topicJson[topic] !== undefined) continue;
-      fetch(`/api/topic/${encodeURIComponent(topic)}`)
-        .then((r) => r.json())
-        .then((d) => setTopicJson((prev) => (prev[topic] !== undefined ? prev : { ...prev, [topic]: d.json })))
-        .catch(() => setTopicJson((prev) => (prev[topic] !== undefined ? prev : { ...prev, [topic]: "{}" })));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedTopics]);
-
-  const categoryColors = useMemo(() => {
+  // One color per topic (not per category, for now) — categories within a topic aren't
+  // individually distinguished yet.
+  const topicColors = useMemo(() => {
     const colors: Record<string, string> = {};
-    for (const cats of Object.values(categoriesByTopic)) {
-      for (const c of cats) colors[`${c.topic}/${c.name}`] = hashColor(`${c.topic}/${c.name}`);
-    }
+    for (const topic of topics) colors[topic] = hashColor(topic);
     return colors;
-  }, [categoriesByTopic]);
+  }, [topics]);
 
   async function addCategory(topic: string) {
     const name = (newNameByTopic[topic] ?? "").trim();
@@ -123,8 +122,9 @@ export default function App() {
       if (res.ok) {
         setBounds(body.bounds);
         setSelected(true);
+        setExtractMs(body.extractMs ?? null);
         setData(null);
-        if (text) classify(text);
+        if (text && active.topic && (active.name || active.isTopicConfig)) classify(text);
       } else {
         setError(body.error || "Unknown error");
       }
@@ -134,7 +134,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!text || !active.topic || !active.name) return;
+    if (!text || !active.topic || (!active.name && !active.isTopicConfig)) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       classify(text);
@@ -156,7 +156,7 @@ export default function App() {
     setCategoriesByTopic((prev) => ({ ...prev, [c.topic]: remaining }));
     if (active.topic === c.topic && active.kind === c.kind && active.name === c.name) {
       setActive(remaining[0] ?? { topic: c.topic, kind: DEFAULT_KIND, name: "" });
-    } else if (selected) {
+    } else if (selected && active.topic && (active.name || active.isTopicConfig)) {
       classify(text);
     }
   }
@@ -175,65 +175,76 @@ export default function App() {
       const next = new Set(prev);
       if (next.has(topic)) next.delete(topic);
       else next.add(topic);
+      // Folding every topic away clears the selection — reopening a (possibly different) topic
+      // afterward should start from "nothing selected", not silently resurface whatever was open
+      // before everything got minimized.
+      if (next.size === 0) setActive(NO_SELECTION);
       return next;
     });
   }
 
-  async function classify(json: string, category: Category = active) {
+  async function classify(json: string, selection: Selection = active) {
     try {
       JSON.parse(json);
     } catch (err) {
       setError(`Invalid JSON: ${(err as Error).message}`);
       return;
     }
-    const res = await fetch("/api/classify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic: category.topic, kind: category.kind, name: category.name, json }),
-    });
+    const res = selection.isTopicConfig
+      ? await fetch(`/api/topic/${encodeURIComponent(selection.topic)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ json }),
+        })
+      : await fetch("/api/classify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ topic: selection.topic, kind: selection.kind, name: selection.name, json }),
+        });
     const body = await res.json();
     if (res.ok) {
       setError(null);
       setData(body);
       setCutPoints(body.cutPoints ?? null);
+      setPipelineMs(body.pipelineMs ?? null);
     } else {
       setError(body.error || "Unknown error");
     }
-  }
-
-  async function classifyTopic(topic: string, json: string) {
-    try {
-      JSON.parse(json);
-    } catch (err) {
-      setError(`Invalid JSON: ${(err as Error).message}`);
-      return;
-    }
-    const res = await fetch(`/api/topic/${encodeURIComponent(topic)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ json }),
-    });
-    const body = await res.json();
-    if (res.ok) {
-      setError(null);
-      setData(body);
-      setCutPoints(body.cutPoints ?? null);
-    } else {
-      setError(body.error || "Unknown error");
-    }
-  }
-
-  function onTopicJsonChange(topic: string, value: string) {
-    setTopicJson((prev) => ({ ...prev, [topic]: value }));
-    const timers = topicJsonDebounceRef.current;
-    if (timers[topic]) clearTimeout(timers[topic]);
-    timers[topic] = setTimeout(() => classifyTopic(topic, value), DEBOUNCE_MS);
   }
 
   return (
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
       <div style={{ flex: "1 1 60%", position: "relative" }}>
-        <Map bounds={bounds} data={data} cutPoints={cutPoints} categoryColors={categoryColors} hiddenTopics={hiddenTopics} onBboxSelected={selectBbox} />
+        <Map
+          bounds={bounds}
+          data={data}
+          cutPoints={cutPoints}
+          topicColors={topicColors}
+          hiddenTopics={hiddenTopics}
+          showNodes={showNodes}
+          onBboxSelected={selectBbox}
+        />
+        <label
+          style={{
+            position: "absolute",
+            top: 10,
+            right: 10,
+            padding: "6px 10px",
+            background: "rgba(0,0,0,0.7)",
+            color: "#fff",
+            fontFamily: "sans-serif",
+            fontSize: 13,
+            borderRadius: 4,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+        >
+          <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
+          Show intersections
+        </label>
         {(!selected || extracting) && (
           <div
             style={{
@@ -250,6 +261,26 @@ export default function App() {
             }}
           >
             {extracting ? "Extracting…" : "Shift+drag on the map to select an area to edit"}
+          </div>
+        )}
+        {(extractMs !== null || pipelineMs !== null) && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: 10,
+              left: 10,
+              padding: "6px 10px",
+              background: "rgba(0,0,0,0.7)",
+              color: "#fff",
+              fontFamily: "monospace",
+              fontSize: 12,
+              borderRadius: 4,
+              pointerEvents: "none",
+            }}
+          >
+            {extractMs !== null && <>extract: {extractMs}ms</>}
+            {extractMs !== null && pipelineMs !== null && " · "}
+            {pipelineMs !== null && <>pipeline: {pipelineMs}ms</>}
           </div>
         )}
       </div>
@@ -275,11 +306,7 @@ export default function App() {
           }}
         >
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {active.topic && active.name
-              ? collapsed
-                ? active.topic
-                : `${active.topic}/${active.kind}/${active.name}.json`
-              : "no category selected"}
+            {collapsed ? active.topic || "topics" : "topics"}
           </span>
           <button onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Expand" : "Minimize"}>
             {collapsed ? "◀" : "▶"}
@@ -319,11 +346,51 @@ export default function App() {
                         {hiddenTopics.has(topic) ? "🚫" : "👁"}
                       </button>
                       <span>{expanded ? "▾" : "▸"}</span>
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: 10,
+                          height: 10,
+                          borderRadius: "50%",
+                          background: topicColors[topic],
+                          flexShrink: 0,
+                        }}
+                      />
                       <span style={{ flex: 1 }}>{topic}</span>
                       <span style={{ color: "#888" }}>{cats.length}</span>
                     </div>
                     {expanded && (
                       <div style={{ paddingLeft: 14 }}>
+                        <div
+                          onClick={() => setActive({ topic, kind: "", name: "", isTopicConfig: true })}
+                          style={{
+                            padding: "5px 10px",
+                            fontFamily: "monospace",
+                            fontSize: 12,
+                            fontWeight: "bold",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            background: active.topic === topic && active.isTopicConfig ? "#2a7be633" : "transparent",
+                          }}
+                        >
+                          topic.json
+                        </div>
+                        <div style={{ display: "flex", padding: "5px 10px", gap: 4 }}>
+                          <input
+                            value={newNameByTopic[topic] ?? ""}
+                            onChange={(e) => setNewNameByTopic((prev) => ({ ...prev, [topic]: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") addCategory(topic);
+                            }}
+                            placeholder={`new category in ${topic}`}
+                            style={{ flex: 1, fontFamily: "monospace", fontSize: 12 }}
+                          />
+                          <button onClick={() => addCategory(topic)} title="Add category">
+                            +
+                          </button>
+                        </div>
                         {cats.map((c) => (
                           <div
                             key={`${c.kind}/${c.name}`}
@@ -339,16 +406,6 @@ export default function App() {
                               background: c.topic === active.topic && c.kind === active.kind && c.name === active.name ? "#2a7be633" : "transparent",
                             }}
                           >
-                            <span
-                              style={{
-                                display: "inline-block",
-                                width: 10,
-                                height: 10,
-                                borderRadius: "50%",
-                                background: categoryColors[`${c.topic}/${c.name}`],
-                                flexShrink: 0,
-                              }}
-                            />
                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
                               {c.kind}/{c.name}
                             </span>
@@ -364,37 +421,34 @@ export default function App() {
                             </button>
                           </div>
                         ))}
-                        <div style={{ display: "flex", padding: "5px 10px", gap: 4 }}>
-                          <input
-                            value={newNameByTopic[topic] ?? ""}
-                            onChange={(e) => setNewNameByTopic((prev) => ({ ...prev, [topic]: e.target.value }))}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") addCategory(topic);
-                            }}
-                            placeholder={`new category in ${topic}`}
-                            style={{ flex: 1, fontFamily: "monospace", fontSize: 12 }}
-                          />
-                          <button onClick={() => addCategory(topic)} title="Add category">
-                            +
-                          </button>
-                        </div>
-                        <div style={{ padding: "5px 10px 8px" }}>
-                          <div style={{ fontFamily: "monospace", fontSize: 11, color: "#888", marginBottom: 3 }}>
-                            {topic}/topic.json
-                          </div>
-                          <div style={{ height: 160, border: "1px solid #ccc" }}>
-                            <Editor value={topicJson[topic] ?? ""} onChange={(v) => onTopicJsonChange(topic, v)} />
-                          </div>
-                        </div>
                       </div>
                     )}
                   </div>
                 );
               })}
             </div>
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <Editor value={text} onChange={setText} />
-            </div>
+            {active.topic && (active.name || active.isTopicConfig) && (
+              <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+                <div
+                  style={{
+                    padding: "4px 10px",
+                    fontFamily: "monospace",
+                    fontSize: 11,
+                    color: "#888",
+                    borderTop: "1px solid #ccc",
+                    borderBottom: "1px solid #ccc",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {active.isTopicConfig ? `${active.topic}/topic.json` : `${active.topic}/${active.kind}/${active.name}.json`}
+                </div>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <Editor value={text} onChange={setText} />
+                </div>
+              </div>
+            )}
             {error && (
               <div style={{ padding: "8px 10px", background: "#3a1f1f", color: "#ffb4b4", fontFamily: "monospace", fontSize: 12, whiteSpace: "pre-wrap" }}>
                 {error}

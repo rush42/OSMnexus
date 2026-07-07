@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 
 const SOURCE_ID = "live-editor-features";
@@ -28,17 +28,16 @@ function boxToPolygon(a: [number, number], b: [number, number]): GeoJSON.Feature
   };
 }
 
-// Builds a MapLibre `match` expression keyed on `topic/category` (not category alone — category
-// *names* collide across topics, e.g. osmnx's bike/walk/drive topics all use "all"), falling back
-// to a neutral color for anything not yet in `categoryColors`.
+// Builds a MapLibre `match` expression keyed on `topic` — one color per topic for now, categories
+// within a topic aren't individually distinguished yet. Falls back to a neutral color for anything
+// not yet in `topicColors`.
 const FALLBACK_COLOR = "#e6432a";
-const TOPIC_CATEGORY_KEY = ["concat", ["get", "topic"], "/", ["get", "category"]] as unknown as maplibregl.ExpressionSpecification;
-function colorExpression(categoryColors: Record<string, string>): maplibregl.ExpressionSpecification | string {
-  const entries = Object.entries(categoryColors);
+function colorExpression(topicColors: Record<string, string>): maplibregl.ExpressionSpecification | string {
+  const entries = Object.entries(topicColors);
   if (entries.length === 0) return FALLBACK_COLOR;
   return [
     "match",
-    TOPIC_CATEGORY_KEY,
+    ["get", "topic"],
     ...entries.flatMap(([key, color]) => [key, color]),
     FALLBACK_COLOR,
   ] as unknown as maplibregl.ExpressionSpecification;
@@ -53,25 +52,31 @@ export default function Map({
   bounds,
   data,
   cutPoints,
-  categoryColors,
+  topicColors,
   hiddenTopics,
+  showNodes,
   onBboxSelected,
 }: {
   bounds: [number, number, number, number] | null;
   data: GeoJSON.FeatureCollection | null;
   cutPoints: GeoJSON.FeatureCollection | null;
-  categoryColors: Record<string, string>;
+  topicColors: Record<string, string>;
   hiddenTopics: Set<string>;
+  showNodes: boolean;
   onBboxSelected: (bounds: [number, number, number, number]) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const onBboxSelectedRef = useRef(onBboxSelected);
   onBboxSelectedRef.current = onBboxSelected;
-  const categoryColorsRef = useRef(categoryColors);
-  categoryColorsRef.current = categoryColors;
-  const hiddenTopicsRef = useRef(hiddenTopics);
-  hiddenTopicsRef.current = hiddenTopics;
+  // Flips true exactly once, from the map's own "load" event — every other effect below depends on
+  // it instead of each re-deriving "is the map ready" via `map.loaded()` + a one-off `map.once("load")`
+  // listener. That ad-hoc pattern raced: if "load" had already fired by the time an effect ran (timing
+  // depends on network/image load, not just React's render), `map.once("load", ...)` would attach to
+  // an event that already happened and never fire — the "sometimes it just doesn't show up" bug.
+  // Depending on `ready` state instead means React itself re-runs every effect when it flips, with no
+  // manual event-listener race possible.
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -99,15 +104,14 @@ export default function Map({
         id: `${SOURCE_ID}-line`,
         type: "line",
         source: SOURCE_ID,
-        filter: visibilityFilter(hiddenTopicsRef.current),
-        paint: { "line-color": colorExpression(categoryColorsRef.current), "line-width": 3 },
+        paint: { "line-color": FALLBACK_COLOR, "line-width": 3 },
       });
       map.addLayer({
         id: `${SOURCE_ID}-point`,
         type: "circle",
         source: SOURCE_ID,
-        filter: ["all", ["==", ["geometry-type"], "Point"], visibilityFilter(hiddenTopicsRef.current)] as unknown as maplibregl.ExpressionSpecification,
-        paint: { "circle-color": colorExpression(categoryColorsRef.current), "circle-radius": 5 },
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: { "circle-color": FALLBACK_COLOR, "circle-radius": 5 },
       });
 
       map.addSource(CUT_POINTS_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
@@ -115,15 +119,13 @@ export default function Map({
         id: `${CUT_POINTS_SOURCE_ID}-halo`,
         type: "circle",
         source: CUT_POINTS_SOURCE_ID,
-        filter: visibilityFilter(hiddenTopicsRef.current),
         paint: { "circle-color": "#ffffff", "circle-radius": 5 },
       });
       map.addLayer({
         id: `${CUT_POINTS_SOURCE_ID}-point`,
         type: "circle",
         source: CUT_POINTS_SOURCE_ID,
-        filter: visibilityFilter(hiddenTopicsRef.current),
-        paint: { "circle-color": "#ffb400", "circle-radius": 3, "circle-stroke-color": "#000", "circle-stroke-width": 1 },
+        paint: { "circle-color": "#000000", "circle-radius": 3, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1 },
       });
 
       const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: "320px" });
@@ -156,6 +158,8 @@ export default function Map({
         source: DRAW_SOURCE_ID,
         paint: { "line-color": "#2a7be6", "line-width": 2, "line-dasharray": [2, 2] },
       });
+
+      setReady(true);
     });
 
     let start: [number, number] | null = null;
@@ -196,60 +200,50 @@ export default function Map({
       map.off("mousedown", onMouseDown);
       map.remove();
       mapRef.current = null;
+      setReady(false);
     };
   }, []);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !bounds) return;
-    const apply = () => map.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]], { padding: 20, duration: 0 });
-    if (map.loaded()) apply();
-    else map.once("load", apply);
-  }, [bounds]);
+    if (!ready || !bounds) return;
+    mapRef.current!.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]], { padding: 20, duration: 0 });
+  }, [ready, bounds]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !data) return;
-    const setData = () => (map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource)?.setData(data);
-    if (map.loaded() && map.getSource(SOURCE_ID)) setData();
-    else map.once("load", setData);
-  }, [data]);
+    if (!ready || !data) return;
+    (mapRef.current!.getSource(SOURCE_ID) as maplibregl.GeoJSONSource).setData(data);
+  }, [ready, data]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const expr = colorExpression(categoryColors);
-    const apply = () => {
-      map.setPaintProperty(`${SOURCE_ID}-line`, "line-color", expr);
-      map.setPaintProperty(`${SOURCE_ID}-point`, "circle-color", expr);
-    };
-    if (map.loaded() && map.getLayer(`${SOURCE_ID}-line`)) apply();
-    else map.once("load", apply);
-  }, [categoryColors]);
+    if (!ready) return;
+    const expr = colorExpression(topicColors);
+    mapRef.current!.setPaintProperty(`${SOURCE_ID}-line`, "line-color", expr);
+    mapRef.current!.setPaintProperty(`${SOURCE_ID}-point`, "circle-color", expr);
+  }, [ready, topicColors]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
+    if (!ready) return;
     const fc = cutPoints ?? { type: "FeatureCollection" as const, features: [] };
-    const setData = () => (map.getSource(CUT_POINTS_SOURCE_ID) as maplibregl.GeoJSONSource)?.setData(fc);
-    if (map.loaded() && map.getSource(CUT_POINTS_SOURCE_ID)) setData();
-    else map.once("load", setData);
-  }, [cutPoints]);
+    (mapRef.current!.getSource(CUT_POINTS_SOURCE_ID) as maplibregl.GeoJSONSource).setData(fc);
+  }, [ready, cutPoints]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
+    if (!ready) return;
+    const visibility = showNodes ? "visible" : "none";
+    mapRef.current!.setLayoutProperty(`${CUT_POINTS_SOURCE_ID}-halo`, "visibility", visibility);
+    mapRef.current!.setLayoutProperty(`${CUT_POINTS_SOURCE_ID}-point`, "visibility", visibility);
+  }, [ready, showNodes]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const map = mapRef.current!;
     const lineFilter = visibilityFilter(hiddenTopics);
     const pointFilter = ["all", ["==", ["geometry-type"], "Point"], lineFilter] as unknown as maplibregl.ExpressionSpecification;
-    const apply = () => {
-      map.setFilter(`${SOURCE_ID}-line`, lineFilter);
-      map.setFilter(`${SOURCE_ID}-point`, pointFilter);
-      map.setFilter(`${CUT_POINTS_SOURCE_ID}-halo`, lineFilter);
-      map.setFilter(`${CUT_POINTS_SOURCE_ID}-point`, lineFilter);
-    };
-    if (map.loaded() && map.getLayer(`${SOURCE_ID}-line`)) apply();
-    else map.once("load", apply);
-  }, [hiddenTopics]);
+    map.setFilter(`${SOURCE_ID}-line`, lineFilter);
+    map.setFilter(`${SOURCE_ID}-point`, pointFilter);
+    map.setFilter(`${CUT_POINTS_SOURCE_ID}-halo`, lineFilter);
+    map.setFilter(`${CUT_POINTS_SOURCE_ID}-point`, lineFilter);
+  }, [ready, hiddenTopics]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }
