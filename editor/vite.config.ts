@@ -226,6 +226,26 @@ function liveEditorApi(): Plugin {
           return sendJson(res, 200, { bounds: currentBounds });
         }
 
+        const categoriesMatch = url.pathname.match(/^\/api\/categories\/([^/]+)$/);
+        if (categoriesMatch && req.method === "GET") {
+          const [, topic] = categoriesMatch;
+          const topicDir = path.join(LIVE_CONFIG_DIR, topic);
+          const kinds = ["way", "node", "relation"];
+          const categories: { kind: string; name: string }[] = [];
+          for (const kind of kinds) {
+            let entries: string[] = [];
+            try {
+              entries = await fs.readdir(path.join(topicDir, kind));
+            } catch {
+              continue;
+            }
+            for (const entry of entries) {
+              if (entry.endsWith(".json")) categories.push({ kind, name: entry.slice(0, -".json".length) });
+            }
+          }
+          return sendJson(res, 200, { categories });
+        }
+
         const categoryMatch = url.pathname.match(/^\/api\/category\/([^/]+)\/([^/]+)\/([^/]+)$/);
         if (categoryMatch && req.method === "GET") {
           const [, topic, kind, name] = categoryMatch;
