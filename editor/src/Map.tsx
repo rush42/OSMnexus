@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 
 const SOURCE_ID = "live-editor-features";
+const CUT_POINTS_SOURCE_ID = "live-editor-cut-points";
 const DRAW_SOURCE_ID = "bbox-draw";
 
 function boxToPolygon(a: [number, number], b: [number, number]): GeoJSON.Feature {
@@ -30,10 +31,12 @@ function boxToPolygon(a: [number, number], b: [number, number]): GeoJSON.Feature
 export default function Map({
   bounds,
   data,
+  cutPoints,
   onBboxSelected,
 }: {
   bounds: [number, number, number, number] | null;
   data: GeoJSON.FeatureCollection | null;
+  cutPoints: GeoJSON.FeatureCollection | null;
   onBboxSelected: (bounds: [number, number, number, number]) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -75,6 +78,20 @@ export default function Map({
         source: SOURCE_ID,
         filter: ["==", ["geometry-type"], "Point"],
         paint: { "circle-color": "#e6432a", "circle-radius": 5 },
+      });
+
+      map.addSource(CUT_POINTS_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({
+        id: `${CUT_POINTS_SOURCE_ID}-halo`,
+        type: "circle",
+        source: CUT_POINTS_SOURCE_ID,
+        paint: { "circle-color": "#ffffff", "circle-radius": 5 },
+      });
+      map.addLayer({
+        id: `${CUT_POINTS_SOURCE_ID}-point`,
+        type: "circle",
+        source: CUT_POINTS_SOURCE_ID,
+        paint: { "circle-color": "#ffb400", "circle-radius": 3, "circle-stroke-color": "#000", "circle-stroke-width": 1 },
       });
 
       const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: "320px" });
@@ -165,6 +182,15 @@ export default function Map({
     if (map.loaded() && map.getSource(SOURCE_ID)) setData();
     else map.once("load", setData);
   }, [data]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const fc = cutPoints ?? { type: "FeatureCollection" as const, features: [] };
+    const setData = () => (map.getSource(CUT_POINTS_SOURCE_ID) as maplibregl.GeoJSONSource)?.setData(fc);
+    if (map.loaded() && map.getSource(CUT_POINTS_SOURCE_ID)) setData();
+    else map.once("load", setData);
+  }, [cutPoints]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

@@ -143,6 +143,9 @@ function reprojectGeometry(geometry: any): any {
   return { ...geometry, coordinates: reprojectDeep(geometry.coordinates) };
 }
 
+// A single OSM way can be split into several edge rows (one per seg_idx) at
+// intersections — the node shared between consecutive segments is a "cut
+// point" where the routing graph broke the original way apart.
 async function buildFeatureCollection(outDir: string, topic: string) {
   const [topicCsv, geomCsv] = await Promise.all([
     fs.readFile(path.join(outDir, `${topic}.csv`), "utf-8"),
@@ -150,22 +153,27 @@ async function buildFeatureCollection(outDir: string, topic: string) {
   ]);
   const topicRows = parseCsv(topicCsv);
   const geomRows = parseCsv(geomCsv);
-  const geomByOsmId = new Map<string, string>();
+  const segmentsByOsmId = new Map<string, Record<string, string>[]>();
   for (const row of geomRows) {
-    if (row.geom) geomByOsmId.set(row.osm_id, row.geom);
+    if (!row.geom) continue;
+    const list = segmentsByOsmId.get(row.osm_id) ?? [];
+    list.push(row);
+    segmentsByOsmId.set(row.osm_id, list);
+  }
+  for (const list of segmentsByOsmId.values()) {
+    list.sort((a, b) => Number(a.seg_idx) - Number(b.seg_idx));
+  }
+
+  function segmentGeometry(row: Record<string, string>) {
+    const geom = wkx.Geometry.parse(Buffer.from(row.geom, "hex"));
+    return reprojectGeometry(geom.toGeoJSON());
   }
 
   const features = [];
+  const cutPoints = [];
   for (const row of topicRows) {
-    const hex = geomByOsmId.get(row.osm_id);
-    if (!hex) continue;
-    let geometry;
-    try {
-      const geom = wkx.Geometry.parse(Buffer.from(hex, "hex"));
-      geometry = reprojectGeometry(geom.toGeoJSON());
-    } catch {
-      continue;
-    }
+    const segments = segmentsByOsmId.get(row.osm_id);
+    if (!segments) continue;
     let osm = {};
     let derived = {};
     try {
@@ -178,13 +186,39 @@ async function buildFeatureCollection(outDir: string, topic: string) {
     } catch {
       /* ignore */
     }
-    features.push({
-      type: "Feature",
-      geometry,
-      properties: { osm_id: row.osm_id, id: row.id, ...osm, ...derived },
-    });
+    for (const segment of segments) {
+      let geometry;
+      try {
+        geometry = segmentGeometry(segment);
+      } catch {
+        continue;
+      }
+      features.push({
+        type: "Feature",
+        geometry,
+        properties: { osm_id: row.osm_id, id: row.id, seg_idx: segment.seg_idx, ...osm, ...derived },
+      });
+    }
+    if (segments.length > 1) {
+      for (let i = 1; i < segments.length; i++) {
+        try {
+          const geometry = segmentGeometry(segments[i]);
+          cutPoints.push({
+            type: "Feature",
+            geometry: { type: "Point", coordinates: geometry.coordinates[0] },
+            properties: { osm_id: row.osm_id },
+          });
+        } catch {
+          continue;
+        }
+      }
+    }
   }
-  return { type: "FeatureCollection", features };
+  return {
+    type: "FeatureCollection",
+    features,
+    cutPoints: { type: "FeatureCollection", features: cutPoints },
+  };
 }
 
 function categoryFilePath(topic: string, kind: string, name: string) {

@@ -19,6 +19,7 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [cutPoints, setCutPoints] = useState<GeoJSON.FeatureCollection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -106,6 +107,7 @@ export default function App() {
     if (res.ok) {
       setError(null);
       setData(body);
+      setCutPoints(body.cutPoints ?? null);
     } else {
       setError(body.error || "Unknown error");
     }
@@ -114,7 +116,7 @@ export default function App() {
   return (
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
       <div style={{ flex: "1 1 60%", position: "relative" }}>
-        <Map bounds={bounds} data={data} onBboxSelected={selectBbox} />
+        <Map bounds={bounds} data={data} cutPoints={cutPoints} onBboxSelected={selectBbox} />
         {(!selected || extracting) && (
           <div
             style={{
