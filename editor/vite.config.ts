@@ -4,7 +4,6 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import wkx from "wkx";
 
 const EDITOR_DIR = path.resolve(__dirname);
 const REPO_DIR = path.resolve(__dirname, "..");
@@ -77,152 +76,85 @@ function sendJson(res: any, status: number, body: unknown) {
 }
 
 async function runPipeline(pbfPath: string, outDir: string): Promise<{ ok: true } | { ok: false; message: string }> {
-  const result = await run(PIPELINE_BIN, [pbfPath, "--config-dir", LIVE_CONFIG_DIR, "--output", "csv", "--out-dir", outDir]);
+  const result = await run(PIPELINE_BIN, [pbfPath, "--config-dir", LIVE_CONFIG_DIR, "--output", "geojson", "--out-dir", outDir]);
   return result.ok ? { ok: true } : result;
 }
 
-// Minimal CSV parser: no embedded newlines in fields except JSON-stringified
-// columns, which never contain raw newlines (serde_json escapes them).
-function parseCsv(text: string): Record<string, string>[] {
-  const lines = text.split("\n").filter((l) => l.length > 0);
-  if (lines.length === 0) return [];
-  const header = splitCsvLine(lines[0]);
-  return lines.slice(1).map((line) => {
-    const cols = splitCsvLine(line);
-    const row: Record<string, string> = {};
-    header.forEach((h, i) => (row[h] = cols[i] ?? ""));
-    return row;
-  });
+// A topic is any non-`_`-prefixed directory directly under LIVE_CONFIG_DIR — same discovery rule
+// the Rust side uses (see TopicRunner::load_all), so nothing here needs to hardcode topic names.
+async function listTopics(): Promise<string[]> {
+  const entries = await fs.readdir(LIVE_CONFIG_DIR, { withFileTypes: true });
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
+    .map((e) => e.name)
+    .sort();
 }
 
-function splitCsvLine(line: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (line[i + 1] === '"') {
-          cur += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cur += c;
-      }
-    } else {
-      if (c === '"') inQuotes = true;
-      else if (c === ",") {
-        out.push(cur);
-        cur = "";
-      } else cur += c;
-    }
-  }
-  out.push(cur);
-  return out;
-}
-
-const R_MAJOR = 20037508.34;
-
-// geometries.csv stores geometry reprojected to EPSG:3857 (see src/output/geometry.rs
-// wgs84_to_3857, used for the Postgres/tile-server output path) — convert back to
-// WGS84 lon/lat for GeoJSON.
-function mercatorToLonLat(coord: number[]): number[] {
-  const [x, y] = coord;
-  const lon = (x / R_MAJOR) * 180;
-  const lat = (180 / Math.PI) * (2 * Math.atan(Math.exp((y / R_MAJOR) * Math.PI)) - Math.PI / 2);
-  return [lon, lat];
-}
-
-function reprojectGeometry(geometry: any): any {
-  if (typeof geometry.coordinates === "undefined") return geometry;
-  const reprojectDeep = (coords: any): any =>
-    typeof coords[0] === "number" ? mercatorToLonLat(coords) : coords.map(reprojectDeep);
-  return { ...geometry, coordinates: reprojectDeep(geometry.coordinates) };
-}
-
-// A single OSM way can be split into several edge rows (one per seg_idx) at
-// intersections — the node shared between consecutive segments is a "cut
-// point" where the routing graph broke the original way apart.
-async function buildFeatureCollection(outDir: string, topic: string) {
-  const [topicCsv, geomCsv] = await Promise.all([
-    fs.readFile(path.join(outDir, `${topic}.csv`), "utf-8"),
-    fs.readFile(path.join(outDir, "edges.csv"), "utf-8"),
-  ]);
-  const topicRows = parseCsv(topicCsv);
-  const geomRows = parseCsv(geomCsv);
-  const segmentsByOsmId = new Map<string, Record<string, string>[]>();
-  for (const row of geomRows) {
-    if (!row.geom) continue;
-    const list = segmentsByOsmId.get(row.osm_id) ?? [];
-    list.push(row);
-    segmentsByOsmId.set(row.osm_id, list);
-  }
-  for (const list of segmentsByOsmId.values()) {
-    list.sort((a, b) => Number(a.seg_idx) - Number(b.seg_idx));
-  }
-
-  function segmentGeometry(row: Record<string, string>) {
-    const geom = wkx.Geometry.parse(Buffer.from(row.geom, "hex"));
-    return reprojectGeometry(geom.toGeoJSON());
-  }
-
-  const features = [];
-  const cutPoints = [];
-  for (const row of topicRows) {
-    const segments = segmentsByOsmId.get(row.osm_id);
-    if (!segments) continue;
-    let osm = {};
-    let derived = {};
+// The pipeline itself joins tag rows to edge geometries (by osm_id) and reprojects back to WGS84
+// — see src/output/geojson.rs — so this just reads its per-topic output back and merges every
+// topic into one FeatureCollection, stamping a `topic` property onto each feature/cut point since
+// category *names* aren't unique across topics (e.g. osmnx's bike/walk/drive all use "all").
+async function readMergedFeatureCollections(outDir: string, topics: string[]) {
+  const features: GeoJSON.Feature[] = [];
+  const cutPoints: GeoJSON.Feature[] = [];
+  for (const topic of topics) {
+    let fc: { features: GeoJSON.Feature[]; cutPoints?: { features: GeoJSON.Feature[] } };
     try {
-      osm = JSON.parse(row.osm || "{}");
+      fc = JSON.parse(await fs.readFile(path.join(outDir, `${topic}.geojson`), "utf-8"));
     } catch {
-      /* ignore */
+      continue; // topic produced no rows for this extract
     }
-    try {
-      derived = JSON.parse(row.derived || "{}");
-    } catch {
-      /* ignore */
+    for (const f of fc.features) {
+      features.push({ ...f, properties: { topic, ...f.properties } });
     }
-    for (const segment of segments) {
-      let geometry;
-      try {
-        geometry = segmentGeometry(segment);
-      } catch {
-        continue;
-      }
-      features.push({
-        type: "Feature",
-        geometry,
-        properties: { osm_id: row.osm_id, id: row.id, seg_idx: segment.seg_idx, ...osm, ...derived },
-      });
-    }
-    if (segments.length > 1) {
-      for (let i = 1; i < segments.length; i++) {
-        try {
-          const geometry = segmentGeometry(segments[i]);
-          cutPoints.push({
-            type: "Feature",
-            geometry: { type: "Point", coordinates: geometry.coordinates[0] },
-            properties: { osm_id: row.osm_id },
-          });
-        } catch {
-          continue;
-        }
-      }
+    for (const f of fc.cutPoints?.features ?? []) {
+      cutPoints.push({ ...f, properties: { topic, ...f.properties } });
     }
   }
   return {
-    type: "FeatureCollection",
+    type: "FeatureCollection" as const,
     features,
-    cutPoints: { type: "FeatureCollection", features: cutPoints },
+    cutPoints: { type: "FeatureCollection" as const, features: cutPoints },
   };
 }
 
 function categoryFilePath(topic: string, kind: string, name: string) {
   return path.join(LIVE_CONFIG_DIR, topic, kind, `${name}.json`);
+}
+
+// Path segments come straight from the request; a blank/malformed one would silently create a
+// bogus directory (e.g. topic="" + kind="way" writes LIVE_CONFIG_DIR/way/.json, which osmnexus
+// then tries to load as a topic named "way" and fails looking for its topic.json), or escape
+// LIVE_CONFIG_DIR entirely via "..". Block only that, not legitimate names with spaces/punctuation/
+// unicode (an allowlist regex was rejecting real category names — over-eager).
+function isValidSegment(s: string): boolean {
+  return s.length > 0 && s !== "." && s !== ".." && !s.includes("/") && !s.includes("\\") && !s.includes("\0");
+}
+
+function topicFilePath(topic: string) {
+  return path.join(LIVE_CONFIG_DIR, topic, "topic.json");
+}
+
+// Re-runs the pipeline against the current extract and replies with the merged multi-topic
+// FeatureCollection — shared by the category-edit and topic-config-edit endpoints, which only
+// differ in which file they write beforehand.
+async function runPipelineAndRespond(res: any) {
+  if (!currentExtractPath) {
+    return sendJson(res, 400, { error: "no extract selected yet: pick a bbox on the map first" });
+  }
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-"));
+  const result = await runPipeline(currentExtractPath, outDir);
+  if (!result.ok) {
+    return sendJson(res, 400, { error: result.message });
+  }
+  try {
+    const fc = await readMergedFeatureCollections(outDir, await listTopics());
+    return sendJson(res, 200, fc);
+  } catch (err) {
+    return sendJson(res, 500, { error: String(err) });
+  } finally {
+    fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function liveEditorApi(): Plugin {
@@ -260,9 +192,13 @@ function liveEditorApi(): Plugin {
           return sendJson(res, 200, { bounds: currentBounds });
         }
 
+        if (url.pathname === "/api/topics" && req.method === "GET") {
+          return sendJson(res, 200, { topics: await listTopics() });
+        }
+
         const categoriesMatch = url.pathname.match(/^\/api\/categories\/([^/]+)$/);
         if (categoriesMatch && req.method === "GET") {
-          const [, topic] = categoriesMatch;
+          const topic = decodeURIComponent(categoriesMatch[1]);
           const topicDir = path.join(LIVE_CONFIG_DIR, topic);
           const kinds = ["way", "node", "relation"];
           const categories: { kind: string; name: string }[] = [];
@@ -282,10 +218,20 @@ function liveEditorApi(): Plugin {
 
         const categoryMatch = url.pathname.match(/^\/api\/category\/([^/]+)\/([^/]+)\/([^/]+)$/);
         if (categoryMatch && req.method === "GET") {
-          const [, topic, kind, name] = categoryMatch;
+          const [topic, kind, name] = categoryMatch.slice(1).map(decodeURIComponent);
           try {
             const json = await fs.readFile(categoryFilePath(topic, kind, name), "utf-8");
             return sendJson(res, 200, { json });
+          } catch (err) {
+            return sendJson(res, 404, { error: String(err) });
+          }
+        }
+
+        if (categoryMatch && req.method === "DELETE") {
+          const [topic, kind, name] = categoryMatch.slice(1).map(decodeURIComponent);
+          try {
+            await fs.unlink(categoryFilePath(topic, kind, name));
+            return sendJson(res, 200, { ok: true });
           } catch (err) {
             return sendJson(res, 404, { error: String(err) });
           }
@@ -301,8 +247,11 @@ function liveEditorApi(): Plugin {
           }
           const { topic, kind, name, json } = payload;
 
-          if (!currentExtractPath) {
-            return sendJson(res, 400, { error: "no extract selected yet: pick a bbox on the map first" });
+          if (![topic, kind, name].every(isValidSegment)) {
+            return sendJson(res, 400, { error: "topic/kind/name must be non-empty and not '.', '..', or contain a path separator" });
+          }
+          if (!(await listTopics()).includes(topic)) {
+            return sendJson(res, 400, { error: `unknown topic '${topic}'` });
           }
 
           try {
@@ -314,19 +263,41 @@ function liveEditorApi(): Plugin {
           await fs.mkdir(path.dirname(categoryFilePath(topic, kind, name)), { recursive: true });
           await fs.writeFile(categoryFilePath(topic, kind, name), json, "utf-8");
 
-          const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-"));
-          const result = await runPipeline(currentExtractPath, outDir);
-          if (!result.ok) {
-            return sendJson(res, 400, { error: result.message });
-          }
+          return runPipelineAndRespond(res);
+        }
+
+        const topicMatch = url.pathname.match(/^\/api\/topic\/([^/]+)$/);
+        if (topicMatch && req.method === "GET") {
+          const topic = decodeURIComponent(topicMatch[1]);
           try {
-            const fc = await buildFeatureCollection(outDir, topic);
-            return sendJson(res, 200, fc);
+            const json = await fs.readFile(topicFilePath(topic), "utf-8");
+            return sendJson(res, 200, { json });
           } catch (err) {
-            return sendJson(res, 500, { error: String(err) });
-          } finally {
-            fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+            return sendJson(res, 404, { error: String(err) });
           }
+        }
+
+        if (topicMatch && req.method === "POST") {
+          const topic = decodeURIComponent(topicMatch[1]);
+          if (!(await listTopics()).includes(topic)) {
+            return sendJson(res, 400, { error: `unknown topic '${topic}'` });
+          }
+          const body = await readBody(req);
+          let payload: { json: string };
+          try {
+            payload = JSON.parse(body);
+          } catch {
+            return sendJson(res, 400, { error: "request body is not valid JSON" });
+          }
+
+          try {
+            JSON.parse(payload.json);
+          } catch (err) {
+            return sendJson(res, 400, { error: `topic JSON is invalid: ${(err as Error).message}` });
+          }
+
+          await fs.writeFile(topicFilePath(topic), payload.json, "utf-8");
+          return runPipelineAndRespond(res);
         }
 
         next();

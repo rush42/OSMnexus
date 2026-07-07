@@ -23,6 +23,7 @@ hex = "0.4"
 bytes = "1"
 futures = "0.3"
 rustc-hash = "2"
+csv = "1"
 
 [profile.release]
 lto = "thin"

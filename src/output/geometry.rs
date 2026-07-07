@@ -31,6 +31,34 @@ pub fn haversine_length_m(coords: &[(f64, f64)]) -> f64 {
     ls.length::<Haversine>()
 }
 
+/// Inverse of `wgs84_to_3857`.
+pub fn mercator_to_wgs84(x: f64, y: f64) -> (f64, f64) {
+    let lon = (x / R).to_degrees();
+    let lat = (2.0 * (y / R).exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees();
+    (lon, lat)
+}
+
+/// Decode a LineString written by `to_ewkb` (little-endian, SRID-flagged) back into its raw
+/// (still-projected) coordinates. Only the LineString shape is supported since that's the only
+/// geometry type the edge/way-geometry writers ever produce.
+pub fn linestring_from_ewkb(bytes: &[u8]) -> anyhow::Result<Vec<(f64, f64)>> {
+    anyhow::ensure!(bytes.len() >= 13, "EWKB too short for a LineString header");
+    anyhow::ensure!(bytes[0] == 1, "only little-endian EWKB is supported");
+    let wkb_type = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
+    anyhow::ensure!(wkb_type == 0x2000_0002, "expected SRID-flagged LineString, got type {wkb_type:#x}");
+    // bytes[5..9] is the SRID, already known to be 3857 by construction.
+    let num_points = u32::from_le_bytes(bytes[9..13].try_into().unwrap()) as usize;
+    anyhow::ensure!(bytes.len() >= 13 + num_points * 16, "EWKB truncated");
+    let mut coords = Vec::with_capacity(num_points);
+    for i in 0..num_points {
+        let off = 13 + i * 16;
+        let x = f64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
+        let y = f64::from_le_bytes(bytes[off + 8..off + 16].try_into().unwrap());
+        coords.push((x, y));
+    }
+    Ok(coords)
+}
+
 /// Encode a projected (EPSG:3857) Point as PostGIS EWKB with SRID.
 pub fn point_to_ewkb(x: f64, y: f64) -> Vec<u8> {
     use std::io::Write;

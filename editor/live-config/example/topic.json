@@ -1,7 +1,0 @@
-{
-  "table": "example",
-  "osm_fields": [
-    { "output": "highway", "source": { "key": "highway" } },
-    { "output": "name", "source": { "key": "name" } }
-  ]
-}

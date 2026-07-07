@@ -84,6 +84,35 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
     returns after the swap). So steps 3 + the lifecycle part of step 1 need `keyword_scan` to carry a
     guard condition + short-circuit, or stay native. Steps 4–5 still open.
 
+- **Live editor: load the base PBF into Postgres once, select bbox extracts from there instead of
+  shelling out to `osmium extract` per drag.** Measured today: `osmium extract -s complete_ways`
+  against a 115MB Berlin-region PBF costs ~2.2–2.5s per bbox change (two full passes over the whole
+  file — PBF has no spatial index, so there's no way to skip the other 113MB); the pipeline run
+  itself (`--output geojson` against the resulting ~2MB extract) is only ~0.15s. The extract step,
+  not the pipeline, is the live-editor's actual latency.
+  - **Easy path: use `osm2pgsql` flex output instead of a hand-rolled loader.** Rather than building
+    a custom bulk loader + reverse node→way index, let `osm2pgsql`'s flex mode do the PBF parsing,
+    way/relation assembly, and node-location middle — write a small Lua script that just dumps the
+    raw shape: `nodes(id, tags jsonb, geom point)`, `ways(id, tags jsonb, node_ids bigint[], geom
+    linestring)`, `relations(id, tags jsonb, member_ids bigint[])`. Flex's `way.nodes` gives the
+    ordered node-id array directly in the callback, so there's no reverse index to build — a bbox
+    query is just `ways WHERE geom && bbox` (GiST-indexed) plus a join back to `nodes` on
+    `node_ids` for coordinates, which is exactly the `WayData`/`NodeData` shape
+    `classify_way`/`classify_node`/`classify_relation` already take (decoupled from the PBF format).
+  - **Estimate: ~2–3 focused days** (down from the hand-rolled estimate, since osm2pgsql absorbs the
+    riskiest part):
+    - Flex Lua script for the three raw tables + import against `berlin.osm.pbf` — ~0.5 day.
+    - Bbox query (nodes/ways/relations in bbox, `complete_ways` node join) — ~0.5 day.
+    - Wiring the query result into the pipeline as an alternate input source next to `stream_osm`
+      (main.rs's producer currently assumes a PBF path) — still ~1 day, unchanged from before; this
+      part doesn't get cheaper just because loading did.
+    - Editor API integration + one-time "import base PBF via osm2pgsql" command, plus verifying
+      output matches today's `osmium extract` path on the same bbox — ~0.5–1 day.
+  - **Trigger to build:** only worth it if the ~2.2s/drag extract cost is still annoying after the
+    cheaper mitigation (shrinking the base PBF to the region actually being edited, which should get
+    extract time down to a few hundred ms for free). If that's enough, this is over-engineering for
+    a local dev tool.
+
 - **Promote the jsonb tag columns to named columns (generated per topic).** The four data columns
   (`osm`, `derived`, `private`, `meta`) are all flat `string→scalar` maps whose full key universe is
   statically knowable from each topic's JSON (`osm_fields` outputs, deriver keys + their const

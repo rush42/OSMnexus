@@ -138,6 +138,12 @@ async fn main() -> anyhow::Result<()> {
             info!("CSV output → {}/ (one file per tag table + {EDGE_TABLE}.csv)", cfg.out_dir);
             (None, 1)
         }
+        Output::GeoJson => {
+            std::fs::create_dir_all(&cfg.out_dir)
+                .with_context(|| format!("creating output dir {}", cfg.out_dir))?;
+            info!("GeoJSON output → {}/ (one {{topic}}.geojson FeatureCollection per topic)", cfg.out_dir);
+            (None, 1)
+        }
     };
 
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
@@ -155,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
             let (tx, rx) = mpsc::channel::<Vec<TopicRow>>(WRITER_CHAN_CAP);
             let h = match cfg.output {
                 Output::Pg => tokio::spawn(copy_writer::<TopicRow>(pool.clone().unwrap(), table.clone(), TAG_COLUMNS, rx)),
-                Output::Csv => tokio::spawn(csv_writer::<TopicRow>(out_dir.join(format!("{table}.csv")), TAG_COLUMNS, rx)),
+                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<TopicRow>(out_dir.join(format!("{table}.csv")), TAG_COLUMNS, rx)),
             };
             th.push(h);
             ts.push(tx);
@@ -169,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
         let (tx, rx) = mpsc::channel::<Vec<GeomRow>>(WRITER_CHAN_CAP);
         let h = match cfg.output {
             Output::Pg => tokio::spawn(copy_writer::<GeomRow>(pool.clone().unwrap(), EDGE_TABLE.to_owned(), GEOM_COLUMNS, rx)),
-            Output::Csv => tokio::spawn(csv_writer::<GeomRow>(out_dir.join(format!("{EDGE_TABLE}.csv")), GEOM_COLUMNS, rx)),
+            Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<GeomRow>(out_dir.join(format!("{EDGE_TABLE}.csv")), GEOM_COLUMNS, rx)),
         };
         geom_handles.push(h);
         geom_senders.push(tx);
@@ -180,7 +186,7 @@ async fn main() -> anyhow::Result<()> {
         let (tx, rx) = mpsc::channel::<Vec<MemberRow>>(WRITER_CHAN_CAP);
         let h = match cfg.output {
             Output::Pg => tokio::spawn(copy_writer::<MemberRow>(pool.clone().unwrap(), MEMBER_TABLE.to_owned(), MEMBER_COLUMNS, rx)),
-            Output::Csv => tokio::spawn(csv_writer::<MemberRow>(out_dir.join(format!("{MEMBER_TABLE}.csv")), MEMBER_COLUMNS, rx)),
+            Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<MemberRow>(out_dir.join(format!("{MEMBER_TABLE}.csv")), MEMBER_COLUMNS, rx)),
         };
         member_handles.push(h);
         member_senders.push(tx);
@@ -193,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
             let (tx, rx) = mpsc::channel::<Vec<WayGeomRow>>(WRITER_CHAN_CAP);
             let h = match cfg.output {
                 Output::Pg => tokio::spawn(copy_writer::<WayGeomRow>(pool.clone().unwrap(), WAY_GEOM_TABLE.to_owned(), WAY_GEOM_COLUMNS, rx)),
-                Output::Csv => tokio::spawn(csv_writer::<WayGeomRow>(out_dir.join(format!("{WAY_GEOM_TABLE}.csv")), WAY_GEOM_COLUMNS, rx)),
+                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<WayGeomRow>(out_dir.join(format!("{WAY_GEOM_TABLE}.csv")), WAY_GEOM_COLUMNS, rx)),
             };
             way_geom_handles.push(h);
             way_geom_senders.push(tx);
@@ -206,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
         let (tx, rx) = mpsc::channel::<Vec<NodeRow>>(WRITER_CHAN_CAP);
         let h = match cfg.output {
             Output::Pg => tokio::spawn(copy_writer::<NodeRow>(pool.clone().unwrap(), NODE_TABLE.to_owned(), NODE_COLUMNS, rx)),
-            Output::Csv => tokio::spawn(csv_writer::<NodeRow>(out_dir.join(format!("{NODE_TABLE}.csv")), NODE_COLUMNS, rx)),
+            Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<NodeRow>(out_dir.join(format!("{NODE_TABLE}.csv")), NODE_COLUMNS, rx)),
         };
         node_handles.push(h);
         node_senders.push(tx);
@@ -353,7 +359,15 @@ async fn main() -> anyhow::Result<()> {
             info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
         }
         (Output::Pg, false) => info!("Skipping index creation (pass --create-index to enable)"),
-        (Output::Csv, _) => {}
+        (Output::Csv, _) | (Output::GeoJson, _) => {}
+    }
+
+    if cfg.output == Output::GeoJson {
+        info!("Building GeoJSON from CSV output...");
+        output::geojson::write_geojson_from_csv(&out_dir, &tables)?;
+        for table in &tables {
+            info!("Wrote {}/{table}.geojson", cfg.out_dir);
+        }
     }
 
     if cfg.output == Output::Pg && cfg.emit_relation_geometries {

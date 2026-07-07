@@ -77,11 +77,13 @@ pub struct Config {
     #[arg(long, default_value_t = 4)]
     pub db_writers: usize,
 
-    /// Output backend: `pg` (COPY into PostGIS) or `csv` (one file per tag table + geometries.csv).
+    /// Output backend: `pg` (COPY into PostGIS), `csv` (one file per tag table + geometries.csv),
+    /// or `geojson` (same CSV files, plus one `<table>.geojson` FeatureCollection per topic built
+    /// by joining tag rows to edge geometries on `osm_id` — for local tooling like the live editor).
     #[arg(long, value_enum, default_value_t = Output::Pg)]
     pub output: Output,
 
-    /// Directory for CSV output (created if missing). Only used with `--output csv`.
+    /// Directory for CSV/GeoJSON output (created if missing). Only used with `--output csv`/`geojson`.
     #[arg(long, default_value = "out")]
     pub out_dir: String,
 
@@ -96,4 +98,6 @@ pub struct Config {
 pub enum Output {
     Pg,
     Csv,
+    #[value(name = "geojson")]
+    GeoJson,
 }

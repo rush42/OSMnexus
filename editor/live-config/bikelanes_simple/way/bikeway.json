@@ -1,1 +1,0 @@
-{"condition":{"or":[{"tag":"highway","eq":"cycleway"},{"tag":"cycleway","exists":true},{"tag":"cycleway:left","exists":true},{"tag":"cycleway:right","exists":true},{"tag":"cycleway:both","exists":true},{"tag":"bicycle","eq":"designated"}]}}

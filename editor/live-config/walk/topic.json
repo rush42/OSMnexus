@@ -1,0 +1,48 @@
+{
+  "table": "walk",
+  "exclude_condition": {
+    "or": [
+      { "tag": "highway", "exists": false },
+      { "tag": "area", "eq": "yes" },
+      { "tag": "access", "eq": "private" },
+      { "tag": "foot", "eq": "no" },
+      { "tag": "service", "eq": "private" },
+      { "tag": "sidewalk", "eq": "separate" },
+      { "tag": "sidewalk:both", "eq": "separate" },
+      { "tag": "sidewalk:left", "eq": "separate" },
+      { "tag": "sidewalk:right", "eq": "separate" },
+      { "tag": "highway", "contains": "motor" },
+      {
+        "tag": "highway",
+        "in": [
+          "abandoned",
+          "bus_guideway",
+          "construction",
+          "cycleway",
+          "no",
+          "planned",
+          "platform",
+          "proposed",
+          "raceway",
+          "razed",
+          "rest_area",
+          "services"
+        ]
+      }
+    ]
+  },
+  "osm_fields": [
+    { "output": "highway", "source": { "key": "highway" } },
+    { "output": "name", "source": { "key": "name" } },
+    { "output": "ref", "source": { "key": "ref" } },
+    { "output": "footway", "source": { "key": "footway" } },
+    { "output": "access", "source": { "key": "access" } },
+    { "output": "foot", "source": { "key": "foot" } },
+    { "output": "service", "source": { "key": "service" } },
+    { "output": "area", "source": { "key": "area" } },
+    { "output": "landuse", "source": { "key": "landuse" } },
+    { "output": "bridge", "source": { "key": "bridge" } },
+    { "output": "tunnel", "source": { "key": "tunnel" } }
+  ],
+  "consts": { "minzoom": 0 }
+}

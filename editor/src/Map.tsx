@@ -28,21 +28,50 @@ function boxToPolygon(a: [number, number], b: [number, number]): GeoJSON.Feature
   };
 }
 
+// Builds a MapLibre `match` expression keyed on `topic/category` (not category alone — category
+// *names* collide across topics, e.g. osmnx's bike/walk/drive topics all use "all"), falling back
+// to a neutral color for anything not yet in `categoryColors`.
+const FALLBACK_COLOR = "#e6432a";
+const TOPIC_CATEGORY_KEY = ["concat", ["get", "topic"], "/", ["get", "category"]] as unknown as maplibregl.ExpressionSpecification;
+function colorExpression(categoryColors: Record<string, string>): maplibregl.ExpressionSpecification | string {
+  const entries = Object.entries(categoryColors);
+  if (entries.length === 0) return FALLBACK_COLOR;
+  return [
+    "match",
+    TOPIC_CATEGORY_KEY,
+    ...entries.flatMap(([key, color]) => [key, color]),
+    FALLBACK_COLOR,
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+// Excludes features whose `topic` property is in `hiddenTopics`.
+function visibilityFilter(hiddenTopics: Set<string>): maplibregl.ExpressionSpecification {
+  return ["!", ["in", ["get", "topic"], ["literal", [...hiddenTopics]]]] as unknown as maplibregl.ExpressionSpecification;
+}
+
 export default function Map({
   bounds,
   data,
   cutPoints,
+  categoryColors,
+  hiddenTopics,
   onBboxSelected,
 }: {
   bounds: [number, number, number, number] | null;
   data: GeoJSON.FeatureCollection | null;
   cutPoints: GeoJSON.FeatureCollection | null;
+  categoryColors: Record<string, string>;
+  hiddenTopics: Set<string>;
   onBboxSelected: (bounds: [number, number, number, number]) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const onBboxSelectedRef = useRef(onBboxSelected);
   onBboxSelectedRef.current = onBboxSelected;
+  const categoryColorsRef = useRef(categoryColors);
+  categoryColorsRef.current = categoryColors;
+  const hiddenTopicsRef = useRef(hiddenTopics);
+  hiddenTopicsRef.current = hiddenTopics;
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -70,14 +99,15 @@ export default function Map({
         id: `${SOURCE_ID}-line`,
         type: "line",
         source: SOURCE_ID,
-        paint: { "line-color": "#e6432a", "line-width": 3 },
+        filter: visibilityFilter(hiddenTopicsRef.current),
+        paint: { "line-color": colorExpression(categoryColorsRef.current), "line-width": 3 },
       });
       map.addLayer({
         id: `${SOURCE_ID}-point`,
         type: "circle",
         source: SOURCE_ID,
-        filter: ["==", ["geometry-type"], "Point"],
-        paint: { "circle-color": "#e6432a", "circle-radius": 5 },
+        filter: ["all", ["==", ["geometry-type"], "Point"], visibilityFilter(hiddenTopicsRef.current)] as unknown as maplibregl.ExpressionSpecification,
+        paint: { "circle-color": colorExpression(categoryColorsRef.current), "circle-radius": 5 },
       });
 
       map.addSource(CUT_POINTS_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
@@ -85,12 +115,14 @@ export default function Map({
         id: `${CUT_POINTS_SOURCE_ID}-halo`,
         type: "circle",
         source: CUT_POINTS_SOURCE_ID,
+        filter: visibilityFilter(hiddenTopicsRef.current),
         paint: { "circle-color": "#ffffff", "circle-radius": 5 },
       });
       map.addLayer({
         id: `${CUT_POINTS_SOURCE_ID}-point`,
         type: "circle",
         source: CUT_POINTS_SOURCE_ID,
+        filter: visibilityFilter(hiddenTopicsRef.current),
         paint: { "circle-color": "#ffb400", "circle-radius": 3, "circle-stroke-color": "#000", "circle-stroke-width": 1 },
       });
 
@@ -186,11 +218,38 @@ export default function Map({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    const expr = colorExpression(categoryColors);
+    const apply = () => {
+      map.setPaintProperty(`${SOURCE_ID}-line`, "line-color", expr);
+      map.setPaintProperty(`${SOURCE_ID}-point`, "circle-color", expr);
+    };
+    if (map.loaded() && map.getLayer(`${SOURCE_ID}-line`)) apply();
+    else map.once("load", apply);
+  }, [categoryColors]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
     const fc = cutPoints ?? { type: "FeatureCollection" as const, features: [] };
     const setData = () => (map.getSource(CUT_POINTS_SOURCE_ID) as maplibregl.GeoJSONSource)?.setData(fc);
     if (map.loaded() && map.getSource(CUT_POINTS_SOURCE_ID)) setData();
     else map.once("load", setData);
   }, [cutPoints]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const lineFilter = visibilityFilter(hiddenTopics);
+    const pointFilter = ["all", ["==", ["geometry-type"], "Point"], lineFilter] as unknown as maplibregl.ExpressionSpecification;
+    const apply = () => {
+      map.setFilter(`${SOURCE_ID}-line`, lineFilter);
+      map.setFilter(`${SOURCE_ID}-point`, pointFilter);
+      map.setFilter(`${CUT_POINTS_SOURCE_ID}-halo`, lineFilter);
+      map.setFilter(`${CUT_POINTS_SOURCE_ID}-point`, lineFilter);
+    };
+    if (map.loaded() && map.getLayer(`${SOURCE_ID}-line`)) apply();
+    else map.once("load", apply);
+  }, [hiddenTopics]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }
