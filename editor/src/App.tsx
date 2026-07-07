@@ -6,7 +6,7 @@ const DEFAULT_KIND = "way";
 const DEBOUNCE_MS = 300;
 const NEW_CATEGORY_JSON = '{"condition":{}}';
 const MIN_BBOX_M = 100;
-const MAX_BBOX_M = 3000;
+const DEFAULT_MAX_BBOX_M = 3000; // Used until /api/bounds' server-configured value (MAX_BBOX_M env var) loads.
 const METERS_PER_DEG_LAT = 111_320;
 
 // Approximate bbox extents in meters (equirectangular — fine at this scale/precision, no need for
@@ -40,6 +40,7 @@ function hashColor(key: string): string {
 export default function App() {
   const [bounds, setBounds] = useState<[number, number, number, number] | null>(null);
   const [selected, setSelected] = useState(false);
+  const [maxBboxM, setMaxBboxM] = useState(DEFAULT_MAX_BBOX_M);
   const [extracting, setExtracting] = useState(false);
   const [topics, setTopics] = useState<string[]>([]);
   const [hiddenTopics, setHiddenTopics] = useState<Set<string>>(new Set());
@@ -63,6 +64,7 @@ export default function App() {
       .then((d) => {
         setBounds(d.bounds);
         setSelected(d.selected);
+        if (d.maxBboxM) setMaxBboxM(d.maxBboxM);
       });
     fetch("/api/topics")
       .then((r) => r.json())
@@ -129,8 +131,8 @@ export default function App() {
       setError(`Selected area is too small (${Math.round(widthM)}m × ${Math.round(heightM)}m) — must be at least ${MIN_BBOX_M}m × ${MIN_BBOX_M}m.`);
       return;
     }
-    if (widthM > MAX_BBOX_M || heightM > MAX_BBOX_M) {
-      setError(`Selected area is too large (${Math.round(widthM)}m × ${Math.round(heightM)}m) — must be at most ${MAX_BBOX_M}m × ${MAX_BBOX_M}m.`);
+    if (widthM > maxBboxM || heightM > maxBboxM) {
+      setError(`Selected area is too large (${Math.round(widthM)}m × ${Math.round(heightM)}m) — must be at most ${maxBboxM}m × ${maxBboxM}m.`);
       return;
     }
     setExtracting(true);

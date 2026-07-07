@@ -11,6 +11,9 @@ const PIPELINE_BIN = path.join(REPO_DIR, "target", "release", "osmnexus");
 const LIVE_CONFIG_DIR = path.join(EDITOR_DIR, "live-config");
 const BASE_PBF = process.env.BASE_PBF_PATH || path.join(EDITOR_DIR, "fixtures", "tiny.osm.pbf");
 const EXTRACT_DIR = path.join(EDITOR_DIR, "live-extract");
+// Upper bound on a shift-dragged bbox's side length (meters), configurable via docker-compose so a
+// deployment with a bigger base PBF (and tolerance for slower extracts) can raise it.
+const MAX_BBOX_M = Number(process.env.MAX_BBOX_M) || 3000;
 
 // The extract currently in use for the map/pipeline. Starts out unset until
 // the user picks a bbox (or, for the bundled fixture, defaults to it).
@@ -168,10 +171,10 @@ function liveEditorApi(): Plugin {
         const url = new URL(req.url, "http://localhost");
 
         if (url.pathname === "/api/bounds" && req.method === "GET") {
-          if (currentBounds) return sendJson(res, 200, { bounds: currentBounds, selected: true });
+          if (currentBounds) return sendJson(res, 200, { bounds: currentBounds, selected: true, maxBboxM: MAX_BBOX_M });
           try {
             const bounds = await baseFileBounds();
-            return sendJson(res, 200, { bounds, selected: false });
+            return sendJson(res, 200, { bounds, selected: false, maxBboxM: MAX_BBOX_M });
           } catch (err) {
             return sendJson(res, 500, { error: String(err) });
           }

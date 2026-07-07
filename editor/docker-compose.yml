@@ -7,5 +7,6 @@ services:
     working_dir: /repo/editor
     environment:
       - BASE_PBF_PATH=/data/base.osm.pbf
+      - MAX_BBOX_M=${MAX_BBOX_M:-5000}
     ports:
       - "5173:5173"
