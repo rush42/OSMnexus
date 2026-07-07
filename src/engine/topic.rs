@@ -123,10 +123,41 @@ pub enum ParamTransform {
 
 /// One produced field: `{ "output": ..., "source": <Producer> }`. Used for `osm_fields`,
 /// desugared sanitizers, and resolved derivers alike — they all share one eval path.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// A bare JSON string is shorthand for the common case of "read this tag verbatim, output under
+/// the same name" — `"highway"` desugars to `{ "output": "highway", "source": { "key": "highway" } }`.
+#[derive(Debug, Clone)]
 pub struct Field {
     pub output: String,
     pub source: Producer,
+}
+
+impl<'de> serde::Deserialize<'de> for Field {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Named(String),
+            Full { output: String, source: Producer },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Named(key) => Field {
+                output: key.clone(),
+                source: Producer::Extract {
+                    key: Some(key),
+                    keys: None,
+                    from: TagSet::Obj,
+                    side: None,
+                    sanitize: None,
+                    consts: serde_json::Map::new(),
+                },
+            },
+            Repr::Full { output, source } => Field { output, source },
+        })
+    }
 }
 
 /// A reference from `topic.json` (or a category) into the `derivers.json` library.

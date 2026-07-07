@@ -39,6 +39,11 @@ pub struct MinzoomCase {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Filter {
+    /// A literal `true`/`false` — e.g. for topics (like osmnx's) whose whole filter already lives
+    /// in `exclude_condition`, so a category just wants "match everything that reached here":
+    /// `{ "condition": true }` instead of restating a tautological tag predicate.
+    Bool(bool),
+
     // Combinators
     And { and: Vec<Filter> },
     Or  { or:  Vec<Filter> },
@@ -97,6 +102,7 @@ pub enum Filter {
 /// (`eval_filter`, which builds a neutral `ctx`).
 pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
     match filter {
+        Filter::Bool(b) => *b,
         Filter::And { and } => and.iter().all(|f| eval(f, ctx, macros)),
         Filter::Or  { or  } => or.iter().any(|f| eval(f, ctx, macros)),
         Filter::Not { not } => !eval(not, ctx, macros),

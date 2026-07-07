@@ -2,11 +2,26 @@
   "table": "drive",
   "exclude_condition": {
     "or": [
-      { "tag": "highway", "exists": false },
-      { "tag": "area", "eq": "yes" },
-      { "tag": "access", "eq": "private" },
-      { "tag": "motor_vehicle", "eq": "no" },
-      { "tag": "motorcar", "eq": "no" },
+      {
+        "tag": "highway",
+        "exists": false
+      },
+      {
+        "tag": "area",
+        "eq": "yes"
+      },
+      {
+        "tag": "access",
+        "eq": "private"
+      },
+      {
+        "tag": "motor_vehicle",
+        "eq": "no"
+      },
+      {
+        "tag": "motorcar",
+        "eq": "no"
+      },
       {
         "tag": "highway",
         "in": [
@@ -48,21 +63,23 @@
     ]
   },
   "osm_fields": [
-    { "output": "highway", "source": { "key": "highway" } },
-    { "output": "name", "source": { "key": "name" } },
-    { "output": "ref", "source": { "key": "ref" } },
-    { "output": "maxspeed", "source": { "key": "maxspeed" } },
-    { "output": "oneway", "source": { "key": "oneway" } },
-    { "output": "lanes", "source": { "key": "lanes" } },
-    { "output": "junction", "source": { "key": "junction" } },
-    { "output": "access", "source": { "key": "access" } },
-    { "output": "service", "source": { "key": "service" } },
-    { "output": "area", "source": { "key": "area" } },
-    { "output": "landuse", "source": { "key": "landuse" } },
-    { "output": "est_width", "source": { "key": "est_width" } },
-    { "output": "width", "source": { "key": "width" } },
-    { "output": "bridge", "source": { "key": "bridge" } },
-    { "output": "tunnel", "source": { "key": "tunnel" } }
+    "highway",
+    "name",
+    "ref",
+    "maxspeed",
+    "oneway",
+    "lanes",
+    "junction",
+    "access",
+    "service",
+    "area",
+    "landuse",
+    "est_width",
+    "width",
+    "bridge",
+    "tunnel"
   ],
-  "consts": { "minzoom": 0 }
+  "consts": {
+    "minzoom": 0
+  }
 }

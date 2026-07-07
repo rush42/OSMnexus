@@ -66,6 +66,8 @@ pub enum Expr {
 
 pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr {
     match filter {
+        Filter::Bool(true) => Expr::True,
+        Filter::Bool(false) => Expr::False,
         Filter::And { and } => Expr::And(and.iter().map(|f| filter_to_expr(f, macros)).collect()),
         Filter::Or { or } => Expr::Or(or.iter().map(|f| filter_to_expr(f, macros)).collect()),
         Filter::Not { not } => Expr::Not(Box::new(filter_to_expr(not, macros))),

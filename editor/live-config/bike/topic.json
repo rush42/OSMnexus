@@ -2,12 +2,30 @@
   "table": "bike",
   "exclude_condition": {
     "or": [
-      { "tag": "highway", "exists": false },
-      { "tag": "area", "eq": "yes" },
-      { "tag": "access", "eq": "private" },
-      { "tag": "bicycle", "eq": "no" },
-      { "tag": "service", "eq": "private" },
-      { "tag": "highway", "contains": "motor" },
+      {
+        "tag": "highway",
+        "exists": false
+      },
+      {
+        "tag": "area",
+        "eq": "yes"
+      },
+      {
+        "tag": "access",
+        "eq": "private"
+      },
+      {
+        "tag": "bicycle",
+        "eq": "no"
+      },
+      {
+        "tag": "service",
+        "eq": "private"
+      },
+      {
+        "tag": "highway",
+        "contains": "motor"
+      },
       {
         "tag": "highway",
         "in": [
@@ -32,17 +50,18 @@
     ]
   },
   "osm_fields": [
-    { "output": "highway", "source": { "key": "highway" } },
-    { "output": "name", "source": { "key": "name" } },
-    { "output": "ref", "source": { "key": "ref" } },
-    { "output": "access", "source": { "key": "access" } },
-    { "output": "bicycle", "source": { "key": "bicycle" } },
-    { "output": "service", "source": { "key": "service" } },
-    { "output": "area", "source": { "key": "area" } },
-    { "output": "landuse", "source": { "key": "landuse" } },
-    { "output": "bridge", "source": { "key": "bridge" } },
-    { "output": "tunnel", "source": { "key": "tunnel" } }
+    "highway",
+    "name",
+    "ref",
+    "access",
+    "bicycle",
+    "service",
+    "area",
+    "landuse",
+    "bridge",
+    "tunnel"
   ],
-  "consts": { "minzoom": 0 }
+  "consts": {
+    "minzoom": 0
+  }
 }
-
