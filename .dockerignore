@@ -1,0 +1,7 @@
+target
+crates
+editor/node_modules
+editor/live-extract
+editor/dist
+*.osm.pbf
+.git
