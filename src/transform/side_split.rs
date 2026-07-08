@@ -64,6 +64,7 @@ pub fn get_transformed_objects(
     transformations: &[CenterLineTransformation],
 ) -> Vec<TransformedObject> {
     let highway = tags.get("highway").cloned().unwrap_or_default();
+    let left_hand = crate::traffic::is_left_hand_traffic();
 
     // Sidepath-class ways (see `apply_sidepath_self`) are never split into sides — any side
     // tagging they carry describes their own alignment, already folded onto this way's own tags.
@@ -129,6 +130,7 @@ pub fn get_transformed_objects(
                 &mut obj,
                 &tags,
                 side,
+                left_hand,
                 transformation.directed_keys,
                 transformation.self_directed_keys,
             );
@@ -214,45 +216,160 @@ pub(crate) fn unnest_prefixed_tags(
     }
 }
 
+/// Where a directed key's fallback value is read from.
+#[derive(Clone, Copy)]
+enum DirectedSource {
+    /// Read from the parent way's tags (`CenterLineTransformation::directed_keys`).
+    Parent,
+    /// Read from the side object's own tags (`CenterLineTransformation::self_directed_keys`).
+    SelfObj,
+}
+
+/// Under right-hand traffic (the default), the way's `forward` direction runs along its right
+/// side, so `Side::Right` reads `:forward` and `Side::Left` reads `:backward`; `left_hand` flips
+/// this. `Side::Self_` has no direction to resolve.
+fn direction_suffix(side: Side, left_hand: bool) -> Option<&'static str> {
+    match (side, left_hand) {
+        (Side::Left, false) | (Side::Right, true) => Some(":backward"),
+        (Side::Right, false) | (Side::Left, true) => Some(":forward"),
+        (Side::Self_, _) => None,
+    }
+}
+
+/// For each `key` in `keys` not already present on `obj`, look up its direction-sensitive value
+/// (bare key, or `key{suffix}`) from `source` and copy it onto `obj` under the bare key name.
+fn resolve_directed(
+    obj: &mut RawTags,
+    parent: &RawTags,
+    suffix: &str,
+    keys: &[&str],
+    source: DirectedSource,
+) {
+    for key in keys {
+        if obj.contains_key(*key) {
+            continue;
+        }
+        let directed_key = format!("{key}{suffix}");
+        let val = match source {
+            DirectedSource::Parent => parent.get(*key).or_else(|| parent.get(&directed_key)),
+            DirectedSource::SelfObj => obj.get(&directed_key),
+        };
+        if let Some(val) = val.cloned() {
+            obj.insert((*key).to_owned(), val);
+        }
+    }
+}
+
 /// Port of `convertDirectedTags` from transformations.lua.
 ///
 /// For left/right side objects, pick the correct `:forward`/`:backward` variant of directed tags.
-/// Under right-hand traffic (the default), the way's `forward` direction runs along its right side,
-/// so `Side::Right` reads `:forward` and `Side::Left` reads `:backward`; `--left-hand-traffic`
-/// flips this. `directed_keys` are read from the parent way's tags; `self_directed_keys` from the
-/// side object's own tags (see `CenterLineTransformation::self_directed_keys`).
+/// `directed_keys` are read from the parent way's tags; `self_directed_keys` from the side
+/// object's own tags (see `CenterLineTransformation::self_directed_keys`).
 fn convert_directed_tags(
     obj: &mut RawTags,
     parent: &RawTags,
     side: Side,
+    left_hand: bool,
     directed_keys: &[&str],
     self_directed_keys: &[&str],
 ) {
-    let left_hand = crate::traffic::is_left_hand_traffic();
-    let direction_suffix = match (side, left_hand) {
-        (Side::Left, false) | (Side::Right, true) => ":backward",
-        (Side::Right, false) | (Side::Left, true) => ":forward",
-        (Side::Self_, _) => return,
+    let Some(suffix) = direction_suffix(side, left_hand) else {
+        return;
     };
 
-    // Tags from the parent that are direction-sensitive.
-    for key in directed_keys {
-        let directed_key = format!("{key}{direction_suffix}");
-        if !obj.contains_key(*key) {
-            if let Some(val) = parent.get(*key).or_else(|| parent.get(&directed_key)) {
-                obj.insert((*key).to_owned(), val.clone());
-            }
-        }
+    resolve_directed(obj, parent, suffix, directed_keys, DirectedSource::Parent);
+    resolve_directed(obj, parent, suffix, self_directed_keys, DirectedSource::SelfObj);
+}
+
+#[cfg(test)]
+mod directed_tag_tests {
+    use super::*;
+
+    #[test]
+    fn direction_suffix_matches_side_and_handedness() {
+        assert_eq!(direction_suffix(Side::Right, false), Some(":forward"));
+        assert_eq!(direction_suffix(Side::Left, false), Some(":backward"));
+        assert_eq!(direction_suffix(Side::Right, true), Some(":backward"));
+        assert_eq!(direction_suffix(Side::Left, true), Some(":forward"));
+        assert_eq!(direction_suffix(Side::Self_, false), None);
+        assert_eq!(direction_suffix(Side::Self_, true), None);
     }
 
-    // Tags that are direction-sensitive on the side object itself (e.g. traffic_sign, which
-    // arrives as `traffic_sign:forward`/`:backward` when unnested from a suffixed parent tag).
-    for key in self_directed_keys {
-        let directed_key = format!("{key}{direction_suffix}");
-        if !obj.contains_key(*key) {
-            if let Some(val) = obj.get(&directed_key).cloned() {
-                obj.insert((*key).to_owned(), val);
-            }
-        }
+    fn tags(pairs: &[(&str, &str)]) -> RawTags {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn parent_source_prefers_existing_obj_value() {
+        let mut obj = tags(&[("cycleway:lanes", "existing")]);
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        resolve_directed(
+            &mut obj,
+            &parent,
+            ":forward",
+            &["cycleway:lanes"],
+            DirectedSource::Parent,
+        );
+        assert_eq!(obj.get("cycleway:lanes").map(String::as_str), Some("existing"));
+    }
+
+    #[test]
+    fn parent_source_falls_back_to_bare_then_directed_key() {
+        let mut obj = RawTags::default();
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        resolve_directed(
+            &mut obj,
+            &parent,
+            ":forward",
+            &["cycleway:lanes"],
+            DirectedSource::Parent,
+        );
+        assert_eq!(obj.get("cycleway:lanes").map(String::as_str), Some("lane"));
+
+        let mut obj = RawTags::default();
+        let parent = RawTags::default();
+        resolve_directed(
+            &mut obj,
+            &parent,
+            ":forward",
+            &["cycleway:lanes"],
+            DirectedSource::Parent,
+        );
+        assert_eq!(obj.get("cycleway:lanes"), None);
+    }
+
+    #[test]
+    fn self_source_reads_from_obj_own_directed_key() {
+        let mut obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
+        let parent = RawTags::default();
+        resolve_directed(
+            &mut obj,
+            &parent,
+            ":forward",
+            &["traffic_sign"],
+            DirectedSource::SelfObj,
+        );
+        assert_eq!(
+            obj.get("traffic_sign").map(String::as_str),
+            Some("DE:1022-10")
+        );
+    }
+
+    #[test]
+    fn convert_directed_tags_noop_for_self_side() {
+        let mut obj = RawTags::default();
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        convert_directed_tags(
+            &mut obj,
+            &parent,
+            Side::Self_,
+            false,
+            &["cycleway:lanes"],
+            &[],
+        );
+        assert!(obj.is_empty());
     }
 }
