@@ -49,6 +49,10 @@ export default function App() {
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
   const [categoriesByTopic, setCategoriesByTopic] = useState<Record<string, Category[]>>({});
   const [active, setActive] = useState<Selection>(NO_SELECTION);
+  // Bumped on every category click (see Map's `focusTick` doc comment) — separate from `active`
+  // itself since re-clicking the already-active category doesn't change `active.topic`/`.name`,
+  // but should still refocus the map on it.
+  const [focusTick, setFocusTick] = useState(0);
   const [newNameByTopic, setNewNameByTopic] = useState<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState(false);
   const [showNodes, setShowNodes] = useState(false);
@@ -146,6 +150,15 @@ export default function App() {
       .then((d) => setText(d.json))
       .catch(() => setText(NEW_CATEGORY_JSON));
   }, [active]);
+
+  // Memoized so identity only changes when the selected topic/category actually does — an inline
+  // object literal here would change reference on every render (e.g. every keystroke while
+  // editing), which would defeat Map's focus effect's ability to tell "selection changed" from
+  // "unrelated re-render".
+  const isolateCategory = useMemo(
+    () => (active.name && !active.isTopicConfig ? { topic: active.topic, name: active.name } : null),
+    [active.topic, active.name, active.isTopicConfig],
+  );
 
   // One color per topic (not per category, for now) — categories within a topic aren't
   // individually distinguished yet.
@@ -287,7 +300,8 @@ export default function App() {
           cutPoints={cutPoints}
           topicColors={topicColors}
           hiddenTopics={hiddenTopics}
-          isolateCategory={active.name && !active.isTopicConfig ? { topic: active.topic, name: active.name } : null}
+          isolateCategory={isolateCategory}
+          focusTick={focusTick}
           showNodes={showNodes}
           onBboxSelected={selectBbox}
         />
@@ -505,7 +519,10 @@ export default function App() {
                           <div
                             key={`${c.kind}/${c.name}`}
                             className="row"
-                            onClick={() => setActive(c)}
+                            onClick={() => {
+                              setActive(c);
+                              setFocusTick((t) => t + 1);
+                            }}
                             style={{
                               padding: "6px 12px",
                               fontFamily: "var(--font-mono)",

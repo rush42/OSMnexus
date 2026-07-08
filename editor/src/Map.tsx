@@ -43,6 +43,20 @@ function colorExpression(topicColors: Record<string, string>): maplibregl.Expres
   ] as unknown as maplibregl.ExpressionSpecification;
 }
 
+// Visits every [lon, lat] pair in a geometry's (possibly nested, for Polygon/MultiLineString/...)
+// `coordinates` array — generic over geometry type since focusing a category only needs the
+// extent, not the shape.
+function forEachCoordinate(geometry: GeoJSON.Geometry, visit: (lon: number, lat: number) => void) {
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node) && typeof node[0] === "number") {
+      visit(node[0] as number, node[1] as number);
+    } else if (Array.isArray(node)) {
+      node.forEach(walk);
+    }
+  };
+  if ("coordinates" in geometry) walk(geometry.coordinates);
+}
+
 // Excludes features whose `topic` property is in `hiddenTopics`; when `isolateCategory` is set
 // (a category, as opposed to a topic's topic.json, is selected in the sidebar) also excludes every
 // feature outside that single topic+category — "clicking a category hides all others" — using the
@@ -69,6 +83,7 @@ export default function Map({
   topicColors,
   hiddenTopics,
   isolateCategory,
+  focusTick,
   showNodes,
   onBboxSelected,
 }: {
@@ -78,6 +93,10 @@ export default function Map({
   topicColors: Record<string, string>;
   hiddenTopics: Set<string>;
   isolateCategory: { topic: string; name: string } | null;
+  // Bumped on every category click (even re-clicking the already-active one) so the fit-to-category
+  // effect below can distinguish "clicked again, please refocus" from an unrelated re-render — a
+  // ref/content comparison on isolateCategory alone can't tell those apart when it's the same value.
+  focusTick: number;
   showNodes: boolean;
   onBboxSelected: (bounds: [number, number, number, number]) => void;
 }) {
@@ -85,6 +104,8 @@ export default function Map({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const onBboxSelectedRef = useRef(onBboxSelected);
   onBboxSelectedRef.current = onBboxSelected;
+  const dataRef = useRef(data);
+  dataRef.current = data;
   // Flips true exactly once, from the map's own "load" event — every other effect below depends on
   // it instead of each re-deriving "is the map ready" via `map.loaded()` + a one-off `map.once("load")`
   // listener. That ad-hoc pattern raced: if "load" had already fired by the time an effect ran (timing
@@ -220,6 +241,23 @@ export default function Map({
     if (!ready || !data) return;
     (mapRef.current!.getSource(SOURCE_ID) as maplibregl.GeoJSONSource).setData(data);
   }, [ready, data]);
+
+  // Fits the view to the selected category's own features on every click (including re-clicking
+  // the already-active one — see `focusTick`'s doc comment). Reads `data` via a ref rather than a
+  // dependency so it doesn't refit on every unrelated data refresh (e.g. re-classify while typing),
+  // only on an actual click.
+  useEffect(() => {
+    if (!ready || !isolateCategory) return;
+    const fc = dataRef.current;
+    if (!fc) return;
+    const bounds = new maplibregl.LngLatBounds();
+    for (const feature of fc.features) {
+      if (feature.properties?.topic !== isolateCategory.topic || feature.properties?.category !== isolateCategory.name) continue;
+      forEachCoordinate(feature.geometry, (lon, lat) => bounds.extend([lon, lat]));
+    }
+    if (!bounds.isEmpty()) mapRef.current!.fitBounds(bounds, { padding: 40, maxZoom: 18, duration: 300 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, isolateCategory, focusTick]);
 
   useEffect(() => {
     if (!ready) return;
