@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends osmium-tool cur
 
 # berlin.osm.pbf is gitignored (not committed — too large), so fetch the same extract fresh at
 # build time instead of relying on it being present in the build context.
-RUN curl -fL -o /data/base.osm.pbf https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf
+RUN mkdir -p /data && curl -fL -o /data/base.osm.pbf https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf
 
 WORKDIR /repo
 COPY configs ./configs
