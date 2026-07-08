@@ -64,6 +64,7 @@ export default function App() {
   const [newNameByTopic, setNewNameByTopic] = useState<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState(false);
   const [showNodes, setShowNodes] = useState(false);
+  const [followSelection, setFollowSelection] = useState(true);
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [cutPoints, setCutPoints] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -171,6 +172,15 @@ export default function App() {
   // "unrelated re-render".
   const isolateCategory = useMemo(
     () => (manualSelect && active.name && !active.isTopicConfig ? { topic: active.topic, name: active.name } : null),
+    [manualSelect, active.topic, active.name, active.isTopicConfig],
+  );
+
+  // What the map should fit its view to on the next focusTick — a topic click fits every feature
+  // in that topic (name: null); a category click narrows to just that category. Kept separate from
+  // `isolateCategory` since a topic click shouldn't hide that topic's other categories on the map,
+  // just move the viewport.
+  const focusTarget = useMemo(
+    () => (manualSelect && active.topic ? { topic: active.topic, name: active.isTopicConfig ? null : active.name || null } : null),
     [manualSelect, active.topic, active.name, active.isTopicConfig],
   );
 
@@ -315,34 +325,56 @@ export default function App() {
           topicColors={topicColors}
           hiddenTopics={hiddenTopics}
           isolateCategory={isolateCategory}
+          focusTarget={focusTarget}
           focusTick={focusTick}
+          followSelection={followSelection}
           showNodes={showNodes}
           onBboxSelected={selectBbox}
         />
-        <label
-          style={{
-            position: "absolute",
-            top: 12,
-            right: 12,
-            padding: "7px 12px",
-            background: "rgba(255,255,255,0.85)",
-            backdropFilter: "blur(6px)",
-            color: "var(--text)",
-            fontFamily: "var(--font-ui)",
-            fontSize: 13,
-            borderRadius: "var(--radius)",
-            boxShadow: "var(--shadow)",
-            border: "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            cursor: "pointer",
-            userSelect: "none",
-          }}
-        >
-          <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
-          Show intersections
-        </label>
+        <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8 }}>
+          <label
+            style={{
+              padding: "7px 12px",
+              background: "rgba(255,255,255,0.85)",
+              backdropFilter: "blur(6px)",
+              color: "var(--text)",
+              fontFamily: "var(--font-ui)",
+              fontSize: 13,
+              borderRadius: "var(--radius)",
+              boxShadow: "var(--shadow)",
+              border: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+          >
+            <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
+            Show intersections
+          </label>
+          <label
+            style={{
+              padding: "7px 12px",
+              background: "rgba(255,255,255,0.85)",
+              backdropFilter: "blur(6px)",
+              color: "var(--text)",
+              fontFamily: "var(--font-ui)",
+              fontSize: 13,
+              borderRadius: "var(--radius)",
+              boxShadow: "var(--shadow)",
+              border: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+          >
+            <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
+            Follow selection
+          </label>
+        </div>
         {(!selected || extracting) && (
           <div
             style={{
@@ -499,7 +531,11 @@ export default function App() {
                       <div style={{ paddingLeft: 16 }}>
                         <div
                           className="row"
-                          onClick={() => setActive({ topic, kind: "", name: "", isTopicConfig: true })}
+                          onClick={() => {
+                            setActive({ topic, kind: "", name: "", isTopicConfig: true });
+                            setManualSelect(true);
+                            setFocusTick((t) => t + 1);
+                          }}
                           style={{
                             padding: "6px 12px",
                             fontFamily: "var(--font-mono)",

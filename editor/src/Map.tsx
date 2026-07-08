@@ -109,7 +109,9 @@ export default function Map({
   topicColors,
   hiddenTopics,
   isolateCategory,
+  focusTarget,
   focusTick,
+  followSelection,
   showNodes,
   onBboxSelected,
 }: {
@@ -119,10 +121,18 @@ export default function Map({
   topicColors: Record<string, string>;
   hiddenTopics: Set<string>;
   isolateCategory: { topic: string; name: string } | null;
-  // Bumped on every category click (even re-clicking the already-active one) so the fit-to-category
-  // effect below can distinguish "clicked again, please refocus" from an unrelated re-render — a
-  // ref/content comparison on isolateCategory alone can't tell those apart when it's the same value.
+  // What to fit the view to on the next focusTick — a topic click (name: null) fits every feature
+  // in that topic, a category click (name set) narrows to just that category. Separate from
+  // `isolateCategory` since focusing a topic shouldn't also hide its other categories on the map.
+  focusTarget: { topic: string; name: string | null } | null;
+  // Bumped on every category/topic click (even re-clicking the already-active one) so the
+  // fit-to-selection effect below can distinguish "clicked again, please refocus" from an unrelated
+  // re-render — a ref/content comparison on focusTarget alone can't tell those apart when it's the
+  // same value.
   focusTick: number;
+  // Gates the fit-to-selection effect — lets users click around the sidebar without the map
+  // yanking the viewport away each time, when they'd rather navigate manually.
+  followSelection: boolean;
   showNodes: boolean;
   onBboxSelected: (bounds: [number, number, number, number]) => void;
 }) {
@@ -268,22 +278,23 @@ export default function Map({
     (mapRef.current!.getSource(SOURCE_ID) as maplibregl.GeoJSONSource).setData(data);
   }, [ready, data]);
 
-  // Fits the view to the selected category's own features on every click (including re-clicking
-  // the already-active one — see `focusTick`'s doc comment). Reads `data` via a ref rather than a
-  // dependency so it doesn't refit on every unrelated data refresh (e.g. re-classify while typing),
-  // only on an actual click.
+  // Fits the view to the selected topic's or category's own features on every click (including
+  // re-clicking the already-active one — see `focusTick`'s doc comment). Reads `data` via a ref
+  // rather than a dependency so it doesn't refit on every unrelated data refresh (e.g. re-classify
+  // while typing), only on an actual click.
   useEffect(() => {
-    if (!ready || !isolateCategory) return;
+    if (!ready || !followSelection || !focusTarget) return;
     const fc = dataRef.current;
     if (!fc) return;
     const bounds = new maplibregl.LngLatBounds();
     for (const feature of fc.features) {
-      if (feature.properties?.topic !== isolateCategory.topic || feature.properties?.category !== isolateCategory.name) continue;
+      if (feature.properties?.topic !== focusTarget.topic) continue;
+      if (focusTarget.name !== null && feature.properties?.category !== focusTarget.name) continue;
       forEachCoordinate(feature.geometry, (lon, lat) => bounds.extend([lon, lat]));
     }
     if (!bounds.isEmpty()) mapRef.current!.fitBounds(bounds, { padding: 40, maxZoom: 18, duration: 300 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, isolateCategory, focusTick]);
+  }, [ready, followSelection, focusTarget, focusTick]);
 
   useEffect(() => {
     if (!ready) return;
