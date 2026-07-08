@@ -42,6 +42,8 @@ export default function App() {
   const [selected, setSelected] = useState(false);
   const [maxBboxM, setMaxBboxM] = useState(DEFAULT_MAX_BBOX_M);
   const [extracting, setExtracting] = useState(false);
+  const [configs, setConfigs] = useState<string[]>([]);
+  const [currentConfig, setCurrentConfig] = useState("");
   const [topics, setTopics] = useState<string[]>([]);
   const [hiddenTopics, setHiddenTopics] = useState<Set<string>>(new Set());
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
@@ -66,6 +68,18 @@ export default function App() {
         setSelected(d.selected);
         if (d.maxBboxM) setMaxBboxM(d.maxBboxM);
       });
+    fetch("/api/configs")
+      .then((r) => r.json())
+      .then((d: { configs: string[]; current: string }) => {
+        setConfigs(d.configs);
+        setCurrentConfig(d.current);
+      });
+    loadTopics();
+  }, []);
+
+  // Fetches the topics/categories for whichever config the server currently has selected —
+  // shared by the initial mount and by switchConfig (after the server-side selection changes).
+  function loadTopics() {
     fetch("/api/topics")
       .then((r) => r.json())
       .then((d: { topics: string[] }) => {
@@ -73,7 +87,7 @@ export default function App() {
         setExpandedTopics((cur) => (cur.size > 0 ? cur : new Set(d.topics[0] ? [d.topics[0]] : [])));
         for (const topic of d.topics) loadCategories(topic);
       });
-  }, []);
+  }
 
   function loadCategories(topic: string) {
     fetch(`/api/categories/${encodeURIComponent(topic)}`)
@@ -86,6 +100,33 @@ export default function App() {
         // which never equals a real topic name, so nothing was ever auto-selected on load.
         setActive((cur) => (!cur.topic && !cur.name && cats[0] ? cats[0] : cur));
       });
+  }
+
+  // Switches the server's selected config directory, then resets every topic-scoped piece of
+  // state (categories/selection differ entirely between configs) and reloads — same load path as
+  // the initial mount, so the freshly switched config auto-selects its first category and (if a
+  // bbox is already chosen) auto-classifies via the existing [active]/[text] effects.
+  async function switchConfig(config: string) {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.error || "Failed to switch config");
+      return;
+    }
+    setCurrentConfig(config);
+    setTopics([]);
+    setCategoriesByTopic({});
+    setHiddenTopics(new Set());
+    setExpandedTopics(new Set());
+    setNewNameByTopic({});
+    setActive(NO_SELECTION);
+    setData(null);
+    setCutPoints(null);
+    loadTopics();
   }
 
   useEffect(() => {
@@ -337,6 +378,32 @@ export default function App() {
             {collapsed ? "◀" : "▶"}
           </button>
         </div>
+        {!collapsed && configs.length > 0 && (
+          <div
+            style={{
+              padding: "6px 10px",
+              fontFamily: "sans-serif",
+              fontSize: 12,
+              borderBottom: "1px solid #ccc",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span style={{ opacity: 0.7 }}>config</span>
+            <select
+              value={currentConfig}
+              onChange={(e) => switchConfig(e.target.value)}
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              {configs.map((config) => (
+                <option key={config} value={config}>
+                  {config}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {!collapsed && (
           <>
             <div style={{ borderBottom: "1px solid #ccc", maxHeight: 320, overflowY: "auto" }}>

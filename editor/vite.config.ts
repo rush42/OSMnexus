@@ -8,7 +8,7 @@ import os from "node:os";
 const EDITOR_DIR = path.resolve(__dirname);
 const REPO_DIR = path.resolve(__dirname, "..");
 const PIPELINE_BIN = path.join(REPO_DIR, "target", "release", "osmnexus");
-const LIVE_CONFIG_DIR = path.join(EDITOR_DIR, "live-config");
+const CONFIGS_ROOT = path.join(REPO_DIR, "configs");
 const BASE_PBF = process.env.BASE_PBF_PATH || path.join(EDITOR_DIR, "fixtures", "tiny.osm.pbf");
 const EXTRACT_DIR = path.join(EDITOR_DIR, "live-extract");
 // Upper bound on a shift-dragged bbox's side length (meters), configurable via docker-compose so a
@@ -19,6 +19,32 @@ const MAX_BBOX_M = Number(process.env.MAX_BBOX_M) || 3000;
 // the user picks a bbox (or, for the bundled fixture, defaults to it).
 let currentExtractPath: string | null = null;
 let currentBounds: [number, number, number, number] | null = null;
+
+// A config is any non-`_`-prefixed directory directly under CONFIGS_ROOT (configs/tilda,
+// configs/osmnx, configs/public_transport, ...) — same discovery rule as listTopics() below, one
+// level up. The editor operates directly on these real config directories (no private copy to
+// keep in sync); edits made here land in the repo's actual configs/*.
+async function listConfigs(): Promise<string[]> {
+  const entries = await fs.readdir(CONFIGS_ROOT, { withFileTypes: true });
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
+    .map((e) => e.name)
+    .sort();
+}
+
+// The config directory currently being edited/run against. Set on first request and whenever
+// the client switches configs (POST /api/config) — same module-level state pattern as
+// currentExtractPath/currentBounds above.
+let currentConfigName: string | null = null;
+let currentConfigDir: string | null = null;
+
+async function ensureConfigSelected(): Promise<string> {
+  if (currentConfigDir) return currentConfigDir;
+  const configs = await listConfigs();
+  currentConfigName = configs[0];
+  currentConfigDir = path.join(CONFIGS_ROOT, configs[0]);
+  return currentConfigDir;
+}
 
 function run(bin: string, args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; message: string }> {
   return new Promise((resolve) => {
@@ -79,14 +105,17 @@ function sendJson(res: any, status: number, body: unknown) {
 }
 
 async function runPipeline(pbfPath: string, outDir: string): Promise<{ ok: true } | { ok: false; message: string }> {
-  const result = await run(PIPELINE_BIN, [pbfPath, "--config-dir", LIVE_CONFIG_DIR, "--output", "geojson", "--out-dir", outDir]);
+  const configDir = await ensureConfigSelected();
+  const result = await run(PIPELINE_BIN, [pbfPath, "--config-dir", configDir, "--output", "geojson", "--out-dir", outDir]);
   return result.ok ? { ok: true } : result;
 }
 
-// A topic is any non-`_`-prefixed directory directly under LIVE_CONFIG_DIR — same discovery rule
-// the Rust side uses (see TopicRunner::load_all), so nothing here needs to hardcode topic names.
+// A topic is any non-`_`-prefixed directory directly under the current config dir — same
+// discovery rule the Rust side uses (see TopicRunner::load_all), so nothing here needs to
+// hardcode topic names.
 async function listTopics(): Promise<string[]> {
-  const entries = await fs.readdir(LIVE_CONFIG_DIR, { withFileTypes: true });
+  const configDir = await ensureConfigSelected();
+  const entries = await fs.readdir(configDir, { withFileTypes: true });
   return entries
     .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
     .map((e) => e.name)
@@ -121,21 +150,23 @@ async function readMergedFeatureCollections(outDir: string, topics: string[]) {
   };
 }
 
-function categoryFilePath(topic: string, kind: string, name: string) {
-  return path.join(LIVE_CONFIG_DIR, topic, kind, `${name}.json`);
+async function categoryFilePath(topic: string, kind: string, name: string) {
+  const configDir = await ensureConfigSelected();
+  return path.join(configDir, topic, kind, `${name}.json`);
 }
 
 // Path segments come straight from the request; a blank/malformed one would silently create a
-// bogus directory (e.g. topic="" + kind="way" writes LIVE_CONFIG_DIR/way/.json, which osmnexus
-// then tries to load as a topic named "way" and fails looking for its topic.json), or escape
-// LIVE_CONFIG_DIR entirely via "..". Block only that, not legitimate names with spaces/punctuation/
+// bogus directory (e.g. topic="" + kind="way" writes <config>/way/.json, which osmnexus then
+// tries to load as a topic named "way" and fails looking for its topic.json), or escape the
+// config dir entirely via "..". Block only that, not legitimate names with spaces/punctuation/
 // unicode (an allowlist regex was rejecting real category names — over-eager).
 function isValidSegment(s: string): boolean {
   return s.length > 0 && s !== "." && s !== ".." && !s.includes("/") && !s.includes("\\") && !s.includes("\0");
 }
 
-function topicFilePath(topic: string) {
-  return path.join(LIVE_CONFIG_DIR, topic, "topic.json");
+async function topicFilePath(topic: string) {
+  const configDir = await ensureConfigSelected();
+  return path.join(configDir, topic, "topic.json");
 }
 
 // Re-runs the pipeline against the current extract and replies with the merged multi-topic
@@ -199,6 +230,27 @@ function liveEditorApi(): Plugin {
           return sendJson(res, 200, { bounds: currentBounds, extractMs });
         }
 
+        if (url.pathname === "/api/configs" && req.method === "GET") {
+          await ensureConfigSelected();
+          return sendJson(res, 200, { configs: await listConfigs(), current: currentConfigName });
+        }
+
+        if (url.pathname === "/api/config" && req.method === "POST") {
+          const body = await readBody(req);
+          let payload: { config: string };
+          try {
+            payload = JSON.parse(body);
+          } catch {
+            return sendJson(res, 400, { error: "request body is not valid JSON" });
+          }
+          if (!(await listConfigs()).includes(payload.config)) {
+            return sendJson(res, 400, { error: `unknown config '${payload.config}'` });
+          }
+          currentConfigName = payload.config;
+          currentConfigDir = path.join(CONFIGS_ROOT, payload.config);
+          return sendJson(res, 200, { ok: true });
+        }
+
         if (url.pathname === "/api/topics" && req.method === "GET") {
           return sendJson(res, 200, { topics: await listTopics() });
         }
@@ -206,7 +258,7 @@ function liveEditorApi(): Plugin {
         const categoriesMatch = url.pathname.match(/^\/api\/categories\/([^/]+)$/);
         if (categoriesMatch && req.method === "GET") {
           const topic = decodeURIComponent(categoriesMatch[1]);
-          const topicDir = path.join(LIVE_CONFIG_DIR, topic);
+          const topicDir = path.join(await ensureConfigSelected(), topic);
           const kinds = ["way", "node", "relation"];
           const categories: { kind: string; name: string }[] = [];
           for (const kind of kinds) {
@@ -227,7 +279,7 @@ function liveEditorApi(): Plugin {
         if (categoryMatch && req.method === "GET") {
           const [topic, kind, name] = categoryMatch.slice(1).map(decodeURIComponent);
           try {
-            const json = await fs.readFile(categoryFilePath(topic, kind, name), "utf-8");
+            const json = await fs.readFile(await categoryFilePath(topic, kind, name), "utf-8");
             return sendJson(res, 200, { json });
           } catch (err) {
             return sendJson(res, 404, { error: String(err) });
@@ -237,7 +289,7 @@ function liveEditorApi(): Plugin {
         if (categoryMatch && req.method === "DELETE") {
           const [topic, kind, name] = categoryMatch.slice(1).map(decodeURIComponent);
           try {
-            await fs.unlink(categoryFilePath(topic, kind, name));
+            await fs.unlink(await categoryFilePath(topic, kind, name));
             return sendJson(res, 200, { ok: true });
           } catch (err) {
             return sendJson(res, 404, { error: String(err) });
@@ -267,8 +319,9 @@ function liveEditorApi(): Plugin {
             return sendJson(res, 400, { error: `category JSON is invalid: ${(err as Error).message}` });
           }
 
-          await fs.mkdir(path.dirname(categoryFilePath(topic, kind, name)), { recursive: true });
-          await fs.writeFile(categoryFilePath(topic, kind, name), json, "utf-8");
+          const catPath = await categoryFilePath(topic, kind, name);
+          await fs.mkdir(path.dirname(catPath), { recursive: true });
+          await fs.writeFile(catPath, json, "utf-8");
 
           return runPipelineAndRespond(res);
         }
@@ -277,7 +330,7 @@ function liveEditorApi(): Plugin {
         if (topicMatch && req.method === "GET") {
           const topic = decodeURIComponent(topicMatch[1]);
           try {
-            const json = await fs.readFile(topicFilePath(topic), "utf-8");
+            const json = await fs.readFile(await topicFilePath(topic), "utf-8");
             return sendJson(res, 200, { json });
           } catch (err) {
             return sendJson(res, 404, { error: String(err) });
@@ -303,7 +356,7 @@ function liveEditorApi(): Plugin {
             return sendJson(res, 400, { error: `topic JSON is invalid: ${(err as Error).message}` });
           }
 
-          await fs.writeFile(topicFilePath(topic), payload.json, "utf-8");
+          await fs.writeFile(await topicFilePath(topic), payload.json, "utf-8");
           return runPipelineAndRespond(res);
         }
 

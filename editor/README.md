@@ -5,16 +5,21 @@ category's condition (or a topic's transforms/fields) in a JSON editor, save, an
 reruns and the map re-renders — no manual `cargo run` / reload round-trips.
 
 It's a thin wrapper around the same [`osmnexus`](../README.md) binary: saving an edit shells out
-to the release build with `--config-dir editor/live-config --output geojson`, then the map reloads
-the resulting `<topic>.geojson` files.
+to the release build with `--config-dir <the selected configs/* dir> --output geojson`, then the
+map reloads the resulting `<topic>.geojson` files.
+
+The editor operates directly on the repo's real config directories under `../configs/` — there's
+no private copy to keep in sync. A **config selector** (top of the topics panel) lists every
+directory under `configs/` (`tilda`, `osmnx`, `public_transport`, ...) and lets you switch between
+them; whichever one is selected is what saves write to and what the pipeline runs against. Edits
+made here are real edits to the repo's configs, not a sandboxed copy.
 
 ## How it works
 
-- **`live-config/`** — the config directory the editor runs against (its own `bike`/`drive`/`walk`
-  topics + `_shared/`), separate from `configs/` so editing here never touches the real configs.
 - **`vite.config.ts`** — a Vite plugin (`liveEditorApi`) that serves a small JSON API alongside the
-  dev server: extracting a bbox (via `osmium extract`), listing topics/categories, reading/writing
-  a category or topic's JSON file, and re-running the pipeline after every write.
+  dev server: listing/switching configs, extracting a bbox (via `osmium extract`), listing
+  topics/categories, reading/writing a category or topic's JSON file, and re-running the pipeline
+  after every write.
 - **`src/App.tsx`** / **`Map.tsx`** / **`Editor.tsx`** — the React UI: a MapLibre map for bbox
   selection and rendering classified features, and a CodeMirror JSON editor for the selected
   topic/category file.
@@ -58,7 +63,9 @@ before `docker compose up`, or set `BASE_PBF_PATH` directly for `npm run dev`.
 
 ## Editing configs
 
-Topics and categories are plain JSON files under `live-config/<topic>/`:
+Topics and categories are plain JSON files under `<config>/<topic>/` (e.g.
+`../configs/tilda/bikelanes/`), where `<config>` is whichever directory is picked in the config
+selector:
 
 - `topic.json` — table name, transforms, osm fields, sanitizers, deriver bindings.
 - `way/*.json`, `node/*.json`, `relation/*.json` — one file per category.
