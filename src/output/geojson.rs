@@ -16,7 +16,10 @@ use crate::output::rows::{GEOM_COLUMNS, NODE_COLUMNS, TAG_COLUMNS};
 
 struct EdgeGeom {
     seg_idx: usize,
-    geom: Vec<u8>,
+    // Decoded once in `read_edges`, not per feature — a way shared by many relations (e.g. a
+    // trunk road several bus routes run down) would otherwise get its WKB re-parsed and
+    // re-projected once per relation that references it.
+    coordinates: Vec<[f64; 2]>,
 }
 
 fn lonlat_coordinates(geom: &[u8]) -> anyhow::Result<Vec<[f64; 2]>> {
@@ -77,7 +80,8 @@ fn read_edges(path: &Path) -> anyhow::Result<HashMap<i64, Vec<EdgeGeom>>> {
         }
         let osm_id: i64 = record[0].parse()?;
         let seg_idx: usize = record[1].parse()?;
-        by_osm_id.entry(osm_id).or_default().push(EdgeGeom { seg_idx, geom: hex::decode(geom_hex)? });
+        let coordinates = lonlat_coordinates(&hex::decode(geom_hex)?)?;
+        by_osm_id.entry(osm_id).or_default().push(EdgeGeom { seg_idx, coordinates });
     }
     for segments in by_osm_id.values_mut() {
         segments.sort_by_key(|s| s.seg_idx);
@@ -160,12 +164,11 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
             merge_properties(&mut properties, &record[5]);
 
             for segment in &segments {
-                let Ok(coordinates) = lonlat_coordinates(&segment.geom) else { continue };
                 let mut properties = properties.clone();
                 properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));
                 features.push(json!({
                     "type": "Feature",
-                    "geometry": { "type": "LineString", "coordinates": coordinates },
+                    "geometry": { "type": "LineString", "coordinates": segment.coordinates },
                     "properties": properties,
                 }));
             }
@@ -174,14 +177,12 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
             // for a single way's own segments, not a relation's aggregated member-way segments.
             if osm_type != "R" {
                 for segment in segments.iter().skip(1) {
-                    if let Ok(coordinates) = lonlat_coordinates(&segment.geom) {
-                        if let Some(&start) = coordinates.first() {
-                            cut_points.push(json!({
-                                "type": "Feature",
-                                "geometry": { "type": "Point", "coordinates": start },
-                                "properties": { "osm_id": osm_id },
-                            }));
-                        }
+                    if let Some(&start) = segment.coordinates.first() {
+                        cut_points.push(json!({
+                            "type": "Feature",
+                            "geometry": { "type": "Point", "coordinates": start },
+                            "properties": { "osm_id": osm_id },
+                        }));
                     }
                 }
             }
