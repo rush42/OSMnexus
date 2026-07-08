@@ -23,7 +23,7 @@ full image rebuild each time, point at a host-built binary instead:
 `PIPELINE_BIN_PATH=/repo/target/release/osmnexus docker compose up` (after `cargo build --release`
 from the repo root).
 
-Open http://localhost:5173, draw a bbox on the map (bounded by `MAX_BBOX_M`, default 3000m), and
+Open http://localhost:5173, draw a bbox on the map (bounded by `MAX_BBOX_M`, default 10000m), and
 it extracts that area, runs the pipeline, and renders the result. Edit a category/topic JSON and
 save to re-run and re-render.
 
@@ -32,7 +32,7 @@ Environment variables:
 | var | default | meaning |
 |---|---|---|
 | `BASE_PBF_PATH` | `fixtures/tiny.osm.pbf` | the base `.osm.pbf` bbox selections are extracted from |
-| `MAX_BBOX_M` | `3000` | max side length (meters) of a selectable bbox |
+| `MAX_BBOX_M` | `10000` | max side length (meters) of a selectable bbox |
 
 To use a bigger base extract (e.g. `berlin.osm.pbf` at the repo root), point `BASE_PBF` at it
 before `docker compose up`.
