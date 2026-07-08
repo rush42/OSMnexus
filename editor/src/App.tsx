@@ -287,6 +287,7 @@ export default function App() {
           cutPoints={cutPoints}
           topicColors={topicColors}
           hiddenTopics={hiddenTopics}
+          isolateCategory={active.name && !active.isTopicConfig ? { topic: active.topic, name: active.name } : null}
           showNodes={showNodes}
           onBboxSelected={selectBbox}
         />

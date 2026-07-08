@@ -43,9 +43,23 @@ function colorExpression(topicColors: Record<string, string>): maplibregl.Expres
   ] as unknown as maplibregl.ExpressionSpecification;
 }
 
-// Excludes features whose `topic` property is in `hiddenTopics`.
-function visibilityFilter(hiddenTopics: Set<string>): maplibregl.ExpressionSpecification {
-  return ["!", ["in", ["get", "topic"], ["literal", [...hiddenTopics]]]] as unknown as maplibregl.ExpressionSpecification;
+// Excludes features whose `topic` property is in `hiddenTopics`; when `isolateCategory` is set
+// (a category, as opposed to a topic's topic.json, is selected in the sidebar) also excludes every
+// feature outside that single topic+category — "clicking a category hides all others" — using the
+// `category` property the pipeline stamps onto `derived` from the matched category's file stem
+// (see `engine::runner`), so no extra plumbing is needed to know which category a feature came from.
+function visibilityFilter(
+  hiddenTopics: Set<string>,
+  isolateCategory: { topic: string; name: string } | null,
+): maplibregl.ExpressionSpecification {
+  const notHidden = ["!", ["in", ["get", "topic"], ["literal", [...hiddenTopics]]]];
+  if (!isolateCategory) return notHidden as unknown as maplibregl.ExpressionSpecification;
+  return [
+    "all",
+    notHidden,
+    ["==", ["get", "topic"], isolateCategory.topic],
+    ["==", ["get", "category"], isolateCategory.name],
+  ] as unknown as maplibregl.ExpressionSpecification;
 }
 
 export default function Map({
@@ -54,6 +68,7 @@ export default function Map({
   cutPoints,
   topicColors,
   hiddenTopics,
+  isolateCategory,
   showNodes,
   onBboxSelected,
 }: {
@@ -62,6 +77,7 @@ export default function Map({
   cutPoints: GeoJSON.FeatureCollection | null;
   topicColors: Record<string, string>;
   hiddenTopics: Set<string>;
+  isolateCategory: { topic: string; name: string } | null;
   showNodes: boolean;
   onBboxSelected: (bounds: [number, number, number, number]) => void;
 }) {
@@ -228,13 +244,17 @@ export default function Map({
   useEffect(() => {
     if (!ready) return;
     const map = mapRef.current!;
-    const lineFilter = visibilityFilter(hiddenTopics);
+    const lineFilter = visibilityFilter(hiddenTopics, isolateCategory);
     const pointFilter = ["all", ["==", ["geometry-type"], "Point"], lineFilter] as unknown as maplibregl.ExpressionSpecification;
     map.setFilter(`${SOURCE_ID}-line`, lineFilter);
     map.setFilter(`${SOURCE_ID}-point`, pointFilter);
-    map.setFilter(`${CUT_POINTS_SOURCE_ID}-halo`, lineFilter);
-    map.setFilter(`${CUT_POINTS_SOURCE_ID}-point`, lineFilter);
-  }, [ready, hiddenTopics]);
+    // Cut points don't carry a `category` property (they're not a classified feature themselves —
+    // see output/geojson.rs), so they stay topic-scoped only; isolating a category would otherwise
+    // just hide every cut point outright.
+    const cutPointFilter = visibilityFilter(hiddenTopics, null);
+    map.setFilter(`${CUT_POINTS_SOURCE_ID}-halo`, cutPointFilter);
+    map.setFilter(`${CUT_POINTS_SOURCE_ID}-point`, cutPointFilter);
+  }, [ready, hiddenTopics, isolateCategory]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }
