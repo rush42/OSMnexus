@@ -1,6 +1,0 @@
-{
-  "condition": {
-    "tag": "railway",
-    "eq": "subway"
-  }
-}
