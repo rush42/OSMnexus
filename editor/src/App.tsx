@@ -78,27 +78,31 @@ export default function App() {
         setConfigs(d.configs);
         setCurrentConfig(d.current);
       });
-    loadTopics();
+    loadTopics(true);
   }, []);
 
   // Fetches the topics/categories for whichever config the server currently has selected —
-  // shared by the initial mount and by switchConfig (after the server-side selection changes).
-  function loadTopics() {
+  // shared by the initial mount (autoSelect: true, so there's something to show right away) and by
+  // switchConfig (autoSelect: false — starting with a category auto-picked would immediately
+  // narrow the map down to just that one category, which reads as the map "reloading"/jumping
+  // right after a switch that's otherwise meant to leave the view alone).
+  function loadTopics(autoSelect: boolean) {
     fetch("/api/topics")
       .then((r) => r.json())
       .then((d: { topics: string[] }) => {
         setTopics(d.topics);
         setExpandedTopics((cur) => (cur.size > 0 ? cur : new Set(d.topics[0] ? [d.topics[0]] : [])));
-        for (const topic of d.topics) loadCategories(topic);
+        for (const topic of d.topics) loadCategories(topic, autoSelect);
       });
   }
 
-  function loadCategories(topic: string) {
+  function loadCategories(topic: string, autoSelect: boolean) {
     fetch(`/api/categories/${encodeURIComponent(topic)}`)
       .then((r) => r.json())
       .then((d: { categories: { kind: string; name: string }[] }) => {
         const cats = d.categories.map((c) => ({ topic, ...c }));
         setCategoriesByTopic((prev) => ({ ...prev, [topic]: cats }));
+        if (!autoSelect) return;
         // Auto-select the first category loaded, for any topic, as long as nothing is selected yet —
         // `cur.topic === topic` doesn't work here since `cur` starts as NO_SELECTION (topic: ""),
         // which never equals a real topic name, so nothing was ever auto-selected on load.
@@ -131,7 +135,7 @@ export default function App() {
     setExpandedTopics(new Set());
     setNewNameByTopic({});
     setActive(NO_SELECTION);
-    loadTopics();
+    loadTopics(false);
   }
 
   useEffect(() => {
@@ -177,7 +181,7 @@ export default function App() {
     setActive(category);
     setText(NEW_CATEGORY_JSON);
     await classify(NEW_CATEGORY_JSON, category);
-    loadCategories(topic);
+    loadCategories(topic, false);
   }
 
   async function selectBbox(box: [number, number, number, number]) {
@@ -521,8 +525,12 @@ export default function App() {
                             key={`${c.kind}/${c.name}`}
                             className="row"
                             onClick={() => {
-                              setActive(c);
-                              setFocusTick((t) => t + 1);
+                              if (active.topic === c.topic && active.kind === c.kind && active.name === c.name) {
+                                setActive(NO_SELECTION);
+                              } else {
+                                setActive(c);
+                                setFocusTick((t) => t + 1);
+                              }
                             }}
                             style={{
                               padding: "6px 12px",
