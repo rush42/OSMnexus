@@ -50,10 +50,23 @@ function colorExpression(topicColors: Record<string, string>): maplibregl.Expres
 // positive is to the right of travel, per the MapLibre style spec). Scaled by zoom so the gap
 // reads as roughly-constant on the ground instead of swamping the line at low zoom or vanishing at
 // high zoom; `self` objects (undivided ways) get no offset.
+// A zoom expression (`["zoom"]`) may only be used as a top-level expression, or as the direct input
+// to a top-level "interpolate"/"step" — nesting an interpolate-on-zoom inside further arithmetic
+// (a "*", or even a wrapping "match") makes MapLibre reject the whole layer at `addLayer` time
+// ("zoom expression may only be used as input to a top-level interpolate/step expression"), which
+// silently broke every other layer/filter/paint call targeting `${SOURCE_ID}-line` since the layer
+// never existed. So `interpolate` has to be the outermost expression here; the left/right sign is
+// instead baked into each stop's *output value*, which is allowed to be an arbitrary (data-driven)
+// expression.
+const SIDE_SIGN = ["match", ["get", "_side"], "left", -1, "right", 1, 0] as unknown as maplibregl.ExpressionSpecification;
 const LINE_OFFSET_EXPRESSION = [
-  "*",
-  ["match", ["get", "_side"], "left", -1, "right", 1, 0],
-  ["interpolate", ["linear"], ["zoom"], 12, 0.5, 20, 6],
+  "interpolate",
+  ["linear"],
+  ["zoom"],
+  12,
+  ["*", SIDE_SIGN, 0.5],
+  20,
+  ["*", SIDE_SIGN, 6],
 ] as unknown as maplibregl.ExpressionSpecification;
 
 // Visits every [lon, lat] pair in a geometry's (possibly nested, for Polygon/MultiLineString/...)

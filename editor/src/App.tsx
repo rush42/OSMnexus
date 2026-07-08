@@ -53,6 +53,14 @@ export default function App() {
   // itself since re-clicking the already-active category doesn't change `active.topic`/`.name`,
   // but should still refocus the map on it.
   const [focusTick, setFocusTick] = useState(0);
+  // True only once the user has explicitly clicked a category in the sidebar — `active` also gets
+  // set by auto-select (first category on mount, see loadCategories) purely so the editor pane has
+  // something to show, but that shouldn't isolate the map down to a single category: the
+  // alphabetically-first category can easily have zero matches in the current bbox (e.g. a rare
+  // subtype), which made the map look broken — lines vanish (isolated to an empty category) while
+  // cut points, which aren't category-scoped, keep showing. Gating `isolateCategory` on this instead
+  // of `active` means the map shows every category's features until the user actually asks to focus.
+  const [manualSelect, setManualSelect] = useState(false);
   const [newNameByTopic, setNewNameByTopic] = useState<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState(false);
   const [showNodes, setShowNodes] = useState(false);
@@ -135,6 +143,7 @@ export default function App() {
     setExpandedTopics(new Set());
     setNewNameByTopic({});
     setActive(NO_SELECTION);
+    setManualSelect(false);
     loadTopics(false);
   }
 
@@ -161,8 +170,8 @@ export default function App() {
   // editing), which would defeat Map's focus effect's ability to tell "selection changed" from
   // "unrelated re-render".
   const isolateCategory = useMemo(
-    () => (active.name && !active.isTopicConfig ? { topic: active.topic, name: active.name } : null),
-    [active.topic, active.name, active.isTopicConfig],
+    () => (manualSelect && active.name && !active.isTopicConfig ? { topic: active.topic, name: active.name } : null),
+    [manualSelect, active.topic, active.name, active.isTopicConfig],
   );
 
   // One color per topic (not per category, for now) — categories within a topic aren't
@@ -527,8 +536,10 @@ export default function App() {
                             onClick={() => {
                               if (active.topic === c.topic && active.kind === c.kind && active.name === c.name) {
                                 setActive(NO_SELECTION);
+                                setManualSelect(false);
                               } else {
                                 setActive(c);
+                                setManualSelect(true);
                                 setFocusTick((t) => t + 1);
                               }
                             }}
