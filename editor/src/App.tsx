@@ -109,7 +109,10 @@ export default function App() {
   // Switches the server's selected config directory, then resets every topic-scoped piece of
   // state (categories/selection differ entirely between configs) and reloads — same load path as
   // the initial mount, so the freshly switched config auto-selects its first category and (if a
-  // bbox is already chosen) auto-classifies via the existing [active]/[text] effects.
+  // bbox is already chosen) auto-classifies via the existing [active]/[text] effects. Keeps the
+  // current bbox and map data as-is (no reset/reload) — the old config's features stay on screen
+  // until the new config's classify call replaces them in place, instead of blanking the map while
+  // switching.
   async function switchConfig(config: string) {
     const res = await fetch("/api/config", {
       method: "POST",
@@ -128,8 +131,6 @@ export default function App() {
     setExpandedTopics(new Set());
     setNewNameByTopic({});
     setActive(NO_SELECTION);
-    setData(null);
-    setCutPoints(null);
     loadTopics();
   }
 
