@@ -5,6 +5,10 @@ services:
       dockerfile: editor/Dockerfile
     volumes:
       - ..:/repo
+      # Anonymous volume on top of the repo bind mount: node_modules is built into the image
+      # (see Dockerfile), and this stops the host bind mount from shadowing it with the (likely
+      # nonexistent, gitignored) host copy — avoids reinstalling on every container start.
+      - /repo/editor/node_modules
       - ${BASE_PBF:-../berlin.osm.pbf}:/data/base.osm.pbf:ro
     working_dir: /repo/editor
     environment:

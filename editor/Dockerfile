@@ -17,5 +17,10 @@ COPY --from=rust-builder /repo/target/release/osmnexus /opt/osmnexus/osmnexus
 ENV PIPELINE_BIN_PATH=/opt/osmnexus/osmnexus
 
 WORKDIR /repo/editor
+# Installed at image-build time so `node_modules` lands in the anonymous volume that
+# docker-compose.yml mounts over `/repo/editor/node_modules` (see comment there) — the repo bind
+# mount shadows everything else under /repo/editor, but not that one path, so this survives.
+COPY editor/package.json editor/package-lock.json ./
+RUN npm install
 
-CMD ["sh", "-c", "npm install && npm run dev"]
+CMD ["npm", "run", "dev"]
