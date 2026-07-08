@@ -293,14 +293,17 @@ export default function App() {
         <label
           style={{
             position: "absolute",
-            top: 10,
-            right: 10,
-            padding: "6px 10px",
-            background: "rgba(0,0,0,0.7)",
-            color: "#fff",
-            fontFamily: "sans-serif",
+            top: 12,
+            right: 12,
+            padding: "7px 12px",
+            background: "rgba(255,255,255,0.85)",
+            backdropFilter: "blur(6px)",
+            color: "var(--text)",
+            fontFamily: "var(--font-ui)",
             fontSize: 13,
-            borderRadius: 4,
+            borderRadius: "var(--radius)",
+            boxShadow: "var(--shadow)",
+            border: "1px solid var(--border)",
             display: "flex",
             alignItems: "center",
             gap: 6,
@@ -315,14 +318,17 @@ export default function App() {
           <div
             style={{
               position: "absolute",
-              top: 10,
-              left: 10,
-              padding: "6px 10px",
-              background: "rgba(0,0,0,0.7)",
-              color: "#fff",
-              fontFamily: "sans-serif",
+              top: 12,
+              left: 12,
+              padding: "7px 12px",
+              background: "rgba(255,255,255,0.85)",
+              backdropFilter: "blur(6px)",
+              color: "var(--text)",
+              fontFamily: "var(--font-ui)",
               fontSize: 13,
-              borderRadius: 4,
+              borderRadius: "var(--radius)",
+              boxShadow: "var(--shadow)",
+              border: "1px solid var(--border)",
               pointerEvents: "none",
             }}
           >
@@ -333,14 +339,17 @@ export default function App() {
           <div
             style={{
               position: "absolute",
-              bottom: 10,
-              left: 10,
+              bottom: 12,
+              left: 12,
               padding: "6px 10px",
-              background: "rgba(0,0,0,0.7)",
-              color: "#fff",
-              fontFamily: "monospace",
-              fontSize: 12,
-              borderRadius: 4,
+              background: "rgba(255,255,255,0.85)",
+              backdropFilter: "blur(6px)",
+              color: "var(--muted)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              borderRadius: "var(--radius)",
+              boxShadow: "var(--shadow)",
+              border: "1px solid var(--border)",
               pointerEvents: "none",
             }}
           >
@@ -355,16 +364,20 @@ export default function App() {
           flex: collapsed ? "0 0 auto" : "1 1 40%",
           display: "flex",
           flexDirection: "column",
-          borderLeft: "1px solid #ccc",
+          background: "var(--panel)",
+          borderLeft: "1px solid var(--border)",
+          boxShadow: "-4px 0 16px rgba(16,24,40,0.04)",
           minWidth: 0,
         }}
       >
         <div
           style={{
-            padding: "6px 10px",
-            fontFamily: "sans-serif",
+            padding: "10px 12px",
+            fontFamily: "var(--font-ui)",
             fontSize: 13,
-            borderBottom: "1px solid #ccc",
+            fontWeight: 600,
+            letterSpacing: 0.2,
+            borderBottom: "1px solid var(--border)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
@@ -381,16 +394,16 @@ export default function App() {
         {!collapsed && configs.length > 0 && (
           <div
             style={{
-              padding: "6px 10px",
-              fontFamily: "sans-serif",
+              padding: "8px 12px",
+              fontFamily: "var(--font-ui)",
               fontSize: 12,
-              borderBottom: "1px solid #ccc",
+              borderBottom: "1px solid var(--border)",
               display: "flex",
               alignItems: "center",
-              gap: 6,
+              gap: 8,
             }}
           >
-            <span style={{ opacity: 0.7 }}>config</span>
+            <span style={{ color: "var(--muted)" }}>config</span>
             <select
               value={currentConfig}
               onChange={(e) => switchConfig(e.target.value)}
@@ -406,28 +419,30 @@ export default function App() {
         )}
         {!collapsed && (
           <>
-            <div style={{ borderBottom: "1px solid #ccc", maxHeight: 320, overflowY: "auto" }}>
+            <div style={{ borderBottom: "1px solid var(--border)", maxHeight: 320, overflowY: "auto" }}>
               {topics.map((topic) => {
                 const expanded = expandedTopics.has(topic);
                 const cats = categoriesByTopic[topic] ?? [];
                 return (
                   <div key={topic}>
                     <div
+                      className="row"
                       onClick={() => toggleTopicExpanded(topic)}
                       style={{
-                        padding: "5px 10px",
-                        fontFamily: "monospace",
+                        padding: "6px 12px",
+                        fontFamily: "var(--font-mono)",
                         fontSize: 12,
-                        fontWeight: "bold",
+                        fontWeight: 600,
                         cursor: "pointer",
                         display: "flex",
                         alignItems: "center",
-                        gap: 6,
+                        gap: 8,
                         opacity: hiddenTopics.has(topic) ? 0.4 : 1,
-                        background: "#0002",
+                        background: "#f7f8fa",
                       }}
                     >
                       <button
+                        className="icon-btn"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleTopicVisibility(topic);
@@ -437,7 +452,7 @@ export default function App() {
                       >
                         {hiddenTopics.has(topic) ? "🚫" : "👁"}
                       </button>
-                      <span>{expanded ? "▾" : "▸"}</span>
+                      <span style={{ color: "var(--muted)" }}>{expanded ? "▾" : "▸"}</span>
                       <span
                         style={{
                           display: "inline-block",
@@ -449,27 +464,29 @@ export default function App() {
                         }}
                       />
                       <span style={{ flex: 1 }}>{topic}</span>
-                      <span style={{ color: "#888" }}>{cats.length}</span>
+                      <span style={{ color: "var(--muted)" }}>{cats.length}</span>
                     </div>
                     {expanded && (
-                      <div style={{ paddingLeft: 14 }}>
+                      <div style={{ paddingLeft: 16 }}>
                         <div
+                          className="row"
                           onClick={() => setActive({ topic, kind: "", name: "", isTopicConfig: true })}
                           style={{
-                            padding: "5px 10px",
-                            fontFamily: "monospace",
+                            padding: "6px 12px",
+                            fontFamily: "var(--font-mono)",
                             fontSize: 12,
-                            fontWeight: "bold",
+                            fontWeight: 600,
                             cursor: "pointer",
                             display: "flex",
                             alignItems: "center",
                             gap: 6,
-                            background: active.topic === topic && active.isTopicConfig ? "#2a7be633" : "transparent",
+                            borderRadius: "var(--radius-sm)",
+                            background: active.topic === topic && active.isTopicConfig ? "var(--accent-soft)" : "transparent",
                           }}
                         >
                           topic.json
                         </div>
-                        <div style={{ display: "flex", padding: "5px 10px", gap: 4 }}>
+                        <div style={{ display: "flex", padding: "6px 12px", gap: 6 }}>
                           <input
                             value={newNameByTopic[topic] ?? ""}
                             onChange={(e) => setNewNameByTopic((prev) => ({ ...prev, [topic]: e.target.value }))}
@@ -477,7 +494,7 @@ export default function App() {
                               if (e.key === "Enter") addCategory(topic);
                             }}
                             placeholder={`new category in ${topic}`}
-                            style={{ flex: 1, fontFamily: "monospace", fontSize: 12 }}
+                            style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
                           />
                           <button onClick={() => addCategory(topic)} title="Add category">
                             +
@@ -486,22 +503,25 @@ export default function App() {
                         {cats.map((c) => (
                           <div
                             key={`${c.kind}/${c.name}`}
+                            className="row"
                             onClick={() => setActive(c)}
                             style={{
-                              padding: "5px 10px",
-                              fontFamily: "monospace",
+                              padding: "6px 12px",
+                              fontFamily: "var(--font-mono)",
                               fontSize: 12,
                               cursor: "pointer",
                               display: "flex",
                               alignItems: "center",
                               gap: 6,
-                              background: c.topic === active.topic && c.kind === active.kind && c.name === active.name ? "#2a7be633" : "transparent",
+                              borderRadius: "var(--radius-sm)",
+                              background: c.topic === active.topic && c.kind === active.kind && c.name === active.name ? "var(--accent-soft)" : "transparent",
                             }}
                           >
                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
                               {c.kind}/{c.name}
                             </span>
                             <button
+                              className="icon-btn"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 deleteCategory(c);
@@ -523,12 +543,13 @@ export default function App() {
               <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
                 <div
                   style={{
-                    padding: "4px 10px",
-                    fontFamily: "monospace",
+                    padding: "6px 12px",
+                    fontFamily: "var(--font-mono)",
                     fontSize: 11,
-                    color: "#888",
-                    borderTop: "1px solid #ccc",
-                    borderBottom: "1px solid #ccc",
+                    color: "var(--muted)",
+                    background: "#f7f8fa",
+                    borderTop: "1px solid var(--border)",
+                    borderBottom: "1px solid var(--border)",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
@@ -542,7 +563,19 @@ export default function App() {
               </div>
             )}
             {error && (
-              <div style={{ padding: "8px 10px", background: "#3a1f1f", color: "#ffb4b4", fontFamily: "monospace", fontSize: 12, whiteSpace: "pre-wrap" }}>
+              <div
+                style={{
+                  margin: 10,
+                  padding: "8px 10px",
+                  background: "var(--danger-bg)",
+                  color: "var(--danger-text)",
+                  border: "1px solid #f5c2c0",
+                  borderRadius: "var(--radius-sm)",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 12,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
                 {error}
               </div>
             )}

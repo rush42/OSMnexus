@@ -82,18 +82,9 @@ export default function Map({
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: {
-        version: 8,
-        sources: {
-          osm: {
-            type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-            tileSize: 256,
-            attribution: "&copy; OpenStreetMap contributors",
-          },
-        },
-        layers: [{ id: "osm", type: "raster", source: "osm" }],
-      },
+      // CARTO Positron: a clean, low-contrast vector basemap (no API key needed) so the
+      // classified feature colors stay legible instead of competing with a busy raster OSM tile.
+      style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
       center: [13.3, 52.51],
       zoom: 13,
       boxZoom: false,

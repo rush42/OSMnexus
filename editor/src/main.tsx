@@ -1,5 +1,6 @@
 import ReactDOM from "react-dom/client";
 import "maplibre-gl/dist/maplibre-gl.css";
+import "./index.css";
 import App from "./App";
 
 // No <React.StrictMode>: it double-invokes mount effects in dev (mount → cleanup → mount again),
