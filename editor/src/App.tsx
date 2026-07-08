@@ -49,7 +49,7 @@ export default function App() {
   const [active, setActive] = useState<Selection>(NO_SELECTION);
   const [newNameByTopic, setNewNameByTopic] = useState<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState(false);
-  const [showNodes, setShowNodes] = useState(true);
+  const [showNodes, setShowNodes] = useState(false);
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [cutPoints, setCutPoints] = useState<GeoJSON.FeatureCollection | null>(null);
