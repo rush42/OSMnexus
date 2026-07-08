@@ -16,6 +16,9 @@ radverkehrsatlas processing pipeline), producing the `roads` and `bikelanes` cla
 driveable-streets network. Nothing in the engine is specific to roads; point `--config-dir` at
 your own folder to define a different network.
 
+There's also a [live editor](editor/) — a local web app for iterating on category/topic JSON
+against a real map and seeing the classified output re-render on every save.
+
 ## How it works
 
 A topic classifies **all three OSM primitives** — ways, nodes, and relations — each independently,
@@ -58,7 +61,9 @@ One extracted graph; each topic is a disjoint attribute layer over it.
 - **`edges`** — one row per (way, segment), shared across all topics: the graph's edges, cut at
   intersections and at any classified node. Columns: `osm_id, seg_idx, start_id, end_id,
   geom(LineString,3857), length_m, total_length_m, cost, reverse_cost`. `start_id`/`end_id` join
-  `nodes.id`; `cost`/`reverse_cost` (pgRouting-style) currently always equal `length_m`.
+  `nodes.id`; `cost`/`reverse_cost` (pgRouting-style) always equal `length_m` here — this shared
+  table stays topic-neutral. A topic that wants real routing weights defines `cost`/`is_directed`
+  fields and opts into `--topic-edges` (below) for a `{topic}_edge` table with those baked in.
 - **`nodes`** — always emitted, one row per graph vertex: every node referenced as a `start_id`/
   `end_id` in `edges` (shared by ≥2 ways, a way endpoint, or forced by a node classifier). Columns:
   `id, osm_id, geom(Point,3857)`. `id` is the internal sequential vertex id; `osm_id` is the
@@ -80,6 +85,23 @@ FROM roads r JOIN edges g USING (osm_id);
 
 Classification is **tag-only** — no geometry-derived criteria (length, etc.). Length/graph-based
 filtering belongs to a downstream geometry/graph stage, not to tag classification.
+
+### Per-topic routing tables (`--topic-edges`)
+
+A topic can define two extra fields to describe its own graph semantics, using the same
+field/filter machinery as everything else — no bespoke expression language:
+
+- **`cost`** — a numeric field (an `osm_fields`/`sanitizers` entry, or a topic/category `consts`
+  value), e.g. `{ "tag": "cost", "name": "parse_length", "in": ["width"] }`.
+- **`is_directed`** — a boolean field driven by a `Filter` condition (the `FilterMatch` producer),
+  e.g. `{ "output": "is_directed", "source": { "filter": { "tag": "oneway", "in": ["yes", "-1"] } } }`.
+
+Pass `--topic-edges <pgrouting|all>` and, as a post-load SQL step, any topic that defines `cost`
+gets a `{topic}_edge` table: `cost`/`reverse_cost` (pgRouting convention — `-1` means unusable in
+that direction) computed from the topic's `cost`/`is_directed` fields and split proportionally by
+segment share (`length_m / total_length_m`) of the shared `edges` table. `all` additionally joins
+in the topic's own tag columns (`osm`/`derived`/`private`/`meta`); `pgrouting` emits only the
+routing columns. Indexes on `{topic}_edge` respect `--create-index` like every other table.
 
 ## Quick start
 
@@ -127,20 +149,24 @@ Add `RUST_LOG=info` in front of either command for per-phase timings.
 |---|---|---|
 | `<pbf_file>` (or `PBF_FILE`) | — | input `.osm.pbf` |
 | `--config-dir <path>` | `configs/tilda` | topic config folder to run (e.g. [`configs/osmnx`](configs/osmnx)) |
-| `--output <backend>` | `pg` | `pg` (COPY into PostGIS) or `csv` (one file per tag table + geometry tables) |
-| `--out-dir <path>` | `out` | directory for CSV output (`--output csv` only) |
+| `--output <backend>` | `pg` | `pg` (COPY into PostGIS), `csv` (one file per tag table + geometry tables), or `geojson` (same CSVs, plus one `<topic>.geojson` per topic) |
+| `--out-dir <path>` | `out` | directory for CSV/GeoJSON output (`--output csv`/`geojson` only) |
 | `--emit-way-geometries` | off | also emit uncut whole-way linestrings (`way_geometries`) |
 | `--emit-relation-geometries` | off | also emit one merged linestring per kept relation (`relation_geometries`, `pg` only) |
 | `--create-index` | off | build indexes after load (the split-geom GiST can dominate runtime; `pg` only) |
+| `--topic-edges <mode>` | off | materialize `{topic}_edge` routing tables for topics that define `cost`; `pgrouting` (routing columns only) or `all` (+ joined tag columns) — see [Per-topic routing tables](#per-topic-routing-tables---topic-edges) (`pg` only) |
 | `--db-writers <k>` | `4` | parallel COPY connections per table, rows round-robined (`pg` only) |
 | `--truncate` | on | truncate tables before loading (`pg` only) |
 | `--threads <n>` | `1` | rayon pool size for the CPU-bound passes (`0` = all cores) |
 | `--left-hand-traffic` | off | flip which physical side a side-split object's `forward`/`backward` tags are read from |
+| `--tree-max-depth <n>` | `6` | max branch depth of the categorization decision tree; deeper prunes more aggressively at the cost of build time |
 
-The `csv` backend writes the same schema as `pg` — `<topic>.csv` (tag tables), `edges.csv`,
-and any opted-in geometry tables — with a header row, JSON columns as quoted CSV, and geometry as
-hex-encoded EWKB. Load it anywhere (DuckDB, `ogr2ogr`, `COPY … FROM`, pandas, a graph library via
-the `osm_id`/`start_id`/`end_id` edge list).
+The `csv`/`geojson` backends write the same schema as `pg` — `<topic>.csv` (tag tables),
+`edges.csv`, and any opted-in geometry tables — with a header row, JSON columns as quoted CSV, and
+geometry as hex-encoded EWKB. Load it anywhere (DuckDB, `ogr2ogr`, `COPY … FROM`, pandas, a graph
+library via the `osm_id`/`start_id`/`end_id` edge list). `geojson` additionally joins each topic's
+tag rows to edge geometries (by `osm_id`) and reprojects to WGS84, writing one
+`<topic>.geojson` `FeatureCollection` per topic — used by the [live editor](editor/).
 
 Database connection uses the standard libpq env vars, overridable per flag: `PGHOST`/`--db-host`
 (empty → Unix socket, peer auth), `PGDATABASE`/`--db-name`, `PGUSER`/`--db-user`,
@@ -161,11 +187,19 @@ one:
 
 Shared macros/sanitizers/value-sets live in `<config-dir>/_shared/`.
 
+## Live editor
+
+[`editor/`](editor/) is a local web app for iterating on topic/category JSON against a real map:
+pick a bbox, edit a category's condition or a topic's transforms/fields in a JSON editor, save, and
+the pipeline reruns (`--output geojson`) and the map re-renders — no manual CLI round-trips. See
+[`editor/README.md`](editor/README.md) for setup and usage.
+
 ## Layout
 
 ```
 src/          engine (classify, transforms, geometry, DB writers), reader, main
-configs/      data-defined config directories (tilda, example, ...), each with its own topics
+configs/      data-defined config directories (tilda, osmnx, ...), each with its own topics
+editor/       live editor — local web app for iterating on topic/category JSON against a map
 BACKLOG.md    deferred ideas / performance notes
 ```
 
