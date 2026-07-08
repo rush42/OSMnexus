@@ -5,7 +5,7 @@
         "macro": "is_cycleway_separated_base"
       },
       {
-        "macro": "sidepath_isolated"
+        "macro": "sidepath_unknown"
       }
     ]
   },
@@ -14,10 +14,9 @@
     "bicycle_road_vehicle_destination",
     "cycleway_link",
     "cycleway_on_highway_between_lanes",
-    "cycleway_on_highway_protected",
     "data_no",
-    "foot_and_cycleway_segregated_isolated",
-    "foot_and_cycleway_shared_isolated",
+    "foot_and_cycleway_segregated_adjoining_or_isolated",
+    "foot_and_cycleway_shared_adjoining_or_isolated",
     "not_expected",
     "pedestrian_area_bicycle_yes",
     "separate_geometry",

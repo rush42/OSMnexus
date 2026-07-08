@@ -3,7 +3,7 @@
     "macro": "is_crossing_pattern"
   },
   "excludes": [
-    "cyclewayLink",
+    "cycleway_link",
     "data_no",
     "not_expected",
     "separate_geometry"

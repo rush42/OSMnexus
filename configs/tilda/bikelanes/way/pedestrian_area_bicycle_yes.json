@@ -15,10 +15,10 @@
     ]
   },
   "excludes": [
-    "bicycleRoad",
-    "bicycleRoad_vehicleDestination",
+    "bicycle_road",
+    "bicycle_road_vehicle_destination",
     "crossing",
-    "cyclewayOnHighwayProtected",
+    "cycleway_on_highway_protected",
     "data_no",
     "not_expected",
     "separate_geometry"

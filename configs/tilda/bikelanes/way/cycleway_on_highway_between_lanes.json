@@ -20,17 +20,17 @@
     ]
   },
   "excludes": [
-    "bicycleRoad",
-    "bicycleRoad_vehicleDestination",
+    "bicycle_road",
+    "bicycle_road_vehicle_destination",
     "crossing",
-    "cyclewayLink",
-    "cyclewayOnHighwayProtected",
+    "cycleway_link",
+    "cycleway_on_highway_protected",
     "data_no",
-    "pedestrianAreaBicycleYes",
+    "pedestrian_area_bicycle_yes",
     "separate_geometry",
-    "sharedBusLaneBikeWithBus",
-    "sharedBusLaneBusWithBike",
-    "sharedMotorVehicleLane"
+    "shared_bus_lane_bike_with_bus",
+    "shared_bus_lane_bus_with_bike",
+    "shared_motor_vehicle_lane"
   ],
   "derivers": [
     {

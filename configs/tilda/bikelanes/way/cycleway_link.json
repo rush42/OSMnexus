@@ -12,7 +12,7 @@
     ]
   },
   "excludes": [
-    "cyclewayOnHighwayProtected",
+    "cycleway_on_highway_protected",
     "not_expected"
   ],
   "consts": {

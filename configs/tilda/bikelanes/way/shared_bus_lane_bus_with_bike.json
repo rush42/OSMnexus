@@ -13,24 +13,27 @@
       {
         "or": [
           {
-            "tag": "lane",
-            "eq": "share_busway"
+            "tag": "cycleway",
+            "in": [
+              "share_busway",
+              "opposite_share_busway"
+            ]
           },
           {
             "and": [
               {
                 "tag": "traffic_sign",
-                "starts_with": "DE:237"
+                "starts_with": "DE:245"
               },
               {
                 "or": [
                   {
                     "tag": "traffic_sign",
-                    "contains": "1024-14"
+                    "contains": "1022-10"
                   },
                   {
                     "tag": "traffic_sign",
-                    "contains": "1026-32"
+                    "contains": "1022-14"
                   }
                 ]
               }
@@ -40,17 +43,17 @@
             "and": [
               {
                 "parent_tag": "traffic_sign",
-                "starts_with": "DE:237"
+                "starts_with": "DE:245"
               },
               {
                 "or": [
                   {
                     "parent_tag": "traffic_sign",
-                    "contains": "1024-14"
+                    "contains": "1022-10"
                   },
                   {
                     "parent_tag": "traffic_sign",
-                    "contains": "1026-32"
+                    "contains": "1022-14"
                   }
                 ]
               }
@@ -61,13 +64,14 @@
     ]
   },
   "excludes": [
-    "bicycleRoad",
-    "bicycleRoad_vehicleDestination",
-    "cyclewayLink",
-    "cyclewayOnHighwayProtected",
+    "bicycle_road",
+    "bicycle_road_vehicle_destination",
+    "cycleway_link",
+    "cycleway_on_highway_protected",
     "data_no",
     "not_expected",
-    "separate_geometry"
+    "separate_geometry",
+    "shared_bus_lane_bike_with_bus"
   ],
   "derivers": [
     {

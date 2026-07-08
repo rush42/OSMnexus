@@ -4,10 +4,10 @@
     "macro": "is_bicycle_road"
   },
   "excludes": [
-    "bicycleRoad_vehicleDestination",
+    "bicycle_road_vehicle_destination",
     "crossing",
-    "cyclewayLink",
-    "cyclewayOnHighwayProtected",
+    "cycleway_link",
+    "cycleway_on_highway_protected",
     "data_no",
     "not_expected",
     "separate_geometry"

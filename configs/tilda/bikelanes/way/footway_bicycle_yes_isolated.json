@@ -2,7 +2,7 @@
   "condition": {
     "and": [
       {
-        "macro": "is_cycleway_separated_base"
+        "macro": "is_footway_bicycle_yes_base"
       },
       {
         "macro": "sidepath_isolated"
@@ -12,9 +12,14 @@
   "excludes": [
     "bicycle_road",
     "bicycle_road_vehicle_destination",
+    "crossing",
     "cycleway_link",
     "cycleway_on_highway_between_lanes",
     "cycleway_on_highway_protected",
+    "cycleway_on_highway_advisory",
+    "cycleway_on_highway_advisory_or_exclusive",
+    "cycleway_on_highway_exclusive",
+    "cycleway_isolated",
     "data_no",
     "foot_and_cycleway_segregated_isolated",
     "foot_and_cycleway_shared_isolated",
@@ -27,7 +32,7 @@
   ],
   "consts": {
     "oneway": {
-      "value": "assumed_no",
+      "value": "implicit_yes",
       "consts": {
         "confidence": "low"
       }

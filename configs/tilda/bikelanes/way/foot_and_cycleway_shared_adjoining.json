@@ -5,22 +5,22 @@
         "macro": "is_foot_and_cycleway_shared_base"
       },
       {
-        "macro": "sidepath_isolated"
+        "macro": "sidepath_adjoining"
       }
     ]
   },
   "excludes": [
-    "bicycleRoad",
-    "bicycleRoad_vehicleDestination",
-    "cyclewayLink",
-    "cyclewayOnHighwayBetweenLanes",
-    "cyclewayOnHighwayProtected",
+    "bicycle_road",
+    "bicycle_road_vehicle_destination",
+    "cycleway_link",
+    "cycleway_on_highway_between_lanes",
+    "cycleway_on_highway_protected",
     "data_no",
     "not_expected",
     "separate_geometry",
-    "sharedBusLaneBikeWithBus",
-    "sharedBusLaneBusWithBike",
-    "sharedMotorVehicleLane"
+    "shared_bus_lane_bike_with_bus",
+    "shared_bus_lane_bus_with_bike",
+    "shared_motor_vehicle_lane"
   ],
   "consts": {
     "oneway": {

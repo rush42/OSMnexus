@@ -2,10 +2,10 @@
   "condition": {
     "and": [
       {
-        "macro": "is_cycleway_separated_base"
+        "macro": "is_foot_and_cycleway_segregated_base"
       },
       {
-        "macro": "sidepath_isolated"
+        "macro": "sidepath_adjoining"
       }
     ]
   },
@@ -16,10 +16,8 @@
     "cycleway_on_highway_between_lanes",
     "cycleway_on_highway_protected",
     "data_no",
-    "foot_and_cycleway_segregated_isolated",
-    "foot_and_cycleway_shared_isolated",
+    "foot_and_cycleway_shared_adjoining",
     "not_expected",
-    "pedestrian_area_bicycle_yes",
     "separate_geometry",
     "shared_bus_lane_bike_with_bus",
     "shared_bus_lane_bus_with_bike",
@@ -27,7 +25,7 @@
   ],
   "consts": {
     "oneway": {
-      "value": "assumed_no",
+      "value": "implicit_yes",
       "consts": {
         "confidence": "low"
       }

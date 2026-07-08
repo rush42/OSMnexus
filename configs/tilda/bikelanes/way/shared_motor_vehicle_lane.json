@@ -12,13 +12,13 @@
     ]
   },
   "excludes": [
-    "bicycleRoad",
-    "bicycleRoad_vehicleDestination",
+    "bicycle_road",
+    "bicycle_road_vehicle_destination",
     "crossing",
-    "cyclewayOnHighwayProtected",
+    "cycleway_on_highway_protected",
     "not_expected",
-    "sharedBusLaneBikeWithBus",
-    "sharedBusLaneBusWithBike"
+    "shared_bus_lane_bike_with_bus",
+    "shared_bus_lane_bus_with_bike"
   ],
   "derivers": [
     {
