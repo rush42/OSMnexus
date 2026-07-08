@@ -8,11 +8,13 @@ It's a thin wrapper around the same [`osmnexus`](../README.md) binary: saving an
 to the release build with `--config-dir <the selected configs/* dir> --output geojson`, then the
 map reloads the resulting `<topic>.geojson` files.
 
-The editor operates directly on the repo's real config directories under `../configs/` — there's
-no private copy to keep in sync. A **config selector** (top of the topics panel) lists every
-directory under `configs/` (`tilda`, `osmnx`, `public_transport`, ...) and lets you switch between
-them; whichever one is selected is what saves write to and what the pipeline runs against. Edits
-made here are real edits to the repo's configs, not a sandboxed copy.
+The editor never touches the repo's real config directories under `../configs/`. A **config
+selector** (top of the topics panel) lists every directory under `configs/` (`tilda`, `osmnx`,
+`public_transport`, ...) and lets you switch between them; on first use (or when you switch), the
+server copies that config into a scratch temp directory and every read/write/delete from then on
+happens against the copy, which the pipeline also runs against. Edits made in the editor are
+sandboxed — they never land in the repo's actual configs, and disappear once the dev server (or
+container) restarts.
 
 ## How it works
 
@@ -32,9 +34,10 @@ The editor always runs in Docker now — no Node.js or `osmium-tool` install nee
 `node_modules` to keep in sync.
 
 `docker-compose.yml` runs it in a container (installs `osmium-tool` + npm deps, mounts the repo so
-edits persist on the host). It still shells out to a host-built `target/release/osmnexus` (mounted
-in along with the rest of the repo), so `cargo build --release` from the repo root is still needed
-once before `docker compose up` (and again after changing Rust code):
+the pipeline binary/source stay in sync with the host — but see above, config edits themselves
+still go to a scratch copy, not the mounted `configs/`). It still shells out to a host-built
+`target/release/osmnexus`, so `cargo build --release` from the repo root is still needed once
+before `docker compose up` (and again after changing Rust code):
 
 ```bash
 cd editor
@@ -66,8 +69,8 @@ docker build -t tilda-live-editor-demo .
 docker run --rm -p 5173:5173 tilda-live-editor-demo
 ```
 
-This one doesn't mount the repo, so edits made in it don't persist anywhere — use
-`docker compose up` above for actual config-editing work.
+This one doesn't mount the repo at all — configs are baked in at build time and, same as above,
+edits go to a scratch copy inside the container, so nothing persists once the container stops.
 
 ## Editing configs
 
@@ -78,6 +81,9 @@ selector:
 - `topic.json` — table name, transforms, osm fields, sanitizers, deriver bindings.
 - `way/*.json`, `node/*.json`, `relation/*.json` — one file per category.
 
-The editor's save button writes the edited JSON straight to these files (validating it parses
-first) and triggers a pipeline rerun — the same files you'd hand-edit outside the editor. See the
+The editor's save button validates the edited JSON, writes it to the same-named file in the
+scratch copy described above, and triggers a pipeline rerun — the same file layout you'd hand-edit
+outside the editor, just not the same files on disk (see above: nothing here persists past the
+session). Use the editor to iterate on a condition/rule and then copy the result back into the
+real `configs/` file yourself once you're happy with it. See the
 [root README](../README.md#topics-are-data) for the full config format.
