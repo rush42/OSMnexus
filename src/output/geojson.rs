@@ -76,6 +76,11 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
             properties.insert("id".to_owned(), json!(&record[2]));
             merge_properties(&mut properties, &record[3]);
             merge_properties(&mut properties, &record[4]);
+            // `private` carries internal-only fields (e.g. `_side`, the side-split object's
+            // left/right/self side) that are excluded from the public `derived` payload elsewhere
+            // (Postgres/CSV output) but are exactly what local tooling like the live editor wants
+            // for debugging/rendering (e.g. a line-offset expression keyed on `_side`).
+            merge_properties(&mut properties, &record[5]);
 
             for segment in segments {
                 let Ok(coordinates) = lonlat_coordinates(&segment.geom) else { continue };

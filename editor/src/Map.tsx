@@ -43,6 +43,19 @@ function colorExpression(topicColors: Record<string, string>): maplibregl.Expres
   ] as unknown as maplibregl.ExpressionSpecification;
 }
 
+// A side-split object (`side_split.rs`) shares its parent way's centerline geometry — there's no
+// offset geometry to compute server-side (see the `_side` field the pipeline stamps into `private`,
+// exposed here via output/geojson.rs). Instead, nudge left/right lines apart purely at render time
+// via MapLibre's `line-offset` (screen-space pixels, perpendicular to the line's own direction —
+// positive is to the right of travel, per the MapLibre style spec). Scaled by zoom so the gap
+// reads as roughly-constant on the ground instead of swamping the line at low zoom or vanishing at
+// high zoom; `self` objects (undivided ways) get no offset.
+const LINE_OFFSET_EXPRESSION = [
+  "*",
+  ["match", ["get", "_side"], "left", -1, "right", 1, 0],
+  ["interpolate", ["linear"], ["zoom"], 12, 0.5, 20, 6],
+] as unknown as maplibregl.ExpressionSpecification;
+
 // Visits every [lon, lat] pair in a geometry's (possibly nested, for Polygon/MultiLineString/...)
 // `coordinates` array — generic over geometry type since focusing a category only needs the
 // extent, not the shape.
@@ -132,7 +145,7 @@ export default function Map({
         id: `${SOURCE_ID}-line`,
         type: "line",
         source: SOURCE_ID,
-        paint: { "line-color": FALLBACK_COLOR, "line-width": 3 },
+        paint: { "line-color": FALLBACK_COLOR, "line-width": 3, "line-offset": LINE_OFFSET_EXPRESSION },
       });
       map.addLayer({
         id: `${SOURCE_ID}-point`,
