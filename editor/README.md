@@ -28,30 +28,24 @@ made here are real edits to the repo's configs, not a sandboxed copy.
 
 ## Running it
 
-Prerequisites: a release build of the pipeline (`cargo build --release` from the repo root — the
-editor shells out to `target/release/osmnexus`), Node.js, and `osmium-tool` (for bbox extraction)
-on `PATH`.
+The editor always runs in Docker now — no Node.js or `osmium-tool` install needed, and no local
+`node_modules` to keep in sync.
+
+`docker-compose.yml` runs it in a container (installs `osmium-tool` + npm deps, mounts the repo so
+edits persist on the host). It still shells out to a host-built `target/release/osmnexus` (mounted
+in along with the rest of the repo), so `cargo build --release` from the repo root is still needed
+once before `docker compose up` (and again after changing Rust code):
 
 ```bash
 cd editor
-npm install
-npm run dev
+docker compose up
 ```
 
 Open http://localhost:5173, draw a bbox on the map (bounded by `MAX_BBOX_M`, default 3000m), and
 it extracts that area, runs the pipeline, and renders the result. Edit a category/topic JSON and
 save to re-run and re-render.
 
-### Docker
-
-`docker-compose.yml` runs the same thing in a container (installs `osmium-tool` + npm deps, mounts
-the repo so edits persist on the host):
-
-```bash
-docker compose up
-```
-
-Environment variables (also settable directly for `npm run dev`):
+Environment variables:
 
 | var | default | meaning |
 |---|---|---|
@@ -59,7 +53,21 @@ Environment variables (also settable directly for `npm run dev`):
 | `MAX_BBOX_M` | `3000` | max side length (meters) of a selectable bbox |
 
 To use a bigger base extract (e.g. `berlin.osm.pbf` at the repo root), point `BASE_PBF` at it
-before `docker compose up`, or set `BASE_PBF_PATH` directly for `npm run dev`.
+before `docker compose up`.
+
+### Trying it standalone (no repo checkout)
+
+The root [`Dockerfile`](../Dockerfile) builds a fully self-contained image — release pipeline
+binary, editor, and a freshly-downloaded Berlin extract baked in — for handing to someone who just
+wants to try the tool without cloning the repo or building anything themselves:
+
+```bash
+docker build -t tilda-live-editor-demo .
+docker run --rm -p 5173:5173 tilda-live-editor-demo
+```
+
+This one doesn't mount the repo, so edits made in it don't persist anywhere — use
+`docker compose up` above for actual config-editing work.
 
 ## Editing configs
 
