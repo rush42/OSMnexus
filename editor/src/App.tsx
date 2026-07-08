@@ -6,7 +6,7 @@ const DEFAULT_KIND = "way";
 const DEBOUNCE_MS = 300;
 const NEW_CATEGORY_JSON = '{"condition":{}}';
 const MIN_BBOX_M = 100;
-const DEFAULT_MAX_BBOX_M = 3000; // Used until /api/bounds' server-configured value (MAX_BBOX_M env var) loads.
+const DEFAULT_MAX_BBOX_M = 10000; // Used until /api/bounds' server-configured value (MAX_BBOX_M env var) loads.
 const METERS_PER_DEG_LAT = 111_320;
 
 // Approximate bbox extents in meters (equirectangular — fine at this scale/precision, no need for

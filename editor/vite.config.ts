@@ -13,7 +13,7 @@ const BASE_PBF = process.env.BASE_PBF_PATH || path.join(EDITOR_DIR, "fixtures", 
 const EXTRACT_DIR = path.join(EDITOR_DIR, "live-extract");
 // Upper bound on a shift-dragged bbox's side length (meters), configurable via docker-compose so a
 // deployment with a bigger base PBF (and tolerance for slower extracts) can raise it.
-const MAX_BBOX_M = Number(process.env.MAX_BBOX_M) || 3000;
+const MAX_BBOX_M = Number(process.env.MAX_BBOX_M) || 10000;
 
 // The extract currently in use for the map/pipeline. Starts out unset until
 // the user picks a bbox (or, for the bundled fixture, defaults to it).
