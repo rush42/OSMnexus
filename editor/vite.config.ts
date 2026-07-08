@@ -22,7 +22,8 @@ let currentBounds: [number, number, number, number] | null = null;
 
 // A config is any non-`_`-prefixed directory directly under CONFIGS_ROOT (configs/tilda,
 // configs/osmnx, configs/public_transport, ...) — same discovery rule as listTopics() below, one
-// level up.
+// level up. The editor operates directly on these real config directories (no private copy to
+// keep in sync); edits made here land in the repo's actual configs/*.
 async function listConfigs(): Promise<string[]> {
   const entries = await fs.readdir(CONFIGS_ROOT, { withFileTypes: true });
   return entries
@@ -31,26 +32,17 @@ async function listConfigs(): Promise<string[]> {
     .sort();
 }
 
-// The config directory currently being edited/run against. This is always a scratch copy under
-// the OS temp dir, never the real configs/* tree — the editor copies a config into it once (on
-// first selection, or on switching), and all reads/writes/pipeline runs happen against the copy.
-// Edits made in the live editor are therefore discarded when the dev server restarts and never
-// touch the repo's actual configs/*.
+// The config directory currently being edited/run against. Set on first request and whenever
+// the client switches configs (POST /api/config) — same module-level state pattern as
+// currentExtractPath/currentBounds above.
 let currentConfigName: string | null = null;
 let currentConfigDir: string | null = null;
-
-async function loadConfigCopy(name: string): Promise<string> {
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-config-"));
-  const dest = path.join(workDir, name);
-  await fs.cp(path.join(CONFIGS_ROOT, name), dest, { recursive: true });
-  return dest;
-}
 
 async function ensureConfigSelected(): Promise<string> {
   if (currentConfigDir) return currentConfigDir;
   const configs = await listConfigs();
   currentConfigName = configs[0];
-  currentConfigDir = await loadConfigCopy(configs[0]);
+  currentConfigDir = path.join(CONFIGS_ROOT, configs[0]);
   return currentConfigDir;
 }
 
@@ -255,7 +247,7 @@ function liveEditorApi(): Plugin {
             return sendJson(res, 400, { error: `unknown config '${payload.config}'` });
           }
           currentConfigName = payload.config;
-          currentConfigDir = await loadConfigCopy(payload.config);
+          currentConfigDir = path.join(CONFIGS_ROOT, payload.config);
           return sendJson(res, 200, { ok: true });
         }
 
