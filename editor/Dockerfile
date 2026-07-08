@@ -1,7 +1,20 @@
-FROM node:20-bookworm-slim
+# Multi-stage: compiles the osmnexus release binary at image-build time and bakes it into
+# /opt/osmnexus/osmnexus, so the container never needs a host-built target/release/osmnexus. The
+# repo itself is still bind-mounted at runtime (see docker-compose.yml) for live config/frontend
+# edits — override PIPELINE_BIN_PATH to point at a host-built binary instead when iterating on Rust
+# code without waiting on a full image rebuild.
+FROM rust:1-bookworm AS rust-builder
+WORKDIR /repo
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release --bin osmnexus
 
+FROM node:20-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends osmium-tool \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=rust-builder /repo/target/release/osmnexus /opt/osmnexus/osmnexus
+ENV PIPELINE_BIN_PATH=/opt/osmnexus/osmnexus
 
 WORKDIR /repo/editor
 

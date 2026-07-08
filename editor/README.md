@@ -17,9 +17,11 @@ docker compose up
 ```
 
 `docker compose up` builds the image automatically the first time (rebuild explicitly with
-`docker compose up --build` after changing `Dockerfile`/`package.json`). It still shells out to a
-host-built `target/release/osmnexus`, so run `cargo build --release` from the repo root once first
-(and again after changing Rust code).
+`docker compose up --build` after changing Rust code, `Dockerfile`, or `package.json`) — the pipeline
+binary is compiled into the image, no host Rust toolchain needed. To iterate on Rust code without a
+full image rebuild each time, point at a host-built binary instead:
+`PIPELINE_BIN_PATH=/repo/target/release/osmnexus docker compose up` (after `cargo build --release`
+from the repo root).
 
 Open http://localhost:5173, draw a bbox on the map (bounded by `MAX_BBOX_M`, default 3000m), and
 it extracts that area, runs the pipeline, and renders the result. Edit a category/topic JSON and

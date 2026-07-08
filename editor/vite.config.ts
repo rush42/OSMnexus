@@ -7,7 +7,10 @@ import os from "node:os";
 
 const EDITOR_DIR = path.resolve(__dirname);
 const REPO_DIR = path.resolve(__dirname, "..");
-const PIPELINE_BIN = path.join(REPO_DIR, "target", "release", "osmnexus");
+// Defaults to the image's baked-in build (see editor/Dockerfile); override to point at a
+// host-built target/release/osmnexus instead, for iterating on Rust code without a full image
+// rebuild (e.g. `PIPELINE_BIN_PATH=/repo/target/release/osmnexus docker compose up`).
+const PIPELINE_BIN = process.env.PIPELINE_BIN_PATH || path.join(REPO_DIR, "target", "release", "osmnexus");
 const CONFIGS_ROOT = path.join(REPO_DIR, "configs");
 const BASE_PBF = process.env.BASE_PBF_PATH || path.join(EDITOR_DIR, "fixtures", "tiny.osm.pbf");
 const EXTRACT_DIR = path.join(EDITOR_DIR, "live-extract");

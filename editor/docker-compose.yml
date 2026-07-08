@@ -1,6 +1,8 @@
 services:
   editor:
-    build: .
+    build:
+      context: ..
+      dockerfile: editor/Dockerfile
     volumes:
       - ..:/repo
       - ${BASE_PBF:-../berlin.osm.pbf}:/data/base.osm.pbf:ro
@@ -8,5 +10,8 @@ services:
     environment:
       - BASE_PBF_PATH=/data/base.osm.pbf
       - MAX_BBOX_M=${MAX_BBOX_M:-10000}
+      # Uncomment (or set on the CLI) to use a host-built target/release/osmnexus instead of the
+      # image's baked-in binary, for iterating on Rust code without a full image rebuild:
+      # - PIPELINE_BIN_PATH=/repo/target/release/osmnexus
     ports:
       - "5173:5173"
