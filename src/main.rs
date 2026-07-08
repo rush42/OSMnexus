@@ -362,6 +362,16 @@ async fn main() -> anyhow::Result<()> {
         (Output::Csv, _) | (Output::GeoJson, _) => {}
     }
 
+    if cfg.output == Output::Pg {
+        if let Some(mode) = cfg.topic_edges {
+            let client = pool.as_ref().unwrap().get().await?;
+            for table in &tables {
+                info!("Materializing graph edges → {table}_edge");
+                db::topic_edges::materialize(&client, table, mode, cfg.create_index).await?;
+            }
+        }
+    }
+
     if cfg.output == Output::GeoJson {
         info!("Building GeoJSON from CSV output...");
         output::geojson::write_geojson_from_csv(&out_dir, &tables)?;

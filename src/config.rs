@@ -92,6 +92,15 @@ pub struct Config {
     /// larger leaves sooner.
     #[arg(long, default_value_t = DEFAULT_TREE_MAX_DEPTH)]
     pub tree_max_depth: usize,
+
+    /// Materialize a `{table}_edge` table per topic that defines `cost`/`is_directed` fields
+    /// (pgRouting-shaped: `cost`/`reverse_cost`, `-1` = unusable in that direction), as a
+    /// post-processing SQL step after the shared edge table is loaded (and indexed, if
+    /// `--create-index` is set). `pgrouting` emits only the routing columns; `all` additionally
+    /// joins in the topic's own tag columns (`osm`/`derived`/`private`/`meta`). Omit to skip
+    /// entirely. Postgres output only.
+    #[arg(long, value_enum)]
+    pub topic_edges: Option<TopicEdgeMode>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -100,4 +109,12 @@ pub enum Output {
     Csv,
     #[value(name = "geojson")]
     GeoJson,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum TopicEdgeMode {
+    /// Just the routing columns: id/seg/start/end/geom/length/cost/reverse_cost.
+    Pgrouting,
+    /// The above, plus the topic's own tag columns (`osm`/`derived`/`private`/`meta`) joined in.
+    All,
 }

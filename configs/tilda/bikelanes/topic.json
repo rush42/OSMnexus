@@ -7,7 +7,8 @@
         "confidence": "not_applicable"
       }
     },
-    "minzoom": 0
+    "minzoom": 0,
+    "cost": 1
   },
   "exclude_condition": {
     "macro": "standard_exclude"
@@ -156,6 +157,15 @@
       }
     },
     "traffic_sign",
+    {
+      "output": "is_directed",
+      "source": {
+        "filter": {
+          "tag": "oneway",
+          "in": ["yes", "-1"]
+        }
+      }
+    },
     {
       "output": "informal",
       "source": {

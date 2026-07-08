@@ -113,6 +113,17 @@ pub enum Producer {
         #[serde(default)] rules: Vec<MinzoomCase>,
         #[serde(default)] from: TagSet,
     },
+    /// A boolean field driven by a Filter condition — reuses the same `Filter`/`eval_filter`
+    /// engine as `exclude_condition`/category conditions/`FilterZoom`, but produces a plain
+    /// bool value instead of gating a whole object. `from` picks the tagset (obj by default,
+    /// or parent). Must be tried before `Extract` below, for the same reason as `FilterZoom`.
+    ///
+    /// Limitation: like `FilterZoom`/`Classify`, `eval_filter` only sees raw obj/parent tags,
+    /// not fields derived earlier in the same pass.
+    FilterMatch {
+        filter: crate::classify::filter::Filter,
+        #[serde(default)] from: TagSet,
+    },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
@@ -181,6 +192,11 @@ impl Producer {
                     .unwrap_or(*default);
                 Some(Produced::bare(Value::Number(zoom.into())))
             }
+
+            Producer::FilterMatch { filter, from } => {
+                let tags = from.resolve(ctx)?;
+                Some(Produced::bare(Value::Bool(eval_filter(filter, tags, &HashMap::new(), ctx.sanitizers))))
+            }
         }
     }
 }
@@ -205,4 +221,59 @@ fn read_raw<'a>(
         return sanitize::first_present(tags, keys);
     }
     None
+}
+
+#[cfg(test)]
+mod filter_match_tests {
+    use super::*;
+    use crate::classify::filter::Filter;
+
+    fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, sanitizers: &'a SanitizerRegistry, derivers: &'a HashMap<String, Producer>) -> ExtractCtx<'a> {
+        ExtractCtx {
+            obj_tags: obj,
+            parent_tags: parent,
+            parking_inference: None,
+            obj_side: "self",
+            sanitizers,
+            derivers,
+        }
+    }
+
+    #[test]
+    fn matching_filter_produces_true() {
+        let obj: RawTags = [("oneway".to_owned(), "yes".to_owned())].into_iter().collect();
+        let sanitizers = SanitizerRegistry::new(HashMap::new());
+        let derivers = HashMap::new();
+        let producer = Producer::FilterMatch {
+            filter: Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
+            from: TagSet::Obj,
+        };
+        let produced = producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).unwrap();
+        assert_eq!(produced.value, Value::Bool(true));
+    }
+
+    #[test]
+    fn non_matching_filter_produces_false() {
+        let obj: RawTags = [("oneway".to_owned(), "no".to_owned())].into_iter().collect();
+        let sanitizers = SanitizerRegistry::new(HashMap::new());
+        let derivers = HashMap::new();
+        let producer = Producer::FilterMatch {
+            filter: Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
+            from: TagSet::Obj,
+        };
+        let produced = producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).unwrap();
+        assert_eq!(produced.value, Value::Bool(false));
+    }
+
+    #[test]
+    fn missing_tagset_produces_none() {
+        let obj = RawTags::default();
+        let sanitizers = SanitizerRegistry::new(HashMap::new());
+        let derivers = HashMap::new();
+        let producer = Producer::FilterMatch {
+            filter: Filter::Bool(true),
+            from: TagSet::Parent,
+        };
+        assert!(producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).is_none());
+    }
 }
