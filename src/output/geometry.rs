@@ -59,6 +59,18 @@ pub fn linestring_from_ewkb(bytes: &[u8]) -> anyhow::Result<Vec<(f64, f64)>> {
     Ok(coords)
 }
 
+/// Decode a Point written by `point_to_ewkb` back into its raw (still-projected) coordinates.
+pub fn point_from_ewkb(bytes: &[u8]) -> anyhow::Result<(f64, f64)> {
+    anyhow::ensure!(bytes.len() >= 21, "EWKB too short for a Point");
+    anyhow::ensure!(bytes[0] == 1, "only little-endian EWKB is supported");
+    let wkb_type = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
+    anyhow::ensure!(wkb_type == 0x2000_0001, "expected SRID-flagged Point, got type {wkb_type:#x}");
+    // bytes[5..9] is the SRID, already known to be 3857 by construction.
+    let x = f64::from_le_bytes(bytes[9..17].try_into().unwrap());
+    let y = f64::from_le_bytes(bytes[17..25].try_into().unwrap());
+    Ok((x, y))
+}
+
 /// Encode a projected (EPSG:3857) Point as PostGIS EWKB with SRID.
 pub fn point_to_ewkb(x: f64, y: f64) -> Vec<u8> {
     use std::io::Write;
