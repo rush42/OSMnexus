@@ -107,14 +107,20 @@ pub struct TopicRunner {
     /// Center-line side split (from a `split_sides` entry); empty if the topic has none. Applied
     /// after every `PreCatStep`, since it changes object cardinality rather than mutating tags.
     pub transformations: Vec<CenterLineTransformation>,
-    /// Desugared `sanitizers` — applied to every object regardless of category.
+    /// Desugared `sanitizers`, kept only for the topic-load summary log (`main.rs`) — evaluation
+    /// doesn't use this list; it's folded into `topic_derivers` (see there) so sanitizers and
+    /// derivers run as one list through one `eval_fields` call.
     pub sanitizer_fields: Vec<Field>,
     /// Data-defined sanitizer chains (sanitizers.json) layered over the built-in registry.
     pub sanitizers: SanitizerRegistry,
     /// The deriver library (derivers.json) — kept so Rust derivers can re-evaluate a sibling
     /// by name (e.g. smoothness_parent re-runs the base smoothness fallback on the parent).
     pub deriver_lib: HashMap<String, Producer>,
-    /// Topic-default derivers (resolved from `derivers.json` via `topic.json`'s bindings).
+    /// Topic-default fields applied to every object regardless of category: desugared sanitizers
+    /// first, then resolved `derivers.json` bindings (`topic.json`'s `derivers` list) — sanitizers
+    /// and derivers are the same `Producer`-evaluation mechanism, just two JSON shorthands for
+    /// declaring an entry in this one list. Order matters only if a sanitizer and a deriver ever
+    /// target the same output: the deriver (evaluated later) wins.
     pub topic_derivers: Vec<Field>,
     /// Per-category effective derivers — present only for categories that override a deriver
     /// (topic defaults with the category's re-bindings applied by output). Categories absent
@@ -191,7 +197,12 @@ impl TopicRunner {
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
 
-        // Sanitizers desugar to per-object `Field`s, applied to every category.
+        // Sanitizers desugar to per-object `Field`s — the same `Producer`-evaluation path as
+        // derivers, just a terser JSON shorthand (`{tag, name}` for "read this tag, clean it,
+        // write it back") for the common single-`Extract`-with-`sanitize` case. Folded into
+        // `topic_derivers` below (not kept as a separate list) so a category can override a
+        // sanitizer's output exactly the way it overrides a deriver's — same mechanism, no new
+        // JSON syntax needed.
         let sanitizer_fields: Vec<Field> = spec.sanitizers.iter().map(|s| s.to_field()).collect();
 
         // Load the data-defined sanitizer chains: shared (topics/_shared/sanitizers.json) merged
@@ -221,8 +232,12 @@ impl TopicRunner {
             HashMap::new()
         };
 
-        // Resolve the topic-default deriver bindings (validates references).
-        let topic_derivers = resolve_bindings(&deriver_lib, &spec.derivers, name)?;
+        // Resolve the topic-default deriver bindings (validates references), appended after the
+        // sanitizer fields — `eval_fields` runs this list in order and just overwrites `derived`
+        // by output key, so a deriver naturally wins over a same-output sanitizer, matching the
+        // original two-pass eval order (sanitizers, then derivers).
+        let mut topic_derivers = sanitizer_fields.clone();
+        topic_derivers.extend(resolve_bindings(&deriver_lib, &spec.derivers, name)?);
 
         // Load per-kind category sets from topics/<name>/{node,way,relation}/.
         let mut categories = load_topic_categories(&base)

@@ -173,8 +173,9 @@ pub fn build_topic_rows(
         let mut osm_written = HashSet::new();
         eval_fields(&topic.osm_fields, &ectx, &mut osm, &mut osm_written);
 
-        // Sanitizer + deriver outputs share one column. Sanitizers apply to every category;
-        // derivers come from this category's effective set (topic defaults ± overrides).
+        // Sanitizer + deriver outputs share one column and one eval pass: `derivers` is
+        // desugared-sanitizers-then-derivers (see `TopicRunner::topic_derivers`), from this
+        // category's effective set (topic defaults ± overrides).
         let derivers = runner
             .category_derivers
             .get(&category.id)
@@ -197,7 +198,6 @@ pub fn build_topic_rows(
             }
         }
         let mut written = HashSet::new();
-        eval_fields(&runner.sanitizer_fields, &ectx, &mut derived, &mut written);
         eval_fields(derivers, &ectx, &mut derived, &mut written);
 
         // Emit bundled-const companions for entries still holding their const default (not
