@@ -14,11 +14,20 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   - **Measured win:** ~5% wall on Brandenburg (and only on roads — 27 leaves, ~2.4 candidates/leaf;
     bikelanes degenerates to 141 leaves, ~11.5/leaf, because its distinctions are sanitized/
     non-equality predicates that can't branch). Small, but kept since it's cheap to keep.
+  - **Re-measured at scale (2026-07-09, `germany-latest.osm.pbf`, `--threads 1`, tilda config,
+    tree vs `categorize_linear` swapped in via a throwaway build):** tree Pass A 834.6s vs linear
+    1044.4s (**~20% faster**), total read+process 1138.3s vs 1347.7s (**~18% faster**). Output
+    row counts identical across all four tables (bikelanes/roads/edges/nodes) — no correctness
+    difference, consistent with the `tree_matches_linear` differential test. Confirms the trigger
+    below: Germany has ~16x Brandenburg's data and far more `highway` value diversity, and the win
+    roughly quadrupled. **Decision: keep the tree** — already live, and the win only grows with
+    scale.
   - **Trigger to revisit further investment:** the win scales with **category count** and **absence
     of the `element_filter`**. If the topic/category set balloons (toward the full Lua set) or the
     explicit filter is dropped (the tree subsumes it — unmatched ways fall to no-category leaves),
     linear becomes O(categories × ways) on an unfiltered firehose and the tree becomes the obvious
-    structure, not over-engineering. ~5% is close to its *worst* case (pre-filtered, few categories).
+    structure, not over-engineering. ~5% was close to its *worst* case (pre-filtered, few
+    categories, small extract) — the Germany measurement above is the more representative number.
   - **Bonus if revived:** the same tree makes the disjointness check O(leaves) instead of the current
     O(n²) pairwise-DNF (`overlap.rs` / `categories_are_disjoint`).
   - **Lesson:** the `element_filter` is emergent from the categories, and bikelanes classification is
