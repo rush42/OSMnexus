@@ -1,7 +1,8 @@
 //! Which side of the road traffic drives on — a process-global, set once at startup from
-//! `--left-hand-traffic`, and read by `transform::side_split::convert_directed_tags` to pick which
-//! physical side (`left`/`right`) maps to the way's `forward`/`backward` direction. Right-hand
-//! traffic (the OSM/global default) is assumed unless set.
+//! `--left-hand-traffic`, and read by the `directed` `Producer::Extract` mode
+//! (`tag_engine::producer`) to pick which physical side (`left`/`right`) maps to the way's
+//! `forward`/`backward` direction. Right-hand traffic (the OSM/global default) is assumed unless
+//! set.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

@@ -1,7 +1,7 @@
 use serde::Deserialize;
-use crate::classify::categories::Filter;
-use crate::classify::sanitize::StrOrVec;
-use crate::engine::extract::{Producer, TagSet};
+use crate::tag_engine::categories::Filter;
+use crate::tag_engine::sanitize::StrOrVec;
+use crate::tag_engine::producer::{Producer, TagSet};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {

@@ -30,7 +30,7 @@ use std::collections::HashMap;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::classify::categories::{CategoriesFile, CategoryContext, Filter, OrderedNode};
+use crate::tag_engine::categories::{CategoriesFile, CategoryContext, Filter, OrderedNode};
 use crate::lint::{filter_to_expr, to_nnf, Expr, Literal, NumOp, Predicate};
 use crate::output::types::Side;
 
@@ -560,11 +560,11 @@ fn collect_sanitized_tags(f: &Filter, macros: &HashMap<String, Filter>, out: &mu
 mod tests {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-    use crate::classify::categories::{
+    use crate::tag_engine::categories::{
         categorize, categorize_linear, load_shared_macros, load_topic_categories, CategoryContext,
         CategoriesFile, OrderedNode,
     };
-    use crate::classify::sanitize::SanitizerRegistry;
+    use crate::tag_engine::sanitize::SanitizerRegistry;
     use crate::lint::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use crate::osm::types::RawTags;
     use crate::output::types::Side;

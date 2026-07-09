@@ -12,8 +12,8 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::classify::categories::{eval_filter, Filter};
-use crate::classify::sanitize::SanitizerRegistry;
+use crate::tag_engine::categories::{eval_filter, Filter};
+use crate::tag_engine::sanitize::SanitizerRegistry;
 use crate::osm::types::RawTags;
 
 /// The value a matching rule produces. `Const` holds any JSON literal (string, number, bool) so

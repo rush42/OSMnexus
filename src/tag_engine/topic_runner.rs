@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use crate::classify::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
-use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
-use crate::engine::extract::{ExtractCtx, Producer, TagSet};
-use crate::engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, TopicSpec}};
+use crate::tag_engine::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
+use crate::tag_engine::sanitize::{SanitizerDef, SanitizerRegistry};
+use crate::tag_engine::producer::{ExtractCtx, Producer, TagSet};
+use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
-use crate::transform::side_split::CenterLineTransformation;
+use crate::tag_engine::transform::side_split::CenterLineTransformation;
 
 /// Per-key overlay: the topic-level default map with the category's entries layered on top.
 /// The shared shape behind both `consts` (→ derived) and `private` (→ private column).
@@ -77,10 +77,10 @@ impl PreCatStep {
                 }
             }
             PreCatStep::SidepathSelf { prefix } => {
-                crate::transform::side_split::apply_sidepath_self(tags, &[prefix]);
+                crate::tag_engine::transform::side_split::apply_sidepath_self(tags, &[prefix]);
             }
             PreCatStep::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } => {
-                crate::transform::strip_prefix(tags, prefix, stamp_key, stamp_value, stamp_nested_under);
+                crate::tag_engine::transform::strip_prefix(tags, prefix, stamp_key, stamp_value, stamp_nested_under);
             }
         }
     }
@@ -233,11 +233,24 @@ impl TopicRunner {
         };
 
         // Resolve the topic-default deriver bindings (validates references), appended after the
-        // sanitizer fields — `eval_fields` runs this list in order and just overwrites `derived`
-        // by output key, so a deriver naturally wins over a same-output sanitizer, matching the
-        // original two-pass eval order (sanitizers, then derivers).
+        // sanitizer fields. A sanitizer and a topic-level deriver silently sharing an output would
+        // mean the deriver wins with no visible signal *why* the sanitizer never took effect — so
+        // that overlap is a config error, not a documented precedence rule. (A *category*
+        // overriding a sanitizer's output is fine — that override is explicit by construction:
+        // it names the output it's replacing.)
+        let topic_derivers_resolved = resolve_bindings(&deriver_lib, &spec.derivers, name)?;
+        if let Some(dup) = topic_derivers_resolved.iter()
+            .find(|d| sanitizer_fields.iter().any(|s| s.output == d.output))
+        {
+            anyhow::bail!(
+                "topics/{name}: sanitizer and deriver both target output '{}' — remove one, or \
+                 if this is an intentional per-category override, move it into that category's \
+                 `derivers` list instead of the topic-level one",
+                dup.output
+            );
+        }
         let mut topic_derivers = sanitizer_fields.clone();
-        topic_derivers.extend(resolve_bindings(&deriver_lib, &spec.derivers, name)?);
+        topic_derivers.extend(topic_derivers_resolved);
 
         // Load per-kind category sets from topics/<name>/{node,way,relation}/.
         let mut categories = load_topic_categories(&base)
@@ -270,7 +283,7 @@ impl TopicRunner {
                 } => {
                     // `directed_keys`/`self_directed_keys` are just key names in JSON — translated
                     // here into ordinary `PreCatStep::TagRule`s (a `directed` `Producer::Extract`
-                    // per key), applied per side object post-split (see `engine::runner`). The
+                    // per key), applied per side object post-split (see `tag_engine::runner`). The
                     // split itself never sees these; it only unnests.
                     let directed_step = |key: &String, from: TagSet| PreCatStep::TagRule {
                         output: key.clone(),

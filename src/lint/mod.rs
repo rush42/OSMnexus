@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::classify::categories::{
+use crate::tag_engine::categories::{
     load_shared_macros, load_topic_categories, CategoriesFile, Filter,
 };
 use crate::osm::types::ElementKind;

@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use crate::classify::categories::CategoriesFile;
-use crate::classify::filter::Filter;
+use crate::tag_engine::categories::CategoriesFile;
+use crate::tag_engine::filter::Filter;
 use crate::osm::types::ElementKind;
 
 /// Load a topic's per-kind category sets from its directory. Reads the optional topic-wide

@@ -4,8 +4,9 @@
 
 use serde_json::Value;
 
-use crate::classify::sanitize::{first_present, sided_keys, SanitizerRegistry};
-use crate::engine::extract::{ExtractCtx, Produced};
+use crate::tag_engine::keys::{first_present, sided_keys};
+use crate::tag_engine::sanitize::SanitizerRegistry;
+use crate::tag_engine::producer::{ExtractCtx, Produced};
 use crate::osm::types::RawTags;
 
 // ── parking inference (used by derive_traffic_mode) ─────────────────────────────

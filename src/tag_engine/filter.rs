@@ -6,7 +6,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::classify::sanitize::{first_present, SanitizerRegistry};
+use crate::tag_engine::keys::first_present;
+use crate::tag_engine::sanitize::SanitizerRegistry;
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
 use crate::value_sets::value_set;

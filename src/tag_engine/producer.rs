@@ -11,8 +11,9 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::classify::sanitize::SanitizerRegistry;
-use crate::classify::{derive, sanitize};
+use crate::tag_engine::keys;
+use crate::tag_engine::sanitize::SanitizerRegistry;
+use crate::tag_engine::derive;
 use crate::osm::types::RawTags;
 
 /// A produced value plus optional provenance. The `consts` are arbitrary key/value pairs the
@@ -99,7 +100,7 @@ pub enum Producer {
     /// Limitation: rules only see raw obj/parent tags, not fields derived earlier in the same
     /// pass.
     Classify {
-        rules: Vec<crate::classify::classifier::Rule>,
+        rules: Vec<crate::tag_engine::classifier::Rule>,
         #[serde(default)] default: Option<Value>,
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
@@ -142,7 +143,7 @@ impl Producer {
 
             Producer::Classify { rules, default, from, consts } => {
                 let tags = from.resolve(ctx)?;
-                crate::classify::classifier::classify_rules(
+                crate::tag_engine::classifier::classify_rules(
                     rules, tags, &HashMap::new(), ctx.sanitizers,
                 ).or_else(|| default.clone())
                     .map(|value| Produced { value, consts: consts.clone() })
@@ -150,7 +151,7 @@ impl Producer {
 
             Producer::SharedClassify { shared, from, consts } => {
                 let tags = from.resolve(ctx)?;
-                crate::classify::classifier::shared_classifier(shared)
+                crate::tag_engine::classifier::shared_classifier(shared)
                     .classify(tags, &HashMap::new(), ctx.sanitizers)
                     .map(|value| Produced { value, consts: consts.clone() })
             }
@@ -186,9 +187,9 @@ impl Producer {
                 let raw = match from {
                     TagSet::Parent => {
                         let tags = ctx.parent_tags?;
-                        sanitize::first_present(tags, [key, directed_key.as_str()])
+                        keys::first_present(tags, [key, directed_key.as_str()])
                     }
-                    _ => sanitize::first_present(ctx.obj_tags, [directed_key.as_str()]),
+                    _ => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
                 }?;
                 let value = match sanitize {
                     Some(name) => ctx.sanitizers.apply(name, raw)?,
@@ -220,14 +221,14 @@ fn read_raw<'a>(
     side: Option<&str>,
 ) -> Option<&'a str> {
     if let Some(side) = side {
-        let candidates = sanitize::sided_keys(key.expect("sided extract needs `key`"), side, true);
-        return sanitize::first_present(tags, candidates);
+        let candidates = keys::sided_keys(key.expect("sided extract needs `key`"), side, true);
+        return keys::first_present(tags, candidates);
     }
     if let Some(key) = key {
-        return sanitize::first_present(tags, std::iter::once(key));
+        return keys::first_present(tags, std::iter::once(key));
     }
     if let Some(keys) = keys {
-        return sanitize::first_present(tags, keys);
+        return keys::first_present(tags, keys);
     }
     None
 }
@@ -235,8 +236,8 @@ fn read_raw<'a>(
 #[cfg(test)]
 mod classify_bool_tests {
     use super::*;
-    use crate::classify::classifier::{Rule, ValueSpec};
-    use crate::classify::filter::Filter;
+    use crate::tag_engine::classifier::{Rule, ValueSpec};
+    use crate::tag_engine::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, sanitizers: &'a SanitizerRegistry, derivers: &'a HashMap<String, Producer>) -> ExtractCtx<'a> {
         ExtractCtx {
