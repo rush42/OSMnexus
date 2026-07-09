@@ -14,9 +14,10 @@ pub struct TopicSpec {
     pub transforms: Vec<ParamTransform>,
     pub osm_fields: Vec<Field>,
     /// Simple field sanitizers: read one tag (or first present of several), clean it with a
-    /// named `&str -> atomic` sanitizer, write to `tag`.
+    /// named `&str -> atomic` sanitizer, write to `tag`. Just sugar over `Field` — see
+    /// `Field`'s `Deserialize` impl — so no distinct Rust type is needed downstream.
     #[serde(default)]
-    pub sanitizers: Vec<Sanitizer>,
+    pub sanitizers: Vec<Field>,
     /// References (by name) into the topic's `derivers.json` library. Each binding names a
     /// single-output deriver and the output field it writes. Categories may override these
     /// by re-binding a different deriver to the same output.
@@ -119,6 +120,17 @@ impl<'de> serde::Deserialize<'de> for Field {
         enum Repr {
             Named(String),
             Full { output: String, source: Producer },
+            /// A simple sanitizer: `{ tag, name, in?, from? }`. Reads the first present of `in`
+            /// (default `[tag]`) from `from` (default obj), applies the `name` sanitizer, writes
+            /// to `tag`. Sugar for the equivalent `Producer::Extract`.
+            Sanitizer {
+                tag: String,
+                name: String,
+                #[serde(default, rename = "in")]
+                in_keys: Option<StrOrVec>,
+                #[serde(default)]
+                from: TagSet,
+            },
         }
         Ok(match Repr::deserialize(deserializer)? {
             Repr::Named(key) => Field {
@@ -134,6 +146,18 @@ impl<'de> serde::Deserialize<'de> for Field {
                 },
             },
             Repr::Full { output, source } => Field { output, source },
+            Repr::Sanitizer { tag, name, in_keys, from } => Field {
+                output: tag.clone(),
+                source: Producer::Extract {
+                    key: None,
+                    keys: Some(in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![tag])),
+                    from,
+                    side: None,
+                    sanitize: Some(name),
+                    consts: serde_json::Map::new(),
+                    directed: false,
+                },
+            },
         })
     }
 }
@@ -157,39 +181,3 @@ impl DeriverBinding {
     }
 }
 
-/// A simple sanitizer: `{ tag, name, in?, from? }`. Reads the first present of `in` (default
-/// `[tag]`) from `from` (default obj), applies the `name` sanitizer, writes to `tag`.
-#[derive(Debug, Deserialize)]
-pub struct Sanitizer {
-    pub tag: String,
-    pub name: String,
-    #[serde(default, rename = "in")]
-    pub in_keys: Option<StrOrVec>,
-    #[serde(default)]
-    pub from: TagSet,
-}
-
-impl Sanitizer {
-    fn input_keys(&self) -> Vec<String> {
-        match self.in_keys.clone() {
-            Some(sv) => sv.into_vec(),
-            None => vec![self.tag.clone()],
-        }
-    }
-
-    /// Desugar to the equivalent `Field` so sanitizers and derivers share one eval path.
-    pub fn to_field(&self) -> Field {
-        Field {
-            output: self.tag.clone(),
-            source: Producer::Extract {
-                key: None,
-                keys: Some(self.input_keys()),
-                from: self.from,
-                side: None,
-                sanitize: Some(self.name.clone()),
-                consts: serde_json::Map::new(),
-                directed: false,
-            },
-        }
-    }
-}

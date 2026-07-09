@@ -12,9 +12,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::tag_engine::categories::{eval_filter, Filter};
-use crate::tag_engine::sanitize::SanitizerRegistry;
-use crate::osm::types::RawTags;
+use crate::tag_engine::filter::{eval, CategoryContext, Filter};
 
 /// The value a matching rule produces. `Const` holds any JSON literal (string, number, bool) so
 /// the same rule table can back string classifiers (category ids, `road`), numeric ones (zoom),
@@ -48,33 +46,29 @@ pub struct Classifier {
 
 impl Classifier {
     /// First matching rule's value, or the table's `default`, or `None` if neither is set.
-    pub fn classify(
-        &self,
-        tags: &RawTags,
-        macros: &HashMap<String, Filter>,
-        sanitizers: &SanitizerRegistry,
-    ) -> Option<Value> {
-        classify_rules(&self.rules, tags, macros, sanitizers).or_else(|| self.default.clone())
+    pub fn classify(&self, ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> Option<Value> {
+        classify_rules(&self.rules, ctx, macros).or_else(|| self.default.clone())
     }
 }
 
 /// First matching rule's value, or `None` if no rule matches (first-match-wins). Shared by the
-/// standalone `road` classifier and the data-defined `rules` value producer (`engine/extract.rs`).
-/// Does not apply a `default` — callers needing one (e.g. `Classifier::classify`, `Producer::Classify`)
-/// apply it themselves.
+/// standalone `road` classifier and the data-defined `rules` value producer (`producer.rs`).
+/// Evaluated against a full `CategoryContext` — same predicate evaluator (`filter::eval`) and same
+/// context shape category matching uses, so a rule's `when` can see side/prefix/infix/parent, not
+/// just raw tags. Does not apply a `default` — callers needing one (e.g. `Classifier::classify`,
+/// `Producer::Classify`) apply it themselves.
 pub fn classify_rules(
     rules: &[Rule],
-    tags: &RawTags,
+    ctx: &CategoryContext,
     macros: &HashMap<String, Filter>,
-    sanitizers: &SanitizerRegistry,
 ) -> Option<Value> {
     for rule in rules {
-        if eval_filter(&rule.when, tags, macros, sanitizers) {
+        if eval(&rule.when, ctx, macros) {
             return match &rule.value {
                 ValueSpec::Const(v) => Some(v.clone()),
-                ValueSpec::Tag { tag } => tags.get(tag).cloned().map(Value::String),
+                ValueSpec::Tag { tag } => ctx.tags.get(tag).cloned().map(Value::String),
                 ValueSpec::TagOr { tag_or, or } => Some(
-                    tags.get(tag_or).cloned().map(Value::String).unwrap_or_else(|| or.clone()),
+                    ctx.tags.get(tag_or).cloned().map(Value::String).unwrap_or_else(|| or.clone()),
                 ),
             };
         }

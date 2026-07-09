@@ -12,9 +12,11 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::tag_engine::keys;
+use crate::tag_engine::filter::{CategoryContext, Filter};
 use crate::tag_engine::sanitize::SanitizerRegistry;
 use crate::tag_engine::derive;
 use crate::osm::types::RawTags;
+use crate::output::types::Side;
 
 /// A produced value plus optional provenance. The `consts` are arbitrary key/value pairs the
 /// winning fallback branch (or a Rust deriver) contributes; each is emitted as `<field>_<k>`
@@ -42,11 +44,43 @@ pub struct ExtractCtx<'a> {
     /// transformed object's side — used by the `traffic_mode` deriver.
     pub parking_inference: Option<&'a str>,
     pub obj_side: &'a str,
+    /// The prefix that produced this object (e.g. "cycleway"; `None` for the self object) and the
+    /// infix that matched during side-splitting — same fields `CategoryContext` carries, so a
+    /// `Classify`/`SharedClassify` producer's rules can condition on them exactly like a category
+    /// condition can (`as_category_context` below).
+    pub prefix: Option<&'a str>,
+    pub infix: Option<&'a str>,
     /// Sanitizer registry (data-defined chains + built-ins) used to resolve `sanitize` names.
     pub sanitizers: &'a SanitizerRegistry,
     /// The topic's deriver library — lets a Rust deriver re-evaluate a sibling by name
     /// (e.g. `smoothness_parent` re-runs the base `smoothness` fallback against the parent).
     pub derivers: &'a HashMap<String, Producer>,
+    /// This kind's category macros (`categories/macros.json` + shared) — lets a `Classify` rule's
+    /// `when` reference a `{"macro": "..."}` the same way a category condition can.
+    pub macros: &'a HashMap<String, Filter>,
+}
+
+impl<'a> ExtractCtx<'a> {
+    /// Build the richer `CategoryContext` a `Classify`/`SharedClassify` producer's rules need to
+    /// see everything a category condition sees. `tags` points at whichever tagset `from` resolved
+    /// (obj or parent) — but `side`/`prefix`/`infix` always describe *this* object, not the
+    /// resolved tagset, and `parent_tags` is always the object's real parent (unaffected by which
+    /// tagset the rules are reading).
+    fn as_category_context(&self, tags: &'a RawTags) -> CategoryContext<'a> {
+        CategoryContext {
+            tags,
+            side: match self.obj_side {
+                "left" => Side::Left,
+                "right" => Side::Right,
+                _ => Side::Self_,
+            },
+            prefix: self.prefix,
+            parent_highway: self.parent_tags.and_then(|t| t.get("highway")).map(String::as_str),
+            parent_tags: self.parent_tags,
+            infix: self.infix,
+            sanitizers: self.sanitizers,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -97,8 +131,11 @@ pub enum Producer {
     /// a required field and so unambiguously distinguishes it (`Extract`'s fields are all
     /// optional, so it would otherwise match — and silently produce nothing — first).
     ///
-    /// Limitation: rules only see raw obj/parent tags, not fields derived earlier in the same
-    /// pass.
+    /// Rules see the same context a category condition does — tags, `side`/`prefix`/`infix`,
+    /// parent, and macros (`as_category_context`) — so e.g. `{"prefix": "cycleway"}` or
+    /// `{"macro": "..."}` work here exactly like in a category's own `condition`. The one
+    /// remaining limitation: rules only see raw obj/parent tags, not fields derived earlier in the
+    /// same pass.
     Classify {
         rules: Vec<crate::tag_engine::classifier::Rule>,
         #[serde(default)] default: Option<Value>,
@@ -143,16 +180,17 @@ impl Producer {
 
             Producer::Classify { rules, default, from, consts } => {
                 let tags = from.resolve(ctx)?;
-                crate::tag_engine::classifier::classify_rules(
-                    rules, tags, &HashMap::new(), ctx.sanitizers,
-                ).or_else(|| default.clone())
+                let cctx = ctx.as_category_context(tags);
+                crate::tag_engine::classifier::classify_rules(rules, &cctx, ctx.macros)
+                    .or_else(|| default.clone())
                     .map(|value| Produced { value, consts: consts.clone() })
             }
 
             Producer::SharedClassify { shared, from, consts } => {
                 let tags = from.resolve(ctx)?;
+                let cctx = ctx.as_category_context(tags);
                 crate::tag_engine::classifier::shared_classifier(shared)
-                    .classify(tags, &HashMap::new(), ctx.sanitizers)
+                    .classify(&cctx, ctx.macros)
                     .map(|value| Produced { value, consts: consts.clone() })
             }
 
@@ -239,14 +277,23 @@ mod classify_bool_tests {
     use crate::tag_engine::classifier::{Rule, ValueSpec};
     use crate::tag_engine::filter::Filter;
 
-    fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, sanitizers: &'a SanitizerRegistry, derivers: &'a HashMap<String, Producer>) -> ExtractCtx<'a> {
+    fn ctx<'a>(
+        obj: &'a RawTags,
+        parent: Option<&'a RawTags>,
+        sanitizers: &'a SanitizerRegistry,
+        derivers: &'a HashMap<String, Producer>,
+        macros: &'a HashMap<String, Filter>,
+    ) -> ExtractCtx<'a> {
         ExtractCtx {
             obj_tags: obj,
             parent_tags: parent,
             parking_inference: None,
             obj_side: "self",
+            prefix: None,
+            infix: None,
             sanitizers,
             derivers,
+            macros,
         }
     }
 
@@ -265,11 +312,12 @@ mod classify_bool_tests {
         let obj: RawTags = [("oneway".to_owned(), "yes".to_owned())].into_iter().collect();
         let sanitizers = SanitizerRegistry::new(HashMap::new());
         let derivers = HashMap::new();
+        let macros = HashMap::new();
         let producer = bool_producer(
             Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
             TagSet::Obj,
         );
-        let produced = producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).unwrap();
+        let produced = producer.eval(&ctx(&obj, None, &sanitizers, &derivers, &macros)).unwrap();
         assert_eq!(produced.value, Value::Bool(true));
     }
 
@@ -278,11 +326,12 @@ mod classify_bool_tests {
         let obj: RawTags = [("oneway".to_owned(), "no".to_owned())].into_iter().collect();
         let sanitizers = SanitizerRegistry::new(HashMap::new());
         let derivers = HashMap::new();
+        let macros = HashMap::new();
         let producer = bool_producer(
             Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
             TagSet::Obj,
         );
-        let produced = producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).unwrap();
+        let produced = producer.eval(&ctx(&obj, None, &sanitizers, &derivers, &macros)).unwrap();
         assert_eq!(produced.value, Value::Bool(false));
     }
 
@@ -291,8 +340,9 @@ mod classify_bool_tests {
         let obj = RawTags::default();
         let sanitizers = SanitizerRegistry::new(HashMap::new());
         let derivers = HashMap::new();
+        let macros = HashMap::new();
         let producer = bool_producer(Filter::Bool(true), TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).is_none());
+        assert!(producer.eval(&ctx(&obj, None, &sanitizers, &derivers, &macros)).is_none());
     }
 }
 
@@ -310,8 +360,12 @@ mod directed_extract_tests {
         obj_side: &'a str,
         sanitizers: &'a SanitizerRegistry,
         derivers: &'a HashMap<String, Producer>,
+        macros: &'a HashMap<String, Filter>,
     ) -> ExtractCtx<'a> {
-        ExtractCtx { obj_tags: obj, parent_tags: parent, parking_inference: None, obj_side, sanitizers, derivers }
+        ExtractCtx {
+            obj_tags: obj, parent_tags: parent, parking_inference: None, obj_side,
+            prefix: None, infix: None, sanitizers, derivers, macros,
+        }
     }
 
     fn directed(key: &str, from: TagSet) -> Producer {
@@ -323,55 +377,55 @@ mod directed_extract_tests {
 
     #[test]
     fn parent_source_prefers_existing_obj_value() {
-        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let (sanitizers, derivers, macros) = (SanitizerRegistry::new(HashMap::new()), HashMap::new(), HashMap::new());
         let obj = tags(&[("cycleway:lanes", "existing")]);
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers)).is_none());
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers, &macros)).is_none());
     }
 
     #[test]
     fn parent_source_falls_back_to_bare_then_directed_key() {
-        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let (sanitizers, derivers, macros) = (SanitizerRegistry::new(HashMap::new()), HashMap::new(), HashMap::new());
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        let produced = producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers)).unwrap();
+        let produced = producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers, &macros)).unwrap();
         assert_eq!(produced.value, Value::String("lane".to_owned()));
 
         let obj = RawTags::default();
         let parent = RawTags::default();
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers)).is_none());
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers, &macros)).is_none());
     }
 
     #[test]
     fn self_source_reads_from_obj_own_directed_key() {
-        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let (sanitizers, derivers, macros) = (SanitizerRegistry::new(HashMap::new()), HashMap::new(), HashMap::new());
         let obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
         let producer = directed("traffic_sign", TagSet::Obj);
-        let produced = producer.eval(&ctx(&obj, None, "right", &sanitizers, &derivers)).unwrap();
+        let produced = producer.eval(&ctx(&obj, None, "right", &sanitizers, &derivers, &macros)).unwrap();
         assert_eq!(produced.value, Value::String("DE:1022-10".to_owned()));
     }
 
     #[test]
     fn noop_for_self_side() {
-        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let (sanitizers, derivers, macros) = (SanitizerRegistry::new(HashMap::new()), HashMap::new(), HashMap::new());
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "self", &sanitizers, &derivers)).is_none());
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "self", &sanitizers, &derivers, &macros)).is_none());
     }
 
     #[test]
     fn handedness_flips_suffix() {
-        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let (sanitizers, derivers, macros) = (SanitizerRegistry::new(HashMap::new()), HashMap::new(), HashMap::new());
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:backward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
         // Right-hand traffic (global default in tests): Side::Right reads `:forward`, not
         // `:backward` — so this should NOT match.
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers)).is_none());
-        let produced = producer.eval(&ctx(&obj, Some(&parent), "left", &sanitizers, &derivers)).unwrap();
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers, &macros)).is_none());
+        let produced = producer.eval(&ctx(&obj, Some(&parent), "left", &sanitizers, &derivers, &macros)).unwrap();
         assert_eq!(produced.value, Value::String("lane".to_owned()));
     }
 }

@@ -4,6 +4,7 @@ use anyhow::Context;
 use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
+use crate::tag_engine::filter::Filter;
 use crate::tag_engine::sanitize::{SanitizerDef, SanitizerRegistry};
 use crate::tag_engine::producer::{ExtractCtx, Producer, TagSet};
 use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, TopicSpec}};
@@ -53,8 +54,11 @@ impl PreCatStep {
         tags: &mut RawTags,
         parent_tags: Option<&RawTags>,
         obj_side: &str,
+        prefix: Option<&str>,
+        infix: Option<&str>,
         sanitizers: &SanitizerRegistry,
         derivers: &HashMap<String, Producer>,
+        macros: &HashMap<String, Filter>,
     ) {
         match self {
             PreCatStep::TagRule { output, source } => {
@@ -63,8 +67,11 @@ impl PreCatStep {
                     parent_tags,
                     parking_inference: None,
                     obj_side,
+                    prefix,
+                    infix,
                     sanitizers,
                     derivers,
+                    macros,
                 };
                 if let Some(p) = source.eval(&ctx) {
                     match p.value {
@@ -197,13 +204,13 @@ impl TopicRunner {
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
 
-        // Sanitizers desugar to per-object `Field`s — the same `Producer`-evaluation path as
-        // derivers, just a terser JSON shorthand (`{tag, name}` for "read this tag, clean it,
-        // write it back") for the common single-`Extract`-with-`sanitize` case. Folded into
+        // Sanitizers already deserialize straight into `Field` (see `Field`'s `Deserialize` impl) —
+        // `{tag, name}` is just a terser JSON shorthand for the common single-`Extract`-with-
+        // `sanitize` case, the same `Producer`-evaluation path as derivers. Folded into
         // `topic_derivers` below (not kept as a separate list) so a category can override a
         // sanitizer's output exactly the way it overrides a deriver's — same mechanism, no new
         // JSON syntax needed.
-        let sanitizer_fields: Vec<Field> = spec.sanitizers.iter().map(|s| s.to_field()).collect();
+        let sanitizer_fields: Vec<Field> = spec.sanitizers.clone();
 
         // Load the data-defined sanitizer chains: shared (topics/_shared/sanitizers.json) merged
         // with the topic's own, topic-local winning on name conflict. Names win over built-ins.

@@ -79,7 +79,10 @@ pub fn build_topic_rows(
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {
             for step in &runner.pre_cat_steps[..runner.exclude_check_at] {
-                step.apply(&mut tags, None, "self", &runner.sanitizers, &runner.deriver_lib);
+                step.apply(
+                    &mut tags, None, "self", None, None,
+                    &runner.sanitizers, &runner.deriver_lib, &categories.macros,
+                );
             }
         });
     }
@@ -96,7 +99,10 @@ pub fn build_topic_rows(
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {
             for step in &runner.pre_cat_steps[runner.exclude_check_at..] {
-                step.apply(&mut tags, None, "self", &runner.sanitizers, &runner.deriver_lib);
+                step.apply(
+                    &mut tags, None, "self", None, None,
+                    &runner.sanitizers, &runner.deriver_lib, &categories.macros,
+                );
             }
         });
     }
@@ -126,7 +132,10 @@ pub fn build_topic_rows(
             let Some(transformation) = transformations.iter().find(|t| Some(t.prefix) == obj.prefix)
             else { continue };
             for step in transformation.directed_steps {
-                step.apply(&mut obj.tags, Some(&self_obj.tags), side_str, &runner.sanitizers, &runner.deriver_lib);
+                step.apply(
+                    &mut obj.tags, Some(&self_obj.tags), side_str, obj.prefix, obj.infix,
+                    &runner.sanitizers, &runner.deriver_lib, &categories.macros,
+                );
             }
         }
     }
@@ -165,8 +174,11 @@ pub fn build_topic_rows(
             parent_tags,
             parking_inference: category.parking_inference.as_deref(),
             obj_side: side_str,
+            prefix: obj.prefix,
+            infix: obj.infix,
             sanitizers: &runner.sanitizers,
             derivers: &runner.deriver_lib,
+            macros: &categories.macros,
         };
 
         let mut osm = Map::new();
