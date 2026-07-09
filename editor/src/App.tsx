@@ -87,45 +87,49 @@ export default function App() {
         setConfigs(d.configs);
         setCurrentConfig(d.current);
       });
-    loadTopics(true);
+    loadTopics();
   }, []);
 
   // Fetches the topics/categories for whichever config the server currently has selected —
-  // shared by the initial mount (autoSelect: true, so there's something to show right away) and by
-  // switchConfig (autoSelect: false — starting with a category auto-picked would immediately
-  // narrow the map down to just that one category, which reads as the map "reloading"/jumping
-  // right after a switch that's otherwise meant to leave the view alone).
-  function loadTopics(autoSelect: boolean) {
+  // shared by the initial mount and by switchConfig.
+  function loadTopics() {
     fetch("/api/topics")
       .then((r) => r.json())
       .then((d: { topics: string[] }) => {
         setTopics(d.topics);
-        setExpandedTopics((cur) => (cur.size > 0 ? cur : new Set(d.topics[0] ? [d.topics[0]] : [])));
-        for (const topic of d.topics) loadCategories(topic, autoSelect);
+        // Topics start collapsed and nothing is selected — classify the first topic directly
+        // (bypassing `active`/`text`) so the map shows data immediately without highlighting a row
+        // or populating the editor pane, which would look selected despite nothing being expanded.
+        if (d.topics[0]) loadInitialMap(d.topics[0]);
+        for (const topic of d.topics) loadCategories(topic);
       });
   }
 
-  function loadCategories(topic: string, autoSelect: boolean) {
+  async function loadInitialMap(topic: string) {
+    try {
+      const r = await fetch(`/api/topic/${encodeURIComponent(topic)}`);
+      const d = await r.json();
+      await classify(d.json, { topic, kind: "", name: "", isTopicConfig: true });
+    } catch {
+      // Ignore — the map just stays empty until the user picks something.
+    }
+  }
+
+  function loadCategories(topic: string) {
     fetch(`/api/categories/${encodeURIComponent(topic)}`)
       .then((r) => r.json())
       .then((d: { categories: { kind: string; name: string }[] }) => {
         const cats = d.categories.map((c) => ({ topic, ...c }));
         setCategoriesByTopic((prev) => ({ ...prev, [topic]: cats }));
-        if (!autoSelect) return;
-        // Auto-select the first category loaded, for any topic, as long as nothing is selected yet —
-        // `cur.topic === topic` doesn't work here since `cur` starts as NO_SELECTION (topic: ""),
-        // which never equals a real topic name, so nothing was ever auto-selected on load.
-        setActive((cur) => (!cur.topic && !cur.name && cats[0] ? cats[0] : cur));
       });
   }
 
   // Switches the server's selected config directory, then resets every topic-scoped piece of
   // state (categories/selection differ entirely between configs) and reloads — same load path as
-  // the initial mount, so the freshly switched config auto-selects its first category and (if a
-  // bbox is already chosen) auto-classifies via the existing [active]/[text] effects. Keeps the
-  // current bbox and map data as-is (no reset/reload) — the old config's features stay on screen
-  // until the new config's classify call replaces them in place, instead of blanking the map while
-  // switching.
+  // the initial mount, so the freshly switched config classifies its first topic right away (if a
+  // bbox is already chosen) via loadTopics -> loadInitialMap. Keeps the current bbox and map data
+  // as-is (no reset/reload) — the old config's features stay on screen until the new config's
+  // classify call replaces them in place, instead of blanking the map while switching.
   async function switchConfig(config: string) {
     const res = await fetch("/api/config", {
       method: "POST",
@@ -145,7 +149,7 @@ export default function App() {
     setNewNameByTopic({});
     setActive(NO_SELECTION);
     setManualSelect(false);
-    loadTopics(false);
+    loadTopics();
   }
 
   useEffect(() => {
@@ -200,7 +204,7 @@ export default function App() {
     setActive(category);
     setText(NEW_CATEGORY_JSON);
     await classify(NEW_CATEGORY_JSON, category);
-    loadCategories(topic, false);
+    loadCategories(topic);
   }
 
   async function selectBbox(box: [number, number, number, number]) {
@@ -228,6 +232,7 @@ export default function App() {
         setExtractMs(body.extractMs ?? null);
         setData(null);
         if (text && active.topic && (active.name || active.isTopicConfig)) classify(text);
+        else if (topics[0]) loadInitialMap(topics[0]);
       } else {
         setError(body.error || "Unknown error");
       }
