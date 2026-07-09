@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
+use serde_json::Value;
 
 use crate::classify::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
 use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
-use crate::engine::extract::Producer;
-use crate::engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, Transform, TopicSpec}};
+use crate::engine::extract::{ExtractCtx, Producer};
+use crate::engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
-use crate::transform::TagTransform;
 use crate::transform::side_split::CenterLineTransformation;
 
 /// Per-key overlay: the topic-level default map with the category's entries layered on top.
@@ -25,6 +25,58 @@ fn overlay(
     merged
 }
 
+/// One in-place tag mutation, applied to a way's tags (in the topic's declared order) before
+/// `exclude_condition` and categorization.
+pub enum PreCatStep {
+    /// Write `output` from a full `Producer`, evaluated with no parent/category context yet
+    /// (`obj_side: "self"`). A produced `null` deletes `output`; a produced non-null value must
+    /// be a string and overwrites it; no match (`None`) leaves it untouched.
+    TagRule { output: String, source: Producer },
+    /// Unnest bare `prefix`-prefixed tags onto sidepath-class ways — see
+    /// `side_split::apply_sidepath_self`.
+    SidepathSelf { prefix: &'static str },
+    /// Strip `prefix` from matching keys — see `transform::strip_prefix`. The one step needing
+    /// dynamic key iteration, so it isn't a `Producer`.
+    StripPrefix {
+        prefix: String,
+        stamp_key: String,
+        stamp_value: String,
+        stamp_nested_under: Vec<String>,
+    },
+}
+
+impl PreCatStep {
+    pub fn apply(&self, tags: &mut RawTags, sanitizers: &SanitizerRegistry, derivers: &HashMap<String, Producer>) {
+        match self {
+            PreCatStep::TagRule { output, source } => {
+                let ctx = ExtractCtx {
+                    obj_tags: tags,
+                    parent_tags: None,
+                    parking_inference: None,
+                    obj_side: "self",
+                    sanitizers,
+                    derivers,
+                };
+                if let Some(p) = source.eval(&ctx) {
+                    match p.value {
+                        Value::Null => { tags.remove(output); }
+                        Value::String(s) => { tags.insert(output.clone(), s); }
+                        other => panic!(
+                            "tag_rules for '{output}' produced a non-string, non-null value: {other}"
+                        ),
+                    }
+                }
+            }
+            PreCatStep::SidepathSelf { prefix } => {
+                crate::transform::side_split::apply_sidepath_self(tags, &[prefix]);
+            }
+            PreCatStep::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } => {
+                crate::transform::strip_prefix(tags, prefix, stamp_key, stamp_value, stamp_nested_under);
+            }
+        }
+    }
+}
+
 /// A fully loaded topic ready to process ways.
 pub struct TopicRunner {
     pub spec: TopicSpec,
@@ -32,17 +84,20 @@ pub struct TopicRunner {
     /// that exists. Each pass (relations → ways → nodes) classifies with its kind's set; a topic
     /// with only a `way/` folder has just the `Way` entry. `categorize` is the same function for all.
     pub categories: HashMap<ElementKind, CategoriesFile>,
-    /// No-arg tag transforms applied (in order) to each way's tags before categorization.
-    pub tag_transforms: Vec<TagTransform>,
-    /// Center-line side split (from a `split_sides` entry); empty if the topic has none.
+    /// In-place tag mutations applied to each way's tags, in declared order, split around
+    /// `exclude_condition` at `exclude_check_at` — so, unlike a deriver, these can influence which
+    /// category a way matches (or whether `exclude_condition` excludes it at all).
+    pub pre_cat_steps: Vec<PreCatStep>,
+    /// Index into `pre_cat_steps` where `exclude_condition` is evaluated: `pre_cat_steps[..n]` run
+    /// first, then `exclude_condition`, then `pre_cat_steps[n..]`. Set to the first `SidepathSelf`
+    /// step's index (or `pre_cat_steps.len()` if there is none) — mirrors the original two-stage
+    /// pipeline, where tag rewrites ran before `exclude_condition` but unnesting (which can promote
+    /// a `cycleway:access=no`-style tag onto a bare `access` that `exclude_condition` checks
+    /// directly) always ran after it.
+    pub exclude_check_at: usize,
+    /// Center-line side split (from a `split_sides` entry); empty if the topic has none. Applied
+    /// after every `PreCatStep`, since it changes object cardinality rather than mutating tags.
     pub transformations: Vec<CenterLineTransformation>,
-    /// Prefixes to self-unnest onto sidepath-class ways (from `unnest_sidepath_self` entries).
-    /// Applied after `exclude_condition` but before `transformations`, mirroring the pre-split
-    /// stage `split_sides` also runs at — see `side_split::apply_sidepath_self`.
-    pub sidepath_self_prefixes: Vec<&'static str>,
-    /// `tag_rules` entries: `(output, rules)`, applied at the same pre-categorization stage as
-    /// `sidepath_self_prefixes` (see `classify::classifier::classify_rules`).
-    pub tag_rules: Vec<(String, Vec<crate::classify::classifier::Rule>)>,
     /// Desugared `sanitizers` — applied to every object regardless of category.
     pub sanitizer_fields: Vec<Field>,
     /// Data-defined sanitizer chains (sanitizers.json) layered over the built-in registry.
@@ -178,24 +233,17 @@ impl TopicRunner {
                 .with_context(|| format!("building category order for topics/{name}"))?;
         }
 
-        // Split the declared transform pipeline into ordered in-place tag transforms and the
-        // parameterized center-line splits (which change object cardinality, handled separately).
-        let mut tag_transforms = Vec::new();
+        // Split the declared transform pipeline into one ordered list of in-place `PreCatStep`s
+        // (applied together, in declaration order, before `exclude_condition`/categorization) and
+        // the parameterized center-line splits (which change object cardinality, handled
+        // separately and always last).
+        let mut pre_cat_steps = Vec::new();
         let mut transformations = Vec::new();
-        let mut sidepath_self_prefixes = Vec::new();
-        let mut tag_rules = Vec::new();
         for t in &spec.transforms {
             match t {
-                Transform::Named(tname) => {
-                    anyhow::ensure!(
-                        tname == "lifecycle",
-                        "unknown named transform '{tname}' in topics/{name}/topic.json",
-                    );
-                    tag_transforms.push(TagTransform::Lifecycle);
-                }
-                Transform::Param(ParamTransform::SplitSides {
+                ParamTransform::SplitSides {
                     highway, prefix, directed_keys, self_directed_keys,
-                }) => {
+                } => {
                     let leak_keys = |keys: &[String]| -> &'static [&'static str] {
                         let leaked: Vec<&'static str> = keys
                             .iter()
@@ -210,30 +258,20 @@ impl TopicRunner {
                         self_directed_keys: leak_keys(self_directed_keys),
                     });
                 }
-                Transform::Param(ParamTransform::UnnestSidepathSelf { prefix }) => {
-                    sidepath_self_prefixes.push(Box::leak(prefix.clone().into_boxed_str()) as &'static str);
+                ParamTransform::UnnestSidepathSelf { prefix } => {
+                    let prefix = Box::leak(prefix.clone().into_boxed_str()) as &'static str;
+                    pre_cat_steps.push(PreCatStep::SidepathSelf { prefix });
                 }
-                Transform::Param(ParamTransform::TagRules { output, rules }) => {
-                    tag_rules.push((output.clone(), rules.clone()));
-                }
-                Transform::Param(ParamTransform::RenameKey { from, to, when_value }) => {
-                    tag_transforms.push(TagTransform::RenameKey {
-                        from: from.clone(),
-                        to: to.clone(),
-                        when_value: when_value.clone(),
+                ParamTransform::TagRules { output, source } => {
+                    pre_cat_steps.push(PreCatStep::TagRule {
+                        output: output.clone(),
+                        source: source.clone(),
                     });
                 }
-                Transform::Param(ParamTransform::ValueCases { tag, remove_tag, cases }) => {
-                    tag_transforms.push(TagTransform::ValueCases {
-                        tag: tag.clone(),
-                        remove_tag: *remove_tag,
-                        cases: cases.clone(),
-                    });
-                }
-                Transform::Param(ParamTransform::StripPrefix {
+                ParamTransform::StripPrefix {
                     prefix, stamp_key, stamp_value, stamp_nested_under,
-                }) => {
-                    tag_transforms.push(TagTransform::StripPrefix {
+                } => {
+                    pre_cat_steps.push(PreCatStep::StripPrefix {
                         prefix: prefix.clone(),
                         stamp_key: stamp_key.clone(),
                         stamp_value: stamp_value.clone(),
@@ -242,6 +280,10 @@ impl TopicRunner {
                 }
             }
         }
+        let exclude_check_at = pre_cat_steps
+            .iter()
+            .position(|s| matches!(s, PreCatStep::SidepathSelf { .. }))
+            .unwrap_or(pre_cat_steps.len());
 
         // Precompute per-category effective derivers/consts/private across every kind. Category ids
         // are expected unique within a topic (they're file stems); a node and a way category sharing
@@ -264,10 +306,9 @@ impl TopicRunner {
         Ok(Self {
             spec,
             categories,
-            tag_transforms,
+            pre_cat_steps,
+            exclude_check_at,
             transformations,
-            sidepath_self_prefixes,
-            tag_rules,
             sanitizer_fields,
             sanitizers,
             deriver_lib,
@@ -287,10 +328,11 @@ impl TopicRunner {
         self.categories.contains_key(&kind)
     }
 
-    /// Run the topic's pipeline for one element of `kind`: apply this topic's tag transforms to a
-    /// copy of the raw tags (way kind only — side-split/lifecycle transforms are way-oriented),
-    /// then categorize/split/extract into tag rows against the kind's category set. `raw_tags` are
-    /// the element's untouched tags. Geometry is produced separately (way-only) via `build_geom_rows`.
+    /// Run the topic's pipeline for one element of `kind`: clone its raw tags, then hand off to
+    /// `build_topic_rows`, which applies `pre_cat_steps` (way kind only — they're way-oriented),
+    /// `exclude_condition`, side-split, categorize/extract into tag rows against the kind's
+    /// category set. `raw_tags` are the element's untouched tags. Geometry is produced separately
+    /// (way-only) via `build_geom_rows`.
     pub fn process(
         &self,
         kind: ElementKind,
@@ -301,12 +343,7 @@ impl TopicRunner {
         if !self.has_kind(kind) {
             return Vec::new();
         }
-        let mut tags = crate::profile::time(&crate::profile::TAGCLONE, || raw_tags.clone());
-        if kind == ElementKind::Way {
-            for t in &self.tag_transforms {
-                t.apply(&mut tags);
-            }
-        }
+        let tags = crate::profile::time(&crate::profile::TAGCLONE, || raw_tags.clone());
         build_topic_rows(self, kind, osm_id, tags, meta)
     }
 }

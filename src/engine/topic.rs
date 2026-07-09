@@ -6,11 +6,12 @@ use crate::engine::extract::{Producer, TagSet};
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
     pub table: String,
-    /// Ordered transform pipeline. Each entry is either a bare string naming a no-arg
-    /// tag transform (e.g. "lifecycle") or a parameterized object such as
-    /// `{ "transform": "split_sides", "sides": [{ "highway": ..., "prefix": ... }] }`.
+    /// Ordered transform pipeline, e.g.
+    /// `{ "transform": "split_sides", "sides": [{ "highway": ..., "prefix": ... }] }`. Applied in
+    /// declaration order (see `PreCatStep`); `split_sides` is the exception, changing object
+    /// cardinality rather than mutating tags in place.
     #[serde(default)]
-    pub transforms: Vec<Transform>,
+    pub transforms: Vec<ParamTransform>,
     pub osm_fields: Vec<Field>,
     /// Simple field sanitizers: read one tag (or first present of several), clean it with a
     /// named `&str -> atomic` sanitizer, write to `tag`.
@@ -37,21 +38,9 @@ pub struct TopicSpec {
     pub private: serde_json::Map<String, serde_json::Value>,
 }
 
-/// One entry in a topic's `transforms` list.
-/// A JSON string is a no-arg native transform; a JSON object is a parameterized transform
-/// dispatched on its `transform` field.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum Transform {
-    /// The one remaining native no-arg transform: "lifecycle".
-    Named(String),
-    /// A parameterized transform object, e.g. `{ "transform": "split_sides", ... }`.
-    Param(ParamTransform),
-}
-
-/// The parameterized (object-form) transforms, dispatched on the `transform` field.
+/// A topic's `transforms` list, dispatched on the `transform` field.
 /// `split_sides` changes object cardinality (handled by `side_split`); the rest are in-place
-/// tag rewrites (handled by `TagTransform`).
+/// tag rewrites, unified into one ordered pre-categorization pass (see `PreCatStep`).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "transform", rename_all = "snake_case")]
 pub enum ParamTransform {
@@ -80,11 +69,13 @@ pub enum ParamTransform {
     /// `highway=path` + `cycleway=track`), as opposed to `split_sides` projecting side tags onto
     /// separate child objects.
     UnnestSidepathSelf { prefix: String },
-    /// Write `output` from the first matching `{when, value}` rule (same engine as the `road`
-    /// classifier / derivers' `rules` producer), evaluated against the way's own tags and applied
-    /// as a raw-tag mutation *before* categorization — so, unlike a deriver, this can influence
-    /// which category a way matches. Only the matching branch writes; no match leaves `output`
-    /// untouched. e.g. deriving `traffic_sign` from `traffic_sign:forward` for oneway sidepaths:
+    /// Write `output` from any full `Producer` (`rules`/`fallback`/`key`/`derive` — the same
+    /// shape used for `osm_fields`/sanitizers/derivers), evaluated against the way's own tags
+    /// (no parent, no category/side context yet) and applied as a raw-tag mutation *before*
+    /// categorization — so, unlike a deriver, this can influence which category a way matches.
+    /// A produced `null` deletes `output`; a produced non-null value must be a string and
+    /// overwrites it; no match (`None`) leaves `output` untouched. e.g. deriving `traffic_sign`
+    /// from `traffic_sign:forward` for oneway sidepaths:
     /// `{ "transform": "tag_rules", "output": "traffic_sign", "rules": [
     ///      { "when": { "and": [ { "tag": "highway", "in_set": "sidepath_highway" },
     ///          { "tag": "traffic_sign", "exists": false }, { "tag": "oneway", "eq": "yes" },
@@ -92,22 +83,8 @@ pub enum ParamTransform {
     ///        "value": { "tag_or": "traffic_sign:forward", "or": "" } } ] }`.
     TagRules {
         output: String,
-        rules: Vec<crate::classify::classifier::Rule>,
-    },
-    /// Move `from` → `to`, optionally gated on `when_value`. (Replaces `cycleway_both`.)
-    RenameKey {
-        from: String,
-        to: String,
-        #[serde(default)]
-        when_value: Option<String>,
-    },
-    /// Match `tag`'s value against `cases`; the matched case's writes are applied, and the source
-    /// tag removed when `remove_tag`. (Replaces `cycleway_opposite`.)
-    ValueCases {
-        tag: String,
-        #[serde(default)]
-        remove_tag: bool,
-        cases: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+        #[serde(flatten)]
+        source: Producer,
     },
     /// Strip `prefix` from matching keys, re-key onto the base tag, and stamp a lifecycle-style
     /// marker (`<base>:<stamp_key>` when nested under one of `stamp_nested_under`, else `stamp_key`).

@@ -87,7 +87,7 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::TagEq { tag, eq, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), eq.clone()))),
         Filter::TagExists { tag, exists: true } => Expr::Lit(Literal::Pos(Predicate::Exists(tag.clone()))),
         Filter::TagExists { tag, exists: false } => Expr::Lit(Literal::Neg(Predicate::Exists(tag.clone()))),
-        Filter::TagContains { tag, contains } => Expr::Lit(Literal::Pos(Predicate::Contains(tag.clone(), contains.clone()))),
+        Filter::TagContains { tag, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(tag.clone(), contains.clone()))),
         Filter::TagStartsWith { tag, starts_with } => Expr::Lit(Literal::Pos(Predicate::StartsWith(tag.clone(), starts_with.clone()))),
         Filter::TagEndsWith { tag, ends_with } => Expr::Lit(Literal::Pos(Predicate::EndsWith(tag.clone(), ends_with.clone()))),
         Filter::TagIn { tag, r#in, .. } => {

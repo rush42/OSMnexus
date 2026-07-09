@@ -50,7 +50,11 @@ pub enum Filter {
     /// Membership in a named set from `_shared/value_sets.json` (keeps long value lists in data).
     TagInSet     { tag: String, in_set:      String      },
     TagIn        { tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<String> },
-    TagContains  { tag: String, contains:    String      },
+    /// `case_insensitive` lower-cases both the tag value and `contains` before comparing — use it
+    /// for free-text fields (notes/descriptions) where casing isn't meaningful. `contains` should
+    /// already be written lowercase in JSON when this is set (only the tag value is lower-cased
+    /// at eval time, to avoid re-lowering a literal on every call).
+    TagContains  { tag: String, contains: String, #[serde(default)] case_insensitive: bool },
     TagStartsWith{ tag: String, starts_with: String      },
     TagEndsWith  { tag: String, ends_with:   String      },
     TagExists    { tag: String, exists:      bool        },
@@ -113,8 +117,14 @@ pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<Stri
         Filter::TagIn { tag, r#in, sanitize } =>
             read_str(ctx.tags.get(tag).map(String::as_str), sanitize, ctx.sanitizers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
-        Filter::TagContains { tag, contains } =>
-            ctx.tags.get(tag).map(|v| v.contains(contains.as_str())).unwrap_or(false),
+        Filter::TagContains { tag, contains, case_insensitive } =>
+            ctx.tags.get(tag).map(|v| {
+                if *case_insensitive {
+                    v.to_lowercase().contains(contains.as_str())
+                } else {
+                    v.contains(contains.as_str())
+                }
+            }).unwrap_or(false),
         Filter::TagStartsWith { tag, starts_with } =>
             ctx.tags.get(tag).map(|v| v.starts_with(starts_with.as_str())).unwrap_or(false),
         Filter::TagEndsWith { tag, ends_with } =>

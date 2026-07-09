@@ -4,7 +4,303 @@
     "_implicit_oneway_confidence": "not_applicable"
   },
   "transforms": [
-    "lifecycle",
+    {
+      "transform": "tag_rules",
+      "output": "highway",
+      "rules": [
+        {
+          "when": {
+            "and": [
+              {
+                "tag": "highway",
+                "exists": true
+              },
+              {
+                "tag": "construction",
+                "in_set": "allowed_highway"
+              }
+            ]
+          },
+          "value": {
+            "tag": "construction"
+          }
+        }
+      ]
+    },
+    {
+      "transform": "tag_rules",
+      "output": "lifecycle",
+      "rules": [
+        {
+          "when": {
+            "and": [
+              {
+                "tag": "highway",
+                "exists": true
+              },
+              {
+                "tag": "construction",
+                "in_set": "allowed_highway"
+              }
+            ]
+          },
+          "value": "construction"
+        },
+        {
+          "when": {
+            "and": [
+              {
+                "or": [
+                  {
+                    "tag": "access",
+                    "eq": "no"
+                  },
+                  {
+                    "and": [
+                      {
+                        "tag": "highway",
+                        "eq": "cycleway"
+                      },
+                      {
+                        "tag": "bicycle",
+                        "eq": "no"
+                      }
+                    ]
+                  },
+                  {
+                    "and": [
+                      {
+                        "tag": "highway",
+                        "eq": "footway"
+                      },
+                      {
+                        "tag": "foot",
+                        "eq": "no"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "or": [
+                  {
+                    "tag": "access:reason",
+                    "contains": "construction",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "access:reason",
+                    "contains": "baustelle",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "description",
+                    "contains": "construction",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "description",
+                    "contains": "baustelle",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "note",
+                    "contains": "construction",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "note",
+                    "contains": "baustelle",
+                    "case_insensitive": true
+                  }
+                ]
+              }
+            ]
+          },
+          "value": "construction_no_access"
+        },
+        {
+          "when": {
+            "and": [
+              {
+                "or": [
+                  {
+                    "tag": "access",
+                    "eq": "no"
+                  },
+                  {
+                    "and": [
+                      {
+                        "tag": "highway",
+                        "eq": "cycleway"
+                      },
+                      {
+                        "tag": "bicycle",
+                        "eq": "no"
+                      }
+                    ]
+                  },
+                  {
+                    "and": [
+                      {
+                        "tag": "highway",
+                        "eq": "footway"
+                      },
+                      {
+                        "tag": "foot",
+                        "eq": "no"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "or": [
+                  {
+                    "tag": "description",
+                    "contains": "sperrung",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "description",
+                    "contains": "gesperrt",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "description",
+                    "contains": "blockiert",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "description",
+                    "contains": "blocked",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "description",
+                    "contains": "closure",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "description",
+                    "contains": "closed",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "note",
+                    "contains": "sperrung",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "note",
+                    "contains": "gesperrt",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "note",
+                    "contains": "blockiert",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "note",
+                    "contains": "blocked",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "note",
+                    "contains": "closure",
+                    "case_insensitive": true
+                  },
+                  {
+                    "tag": "note",
+                    "contains": "closed",
+                    "case_insensitive": true
+                  }
+                ]
+              }
+            ]
+          },
+          "value": "blocked"
+        }
+      ]
+    },
+    {
+      "transform": "tag_rules",
+      "output": "construction",
+      "rules": [
+        {
+          "when": {
+            "tag": "lifecycle",
+            "eq": "construction"
+          },
+          "value": null
+        }
+      ]
+    },
+    {
+      "transform": "tag_rules",
+      "output": "access",
+      "rules": [
+        {
+          "when": {
+            "tag": "lifecycle",
+            "in": [
+              "construction_no_access",
+              "blocked"
+            ]
+          },
+          "value": null
+        }
+      ]
+    },
+    {
+      "transform": "tag_rules",
+      "output": "bicycle",
+      "rules": [
+        {
+          "when": {
+            "and": [
+              {
+                "tag": "lifecycle",
+                "in": [
+                  "construction_no_access",
+                  "blocked"
+                ]
+              },
+              {
+                "tag": "highway",
+                "eq": "cycleway"
+              }
+            ]
+          },
+          "value": null
+        }
+      ]
+    },
+    {
+      "transform": "tag_rules",
+      "output": "foot",
+      "rules": [
+        {
+          "when": {
+            "and": [
+              {
+                "tag": "lifecycle",
+                "in": [
+                  "construction_no_access",
+                  "blocked"
+                ]
+              },
+              {
+                "tag": "highway",
+                "eq": "footway"
+              }
+            ]
+          },
+          "value": null
+        }
+      ]
+    },
     {
       "transform": "unnest_sidepath_self",
       "prefix": "cycleway"

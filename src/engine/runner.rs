@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 use crate::classify::categories::{categorize, eval_filter, CategoryContext};
-use crate::classify::classifier::classify_rules;
 use crate::engine::extract::ExtractCtx;
 use crate::engine::topic::Field;
 use crate::engine::topic_runner::TopicRunner;
@@ -14,7 +13,7 @@ use crate::output::{
     types::{OsmMeta, Side},
 };
 use rustc_hash::FxHashMap;
-use crate::transform::side_split::{apply_sidepath_self, get_transformed_objects};
+use crate::transform::side_split::get_transformed_objects;
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 
@@ -70,7 +69,21 @@ pub fn build_topic_rows(
         None => return Vec::new(),
     };
 
-    // Evaluate optional way-level exclude condition before any categorization.
+    // Pre-categorization tag mutations are way-oriented; nodes/relations never carry them. Split
+    // around `exclude_condition` at `exclude_check_at`: tag rewrites (e.g. lifecycle's
+    // construction→real-highway swap) run first, so `exclude_condition`'s `is_allowed_highway`
+    // check sees the un-construction'd highway — but sidepath-unnest runs *after*
+    // `exclude_condition`, since promoting a `cycleway:access=no`-style tag onto bare `access`
+    // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
+    // checks (which only ever saw the pre-unnest tags in the original pipeline).
+    if kind == ElementKind::Way {
+        crate::profile::time(&crate::profile::PRECAT, || {
+            for step in &runner.pre_cat_steps[..runner.exclude_check_at] {
+                step.apply(&mut tags, &runner.sanitizers, &runner.deriver_lib);
+            }
+        });
+    }
+
     if let Some(cond) = &topic.exclude_condition {
         let excluded = crate::profile::time(&crate::profile::EXCLUDE, || {
             eval_filter(cond, &tags, &categories.macros, &runner.sanitizers)
@@ -80,20 +93,10 @@ pub fn build_topic_rows(
         }
     }
 
-    // Sidepath self-unnest and tag_rules are way-oriented; nodes/relations never carry them.
-    // Both run pre-categorization (unlike derivers) so they can influence which category matches.
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {
-            if !runner.sidepath_self_prefixes.is_empty() {
-                apply_sidepath_self(&mut tags, &runner.sidepath_self_prefixes);
-            }
-            for (output, rules) in &runner.tag_rules {
-                if let Some(v) = classify_rules(rules, &tags, &categories.macros, &runner.sanitizers) {
-                    let v = v.as_str().unwrap_or_else(|| {
-                        panic!("tag_rules for '{output}' produced a non-string value: {v}")
-                    });
-                    tags.insert(output.clone(), v.to_owned());
-                }
+            for step in &runner.pre_cat_steps[runner.exclude_check_at..] {
+                step.apply(&mut tags, &runner.sanitizers, &runner.deriver_lib);
             }
         });
     }
