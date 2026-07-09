@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::classify::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
 use crate::classify::sanitize::{SanitizerDef, SanitizerRegistry};
-use crate::engine::extract::{ExtractCtx, Producer};
+use crate::engine::extract::{ExtractCtx, Producer, TagSet};
 use crate::engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
@@ -25,12 +25,14 @@ fn overlay(
     merged
 }
 
-/// One in-place tag mutation, applied to a way's tags (in the topic's declared order) before
-/// `exclude_condition` and categorization.
+/// One in-place tag mutation, applied to an object's tags before categorization — either at the
+/// whole-way, pre-split stage (`obj_side: "self"`, no `parent_tags`), or, for `directed`-style
+/// steps, per already-split object (its own resolved side + the parent way's tags). This is the
+/// same primitive either way; only the `ExtractCtx` passed to `apply` differs.
+#[derive(Clone)]
 pub enum PreCatStep {
-    /// Write `output` from a full `Producer`, evaluated with no parent/category context yet
-    /// (`obj_side: "self"`). A produced `null` deletes `output`; a produced non-null value must
-    /// be a string and overwrites it; no match (`None`) leaves it untouched.
+    /// Write `output` from a full `Producer`. A produced `null` deletes `output`; a produced
+    /// non-null value must be a string and overwrites it; no match (`None`) leaves it untouched.
     TagRule { output: String, source: Producer },
     /// Unnest bare `prefix`-prefixed tags onto sidepath-class ways — see
     /// `side_split::apply_sidepath_self`.
@@ -46,14 +48,21 @@ pub enum PreCatStep {
 }
 
 impl PreCatStep {
-    pub fn apply(&self, tags: &mut RawTags, sanitizers: &SanitizerRegistry, derivers: &HashMap<String, Producer>) {
+    pub fn apply(
+        &self,
+        tags: &mut RawTags,
+        parent_tags: Option<&RawTags>,
+        obj_side: &str,
+        sanitizers: &SanitizerRegistry,
+        derivers: &HashMap<String, Producer>,
+    ) {
         match self {
             PreCatStep::TagRule { output, source } => {
                 let ctx = ExtractCtx {
                     obj_tags: tags,
-                    parent_tags: None,
+                    parent_tags,
                     parking_inference: None,
-                    obj_side: "self",
+                    obj_side,
                     sanitizers,
                     derivers,
                 };
@@ -244,18 +253,24 @@ impl TopicRunner {
                 ParamTransform::SplitSides {
                     highway, prefix, directed_keys, self_directed_keys,
                 } => {
-                    let leak_keys = |keys: &[String]| -> &'static [&'static str] {
-                        let leaked: Vec<&'static str> = keys
-                            .iter()
-                            .map(|k| -> &'static str { Box::leak(k.clone().into_boxed_str()) })
-                            .collect();
-                        Box::leak(leaked.into_boxed_slice())
+                    // `directed_keys`/`self_directed_keys` are just key names in JSON — translated
+                    // here into ordinary `PreCatStep::TagRule`s (a `directed` `Producer::Extract`
+                    // per key), applied per side object post-split (see `engine::runner`). The
+                    // split itself never sees these; it only unnests.
+                    let directed_step = |key: &String, from: TagSet| PreCatStep::TagRule {
+                        output: key.clone(),
+                        source: Producer::Extract {
+                            key: Some(key.clone()), keys: None, from, side: None, sanitize: None,
+                            consts: Map::new(), directed: true,
+                        },
                     };
+                    let steps: Vec<PreCatStep> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
+                        .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))
+                        .collect();
                     transformations.push(CenterLineTransformation {
                         highway: Box::leak(highway.clone().into_boxed_str()),
                         prefix:  Box::leak(prefix.clone().into_boxed_str()),
-                        directed_keys: leak_keys(directed_keys),
-                        self_directed_keys: leak_keys(self_directed_keys),
+                        directed_steps: Box::leak(steps.into_boxed_slice()),
                     });
                 }
                 ParamTransform::UnnestSidepathSelf { prefix } => {

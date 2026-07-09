@@ -130,6 +130,7 @@ impl<'de> serde::Deserialize<'de> for Field {
                     side: None,
                     sanitize: None,
                     consts: serde_json::Map::new(),
+                    directed: false,
                 },
             },
             Repr::Full { output, source } => Field { output, source },
@@ -187,6 +188,7 @@ impl Sanitizer {
                 side: None,
                 sanitize: Some(self.name.clone()),
                 consts: serde_json::Map::new(),
+                directed: false,
             },
         }
     }

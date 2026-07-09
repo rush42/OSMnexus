@@ -79,7 +79,7 @@ pub fn build_topic_rows(
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {
             for step in &runner.pre_cat_steps[..runner.exclude_check_at] {
-                step.apply(&mut tags, &runner.sanitizers, &runner.deriver_lib);
+                step.apply(&mut tags, None, "self", &runner.sanitizers, &runner.deriver_lib);
             }
         });
     }
@@ -96,7 +96,7 @@ pub fn build_topic_rows(
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {
             for step in &runner.pre_cat_steps[runner.exclude_check_at..] {
-                step.apply(&mut tags, &runner.sanitizers, &runner.deriver_lib);
+                step.apply(&mut tags, None, "self", &runner.sanitizers, &runner.deriver_lib);
             }
         });
     }
@@ -105,9 +105,31 @@ pub fn build_topic_rows(
     let no_transforms = Vec::new();
     let transformations = if kind == ElementKind::Way { &runner.transformations } else { &no_transforms };
     // Moves `tags` into the self object rather than cloning it (the common no-side-split case).
-    let transformed = crate::profile::time(&crate::profile::SIDESPLIT, || {
+    let mut transformed = crate::profile::time(&crate::profile::SIDESPLIT, || {
         get_transformed_objects(tags, transformations)
     });
+
+    // Per-object post-split steps (currently just `directed_keys`/`self_directed_keys`, ported
+    // from `split_sides`'s config into ordinary `PreCatStep`s): applied to each side object's own
+    // tags, using the self object's tags as `parent_tags` — still pre-categorization (it can
+    // influence which category a side object matches), just after cardinality is decided, since it
+    // needs each object's resolved `side` to pick `:forward`/`:backward`. `side_split` itself only
+    // ever does unnesting; this is what makes `directed_keys` an ordinary data-defined transform
+    // instead of bespoke logic living inside the split.
+    if let [self_obj, side_objs @ ..] = transformed.as_mut_slice() {
+        for obj in side_objs {
+            let side_str = match obj.side {
+                Side::Left => "left",
+                Side::Right => "right",
+                Side::Self_ => unreachable!("side objects are never Self_"),
+            };
+            let Some(transformation) = transformations.iter().find(|t| Some(t.prefix) == obj.prefix)
+            else { continue };
+            for step in transformation.directed_steps {
+                step.apply(&mut obj.tags, Some(&self_obj.tags), side_str, &runner.sanitizers, &runner.deriver_lib);
+            }
+        }
+    }
     let mut rows = Vec::new();
 
     for obj in &transformed {

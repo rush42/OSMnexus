@@ -122,6 +122,15 @@ pub enum Producer {
         /// Companion key/values this branch contributes when it produces the value; emitted as
         /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
         #[serde(default)] consts: Map<String, Value>,
+        /// Direction-sensitive read (needs `key`, ignores `keys`/`side`): resolves `key`'s
+        /// `:forward`/`:backward` variant from `ctx.obj_side` + the global left/right-hand-traffic
+        /// setting (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no
+        /// direction to resolve). `from: Parent` tries the bare key on the parent's tags, then its
+        /// directed variant; any other `from` tries only the directed variant on the object's own
+        /// tags (e.g. a tag already unnested as `traffic_sign:forward`). Used for `split_sides`'
+        /// `directed_keys`/`self_directed_keys` — the object-cardinality-changing split itself
+        /// stays native, but this per-key projection is an ordinary sided tag read.
+        #[serde(default)] directed: bool,
     },
 }
 
@@ -163,7 +172,32 @@ impl Producer {
                 other => { tracing::warn!("unknown deriver: {other}"); None }
             },
 
-            Producer::Extract { key, keys, from, side, sanitize, consts } => {
+            Producer::Extract { key, keys: _, from, side: _, sanitize, consts, directed: true } => {
+                let key = key.as_deref().expect("directed extract needs `key`");
+                if ctx.obj_tags.contains_key(key) {
+                    return None; // already set (e.g. by an earlier unnest) — don't override it
+                }
+                let suffix = match (ctx.obj_side, crate::traffic::is_left_hand_traffic()) {
+                    ("left", false) | ("right", true) => ":backward",
+                    ("right", false) | ("left", true) => ":forward",
+                    _ => return None, // "self": no direction to resolve
+                };
+                let directed_key = format!("{key}{suffix}");
+                let raw = match from {
+                    TagSet::Parent => {
+                        let tags = ctx.parent_tags?;
+                        sanitize::first_present(tags, [key, directed_key.as_str()])
+                    }
+                    _ => sanitize::first_present(ctx.obj_tags, [directed_key.as_str()]),
+                }?;
+                let value = match sanitize {
+                    Some(name) => ctx.sanitizers.apply(name, raw)?,
+                    None => Value::String(raw.to_owned()),
+                };
+                Some(Produced { value, consts: consts.clone() })
+            }
+
+            Producer::Extract { key, keys, from, side, sanitize, consts, directed: false } => {
                 let tags = from.resolve(ctx)?;
                 let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
                 let value = match sanitize {
@@ -258,5 +292,85 @@ mod classify_bool_tests {
         let derivers = HashMap::new();
         let producer = bool_producer(Filter::Bool(true), TagSet::Parent);
         assert!(producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod directed_extract_tests {
+    use super::*;
+
+    fn tags(pairs: &[(&str, &str)]) -> RawTags {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    fn ctx<'a>(
+        obj: &'a RawTags,
+        parent: Option<&'a RawTags>,
+        obj_side: &'a str,
+        sanitizers: &'a SanitizerRegistry,
+        derivers: &'a HashMap<String, Producer>,
+    ) -> ExtractCtx<'a> {
+        ExtractCtx { obj_tags: obj, parent_tags: parent, parking_inference: None, obj_side, sanitizers, derivers }
+    }
+
+    fn directed(key: &str, from: TagSet) -> Producer {
+        Producer::Extract {
+            key: Some(key.to_owned()), keys: None, from, side: None, sanitize: None,
+            consts: Map::new(), directed: true,
+        }
+    }
+
+    #[test]
+    fn parent_source_prefers_existing_obj_value() {
+        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let obj = tags(&[("cycleway:lanes", "existing")]);
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        let producer = directed("cycleway:lanes", TagSet::Parent);
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers)).is_none());
+    }
+
+    #[test]
+    fn parent_source_falls_back_to_bare_then_directed_key() {
+        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let obj = RawTags::default();
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        let producer = directed("cycleway:lanes", TagSet::Parent);
+        let produced = producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers)).unwrap();
+        assert_eq!(produced.value, Value::String("lane".to_owned()));
+
+        let obj = RawTags::default();
+        let parent = RawTags::default();
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers)).is_none());
+    }
+
+    #[test]
+    fn self_source_reads_from_obj_own_directed_key() {
+        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
+        let producer = directed("traffic_sign", TagSet::Obj);
+        let produced = producer.eval(&ctx(&obj, None, "right", &sanitizers, &derivers)).unwrap();
+        assert_eq!(produced.value, Value::String("DE:1022-10".to_owned()));
+    }
+
+    #[test]
+    fn noop_for_self_side() {
+        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let obj = RawTags::default();
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        let producer = directed("cycleway:lanes", TagSet::Parent);
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "self", &sanitizers, &derivers)).is_none());
+    }
+
+    #[test]
+    fn handedness_flips_suffix() {
+        let (sanitizers, derivers) = (SanitizerRegistry::new(HashMap::new()), HashMap::new());
+        let obj = RawTags::default();
+        let parent = tags(&[("cycleway:lanes:backward", "lane")]);
+        let producer = directed("cycleway:lanes", TagSet::Parent);
+        // Right-hand traffic (global default in tests): Side::Right reads `:forward`, not
+        // `:backward` — so this should NOT match.
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right", &sanitizers, &derivers)).is_none());
+        let produced = producer.eval(&ctx(&obj, Some(&parent), "left", &sanitizers, &derivers)).unwrap();
+        assert_eq!(produced.value, Value::String("lane".to_owned()));
     }
 }
