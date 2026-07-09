@@ -55,7 +55,9 @@ impl TagTransform {
     pub fn apply(&self, tags: &mut RawTags) {
         match self {
             TagTransform::Lifecycle => {
-                lifecycle::transform_lifecycle_tags(tags);
+                crate::profile::time(&crate::profile::LIFECYCLE, || {
+                    lifecycle::transform_lifecycle_tags(tags);
+                });
             }
 
             TagTransform::RenameKey { from, to, when_value } => {

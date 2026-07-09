@@ -2,28 +2,69 @@
 
 Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
 
-- **Decision tree / discrimination net for `categorize` — BUILT, MEASURED, REVERTED. Revisit only
-  if the scale changes (see trigger).** A field-branching tree (branch on `highway` etc. to a small
-  candidate leaf, then first-match the residual conditions) was fully implemented behind a
-  `--classifier tree|linear` flag, with a `--dump-category-tree` JSON dump and a differential test
-  vs linear. Recoverable at **commit `54c2c95b4`** (impl + flag + dump; the core is `f4825a817` /
-  `ef7b82246`); removed in `76675e7b8`. Sound pruning via three-valued (Kleene) eval of each node's
-  NNF condition — no DNF blowup — so guard predicates (`contains`/numeric/`sanitize`/parent-tag)
-  stay at leaves and correctness never depends on the tree being clever.
-  - **Why reverted:** ~5% wall on Brandenburg (and only on roads — 27 leaves, ~2.4 candidates/leaf;
+- **Decision tree / discrimination net for `categorize` — BUILT, MEASURED, LIVE (this note
+  previously said "reverted"; it wasn't — `cats.tree` is wired into `categorize` today via
+  `decision_tree::build` in `CategoriesFile::build_order`, `categories.rs`). Correcting the record
+  below; the historical measurement still stands.** A field-branching tree (branch on `highway` etc.
+  to a small candidate leaf, then first-match the residual conditions), with `categorize_linear` kept
+  as the unpruned reference for a differential test. Original impl at commit `54c2c95b4` (core
+  `f4825a817` / `ef7b82246`). Sound pruning via three-valued (Kleene) eval of each node's NNF
+  condition — no DNF blowup — so guard predicates (`contains`/numeric/`sanitize`/parent-tag) stay at
+  leaves and correctness never depends on the tree being clever.
+  - **Measured win:** ~5% wall on Brandenburg (and only on roads — 27 leaves, ~2.4 candidates/leaf;
     bikelanes degenerates to 141 leaves, ~11.5/leaf, because its distinctions are sanitized/
-    non-equality predicates that can't branch). Too little runtime win + too much clever code, and
-    the tree-as-docs read poorly for the same reason (huge guard-leaves).
-  - **Trigger to revisit:** the win scales with **category count** and **absence of the
-    `element_filter`**. If the topic/category set balloons (toward the full Lua set) or the explicit
-    filter is dropped (the tree subsumes it — unmatched ways fall to no-category leaves), linear
-    becomes O(categories × ways) on an unfiltered firehose and the tree becomes the obvious
+    non-equality predicates that can't branch). Small, but kept since it's cheap to keep.
+  - **Trigger to revisit further investment:** the win scales with **category count** and **absence
+    of the `element_filter`**. If the topic/category set balloons (toward the full Lua set) or the
+    explicit filter is dropped (the tree subsumes it — unmatched ways fall to no-category leaves),
+    linear becomes O(categories × ways) on an unfiltered firehose and the tree becomes the obvious
     structure, not over-engineering. ~5% is close to its *worst* case (pre-filtered, few categories).
   - **Bonus if revived:** the same tree makes the disjointness check O(leaves) instead of the current
     O(n²) pairwise-DNF (`overlap.rs` / `categories_are_disjoint`).
-  - **Lesson kept even though the code isn't:** the `element_filter` is emergent from the categories,
-    and bikelanes classification is *not* tag-value-shaped (so no tree/taxonomy diagram reads cleanly
-    for it) — to make bikelanes prune/plot well, expose an un-sanitized discriminator, not machinery.
+  - **Lesson:** the `element_filter` is emergent from the categories, and bikelanes classification is
+    *not* tag-value-shaped (so no tree/taxonomy diagram reads cleanly for it) — to make bikelanes
+    prune/plot well, expose an un-sanitized discriminator, not machinery.
+
+- **`RuleIndex` (hash-dispatch for `classify_rules`) — BUILT, MEASURED, NOT MERGED (parked on branch
+  `classify-rule-index`).** Same pruning idea as the decision tree above, but for the *other*
+  first-match-wins dispatcher: `classify::classifier::classify_rules` (the flat `{when, value}` rule
+  tables — `road.json`, topic `tag_rules`, `Producer::Classify`), not `categorize`'s category sets.
+  Groups rules by their necessary `tag == value` condition (`necessary_tag_eq`: unwraps `and`/`or`
+  when every branch agrees) into a `HashMap`, so only rules that could plausibly match a given
+  `highway` value get `eval_filter`'d.
+  - **Why not merged:** no measurable win on Brandenburg — `road.json` only has ~18 rules, so the
+    `HashMap` lookup + group indirection costs about as much as the branches it skips. Byte-identical
+    output confirmed; correctness isn't in question, just not worth the added indirection for tables
+    this small.
+  - **Trigger to revisit:** a rule table growing well past what `road.json` has today, the same way
+    the tree's trigger is category-count growth.
+
+- **Pass-C profiler breakdown (2026-07-09, Brandenburg, `PASS_C_PROFILE=1`) — no single bottleneck
+  left; costs are spread across ~7 buckets.** Added `LIFECYCLE`/`TAGCLONE`/`EXCLUDE`/`PRECAT`/
+  `SIDESPLIT` buckets to `profile.rs` (zero-cost when unset) to find out what's actually in the old
+  "other" bucket this file used to blame on `lifecycle`. It isn't: `lifecycle` is ~2% of `classify`
+  time. Roughly stable proportions across repeated runs: `sidesplit` ~18%, `extract` ~18%,
+  `categorize` ~17%, unaccounted (Vec/HashMap allocation, loop overhead) ~19%, `tagclone`
+  (`raw_tags.clone()` per topic per element) ~11%, `exclude` (`exclude_condition` eval) ~8%, `precat`
+  (sidepath-self + `tag_rules`) ~6%.
+  - **One real structural lead, investigated and rejected:** `tagclone`+`exclude`+`precat` (~25%
+    combined) all run *before* `exclude_condition` is checked — `TopicRunner::process` clones the
+    full tag map and runs `lifecycle` unconditionally, then `build_topic_rows` evaluates
+    `exclude_condition` and bails. Reordering (check exclude on raw tags first, clone only if kept)
+    was prototyped and measured: it does cut real work (`tagclone`'s share of `classify` roughly
+    halved, `lifecycle`'s too), **but it silently changes output** — on Brandenburg it dropped 931
+    `roads` rows + 113 `bikelanes` rows, all `highway=construction` + `construction=<allowed>` swaps
+    and access-restricted-but-rescued ways that only survive today because `lifecycle` runs *before*
+    `exclude_condition` (see `lifecycle.rs`'s construction swap and `remove_access_tags`). Reverted;
+    not safe as a plain reorder.
+    - **If ever revisited:** the real fix isn't reordering wholesale, it's a cheap raw-tag pre-check
+      that mirrors just the few conditions `lifecycle` can change (raw `highway=construction` +
+      `construction` value; raw `access=no`) — "could `lifecycle` rescue this way from exclusion?" —
+      and only takes the fast (no-clone) exclude path when the answer is no. Fiddly, correctness-
+      sensitive, not attempted.
+  - **Conclusion:** no more free lunch here. Next real win (if ever needed) requires either the
+    precheck above, or attacking the ~19% unaccounted allocation overhead directly (arena/reuse
+    buffers across topics), not another dispatch-pruning trick.
 
 - **Speed up / gate the `categories_are_disjoint` test.** It's ~57 s idle but the DNF conversion is
   exponential in condition size (a few big-condition categories dominate; the 78 non-excluding

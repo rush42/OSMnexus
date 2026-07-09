@@ -72,7 +72,10 @@ pub fn build_topic_rows(
 
     // Evaluate optional way-level exclude condition before any categorization.
     if let Some(cond) = &topic.exclude_condition {
-        if eval_filter(cond, &tags, &categories.macros, &runner.sanitizers) {
+        let excluded = crate::profile::time(&crate::profile::EXCLUDE, || {
+            eval_filter(cond, &tags, &categories.macros, &runner.sanitizers)
+        });
+        if excluded {
             return Vec::new();
         }
     }
@@ -80,21 +83,25 @@ pub fn build_topic_rows(
     // Sidepath self-unnest and tag_rules are way-oriented; nodes/relations never carry them.
     // Both run pre-categorization (unlike derivers) so they can influence which category matches.
     if kind == ElementKind::Way {
-        if !runner.sidepath_self_prefixes.is_empty() {
-            apply_sidepath_self(&mut tags, &runner.sidepath_self_prefixes);
-        }
-        for (output, rules) in &runner.tag_rules {
-            if let Some(v) = classify_rules(rules, &tags, &categories.macros, &runner.sanitizers) {
-                tags.insert(output.clone(), v);
+        crate::profile::time(&crate::profile::PRECAT, || {
+            if !runner.sidepath_self_prefixes.is_empty() {
+                apply_sidepath_self(&mut tags, &runner.sidepath_self_prefixes);
             }
-        }
+            for (output, rules) in &runner.tag_rules {
+                if let Some(v) = classify_rules(rules, &tags, &categories.macros, &runner.sanitizers) {
+                    tags.insert(output.clone(), v);
+                }
+            }
+        });
     }
 
     // Side-split (center-line) transforms are way-oriented; nodes/relations are never side-split.
     let no_transforms = Vec::new();
     let transformations = if kind == ElementKind::Way { &runner.transformations } else { &no_transforms };
     // Moves `tags` into the self object rather than cloning it (the common no-side-split case).
-    let transformed = get_transformed_objects(tags, transformations);
+    let transformed = crate::profile::time(&crate::profile::SIDESPLIT, || {
+        get_transformed_objects(tags, transformations)
+    });
     let mut rows = Vec::new();
 
     for obj in &transformed {

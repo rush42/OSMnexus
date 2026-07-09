@@ -301,7 +301,7 @@ impl TopicRunner {
         if !self.has_kind(kind) {
             return Vec::new();
         }
-        let mut tags = raw_tags.clone();
+        let mut tags = crate::profile::time(&crate::profile::TAGCLONE, || raw_tags.clone());
         if kind == ElementKind::Way {
             for t in &self.tag_transforms {
                 t.apply(&mut tags);
