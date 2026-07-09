@@ -160,10 +160,10 @@
     {
       "output": "is_directed",
       "source": {
-        "filter": {
-          "tag": "oneway",
-          "in": ["yes", "-1"]
-        }
+        "rules": [
+          { "when": { "tag": "oneway", "in": ["yes", "-1"] }, "value": true }
+        ],
+        "default": false
       }
     },
     {

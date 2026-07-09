@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::classify::filter::{eval_filter, MinzoomCase};
 use crate::classify::sanitize::SanitizerRegistry;
 use crate::classify::{derive, sanitize};
 use crate::osm::types::RawTags;
@@ -86,43 +85,33 @@ pub enum Producer {
         derive: String,
         #[serde(default)] out_side: Option<String>,
     },
-    /// A data-defined first-match-wins rule table (same engine as the `road` classifier).
-    /// `from` picks the tagset the rules read (obj by default, or the parent), and `consts` is the
-    /// provenance this branch contributes when it produces. Returns `None` when no rule matches —
-    /// letting a category const default or a later fallback branch supply the value.
+    /// A data-defined first-match-wins rule table (same engine as the `road` classifier). The
+    /// value of any matching rule (or `default`, if given) can be any JSON literal — a string
+    /// (category/tag classification), a number (e.g. `minzoom`), or a bool (e.g. a filter-driven
+    /// flag) — so this one variant subsumes what used to be separate `FilterZoom`/`FilterMatch`
+    /// producers. `from` picks the tagset the rules read (obj by default, or the parent), and
+    /// `consts` is the provenance this branch contributes when it produces. With no `default`,
+    /// returns `None` when no rule matches — letting a category const default or a later
+    /// fallback branch supply the value; must be tried before `Extract` below, since `rules` is
+    /// a required field and so unambiguously distinguishes it (`Extract`'s fields are all
+    /// optional, so it would otherwise match — and silently produce nothing — first).
+    ///
+    /// Limitation: rules only see raw obj/parent tags, not fields derived earlier in the same
+    /// pass.
     Classify {
         rules: Vec<crate::classify::classifier::Rule>,
+        #[serde(default)] default: Option<Value>,
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
     },
     /// Like `Classify`, but the rule table is a named shared classifier loaded from
     /// `topics/_shared/classifiers/<shared>.json` — lets topics reuse one table (e.g. the `road`
-    /// classification) without duplicating it. `from`/`consts` behave as in `Classify`.
+    /// classification) without duplicating it. `from`/`consts` behave as in `Classify`; the
+    /// shared table's own `default` (if any) applies.
     SharedClassify {
         shared: String,
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
-    },
-    /// A constant zoom, or first-matching-`Filter`-case zoom with a default — the `minzoom`
-    /// shape, reusing the same `Filter`/`eval_filter` engine as `Classify` (neutral, obj-only
-    /// context; no macro support, matching `Classify`'s existing limitation). Must be tried
-    /// before `Extract` below: `Extract`'s fields are all optional, so it would otherwise
-    /// match (and silently produce nothing) before `default`/`rules` ever get a look-in.
-    FilterZoom {
-        default: i32,
-        #[serde(default)] rules: Vec<MinzoomCase>,
-        #[serde(default)] from: TagSet,
-    },
-    /// A boolean field driven by a Filter condition — reuses the same `Filter`/`eval_filter`
-    /// engine as `exclude_condition`/category conditions/`FilterZoom`, but produces a plain
-    /// bool value instead of gating a whole object. `from` picks the tagset (obj by default,
-    /// or parent). Must be tried before `Extract` below, for the same reason as `FilterZoom`.
-    ///
-    /// Limitation: like `FilterZoom`/`Classify`, `eval_filter` only sees raw obj/parent tags,
-    /// not fields derived earlier in the same pass.
-    FilterMatch {
-        filter: crate::classify::filter::Filter,
-        #[serde(default)] from: TagSet,
     },
     Extract {
         #[serde(default)] key: Option<String>,
@@ -142,18 +131,19 @@ impl Producer {
             // First non-empty branch wins, carrying its own source/confidence.
             Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
 
-            Producer::Classify { rules, from, consts } => {
+            Producer::Classify { rules, default, from, consts } => {
                 let tags = from.resolve(ctx)?;
                 crate::classify::classifier::classify_rules(
                     rules, tags, &HashMap::new(), ctx.sanitizers,
-                ).map(|v| Produced { value: Value::String(v), consts: consts.clone() })
+                ).or_else(|| default.clone())
+                    .map(|value| Produced { value, consts: consts.clone() })
             }
 
             Producer::SharedClassify { shared, from, consts } => {
                 let tags = from.resolve(ctx)?;
                 crate::classify::classifier::shared_classifier(shared)
                     .classify(tags, &HashMap::new(), ctx.sanitizers)
-                    .map(|v| Produced { value: Value::String(v), consts: consts.clone() })
+                    .map(|value| Produced { value, consts: consts.clone() })
             }
 
             Producer::Derive { derive, out_side } => match derive.as_str() {
@@ -182,21 +172,6 @@ impl Producer {
                 };
                 Some(Produced { value, consts: consts.clone() })
             }
-
-            Producer::FilterZoom { default, rules, from } => {
-                let tags = from.resolve(ctx)?;
-                let zoom = rules
-                    .iter()
-                    .find(|case| eval_filter(&case.when, tags, &HashMap::new(), ctx.sanitizers))
-                    .map(|case| case.zoom)
-                    .unwrap_or(*default);
-                Some(Produced::bare(Value::Number(zoom.into())))
-            }
-
-            Producer::FilterMatch { filter, from } => {
-                let tags = from.resolve(ctx)?;
-                Some(Produced::bare(Value::Bool(eval_filter(filter, tags, &HashMap::new(), ctx.sanitizers))))
-            }
         }
     }
 }
@@ -224,8 +199,9 @@ fn read_raw<'a>(
 }
 
 #[cfg(test)]
-mod filter_match_tests {
+mod classify_bool_tests {
     use super::*;
+    use crate::classify::classifier::{Rule, ValueSpec};
     use crate::classify::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, sanitizers: &'a SanitizerRegistry, derivers: &'a HashMap<String, Producer>) -> ExtractCtx<'a> {
@@ -239,15 +215,25 @@ mod filter_match_tests {
         }
     }
 
+    /// A `Classify` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
+    fn bool_producer(filter: Filter, from: TagSet) -> Producer {
+        Producer::Classify {
+            rules: vec![Rule { when: filter, value: ValueSpec::Const(Value::Bool(true)) }],
+            default: Some(Value::Bool(false)),
+            from,
+            consts: Map::new(),
+        }
+    }
+
     #[test]
     fn matching_filter_produces_true() {
         let obj: RawTags = [("oneway".to_owned(), "yes".to_owned())].into_iter().collect();
         let sanitizers = SanitizerRegistry::new(HashMap::new());
         let derivers = HashMap::new();
-        let producer = Producer::FilterMatch {
-            filter: Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
-            from: TagSet::Obj,
-        };
+        let producer = bool_producer(
+            Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
+            TagSet::Obj,
+        );
         let produced = producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).unwrap();
         assert_eq!(produced.value, Value::Bool(true));
     }
@@ -257,10 +243,10 @@ mod filter_match_tests {
         let obj: RawTags = [("oneway".to_owned(), "no".to_owned())].into_iter().collect();
         let sanitizers = SanitizerRegistry::new(HashMap::new());
         let derivers = HashMap::new();
-        let producer = Producer::FilterMatch {
-            filter: Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
-            from: TagSet::Obj,
-        };
+        let producer = bool_producer(
+            Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
+            TagSet::Obj,
+        );
         let produced = producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).unwrap();
         assert_eq!(produced.value, Value::Bool(false));
     }
@@ -270,10 +256,7 @@ mod filter_match_tests {
         let obj = RawTags::default();
         let sanitizers = SanitizerRegistry::new(HashMap::new());
         let derivers = HashMap::new();
-        let producer = Producer::FilterMatch {
-            filter: Filter::Bool(true),
-            from: TagSet::Parent,
-        };
+        let producer = bool_producer(Filter::Bool(true), TagSet::Parent);
         assert!(producer.eval(&ctx(&obj, None, &sanitizers, &derivers)).is_none());
     }
 }

@@ -12,7 +12,7 @@
     "rules": [
       {
         "when": { "not": { "tag": "tracktype", "in": ["grade1", "grade2"] } },
-        "zoom": 11
+        "value": 11
       }
     ]
   }

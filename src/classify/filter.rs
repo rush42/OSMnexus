@@ -26,14 +26,6 @@ pub struct CategoryContext<'a> {
     pub sanitizers: &'a SanitizerRegistry,
 }
 
-/// One conditional case in a `Producer::FilterZoom` rule list: evaluated with the same `Filter`
-/// engine as every other producer, first match wins.
-#[derive(Debug, Clone, Deserialize)]
-pub struct MinzoomCase {
-    pub when: Filter,
-    pub zoom: i32,
-}
-
 /// Filter expression. Variants are tried in declaration order by serde's untagged deserializer,
 /// so more-specific variants (those with unique secondary fields) come before catch-alls.
 #[derive(Debug, Clone, Deserialize)]

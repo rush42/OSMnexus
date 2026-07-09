@@ -89,7 +89,10 @@ pub fn build_topic_rows(
             }
             for (output, rules) in &runner.tag_rules {
                 if let Some(v) = classify_rules(rules, &tags, &categories.macros, &runner.sanitizers) {
-                    tags.insert(output.clone(), v);
+                    let v = v.as_str().unwrap_or_else(|| {
+                        panic!("tag_rules for '{output}' produced a non-string value: {v}")
+                    });
+                    tags.insert(output.clone(), v.to_owned());
                 }
             }
         });

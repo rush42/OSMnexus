@@ -93,8 +93,9 @@ field/filter machinery as everything else — no bespoke expression language:
 
 - **`cost`** — a numeric field (an `osm_fields`/`sanitizers` entry, or a topic/category `consts`
   value), e.g. `{ "tag": "cost", "name": "parse_length", "in": ["width"] }`.
-- **`is_directed`** — a boolean field driven by a `Filter` condition (the `FilterMatch` producer),
-  e.g. `{ "output": "is_directed", "source": { "filter": { "tag": "oneway", "in": ["yes", "-1"] } } }`.
+- **`is_directed`** — a boolean field driven by a `Filter` condition (a `Classify` producer with a
+  single rule + `default`), e.g. `{ "output": "is_directed", "source": { "rules": [{ "when": {
+  "tag": "oneway", "in": ["yes", "-1"] }, "value": true }], "default": false } }`.
 
 Pass `--topic-edges <pgrouting|all>` and, as a post-load SQL step, any topic that defines `cost`
 gets a `{topic}_edge` table: `cost`/`reverse_cost` (pgRouting convention — `-1` means unusable in

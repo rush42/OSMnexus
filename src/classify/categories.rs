@@ -4,9 +4,9 @@ use serde::Deserialize;
 
 use crate::engine::topic::DeriverBinding;
 
-// Re-export the predicate/minzoom types + loaders so existing `classify::categories::*` import
+// Re-export the predicate types + loaders so existing `classify::categories::*` import
 // paths keep working after the split into `filter` and `loader`.
-pub use crate::classify::filter::{eval_filter, CategoryContext, Filter, MinzoomCase};
+pub use crate::classify::filter::{eval_filter, CategoryContext, Filter};
 pub use crate::classify::loader::{load_categories_dir, load_topic_categories, load_shared_macros};
 
 use crate::classify::decision_tree::{self, DecisionTree};
