@@ -252,43 +252,11 @@ pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
 
 // ── parse_length ──────────────────────────────────────────────────────────────
 
-/// Port of parse_length.lua. Converts OSM length strings to metres as f32.
-/// Handles: "2.5", "2.5 m", "250 cm", "2500 mm", "8 ft", "8'6\"", …
+/// Converts OSM length strings to metres. Handles: "2.5", "2.5 m", "250 cm", "2500 mm", "8 ft",
+/// "8'6\"", … — the general `parse_compound_unit` algorithm over the `"length"` unit table
+/// (`_shared/units.json`); no unit-specific logic lives here.
 pub fn parse_length(raw: &str) -> Option<f32> {
-    let s = raw.trim();
-    if s.is_empty() { return None; }
-
-    // feet/inches: 8'6" or 8'
-    if s.contains('\'') {
-        let parts: Vec<&str> = s.split('\'').collect();
-        let feet: f32 = parts[0].trim().parse().ok()?;
-        let inches: f32 = parts.get(1)
-            .map(|p| p.trim().trim_end_matches('"'))
-            .map(|p| if p.is_empty() { "0" } else { p })
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(0.0);
-        return Some((feet * 12.0 + inches) * 0.0254);
-    }
-
-    // strip unit suffix and scale
-    let (num_str, scale) = if let Some(n) = s.strip_suffix("km") {
-        (n.trim(), 1000.0_f32)
-    } else if let Some(n) = s.strip_suffix("cm") {
-        (n.trim(), 0.01_f32)
-    } else if let Some(n) = s.strip_suffix("mm") {
-        (n.trim(), 0.001_f32)
-    } else if let Some(n) = s.strip_suffix("ft") {
-        (n.trim(), 0.3048_f32)
-    } else if let Some(n) = s.strip_suffix(" m") {
-        (n.trim(), 1.0_f32)
-    } else if let Some(n) = s.strip_suffix('m') {
-        (n.trim(), 1.0_f32)
-    } else {
-        (s, 1.0_f32)
-    };
-
-    let v: f32 = num_str.replace(',', ".").parse().ok()?;
-    Some(v * scale)
+    crate::units::parse_compound_unit(raw, crate::units::unit_table("length"))
 }
 
 
