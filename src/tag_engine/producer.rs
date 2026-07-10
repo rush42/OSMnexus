@@ -173,6 +173,37 @@ pub enum Producer {
 }
 
 impl Producer {
+    /// Recursively expand every `Filter` this producer owns (`Classify`'s `rules[].when`,
+    /// `Cond`'s `cond`) against `macros` — see `Filter::expand`. Called once at load time on
+    /// every entry in a topic's deriver library and every `osm_fields`/`derivers`-bound `Field`.
+    /// `SharedClassify` is untouched: it only carries a name into the topic-independent shared
+    /// classifier library (`classifier::shared_classifier`), which has no topic macro namespace
+    /// to expand against — a shared classifier can't reference `{"macro": ...}`.
+    pub fn expand_macros(&self, macros: &HashMap<String, Filter>) -> anyhow::Result<Producer> {
+        Ok(match self {
+            Producer::Fallback { fallback } => Producer::Fallback {
+                fallback: fallback.iter().map(|p| p.expand_macros(macros)).collect::<anyhow::Result<_>>()?,
+            },
+            Producer::Classify { rules, default, from, consts } => Producer::Classify {
+                rules: rules.iter()
+                    .map(|r| Ok(crate::tag_engine::classifier::Rule {
+                        when: r.when.expand(macros)?,
+                        value: r.value.clone(),
+                    }))
+                    .collect::<anyhow::Result<_>>()?,
+                default: default.clone(),
+                from: *from,
+                consts: consts.clone(),
+            },
+            Producer::Cond { cond, then, r#else } => Producer::Cond {
+                cond: cond.expand(macros)?,
+                then: Box::new(then.expand_macros(macros)?),
+                r#else: r#else.as_ref().map(|p| p.expand_macros(macros)).transpose()?.map(Box::new),
+            },
+            other => other.clone(),
+        })
+    }
+
     pub fn eval(&self, ctx: &ExtractCtx, env: &Env) -> Option<Produced> {
         match self {
             // First non-empty branch wins, carrying its own source/confidence.

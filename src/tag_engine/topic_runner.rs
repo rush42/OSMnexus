@@ -4,6 +4,8 @@ use anyhow::Context;
 use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
+use crate::tag_engine::filter::Filter;
+use crate::tag_engine::loader::load_topic_macros;
 use crate::tag_engine::producer::{Env, ExtractCtx, Producer, TagSet};
 use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, SplitSidesSpec, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
@@ -189,19 +191,46 @@ impl TopicRunner {
     /// Load a topic from its directory `<config_root>/<name>/`.
     pub fn load(name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
         let base = crate::paths::config_root().join(name);
+        let shared_dir = base.parent().expect("topics/<name> has a parent").join("_shared");
 
-        let spec: TopicSpec = serde_json::from_str(
+        let mut spec: TopicSpec = serde_json::from_str(
             &std::fs::read_to_string(base.join("topic.json"))
                 .with_context(|| format!("reading topics/{name}/topic.json"))?,
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
+
+        // Every macro this topic can reference: shared (topics/_shared/macros/) plus the topic's
+        // own macros.json, topic-local winning on name conflict. Expanded once, here, against
+        // itself (so a macro referencing another macro resolves too) — every `Filter`/`Producer`
+        // this topic owns is then expanded against the *expanded* result below, so `eval` never
+        // does a live macro lookup and an unknown/cyclic macro is a load-time error, not a
+        // per-object runtime no-op (see `Filter::expand`).
+        let shared_macros = load_shared_macros(&shared_dir).with_context(|| "loading topics/_shared/")?;
+        let mut raw_macros = shared_macros;
+        for (k, v) in load_topic_macros(&base)? {
+            raw_macros.insert(k, v); // topic-local overrides shared
+        }
+        let macros: HashMap<String, Filter> = raw_macros.iter()
+            .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros)?)))
+            .collect::<anyhow::Result<_>>()
+            .with_context(|| format!("expanding macros for topics/{name}"))?;
+
+        if let Some(cond) = spec.exclude_condition.take() {
+            spec.exclude_condition = Some(cond.expand(&macros)
+                .with_context(|| format!("topics/{name}/topic.json: exclude_condition"))?);
+        }
+        for f in &mut spec.osm_fields {
+            f.source = f.source.expand_macros(&macros)
+                .with_context(|| format!("topics/{name}/topic.json: osm_fields.{}", f.output))?;
+        }
 
         // Sanitizers already deserialize straight into `Field` (see `Field`'s `Deserialize` impl) —
         // `{tag, name}` is just a terser JSON shorthand for the common single-`Extract`-with-
         // `sanitize` case, the same `Producer`-evaluation path as derivers. Folded into
         // `topic_derivers` below (not kept as a separate list) so a category can override a
         // sanitizer's output exactly the way it overrides a deriver's — same mechanism, no new
-        // JSON syntax needed.
+        // JSON syntax needed. (No macro expansion needed: this shorthand only ever desugars to a
+        // plain `Extract`, which carries no `Filter`.)
         let sanitizer_fields: Vec<Field> = spec.sanitizers.clone();
 
         // Load the data-defined atomic chains (named `sanitize` targets): shared
@@ -216,7 +245,6 @@ impl TopicRunner {
                 Ok(HashMap::new())
             }
         };
-        let shared_dir = base.parent().expect("topics/<name> has a parent").join("_shared");
         let mut sanitizers = read_named_producers(&shared_dir.join("sanitizers.json"))?;
         for (k, v) in read_named_producers(&base.join("sanitizers.json"))? {
             sanitizers.insert(k, v); // topic-local overrides shared
@@ -247,6 +275,17 @@ impl TopicRunner {
             deriver_lib.insert(k, v);
         }
 
+        // Expand every deriver's embedded macros now, before anything downstream (`resolve_bindings`,
+        // category overrides) clones entries out of this map — every clone then inherits the
+        // expansion for free.
+        let deriver_lib: HashMap<String, Producer> = deriver_lib.into_iter()
+            .map(|(k, v)| {
+                let expanded = v.expand_macros(&macros)
+                    .with_context(|| format!("topics/{name}: deriver '{k}'"))?;
+                Ok((k, expanded))
+            })
+            .collect::<anyhow::Result<_>>()?;
+
         // Resolve the topic-default deriver bindings (validates references), appended after the
         // sanitizer fields. A sanitizer and a topic-level deriver silently sharing an output would
         // mean the deriver wins with no visible signal *why* the sanitizer never took effect — so
@@ -271,13 +310,14 @@ impl TopicRunner {
         let mut categories = load_topic_categories(&base)
             .with_context(|| format!("loading topics/{name}/ categories"))?;
 
-        // Merge shared cross-topic macros (topics/_shared/) into each kind's macro namespace.
-        // Topic-local macros win on name conflict.
-        let shared_dir = base.parent().expect("topics/<name> has a parent").join("_shared");
-        let shared_macros = load_shared_macros(&shared_dir).with_context(|| "loading topics/_shared/")?;
+        // Every kind shares the one already-expanded macro map, and every category condition is
+        // expanded against it — `build_order`'s `Skip` sink conditions (`self.macros.get(name)
+        // .cloned()`) then pick up already-expanded `Filter`s for free.
         for cats in categories.values_mut() {
-            for (k, v) in &shared_macros {
-                cats.macros.entry(k.clone()).or_insert_with(|| v.clone());
+            cats.macros = macros.clone();
+            for cat in &mut cats.categories {
+                cat.condition = cat.condition.expand(&macros)
+                    .with_context(|| format!("topics/{name}: category '{}'", cat.id))?;
             }
             // Compile the exclude relation into a priority order + discrimination tree (needs macros
             // fully merged first). categorize() is then pure first-match over this — no runtime excludes.
@@ -323,7 +363,8 @@ impl TopicRunner {
                 ParamTransform::TagRules { output, source } => {
                     pre_cat_steps.push(PreCatStep::TagRule {
                         output: output.clone(),
-                        source: source.clone(),
+                        source: source.expand_macros(&macros)
+                            .with_context(|| format!("topics/{name}/topic.json: transforms.{output}"))?,
                     });
                 }
                 ParamTransform::StripPrefix {

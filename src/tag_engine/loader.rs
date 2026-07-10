@@ -44,6 +44,20 @@ fn read_macros(path: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
     }
 }
 
+/// Read a topic's own `macros.json` (`{ name: Filter }`) as `Filter` values directly, else an
+/// empty map. Distinct from `load_shared_macros` (cross-topic, `_shared/macros/*.json`, one file
+/// per macro name) — this is one file, holding every topic-local macro. Used to build the raw
+/// (pre-`Filter::expand`) macro map a topic's conditions/producers are expanded against.
+pub fn load_topic_macros(topic_dir: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
+    let path = topic_dir.join("macros.json");
+    if path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&path)?)
+            .with_context(|| format!("parsing {}", path.display()))
+    } else {
+        Ok(HashMap::new())
+    }
+}
+
 /// Load all `*.json` category files (sorted) in one kind subfolder into a `CategoriesFile`, seeding
 /// its macro namespace with `macros` (the topic-wide macros). The category `id` is the file stem.
 pub fn load_categories_dir(

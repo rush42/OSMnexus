@@ -27,7 +27,10 @@ pub enum Filter {
     And { and: Vec<Filter> },
     Or  { or:  Vec<Filter> },
     Not { not: Box<Filter> },
-    /// Reference to a named macro defined in `macros` or a Rust-implemented predicate.
+    /// Reference to a named macro defined in `macros.json`/`_shared/macros/`. Only exists
+    /// pre-`expand` — every `Filter` actually reached by `eval` has had every `Macro` node
+    /// substituted with its (recursively expanded) definition at load time (see `expand` below),
+    /// so `eval`'s own `Macro` arm should never fire in practice.
     Macro { r#macro: String },
 
     // Tag predicates — secondary field disambiguates (TagEq is the catch-all).
@@ -81,6 +84,45 @@ pub enum Filter {
     NumLte { num: String, #[serde(default)] sanitize: Option<String>, lte: f64 },
     NumGt  { num: String, #[serde(default)] sanitize: Option<String>, gt:  f64 },
     NumGte { num: String, #[serde(default)] sanitize: Option<String>, gte: f64 },
+}
+
+impl Filter {
+    /// Recursively replace every `Macro` node with its (recursively expanded) definition, so
+    /// `eval` never has to do a live macro lookup. Called once at load time on every `Filter` a
+    /// topic owns (category `condition`s, `exclude_condition`, and any `when`/`cond` embedded in
+    /// a `Producer` — see `Producer::expand_macros`) against `macros`, the topic's raw (also
+    /// possibly macro-referencing) macro definitions.
+    ///
+    /// Hard-errors on an undefined macro name or a cyclic macro definition (`A` referencing `B`
+    /// referencing `A`) rather than infinite-recursing — the same fail-fast-at-load philosophy as
+    /// `CategoriesFile::build_order`'s `excludes` cycle check.
+    pub fn expand(&self, macros: &HashMap<String, Filter>) -> anyhow::Result<Filter> {
+        self.expand_inner(macros, &mut Vec::new())
+    }
+
+    fn expand_inner(&self, macros: &HashMap<String, Filter>, stack: &mut Vec<String>) -> anyhow::Result<Filter> {
+        Ok(match self {
+            Filter::And { and } =>
+                Filter::And { and: and.iter().map(|f| f.expand_inner(macros, stack)).collect::<anyhow::Result<_>>()? },
+            Filter::Or { or } =>
+                Filter::Or { or: or.iter().map(|f| f.expand_inner(macros, stack)).collect::<anyhow::Result<_>>()? },
+            Filter::Not { not } =>
+                Filter::Not { not: Box::new(not.expand_inner(macros, stack)?) },
+            Filter::Macro { r#macro: name } => {
+                if stack.iter().any(|n| n == name) {
+                    stack.push(name.clone());
+                    anyhow::bail!("cyclic macro definition: {}", stack.join(" -> "));
+                }
+                let def = macros.get(name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown macro: '{name}'"))?;
+                stack.push(name.clone());
+                let expanded = def.expand_inner(macros, stack)?;
+                stack.pop();
+                expanded
+            }
+            other => other.clone(),
+        })
+    }
 }
 
 // ── Filter evaluator ──────────────────────────────────────────────────────────
