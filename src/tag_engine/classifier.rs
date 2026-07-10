@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::tag_engine::filter::{eval, Filter};
-use crate::tag_engine::producer::{Env, ExtractCtx};
+use crate::tag_engine::producer::ExtractCtx;
 
 /// The value a matching rule produces. `Const` holds any JSON literal (string, number, bool) so
 /// the same rule table can back string classifiers (category ids, `road`), numeric ones (zoom),
@@ -47,8 +47,8 @@ pub struct Classifier {
 
 impl Classifier {
     /// First matching rule's value, or the table's `default`, or `None` if neither is set.
-    pub fn classify(&self, ctx: &ExtractCtx, env: &Env) -> Option<Value> {
-        classify_rules(&self.rules, ctx, env).or_else(|| self.default.clone())
+    pub fn classify(&self, ctx: &ExtractCtx) -> Option<Value> {
+        classify_rules(&self.rules, ctx).or_else(|| self.default.clone())
     }
 }
 
@@ -58,9 +58,9 @@ impl Classifier {
 /// context shape category matching uses, so a rule's `when` can see side/prefix/infix/parent, not
 /// just raw tags. Does not apply a `default` — callers needing one (e.g. `Classifier::classify`,
 /// `Producer::Classify`) apply it themselves.
-pub fn classify_rules(rules: &[Rule], ctx: &ExtractCtx, env: &Env) -> Option<Value> {
+pub fn classify_rules(rules: &[Rule], ctx: &ExtractCtx) -> Option<Value> {
     for rule in rules {
-        if eval(&rule.when, ctx, env) {
+        if eval(&rule.when, ctx) {
             return match &rule.value {
                 ValueSpec::Const(v) => Some(v.clone()),
                 ValueSpec::Tag { tag } => ctx.obj_tags.get(tag).cloned().map(Value::String),

@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::CategoriesFile;
 use crate::tag_engine::filter::Filter;
+use crate::tag_engine::producer::AtomicChain;
 use crate::osm::types::ElementKind;
 
 /// Load a topic's per-kind category sets from its directory. Reads the optional topic-wide
@@ -86,6 +87,29 @@ pub fn load_categories_dir(
         ("categories".to_owned(), Value::Array(categories)),
     ]));
     Ok(serde_json::from_value(combined)?)
+}
+
+/// Load a topic's atomic sanitizer registry: shared (`_shared/sanitizers.json`) merged with the
+/// topic's own (`<topic>/sanitizers.json`), topic-local winning on name conflict. Self-contained —
+/// a `Step` never references another named sanitizer — so nothing here needs a resolution pass;
+/// only whatever references an entry by name (`sanitize:`) does.
+pub fn load_topic_sanitizers(
+    topic_dir: &std::path::Path,
+    shared_dir: &std::path::Path,
+) -> anyhow::Result<HashMap<String, AtomicChain>> {
+    let read = |path: &std::path::Path| -> anyhow::Result<HashMap<String, AtomicChain>> {
+        if path.exists() {
+            Ok(serde_json::from_str(&std::fs::read_to_string(path)?)
+                .with_context(|| format!("parsing {}", path.display()))?)
+        } else {
+            Ok(HashMap::new())
+        }
+    };
+    let mut sanitizers = read(&shared_dir.join("sanitizers.json"))?;
+    for (k, v) in read(&topic_dir.join("sanitizers.json"))? {
+        sanitizers.insert(k, v); // topic-local overrides shared
+    }
+    Ok(sanitizers)
 }
 
 /// Load shared, cross-topic macros from `topics/_shared/macros/<name>.json` (one Filter per

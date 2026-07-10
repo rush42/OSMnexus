@@ -561,7 +561,8 @@ mod tests {
         CategoriesFile, OrderedNode,
     };
     use crate::tag_engine::filter::Filter;
-    use crate::tag_engine::producer::{AtomicChain, Env, ExtractCtx, Producer};
+    use crate::tag_engine::loader::load_topic_sanitizers;
+    use crate::tag_engine::producer::ExtractCtx;
     use crate::lint::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use crate::osm::types::RawTags;
 
@@ -594,13 +595,10 @@ mod tests {
     /// object we can construct — the tree only drops provably-false nodes.
     #[test]
     fn tree_matches_linear() {
-        let sanitizers: HashMap<String, AtomicChain> = HashMap::new();
-        let derivers: HashMap<String, Producer> = HashMap::new();
-        let env = Env { sanitizers: &sanitizers, derivers: &derivers };
-
         for (topic, dir) in topic_category_dirs() {
           let shared = dir.parent().unwrap().join("_shared");
           let shared_macros = load_shared_macros(&shared).expect("shared macros");
+          let sanitizers = load_topic_sanitizers(&dir, &shared).expect("load sanitizers");
           for (kind, mut cats) in load_topic_categories(&dir).expect("load categories") {
             let topic = format!("{topic}/{}", kind.subdir());
             let mut raw_macros = shared_macros.clone();
@@ -608,12 +606,12 @@ mod tests {
                 raw_macros.insert(k.clone(), v.clone()); // topic-local overrides shared
             }
             let expanded: HashMap<String, Filter> = raw_macros.iter()
-                .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros)?)))
+                .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros, &sanitizers)?)))
                 .collect::<anyhow::Result<_>>()
                 .expect("expand macros");
             cats.macros = expanded.clone();
             for cat in &mut cats.categories {
-                cat.condition = cat.condition.expand(&expanded).expect("expand category condition");
+                cat.condition = cat.condition.expand(&expanded, &sanitizers).expect("expand category condition");
             }
             cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
 
@@ -660,8 +658,8 @@ mod tests {
                             prefix,
                             infix: None,
                         };
-                        let a = categorize(&ctx, &env, &cats).map(|c| c.id.clone());
-                        let b = categorize_linear(&ctx, &env, &cats).map(|c| c.id.clone());
+                        let a = categorize(&ctx, &cats).map(|c| c.id.clone());
+                        let b = categorize_linear(&ctx, &cats).map(|c| c.id.clone());
                         assert_eq!(
                             a, b,
                             "[{topic}] tree≠linear for highway={hw:?} other={other:?} side={side:?}"

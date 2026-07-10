@@ -11,7 +11,7 @@ pub use crate::tag_engine::loader::{load_categories_dir, load_topic_categories, 
 
 use crate::tag_engine::decision_tree::{self, DecisionTree};
 use crate::tag_engine::filter::eval;
-use crate::tag_engine::producer::{Env, ExtractCtx};
+use crate::tag_engine::producer::ExtractCtx;
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -136,12 +136,12 @@ impl CategoriesFile {
 /// first-match: the first node whose condition matches wins — a `Category` node is the answer,
 /// a `Skip` (disqualifier-macro) node means the object has no category. No `excludes` are
 /// evaluated at runtime; the ordering already encodes them (see `build_order`).
-pub fn categorize<'a>(ctx: &ExtractCtx, env: &Env, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
+pub fn categorize<'a>(ctx: &ExtractCtx, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
     // The discrimination net prunes the priority list to a small, order-preserving candidate set;
     // first-match `eval` over it is identical to the full walk (the tree only drops provably-false
     // nodes — see `decision_tree`).
     for &i in cats.tree.candidates(ctx) {
-        if let Some(hit) = eval_node(&cats.order[i], ctx, env, cats) {
+        if let Some(hit) = eval_node(&cats.order[i], ctx, cats) {
             return hit;
         }
     }
@@ -150,9 +150,9 @@ pub fn categorize<'a>(ctx: &ExtractCtx, env: &Env, cats: &'a CategoriesFile) -> 
 
 /// Full first-match walk over the whole `order`, bypassing the tree. Kept as the reference
 /// implementation for the differential test (`categorize` must agree with it for every object).
-pub fn categorize_linear<'a>(ctx: &ExtractCtx, env: &Env, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
+pub fn categorize_linear<'a>(ctx: &ExtractCtx, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
     for node in &cats.order {
-        if let Some(hit) = eval_node(node, ctx, env, cats) {
+        if let Some(hit) = eval_node(node, ctx, cats) {
             return hit;
         }
     }
@@ -160,21 +160,20 @@ pub fn categorize_linear<'a>(ctx: &ExtractCtx, env: &Env, cats: &'a CategoriesFi
 }
 
 /// Evaluate one order node against `ctx`. `Some(Some(cat))` = category matched (answer);
-/// `Some(None)` = disqualifier matched (no category); `None` = no match, continue. Assumes
-/// `env.macros` is this same `cats`'s macro map — true for the one real caller (`runner.rs`
-/// builds one `Env` per topic pass from the same `CategoriesFile`).
+/// `Some(None)` = disqualifier matched (no category); `None` = no match, continue. Both
+/// `cat.condition` and a `Skip`'s `condition` are already fully macro/sanitizer-resolved by load
+/// time (see `TopicRunner::load`), so `eval` needs nothing beyond `ctx`.
 fn eval_node<'a>(
     node: &OrderedNode,
     ctx: &ExtractCtx,
-    env: &Env,
     cats: &'a CategoriesFile,
 ) -> Option<Option<&'a CategoryDef>> {
     match node {
         OrderedNode::Category { idx } => {
             let cat = &cats.categories[*idx];
-            eval(&cat.condition, ctx, env).then_some(Some(cat))
+            eval(&cat.condition, ctx).then_some(Some(cat))
         }
-        OrderedNode::Skip { condition } => eval(condition, ctx, env).then_some(None),
+        OrderedNode::Skip { condition } => eval(condition, ctx).then_some(None),
     }
 }
 

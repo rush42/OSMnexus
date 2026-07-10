@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::{categorize, eval_filter};
-use crate::tag_engine::producer::{Env, ExtractCtx};
+use crate::tag_engine::producer::ExtractCtx;
 use crate::tag_engine::topic::Field;
 use crate::tag_engine::topic_runner::TopicRunner;
 use crate::osm::types::{ElementKind, OsmWay, RawTags};
@@ -25,12 +25,11 @@ use crate::tag_engine::transform::side_split::get_transformed_objects;
 fn eval_fields(
     fields: &[Field],
     ctx: &ExtractCtx,
-    env: &Env,
     map: &mut Map<String, Value>,
     written: &mut HashSet<String>,
 ) {
     for field in fields {
-        if let Some(p) = field.source.eval(ctx, env) {
+        if let Some(p) = field.source.eval(ctx) {
             map.insert(field.output.clone(), p.value);
             written.insert(field.output.clone());
             // Companion consts → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
@@ -77,20 +76,17 @@ pub fn build_topic_rows(
     // `exclude_condition`, since promoting a `cycleway:access=no`-style tag onto bare `access`
     // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
     // checks (which only ever saw the pre-unnest tags in the original pipeline).
-    // Topic-wide lookup tables — identical for every step/object below, so built once.
-    let env = Env { sanitizers: &runner.sanitizers, derivers: &runner.deriver_lib };
-
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {
             for step in &runner.pre_cat_steps[..runner.exclude_check_at] {
-                step.apply(&mut tags, None, "self", None, None, &env);
+                step.apply(&mut tags, None, "self", None, None);
             }
         });
     }
 
     if let Some(cond) = &topic.exclude_condition {
         let excluded = crate::profile::time(&crate::profile::EXCLUDE, || {
-            eval_filter(cond, &tags, &env)
+            eval_filter(cond, &tags)
         });
         if excluded {
             return Vec::new();
@@ -100,7 +96,7 @@ pub fn build_topic_rows(
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {
             for step in &runner.pre_cat_steps[runner.exclude_check_at..] {
-                step.apply(&mut tags, None, "self", None, None, &env);
+                step.apply(&mut tags, None, "self", None, None);
             }
         });
     }
@@ -130,7 +126,7 @@ pub fn build_topic_rows(
             let Some(transformation) = transformations.iter().find(|t| Some(t.prefix) == obj.prefix)
             else { continue };
             for step in transformation.directed_steps {
-                step.apply(&mut obj.tags, Some(&self_obj.tags), side_str, obj.prefix, obj.infix, &env);
+                step.apply(&mut obj.tags, Some(&self_obj.tags), side_str, obj.prefix, obj.infix);
             }
         }
     }
@@ -156,7 +152,7 @@ pub fn build_topic_rows(
             infix: obj.infix,
         };
 
-        let category = match crate::profile::time(&crate::profile::CATEGORIZE, || categorize(&ectx, &env, categories)) {
+        let category = match crate::profile::time(&crate::profile::CATEGORIZE, || categorize(&ectx, categories)) {
             Some(c) => c,
             None => continue,
         };
@@ -165,7 +161,7 @@ pub fn build_topic_rows(
 
         let mut osm = Map::new();
         let mut osm_written = HashSet::new();
-        eval_fields(&topic.osm_fields, &ectx, &env, &mut osm, &mut osm_written);
+        eval_fields(&topic.osm_fields, &ectx, &mut osm, &mut osm_written);
 
         // Sanitizer + deriver outputs share one column and one eval pass: `derivers` is
         // desugared-sanitizers-then-derivers (see `TopicRunner::topic_derivers`), from this
@@ -192,7 +188,7 @@ pub fn build_topic_rows(
             }
         }
         let mut written = HashSet::new();
-        eval_fields(derivers, &ectx, &env, &mut derived, &mut written);
+        eval_fields(derivers, &ectx, &mut derived, &mut written);
 
         // Emit bundled-const companions for entries still holding their const default (not
         // produced by a sanitizer/deriver): `<key>_<companion>` into `derived`, mirroring the

@@ -23,19 +23,58 @@ fn identity(raw: &str) -> Value {
     Value::String(raw.to_owned())
 }
 
-/// Resolve an `Extract`/`Filter` `sanitize` name against `sanitizers` and evaluate it against
-/// `raw`. `name: None` is the identity transform (always succeeds); `Some(name)` looks up a
-/// data-defined chain, falling back to the built-in registry (`apply_builtin`) when the name isn't
-/// found. A *named* sanitizer can still legitimately reject its input (e.g. an unrecognized
-/// `traffic_mode` value) — that `None` propagates as "this branch produced nothing," distinct from
-/// the always-succeeds identity case.
-pub fn resolve_sanitize(sanitizers: &HashMap<String, AtomicChain>, name: Option<&str>, raw: &str) -> Option<Value> {
-    match name {
+/// An `Extract`/`Filter` `sanitize` reference. `Name` is what raw JSON always deserializes into
+/// (tried first, so a plain string never lands in `Inline`); `resolve` (called once at load time,
+/// alongside `Filter::expand`/`Producer::expand_macros`) replaces it with the actual chain, so
+/// `eval` never does a registry lookup — same "resolve names once at load" treatment macros get.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum SanitizeRef {
+    Name(String),
+    Inline(AtomicChain),
+}
+
+impl SanitizeRef {
+    /// `name` not found in `sanitizers` falls back to a built-in alias (`Step::Builtin`, e.g.
+    /// `"parse_length"`) rather than erroring — mirrors the pre-inlining fallback
+    /// (`None => apply_builtin(name, raw)`). A truly unrecognized name still isn't caught until
+    /// `apply_builtin` runs (it has no load-time name registry of its own, just one built-in), so
+    /// it warns-and-drops per row rather than failing to load — the same looseness the built-in
+    /// fallback always had.
+    pub(crate) fn resolve(&self, sanitizers: &HashMap<String, AtomicChain>) -> anyhow::Result<SanitizeRef> {
+        match self {
+            SanitizeRef::Name(name) => Ok(SanitizeRef::Inline(match sanitizers.get(name) {
+                Some(chain) => chain.clone(),
+                None => AtomicChain::One(Step::Builtin(name.clone())),
+            })),
+            SanitizeRef::Inline(_) => Ok(self.clone()),
+        }
+    }
+
+    fn eval(&self, raw: &str) -> Option<Value> {
+        match self {
+            SanitizeRef::Inline(chain) => chain.eval(raw),
+            SanitizeRef::Name(name) => {
+                tracing::error!("unresolved sanitizer '{name}' reached eval — resolve should have run at load");
+                None
+            }
+        }
+    }
+}
+
+fn resolve_opt_sanitize(
+    sanitize: &Option<SanitizeRef>,
+    sanitizers: &HashMap<String, AtomicChain>,
+) -> anyhow::Result<Option<SanitizeRef>> {
+    sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()
+}
+
+/// Evaluate a resolved `sanitize` reference against `raw`. `None` is the identity transform
+/// (always succeeds) — see `SanitizeRef`.
+pub fn resolve_sanitize(sanitize: Option<&SanitizeRef>, raw: &str) -> Option<Value> {
+    match sanitize {
         None => Some(identity(raw)),
-        Some(name) => match sanitizers.get(name) {
-            Some(chain) => chain.eval(raw),
-            None => apply_builtin(name, raw),
-        },
+        Some(r) => r.eval(raw),
     }
 }
 
@@ -62,25 +101,6 @@ pub struct ExtractCtx<'a> {
     /// condition can, since they're evaluated with this same `ExtractCtx`.
     pub prefix: Option<&'a str>,
     pub infix: Option<&'a str>,
-}
-
-/// Topic-wide lookup tables, identical for every producer evaluated within one topic/pass — as
-/// opposed to `ExtractCtx`, which describes the one object currently being evaluated. Kept as a
-/// separate `Copy` param (rather than fields on `ExtractCtx`) so the two concerns — "where" vs.
-/// "what tools are available" — don't get tangled.
-///
-/// No `macros` field: every `Filter` the engine ever evaluates has had every `Macro` node
-/// substituted with its expanded definition at load time (`Filter::expand`/
-/// `Producer::expand_macros`, called once in `TopicRunner::load`) — macros are a load-time
-/// data-preprocessing concern, not a runtime lookup, so there's nothing here to carry them in.
-#[derive(Clone, Copy)]
-pub struct Env<'a> {
-    /// Atomic `&str -> Value` transforms (`sanitizers.json`, shared + topic-local). Resolved by
-    /// `sanitize:` names (`resolve_sanitize`, falling back to the built-in registry when absent).
-    pub sanitizers: &'a HashMap<String, AtomicChain>,
-    /// Composite, tag-selecting producers (`derivers.json`). Resolved by `derivers:` field
-    /// bindings (`TopicRunner`) — a composite producer can't reference another one by name.
-    pub derivers: &'a HashMap<String, Producer>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -139,8 +159,12 @@ pub enum Producer {
     },
     /// Like `Classify`, but the rule table is a named shared classifier loaded from
     /// `topics/_shared/classifiers/<shared>.json` — lets topics reuse one table (e.g. the `road`
-    /// classification) without duplicating it. `from`/`consts` behave as in `Classify`; the
-    /// shared table's own `default` (if any) applies.
+    /// classification) without duplicating it in every topic's own JSON. `from`/`consts` behave
+    /// as in `Classify`; the shared table's own `default` (if any) applies. Only exists
+    /// pre-`resolve`: inlined into an equivalent `Classify` at load time (small tables — a
+    /// handful of rules, referenced from a couple of topics — so cloning them per reference site
+    /// is cheap, and it means nothing at eval time distinguishes a shared table from a topic-local
+    /// one).
     SharedClassify {
         shared: String,
         #[serde(default)] from: TagSet,
@@ -162,7 +186,7 @@ pub enum Producer {
         #[serde(default)] keys: Option<Vec<String>>,
         #[serde(default)] from: TagSet,
         #[serde(default)] side: Option<String>,
-        #[serde(default)] sanitize: Option<String>,
+        #[serde(default)] sanitize: Option<SanitizeRef>,
         /// Companion key/values this branch contributes when it produces the value; emitted as
         /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
         #[serde(default)] consts: Map<String, Value>,
@@ -179,21 +203,24 @@ pub enum Producer {
 }
 
 impl Producer {
-    /// Recursively expand every `Filter` this producer owns (`Classify`'s `rules[].when`,
-    /// `Cond`'s `cond`) against `macros` — see `Filter::expand`. Called once at load time on
-    /// every entry in a topic's deriver library and every `osm_fields`/`derivers`-bound `Field`.
-    /// `SharedClassify` is untouched: it only carries a name into the topic-independent shared
-    /// classifier library (`classifier::shared_classifier`), which has no topic macro namespace
-    /// to expand against — a shared classifier can't reference `{"macro": ...}`.
-    pub fn expand_macros(&self, macros: &HashMap<String, Filter>) -> anyhow::Result<Producer> {
+    /// Resolve every named reference this producer (transitively) carries, once, at load time:
+    /// macros embedded in a `Classify`'s `rules[].when` or a `Cond`'s `cond` (`Filter::expand`),
+    /// `Extract`'s `sanitize:` (`SanitizeRef::resolve`), and `SharedClassify` (inlined into an
+    /// equivalent `Classify` — its rules go through the same macro/sanitize resolution as any
+    /// other `Classify`'s). After this, `eval` never does a registry lookup of any kind.
+    pub fn resolve(
+        &self,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, AtomicChain>,
+    ) -> anyhow::Result<Producer> {
         Ok(match self {
             Producer::Fallback { fallback } => Producer::Fallback {
-                fallback: fallback.iter().map(|p| p.expand_macros(macros)).collect::<anyhow::Result<_>>()?,
+                fallback: fallback.iter().map(|p| p.resolve(macros, sanitizers)).collect::<anyhow::Result<_>>()?,
             },
             Producer::Classify { rules, default, from, consts } => Producer::Classify {
                 rules: rules.iter()
                     .map(|r| Ok(crate::tag_engine::classifier::Rule {
-                        when: r.when.expand(macros)?,
+                        when: r.when.expand(macros, sanitizers)?,
                         value: r.value.clone(),
                     }))
                     .collect::<anyhow::Result<_>>()?,
@@ -201,43 +228,68 @@ impl Producer {
                 from: *from,
                 consts: consts.clone(),
             },
+            Producer::SharedClassify { shared, from, consts } => {
+                let classifier = crate::tag_engine::classifier::shared_classifier(shared);
+                let rules = classifier.rules.iter()
+                    .map(|r| Ok(crate::tag_engine::classifier::Rule {
+                        when: r.when.expand(macros, sanitizers)?,
+                        value: r.value.clone(),
+                    }))
+                    .collect::<anyhow::Result<_>>()?;
+                Producer::Classify {
+                    rules,
+                    default: classifier.default.clone(),
+                    from: *from,
+                    consts: consts.clone(),
+                }
+            }
             Producer::Cond { cond, then, r#else } => Producer::Cond {
-                cond: cond.expand(macros)?,
-                then: Box::new(then.expand_macros(macros)?),
-                r#else: r#else.as_ref().map(|p| p.expand_macros(macros)).transpose()?.map(Box::new),
+                cond: cond.expand(macros, sanitizers)?,
+                then: Box::new(then.resolve(macros, sanitizers)?),
+                r#else: r#else.as_ref().map(|p| p.resolve(macros, sanitizers)).transpose()?.map(Box::new),
             },
-            other => other.clone(),
+            Producer::Extract { key, keys, from, side, sanitize, consts, directed } => Producer::Extract {
+                key: key.clone(),
+                keys: keys.clone(),
+                from: *from,
+                side: side.clone(),
+                sanitize: resolve_opt_sanitize(sanitize, sanitizers)?,
+                consts: consts.clone(),
+                directed: *directed,
+            },
         })
     }
 
-    pub fn eval(&self, ctx: &ExtractCtx, env: &Env) -> Option<Produced> {
+    pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
             // First non-empty branch wins, carrying its own source/confidence.
-            Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx, env)),
+            Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
 
             Producer::Classify { rules, default, from, consts } => {
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
                 rctx.obj_tags = tags;
-                crate::tag_engine::classifier::classify_rules(rules, &rctx, env)
+                crate::tag_engine::classifier::classify_rules(rules, &rctx)
                     .or_else(|| default.clone())
                     .map(|value| Produced { value, consts: consts.clone() })
             }
 
+            // Only reachable if `resolve` (which inlines this into `Classify`) was skipped —
+            // kept working defensively rather than panicking.
             Producer::SharedClassify { shared, from, consts } => {
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
                 rctx.obj_tags = tags;
                 crate::tag_engine::classifier::shared_classifier(shared)
-                    .classify(&rctx, env)
+                    .classify(&rctx)
                     .map(|value| Produced { value, consts: consts.clone() })
             }
 
             Producer::Cond { cond, then, r#else } => {
-                if crate::tag_engine::filter::eval(cond, ctx, env) {
-                    then.eval(ctx, env)
+                if crate::tag_engine::filter::eval(cond, ctx) {
+                    then.eval(ctx)
                 } else {
-                    r#else.as_ref().and_then(|p| p.eval(ctx, env))
+                    r#else.as_ref().and_then(|p| p.eval(ctx))
                 }
             }
 
@@ -259,14 +311,14 @@ impl Producer {
                     }
                     _ => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
                 }?;
-                let value = resolve_sanitize(env.sanitizers, sanitize.as_deref(), raw)?;
+                let value = resolve_sanitize(sanitize.as_ref(), raw)?;
                 Some(Produced { value, consts: consts.clone() })
             }
 
             Producer::Extract { key, keys, from, side, sanitize, consts, directed: false } => {
                 let tags = from.resolve(ctx)?;
                 let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
-                let value = resolve_sanitize(env.sanitizers, sanitize.as_deref(), raw)?;
+                let value = resolve_sanitize(sanitize.as_ref(), raw)?;
                 Some(Produced { value, consts: consts.clone() })
             }
         }
@@ -493,13 +545,6 @@ mod classify_bool_tests {
         }
     }
 
-    fn env<'a>(
-        sanitizers: &'a HashMap<String, AtomicChain>,
-        derivers: &'a HashMap<String, Producer>,
-    ) -> Env<'a> {
-        Env { sanitizers, derivers }
-    }
-
     /// A `Classify` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
     fn bool_producer(filter: Filter, from: TagSet) -> Producer {
         Producer::Classify {
@@ -513,33 +558,30 @@ mod classify_bool_tests {
     #[test]
     fn matching_filter_produces_true() {
         let obj: RawTags = [("oneway".to_owned(), "yes".to_owned())].into_iter().collect();
-        let (sanitizers, derivers) = (HashMap::new(), HashMap::new());
         let producer = bool_producer(
             Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
             TagSet::Obj,
         );
-        let produced = producer.eval(&ctx(&obj, None), &env(&sanitizers, &derivers)).unwrap();
+        let produced = producer.eval(&ctx(&obj, None)).unwrap();
         assert_eq!(produced.value, Value::Bool(true));
     }
 
     #[test]
     fn non_matching_filter_produces_false() {
         let obj: RawTags = [("oneway".to_owned(), "no".to_owned())].into_iter().collect();
-        let (sanitizers, derivers) = (HashMap::new(), HashMap::new());
         let producer = bool_producer(
             Filter::TagEq { tag: "oneway".to_owned(), eq: "yes".to_owned(), sanitize: None },
             TagSet::Obj,
         );
-        let produced = producer.eval(&ctx(&obj, None), &env(&sanitizers, &derivers)).unwrap();
+        let produced = producer.eval(&ctx(&obj, None)).unwrap();
         assert_eq!(produced.value, Value::Bool(false));
     }
 
     #[test]
     fn missing_tagset_produces_none() {
         let obj = RawTags::default();
-        let (sanitizers, derivers) = (HashMap::new(), HashMap::new());
         let producer = bool_producer(Filter::Bool(true), TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, None), &env(&sanitizers, &derivers)).is_none());
+        assert!(producer.eval(&ctx(&obj, None)).is_none());
     }
 }
 
@@ -558,13 +600,6 @@ mod directed_extract_tests {
         }
     }
 
-    fn env<'a>(
-        sanitizers: &'a HashMap<String, AtomicChain>,
-        derivers: &'a HashMap<String, Producer>,
-    ) -> Env<'a> {
-        Env { sanitizers, derivers }
-    }
-
     fn directed(key: &str, from: TagSet) -> Producer {
         Producer::Extract {
             key: Some(key.to_owned()), keys: None, from, side: None, sanitize: None,
@@ -574,55 +609,50 @@ mod directed_extract_tests {
 
     #[test]
     fn parent_source_prefers_existing_obj_value() {
-        let (sanitizers, derivers) = (HashMap::new(), HashMap::new());
         let obj = tags(&[("cycleway:lanes", "existing")]);
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right"), &env(&sanitizers, &derivers)).is_none());
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right")).is_none());
     }
 
     #[test]
     fn parent_source_falls_back_to_bare_then_directed_key() {
-        let (sanitizers, derivers) = (HashMap::new(), HashMap::new());
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        let produced = producer.eval(&ctx(&obj, Some(&parent), "right"), &env(&sanitizers, &derivers)).unwrap();
+        let produced = producer.eval(&ctx(&obj, Some(&parent), "right")).unwrap();
         assert_eq!(produced.value, Value::String("lane".to_owned()));
 
         let obj = RawTags::default();
         let parent = RawTags::default();
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right"), &env(&sanitizers, &derivers)).is_none());
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right")).is_none());
     }
 
     #[test]
     fn self_source_reads_from_obj_own_directed_key() {
-        let (sanitizers, derivers) = (HashMap::new(), HashMap::new());
         let obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
         let producer = directed("traffic_sign", TagSet::Obj);
-        let produced = producer.eval(&ctx(&obj, None, "right"), &env(&sanitizers, &derivers)).unwrap();
+        let produced = producer.eval(&ctx(&obj, None, "right")).unwrap();
         assert_eq!(produced.value, Value::String("DE:1022-10".to_owned()));
     }
 
     #[test]
     fn noop_for_self_side() {
-        let (sanitizers, derivers) = (HashMap::new(), HashMap::new());
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "self"), &env(&sanitizers, &derivers)).is_none());
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "self")).is_none());
     }
 
     #[test]
     fn handedness_flips_suffix() {
-        let (sanitizers, derivers) = (HashMap::new(), HashMap::new());
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:backward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
         // Right-hand traffic (global default in tests): Side::Right reads `:forward`, not
         // `:backward` — so this should NOT match.
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right"), &env(&sanitizers, &derivers)).is_none());
-        let produced = producer.eval(&ctx(&obj, Some(&parent), "left"), &env(&sanitizers, &derivers)).unwrap();
+        assert!(producer.eval(&ctx(&obj, Some(&parent), "right")).is_none());
+        let produced = producer.eval(&ctx(&obj, Some(&parent), "left")).unwrap();
         assert_eq!(produced.value, Value::String("lane".to_owned()));
     }
 }

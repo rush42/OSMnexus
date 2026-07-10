@@ -200,7 +200,7 @@ impl<'de> serde::Deserialize<'de> for Field {
                     keys: Some(in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![tag])),
                     from,
                     side: None,
-                    sanitize: Some(name),
+                    sanitize: Some(crate::tag_engine::producer::SanitizeRef::Name(name)),
                     consts: serde_json::Map::new(),
                     directed: false,
                 },

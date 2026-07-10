@@ -1,15 +1,16 @@
-//! The `Filter` predicate AST and its evaluator. Shares its context/lookup-table pair
-//! (`ExtractCtx`/`Env`, both in `producer.rs`) with `Producer::eval` — a predicate is just another
-//! "(object state, lookup tables) → output" evaluator, output `bool` instead of `Option<Value>`.
-//! The category *data model* and the priority-order compiler live in `categories`; this module is
-//! purely "given a context, does a predicate hold".
+//! The `Filter` predicate AST and its evaluator. Shares its context (`ExtractCtx`, in
+//! `producer.rs`) with `Producer::eval` — a predicate is just another "object state → output"
+//! evaluator, output `bool` instead of `Option<Value>`. Neither needs any lookup table at eval
+//! time: every named reference a `Filter` can carry (`Macro`, `sanitize:`) is resolved once at
+//! load time (`expand`) before `eval` ever runs. The category *data model* and the priority-order
+//! compiler live in `categories`; this module is purely "given a context, does a predicate hold".
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 
 use crate::tag_engine::keys::first_present;
-use crate::tag_engine::producer::{resolve_sanitize, AtomicChain, Env, ExtractCtx};
+use crate::tag_engine::producer::{resolve_sanitize, AtomicChain, ExtractCtx, SanitizeRef};
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
 
@@ -39,7 +40,7 @@ pub enum Filter {
     // as absent → false), mirroring the `num` predicate's `sanitize`.
     /// Membership in a named set from `_shared/value_sets.json` (keeps long value lists in data).
     TagInSet     { tag: String, in_set:      String      },
-    TagIn        { tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<String> },
+    TagIn        { tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<SanitizeRef> },
     /// `case_insensitive` lower-cases both the tag value and `contains` before comparing — use it
     /// for free-text fields (notes/descriptions) where casing isn't meaningful. `contains` should
     /// already be written lowercase in JSON when this is set (only the tag value is lower-cased
@@ -48,24 +49,24 @@ pub enum Filter {
     TagStartsWith{ tag: String, starts_with: String      },
     TagEndsWith  { tag: String, ends_with:   String      },
     TagExists    { tag: String, exists:      bool        },
-    TagEq        { tag: String, eq:          String,      #[serde(default)] sanitize: Option<String> },
+    TagEq        { tag: String, eq:          String,      #[serde(default)] sanitize: Option<SanitizeRef> },
 
     // "First matching tag from a list" — tries each key in order, uses the first that exists.
     /// First-present sibling of `TagInSet`; also honours an optional `sanitize` chain.
-    FirstTagInSet { first_tag: Vec<String>, in_set: String, #[serde(default)] sanitize: Option<String> },
-    FirstTagIn   { first_tag: Vec<String>, r#in:     Vec<String>, #[serde(default)] sanitize: Option<String> },
+    FirstTagInSet { first_tag: Vec<String>, in_set: String, #[serde(default)] sanitize: Option<SanitizeRef> },
+    FirstTagIn   { first_tag: Vec<String>, r#in:     Vec<String>, #[serde(default)] sanitize: Option<SanitizeRef> },
     /// With `sanitize` set, "exists" means "the first-present candidate's value survives that
     /// sanitizer" (e.g. an unrecognized/garbage tag value counts as absent), not mere raw key
     /// presence — matching how a sided producer read (`first_present` + `sanitize`) decides
     /// whether it produced anything.
-    FirstTagExists { first_tag: Vec<String>, exists: bool, #[serde(default)] sanitize: Option<String> },
+    FirstTagExists { first_tag: Vec<String>, exists: bool, #[serde(default)] sanitize: Option<SanitizeRef> },
 
     // Parent tag predicates
-    ParentTagIn        { parent_tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<String> },
+    ParentTagIn        { parent_tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<SanitizeRef> },
     ParentTagContains  { parent_tag: String, contains:    String      },
     ParentTagStartsWith{ parent_tag: String, starts_with: String      },
     ParentTagEndsWith  { parent_tag: String, ends_with:   String      },
-    ParentTagEq        { parent_tag: String, eq:          String,      #[serde(default)] sanitize: Option<String> },
+    ParentTagEq        { parent_tag: String, eq:          String,      #[serde(default)] sanitize: Option<SanitizeRef> },
 
     // Context predicates
     Side      { side:       String },   // "self" | "left" | "right"
@@ -80,34 +81,48 @@ pub enum Filter {
     // unparseable input makes the comparison false. The secondary field (lt/lte/gt/gte) is the op.
     // Geometry-derived values (length, area, …) are NOT available here — classification is
     // tag-only; length-based filtering is deferred to the geometry/graph stage.
-    NumLt  { num: String, #[serde(default)] sanitize: Option<String>, lt:  f64 },
-    NumLte { num: String, #[serde(default)] sanitize: Option<String>, lte: f64 },
-    NumGt  { num: String, #[serde(default)] sanitize: Option<String>, gt:  f64 },
-    NumGte { num: String, #[serde(default)] sanitize: Option<String>, gte: f64 },
+    NumLt  { num: String, #[serde(default)] sanitize: Option<SanitizeRef>, lt:  f64 },
+    NumLte { num: String, #[serde(default)] sanitize: Option<SanitizeRef>, lte: f64 },
+    NumGt  { num: String, #[serde(default)] sanitize: Option<SanitizeRef>, gt:  f64 },
+    NumGte { num: String, #[serde(default)] sanitize: Option<SanitizeRef>, gte: f64 },
 }
 
 impl Filter {
-    /// Recursively replace every `Macro` node with its (recursively expanded) definition, so
-    /// `eval` never has to do a live macro lookup. Called once at load time on every `Filter` a
-    /// topic owns (category `condition`s, `exclude_condition`, and any `when`/`cond` embedded in
-    /// a `Producer` — see `Producer::expand_macros`) against `macros`, the topic's raw (also
-    /// possibly macro-referencing) macro definitions.
+    /// Recursively resolve every named reference this `Filter` (transitively) carries — `Macro`
+    /// nodes (replaced by their expanded definition) and every `sanitize:` reference (resolved
+    /// against `sanitizers`, `SanitizeRef::resolve`) — so `eval` never does a registry lookup of
+    /// any kind. Called once at load time on every `Filter` a topic owns (category `condition`s,
+    /// `exclude_condition`, and any `when`/`cond` embedded in a `Producer` — see
+    /// `Producer::resolve`) against `macros`, the topic's raw (also possibly macro-referencing)
+    /// macro definitions.
     ///
-    /// Hard-errors on an undefined macro name or a cyclic macro definition (`A` referencing `B`
-    /// referencing `A`) rather than infinite-recursing — the same fail-fast-at-load philosophy as
-    /// `CategoriesFile::build_order`'s `excludes` cycle check.
-    pub fn expand(&self, macros: &HashMap<String, Filter>) -> anyhow::Result<Filter> {
-        self.expand_inner(macros, &mut Vec::new())
+    /// Hard-errors on an undefined macro/sanitizer name or a cyclic macro definition (`A`
+    /// referencing `B` referencing `A`) rather than infinite-recursing — the same
+    /// fail-fast-at-load philosophy as `CategoriesFile::build_order`'s `excludes` cycle check.
+    pub fn expand(
+        &self,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, AtomicChain>,
+    ) -> anyhow::Result<Filter> {
+        self.expand_inner(macros, sanitizers, &mut Vec::new())
     }
 
-    fn expand_inner(&self, macros: &HashMap<String, Filter>, stack: &mut Vec<String>) -> anyhow::Result<Filter> {
+    fn expand_inner(
+        &self,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, AtomicChain>,
+        stack: &mut Vec<String>,
+    ) -> anyhow::Result<Filter> {
+        let resolve = |s: &Option<SanitizeRef>| -> anyhow::Result<Option<SanitizeRef>> {
+            s.as_ref().map(|r| r.resolve(sanitizers)).transpose()
+        };
         Ok(match self {
             Filter::And { and } =>
-                Filter::And { and: and.iter().map(|f| f.expand_inner(macros, stack)).collect::<anyhow::Result<_>>()? },
+                Filter::And { and: and.iter().map(|f| f.expand_inner(macros, sanitizers, stack)).collect::<anyhow::Result<_>>()? },
             Filter::Or { or } =>
-                Filter::Or { or: or.iter().map(|f| f.expand_inner(macros, stack)).collect::<anyhow::Result<_>>()? },
+                Filter::Or { or: or.iter().map(|f| f.expand_inner(macros, sanitizers, stack)).collect::<anyhow::Result<_>>()? },
             Filter::Not { not } =>
-                Filter::Not { not: Box::new(not.expand_inner(macros, stack)?) },
+                Filter::Not { not: Box::new(not.expand_inner(macros, sanitizers, stack)?) },
             Filter::Macro { r#macro: name } => {
                 if stack.iter().any(|n| n == name) {
                     stack.push(name.clone());
@@ -116,40 +131,83 @@ impl Filter {
                 let def = macros.get(name)
                     .ok_or_else(|| anyhow::anyhow!("unknown macro: '{name}'"))?;
                 stack.push(name.clone());
-                let expanded = def.expand_inner(macros, stack)?;
+                let expanded = def.expand_inner(macros, sanitizers, stack)?;
                 stack.pop();
                 expanded
             }
-            other => other.clone(),
+            Filter::Bool(b) => Filter::Bool(*b),
+            Filter::TagInSet { tag, in_set } =>
+                Filter::TagInSet { tag: tag.clone(), in_set: in_set.clone() },
+            Filter::TagIn { tag, r#in, sanitize } =>
+                Filter::TagIn { tag: tag.clone(), r#in: r#in.clone(), sanitize: resolve(sanitize)? },
+            Filter::TagContains { tag, contains, case_insensitive } =>
+                Filter::TagContains { tag: tag.clone(), contains: contains.clone(), case_insensitive: *case_insensitive },
+            Filter::TagStartsWith { tag, starts_with } =>
+                Filter::TagStartsWith { tag: tag.clone(), starts_with: starts_with.clone() },
+            Filter::TagEndsWith { tag, ends_with } =>
+                Filter::TagEndsWith { tag: tag.clone(), ends_with: ends_with.clone() },
+            Filter::TagExists { tag, exists } =>
+                Filter::TagExists { tag: tag.clone(), exists: *exists },
+            Filter::TagEq { tag, eq, sanitize } =>
+                Filter::TagEq { tag: tag.clone(), eq: eq.clone(), sanitize: resolve(sanitize)? },
+            Filter::FirstTagInSet { first_tag, in_set, sanitize } =>
+                Filter::FirstTagInSet { first_tag: first_tag.clone(), in_set: in_set.clone(), sanitize: resolve(sanitize)? },
+            Filter::FirstTagIn { first_tag, r#in, sanitize } =>
+                Filter::FirstTagIn { first_tag: first_tag.clone(), r#in: r#in.clone(), sanitize: resolve(sanitize)? },
+            Filter::FirstTagExists { first_tag, exists, sanitize } =>
+                Filter::FirstTagExists { first_tag: first_tag.clone(), exists: *exists, sanitize: resolve(sanitize)? },
+            Filter::ParentTagIn { parent_tag, r#in, sanitize } =>
+                Filter::ParentTagIn { parent_tag: parent_tag.clone(), r#in: r#in.clone(), sanitize: resolve(sanitize)? },
+            Filter::ParentTagContains { parent_tag, contains } =>
+                Filter::ParentTagContains { parent_tag: parent_tag.clone(), contains: contains.clone() },
+            Filter::ParentTagStartsWith { parent_tag, starts_with } =>
+                Filter::ParentTagStartsWith { parent_tag: parent_tag.clone(), starts_with: starts_with.clone() },
+            Filter::ParentTagEndsWith { parent_tag, ends_with } =>
+                Filter::ParentTagEndsWith { parent_tag: parent_tag.clone(), ends_with: ends_with.clone() },
+            Filter::ParentTagEq { parent_tag, eq, sanitize } =>
+                Filter::ParentTagEq { parent_tag: parent_tag.clone(), eq: eq.clone(), sanitize: resolve(sanitize)? },
+            Filter::Side { side } => Filter::Side { side: side.clone() },
+            Filter::Prefix { prefix } => Filter::Prefix { prefix: prefix.clone() },
+            Filter::Infix { infix } => Filter::Infix { infix: infix.clone() },
+            Filter::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix: has_key_prefix.clone() },
+            Filter::HasParent { has_parent } => Filter::HasParent { has_parent: *has_parent },
+            Filter::NumLt { num, sanitize, lt } =>
+                Filter::NumLt { num: num.clone(), sanitize: resolve(sanitize)?, lt: *lt },
+            Filter::NumLte { num, sanitize, lte } =>
+                Filter::NumLte { num: num.clone(), sanitize: resolve(sanitize)?, lte: *lte },
+            Filter::NumGt { num, sanitize, gt } =>
+                Filter::NumGt { num: num.clone(), sanitize: resolve(sanitize)?, gt: *gt },
+            Filter::NumGte { num, sanitize, gte } =>
+                Filter::NumGte { num: num.clone(), sanitize: resolve(sanitize)?, gte: *gte },
         })
     }
 }
 
 // ── Filter evaluator ──────────────────────────────────────────────────────────
 
-/// Evaluate `filter` against `ctx`/`env`. Shared by categorization and the way-level exclude check
+/// Evaluate `filter` against `ctx`. Shared by categorization and the way-level exclude check
 /// (`eval_filter`, which builds a neutral `ctx`).
-pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx, env: &Env) -> bool {
+pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
     match filter {
         Filter::Bool(b) => *b,
-        Filter::And { and } => and.iter().all(|f| eval(f, ctx, env)),
-        Filter::Or  { or  } => or.iter().any(|f| eval(f, ctx, env)),
-        Filter::Not { not } => !eval(not, ctx, env),
+        Filter::And { and } => and.iter().all(|f| eval(f, ctx)),
+        Filter::Or  { or  } => or.iter().any(|f| eval(f, ctx)),
+        Filter::Not { not } => !eval(not, ctx),
 
         // Macros are expanded away at load time (`Filter::expand`) — a live tree should never
-        // contain one; `Env` doesn't even carry a macro table to resolve this against.
+        // contain one.
         Filter::Macro { r#macro: name } => {
             tracing::error!("unexpanded macro '{name}' reached eval — Filter::expand should have run at load");
             false
         }
 
         Filter::TagEq { tag, eq, sanitize } =>
-            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize, env.sanitizers)
+            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize.as_ref())
                 .is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::TagInSet { tag, in_set } =>
             ctx.obj_tags.get(tag).map(|v| value_set(in_set).contains(v)).unwrap_or(false),
         Filter::TagIn { tag, r#in, sanitize } =>
-            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize, env.sanitizers)
+            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize.as_ref())
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::TagContains { tag, contains, case_insensitive } =>
             ctx.obj_tags.get(tag).map(|v| {
@@ -167,21 +225,21 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx, env: &Env) -> bool {
             ctx.obj_tags.contains_key(tag) == *exists,
 
         Filter::FirstTagInSet { first_tag, in_set, sanitize } =>
-            read_str(first_present(ctx.obj_tags, first_tag), sanitize, env.sanitizers)
+            read_str(first_present(ctx.obj_tags, first_tag), sanitize.as_ref())
                 .is_some_and(|v| value_set(in_set).contains(v.as_ref())),
         Filter::FirstTagIn { first_tag, r#in, sanitize } =>
-            read_str(first_present(ctx.obj_tags, first_tag), sanitize, env.sanitizers)
+            read_str(first_present(ctx.obj_tags, first_tag), sanitize.as_ref())
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::FirstTagExists { first_tag, exists, sanitize: None } =>
             first_tag.iter().any(|k| ctx.obj_tags.contains_key(k)) == *exists,
-        Filter::FirstTagExists { first_tag, exists, sanitize: Some(name) } =>
-            read_str(first_present(ctx.obj_tags, first_tag), &Some(name.clone()), env.sanitizers).is_some() == *exists,
+        Filter::FirstTagExists { first_tag, exists, sanitize: Some(r) } =>
+            read_str(first_present(ctx.obj_tags, first_tag), Some(r)).is_some() == *exists,
 
         Filter::ParentTagEq { parent_tag, eq, sanitize } =>
-            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, env.sanitizers)
+            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize.as_ref())
                 .is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::ParentTagIn { parent_tag, r#in, sanitize } =>
-            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, env.sanitizers)
+            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize.as_ref())
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::ParentTagContains { parent_tag, contains } =>
             ctx.parent_tags.and_then(|t| t.get(parent_tag))
@@ -205,10 +263,10 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx, env: &Env) -> bool {
         // `parent_tags` is only ever `Some` for those (see `get_transformed_objects`).
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
 
-        Filter::NumLt  { num, sanitize, lt  } => read_num(ctx, env, num, sanitize).is_some_and(|n| n <  *lt),
-        Filter::NumLte { num, sanitize, lte } => read_num(ctx, env, num, sanitize).is_some_and(|n| n <= *lte),
-        Filter::NumGt  { num, sanitize, gt  } => read_num(ctx, env, num, sanitize).is_some_and(|n| n >  *gt),
-        Filter::NumGte { num, sanitize, gte } => read_num(ctx, env, num, sanitize).is_some_and(|n| n >= *gte),
+        Filter::NumLt  { num, sanitize, lt  } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n <  *lt),
+        Filter::NumLte { num, sanitize, lte } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n <= *lte),
+        Filter::NumGt  { num, sanitize, gt  } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n >  *gt),
+        Filter::NumGte { num, sanitize, gte } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n >= *gte),
     }
 }
 
@@ -217,10 +275,10 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx, env: &Env) -> bool {
 /// coercing to f64. Returns None when the tag is absent or the value is unparseable — so every
 /// numeric comparison is false on missing/garbage input. No geometry-derived values (length, …)
 /// are available: classification is tag-only.
-fn read_num(ctx: &ExtractCtx, env: &Env, key: &str, sanitize: &Option<String>) -> Option<f64> {
+fn read_num(ctx: &ExtractCtx, key: &str, sanitize: Option<&SanitizeRef>) -> Option<f64> {
     let raw = ctx.obj_tags.get(key)?;
     match sanitize {
-        Some(name) => num_from_value(&resolve_sanitize(env.sanitizers, Some(name.as_str()), raw)?),
+        Some(_) => num_from_value(&resolve_sanitize(sanitize, raw)?),
         None => raw.trim().parse().ok(),
     }
 }
@@ -238,15 +296,11 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
 /// with `sanitize`, runs it through that sanitizer chain (coercing the atomic output to a string),
 /// yielding None when the value is dropped — so a sanitized-away value compares as absent.
 /// Mirrors `read_num` for the numeric predicates.
-fn read_str<'a>(
-    raw: Option<&'a str>,
-    sanitize: &Option<String>,
-    reg: &HashMap<String, AtomicChain>,
-) -> Option<std::borrow::Cow<'a, str>> {
+fn read_str<'a>(raw: Option<&'a str>, sanitize: Option<&SanitizeRef>) -> Option<std::borrow::Cow<'a, str>> {
     let raw = raw?;
     match sanitize {
         None => Some(std::borrow::Cow::Borrowed(raw)),
-        Some(name) => match resolve_sanitize(reg, Some(name.as_str()), raw)? {
+        Some(_) => match resolve_sanitize(sanitize, raw)? {
             serde_json::Value::String(s) => Some(std::borrow::Cow::Owned(s)),
             other => other.as_str().map(|s| std::borrow::Cow::Owned(s.to_owned())),
         },
@@ -255,7 +309,7 @@ fn read_str<'a>(
 
 /// Evaluate a Filter against raw tags with a neutral context (side=self, no parent).
 /// Used by the topic engine for way-level exclude_condition checks.
-pub fn eval_filter(filter: &Filter, tags: &RawTags, env: &Env) -> bool {
+pub fn eval_filter(filter: &Filter, tags: &RawTags) -> bool {
     let ctx = ExtractCtx {
         obj_tags: tags,
         parent_tags: None,
@@ -263,5 +317,5 @@ pub fn eval_filter(filter: &Filter, tags: &RawTags, env: &Env) -> bool {
         prefix: None,
         infix: None,
     };
-    eval(filter, &ctx, env)
+    eval(filter, &ctx)
 }

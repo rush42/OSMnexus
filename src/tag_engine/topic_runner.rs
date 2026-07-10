@@ -5,8 +5,8 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
 use crate::tag_engine::filter::Filter;
-use crate::tag_engine::loader::load_topic_macros;
-use crate::tag_engine::producer::{AtomicChain, Env, ExtractCtx, Producer, TagSet};
+use crate::tag_engine::loader::{load_topic_macros, load_topic_sanitizers};
+use crate::tag_engine::producer::{ExtractCtx, Producer, TagSet};
 use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, SplitSidesSpec, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
@@ -56,7 +56,6 @@ impl PreCatStep {
         obj_side: &str,
         prefix: Option<&str>,
         infix: Option<&str>,
-        env: &Env,
     ) {
         match self {
             PreCatStep::TagRule { output, source } => {
@@ -67,7 +66,7 @@ impl PreCatStep {
                     prefix,
                     infix,
                 };
-                if let Some(p) = source.eval(&ctx, env) {
+                if let Some(p) = source.eval(&ctx) {
                     match p.value {
                         Value::Null => { tags.remove(output); }
                         Value::String(s) => { tags.insert(output.clone(), s); }
@@ -112,13 +111,6 @@ pub struct TopicRunner {
     /// doesn't use this list; it's folded into `topic_derivers` (see there) so sanitizers and
     /// derivers run as one list through one `eval_fields` call.
     pub sanitizer_fields: Vec<Field>,
-    /// Atomic `&str -> Value` transforms (`sanitizers.json`, shared + topic-local). Resolved by
-    /// `sanitize:` names (`resolve_sanitize`, falling back to the built-in registry when absent).
-    /// A separate registry/namespace from `deriver_lib` below — see `Env`'s doc for why.
-    pub sanitizers: HashMap<String, AtomicChain>,
-    /// The deriver library (`derivers.json`): named composite producers, resolved by `derivers`
-    /// bindings.
-    pub deriver_lib: HashMap<String, Producer>,
     /// Topic-default fields applied to every object regardless of category: desugared sanitizers
     /// first, then resolved `derivers.json` bindings (`topic.json`'s `derivers` list) — sanitizers
     /// and derivers are the same `Producer`-evaluation mechanism, just two JSON shorthands for
@@ -201,6 +193,13 @@ impl TopicRunner {
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
 
+        // Named atomic transforms (`sanitize:` targets), shared+topic-local. A separate
+        // registry/namespace from the deriver library below — atomic chains and composite
+        // producers are different *types* (`AtomicChain`/`Producer`), so there's no risk of a
+        // name meaning two things at once. Loaded before macros, since a macro's own condition can
+        // carry a `sanitize:` too.
+        let sanitizers = load_topic_sanitizers(&base, &shared_dir)?;
+
         // Every macro this topic can reference: shared (topics/_shared/macros/) plus the topic's
         // own macros.json, topic-local winning on name conflict. Expanded once, here, against
         // itself (so a macro referencing another macro resolves too) — every `Filter`/`Producer`
@@ -213,16 +212,16 @@ impl TopicRunner {
             raw_macros.insert(k, v); // topic-local overrides shared
         }
         let macros: HashMap<String, Filter> = raw_macros.iter()
-            .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros)?)))
+            .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros, &sanitizers)?)))
             .collect::<anyhow::Result<_>>()
             .with_context(|| format!("expanding macros for topics/{name}"))?;
 
         if let Some(cond) = spec.exclude_condition.take() {
-            spec.exclude_condition = Some(cond.expand(&macros)
+            spec.exclude_condition = Some(cond.expand(&macros, &sanitizers)
                 .with_context(|| format!("topics/{name}/topic.json: exclude_condition"))?);
         }
         for f in &mut spec.osm_fields {
-            f.source = f.source.expand_macros(&macros)
+            f.source = f.source.resolve(&macros, &sanitizers)
                 .with_context(|| format!("topics/{name}/topic.json: osm_fields.{}", f.output))?;
         }
 
@@ -231,30 +230,14 @@ impl TopicRunner {
         // `sanitize` case, the same `Producer`-evaluation path as derivers. Folded into
         // `topic_derivers` below (not kept as a separate list) so a category can override a
         // sanitizer's output exactly the way it overrides a deriver's — same mechanism, no new
-        // JSON syntax needed. (No macro expansion needed: this shorthand only ever desugars to a
-        // plain `Extract`, which carries no `Filter`.)
-        let sanitizer_fields: Vec<Field> = spec.sanitizers.clone();
-
-        // Load the data-defined atomic transforms (named `sanitize:` targets): shared
-        // (topics/_shared/sanitizers.json) merged with the topic's own, topic-local winning on
-        // name conflict. An unrecognized name falls back to the built-in registry
-        // (`resolve_sanitize`), not handled here. A separate registry/namespace from `deriver_lib`
-        // below — atomic chains and composite producers are different *types*
-        // (`AtomicChain`/`Producer`), so there's no risk of a name meaning two things at once; no
-        // collision check needed. `AtomicChain` never embeds a `Filter`, so no macro expansion
-        // pass applies here either.
-        let read_sanitizers = |path: &std::path::Path| -> anyhow::Result<HashMap<String, AtomicChain>> {
-            if path.exists() {
-                Ok(serde_json::from_str(&std::fs::read_to_string(path)?)
-                    .with_context(|| format!("parsing {}", path.display()))?)
-            } else {
-                Ok(HashMap::new())
-            }
-        };
-        let mut sanitizers = read_sanitizers(&shared_dir.join("sanitizers.json"))?;
-        for (k, v) in read_sanitizers(&base.join("sanitizers.json"))? {
-            sanitizers.insert(k, v); // topic-local overrides shared
-        }
+        // JSON syntax needed. Its `sanitize:` reference still needs resolving like any other.
+        let sanitizer_fields: Vec<Field> = spec.sanitizers.iter()
+            .map(|f| Ok(Field {
+                output: f.output.clone(),
+                source: f.source.resolve(&macros, &sanitizers)
+                    .with_context(|| format!("topics/{name}/topic.json: sanitizers.{}", f.output))?,
+            }))
+            .collect::<anyhow::Result<_>>()?;
 
         // Load the deriver library (named composite producers). Optional: a topic with no derivers
         // (e.g. barrierLines) may omit the file.
@@ -266,14 +249,14 @@ impl TopicRunner {
             HashMap::new()
         };
 
-        // Expand every deriver's embedded macros now, before anything downstream (`resolve_bindings`,
-        // category overrides) clones entries out of this map — every clone then inherits the
-        // expansion for free.
+        // Resolve every deriver's embedded macros/sanitizers/shared-classifier references now,
+        // before anything downstream (`resolve_bindings`, category overrides) clones entries out
+        // of this map — every clone then inherits the resolution for free.
         let deriver_lib: HashMap<String, Producer> = deriver_lib.into_iter()
             .map(|(k, v)| {
-                let expanded = v.expand_macros(&macros)
+                let resolved = v.resolve(&macros, &sanitizers)
                     .with_context(|| format!("topics/{name}: deriver '{k}'"))?;
-                Ok((k, expanded))
+                Ok((k, resolved))
             })
             .collect::<anyhow::Result<_>>()?;
 
@@ -307,7 +290,7 @@ impl TopicRunner {
         for cats in categories.values_mut() {
             cats.macros = macros.clone();
             for cat in &mut cats.categories {
-                cat.condition = cat.condition.expand(&macros)
+                cat.condition = cat.condition.expand(&macros, &sanitizers)
                     .with_context(|| format!("topics/{name}: category '{}'", cat.id))?;
             }
             // Compile the exclude relation into a priority order + discrimination tree (needs macros
@@ -354,7 +337,7 @@ impl TopicRunner {
                 ParamTransform::TagRules { output, source } => {
                     pre_cat_steps.push(PreCatStep::TagRule {
                         output: output.clone(),
-                        source: source.expand_macros(&macros)
+                        source: source.resolve(&macros, &sanitizers)
                             .with_context(|| format!("topics/{name}/topic.json: transforms.{output}"))?,
                     });
                 }
@@ -400,8 +383,6 @@ impl TopicRunner {
             exclude_check_at,
             transformations,
             sanitizer_fields,
-            sanitizers,
-            deriver_lib,
             topic_derivers,
             category_derivers,
             category_consts,
