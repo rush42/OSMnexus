@@ -110,18 +110,16 @@ where
     C: Fn(&WayData, bool) -> Option<M> + Sync,
     M: Copy + Send + Sync,
 {
-    use crate::profile::{self, DECODE, TAGBUILD};
-
     way_offsets
         .par_iter()
         .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>)> {
-            let block = profile::time(&DECODE, || decode_block(path, off))?;
+            let block = decode_block(path, off)?;
             let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
             let mut endpoints: FxHashSet<i64> = FxHashSet::default();
             let mut seg = WayIndex::new();
             for group in block.groups() {
                 for way in group.ways() {
-                    let wd = profile::time(&TAGBUILD, || way_data(&way));
+                    let wd = way_data(&way);
                     let in_keep = keep_set.contains(&wd.id);
                     if let Some(m) = classify(&wd, in_keep) {
                         for &id in &wd.node_refs {
@@ -213,10 +211,9 @@ where
     G: Fn(&OsmWay, M, &FxHashMap<i64, i64>) + Sync,
     M: Copy + Sync,
 {
-    use crate::profile::{self, RESOLVE};
     index.ways.par_iter().try_for_each(|&(id, start, len, m)| -> anyhow::Result<()> {
         let refs = &index.refs[start as usize..(start + len) as usize];
-        if let Some(w) = profile::time(&RESOLVE, || resolve_geometry(id, refs, coords, selected)) {
+        if let Some(w) = resolve_geometry(id, refs, coords, selected) {
             build_geom(&w, m, node_ids);
         }
         Ok(())

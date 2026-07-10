@@ -23,6 +23,17 @@ impl Default for SplitContext {
     }
 }
 
+impl SplitContext {
+    /// `(key, value)` pairs describing this context, for a caller that wants to write it into a
+    /// row's `private` map generically (e.g. `_{key}`) rather than naming each field by hand.
+    /// `obj_side` is always present; `prefix`/`infix` only for a side object.
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
+        [("side", Some(self.obj_side)), ("prefix", self.prefix), ("infix", self.infix)]
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|v| (k, v)))
+    }
+}
+
 /// A way object after center-line splitting.
 pub struct TransformedObject {
     pub side: Side,
@@ -204,6 +215,28 @@ pub fn get_transformed_objects(
         id: default_id.to_owned(),
     });
     results.extend(side_objects);
+
+    // Per-object post-split steps (`directed_keys`/`self_directed_keys`, ported from
+    // `split_sides`'s config into ordinary `InputTransform`s): applied to each side object's own
+    // tags, using the self object's tags as `parent_tags` — still pre-categorization (it can
+    // influence which category a side object matches), just after cardinality is decided, since it
+    // needs each object's resolved `side` to pick `:forward`/`:backward`. Folded in here (rather
+    // than left to the caller) so no side-specific logic needs to live outside this module.
+    if let [self_obj, side_objs @ ..] = results.as_mut_slice() {
+        for obj in side_objs {
+            let obj_side = match obj.side {
+                Side::Left => "left",
+                Side::Right => "right",
+                Side::Self_ => unreachable!("side objects are never Self_"),
+            };
+            let Some(transformation) = transformations.iter().find(|t| Some(t.prefix) == obj.prefix)
+            else { continue };
+            for step in transformation.directed_steps {
+                step.apply(&mut obj.tags, Some(&self_obj.tags), obj_side, obj.prefix, obj.infix);
+            }
+        }
+    }
+
     results
 }
 

@@ -341,7 +341,6 @@ impl TopicRunner {
         if !self.has_kind(kind) {
             return Vec::new();
         }
-        let tags = crate::profile::time(&crate::profile::TAGCLONE, || raw_tags.clone());
-        build_topic_rows(self, kind, osm_id, tags, meta)
+        build_topic_rows(self, kind, osm_id, raw_tags.clone(), meta)
     }
 }

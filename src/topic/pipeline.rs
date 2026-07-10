@@ -9,10 +9,7 @@ use crate::tag_engine::transform::side_split::{get_transformed_objects, iter_wit
 use crate::topic::runner::TopicRunner;
 use crate::topic::spec::Field;
 use crate::osm::types::{ElementKind, RawTags};
-use crate::output::{
-    rows::TopicRow,
-    types::{OsmMeta, Side},
-};
+use crate::output::{rows::TopicRow, types::OsmMeta};
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 
@@ -78,28 +75,21 @@ pub fn build_topic_rows(
     // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
     // checks (which only ever saw the pre-unnest tags in the original pipeline).
     if kind == ElementKind::Way {
-        crate::profile::time(&crate::profile::INPUT_TRANSFORMS, || {
-            for step in &runner.input_transforms[..runner.exclude_check_at] {
-                step.apply(&mut tags, None, "self", None, None);
-            }
-        });
+        for step in &runner.input_transforms[..runner.exclude_check_at] {
+            step.apply(&mut tags, None, "self", None, None);
+        }
     }
 
     if let Some(cond) = &topic.exclude_condition {
-        let excluded = crate::profile::time(&crate::profile::EXCLUDE, || {
-            eval_filter(cond, &tags)
-        });
-        if excluded {
+        if eval_filter(cond, &tags) {
             return Vec::new();
         }
     }
 
     if kind == ElementKind::Way {
-        crate::profile::time(&crate::profile::INPUT_TRANSFORMS, || {
-            for step in &runner.input_transforms[runner.exclude_check_at..] {
-                step.apply(&mut tags, None, "self", None, None);
-            }
-        });
+        for step in &runner.input_transforms[runner.exclude_check_at..] {
+            step.apply(&mut tags, None, "self", None, None);
+        }
     }
 
     // Side-split (center-line) transforms are way-oriented; nodes/relations are never side-split.
@@ -107,45 +97,16 @@ pub fn build_topic_rows(
     let transformations = if kind == ElementKind::Way { &runner.transformations } else { &no_transforms };
     let default_id = format!("{}/{}", kind.id_prefix(), osm_id);
     // Moves `tags` into the self object rather than cloning it (the common no-side-split case).
-    let mut transformed = crate::profile::time(&crate::profile::SIDESPLIT, || {
-        get_transformed_objects(tags, transformations, &default_id)
-    });
-
-    // Per-object post-split steps (currently just `directed_keys`/`self_directed_keys`, ported
-    // from `split_sides`'s config into ordinary `InputTransform`s): applied to each side object's
-    // own tags, using the self object's tags as `parent_tags` — still pre-categorization (it can
-    // influence which category a side object matches), just after cardinality is decided, since it
-    // needs each object's resolved `side` to pick `:forward`/`:backward`. `side_split` itself only
-    // ever does unnesting; this is what makes `directed_keys` an ordinary data-defined transform
-    // instead of bespoke logic living inside the split.
-    if let [self_obj, side_objs @ ..] = transformed.as_mut_slice() {
-        for obj in side_objs {
-            let side_str = match obj.side {
-                Side::Left => "left",
-                Side::Right => "right",
-                Side::Self_ => unreachable!("side objects are never Self_"),
-            };
-            let Some(transformation) = transformations.iter().find(|t| Some(t.prefix) == obj.prefix)
-            else { continue };
-            for step in transformation.directed_steps {
-                step.apply(&mut obj.tags, Some(&self_obj.tags), side_str, obj.prefix, obj.infix);
-            }
-        }
-    }
+    // Post-split `directed_keys`/`self_directed_keys` steps are applied inside this call too — no
+    // side-specific logic lives here, only iteration over the `ExtractCtx`s it hands back.
+    let transformed = get_transformed_objects(tags, transformations, &default_id);
     let mut rows = Vec::new();
 
-    // `iter_with_ctx` pairs each transformed object with its `ExtractCtx` (side objects' `parent_tags`
-    // resolved against the self object) — the only place per-object side/prefix/infix/parent
-    // addressing gets assembled; every earlier tag-only transform never touches it. One `ExtractCtx`
-    // serves both categorization and field evaluation — same "object state", just consumed by two
-    // different evaluators (`Filter`/`Producer`).
     for ectx in iter_with_ctx(&transformed) {
-        let category = match crate::profile::time(&crate::profile::CATEGORIZE, || categorize(&ectx, categories)) {
+        let category = match categorize(&ectx, categories) {
             Some(c) => c,
             None => continue,
         };
-        // Times the rest of this iteration (field eval + const seeding + row build).
-        let _extract = crate::profile::scope(&crate::profile::EXTRACT);
 
         let mut osm = Map::new();
         let mut osm_written = HashSet::new();
@@ -197,15 +158,11 @@ pub fn build_topic_rows(
 
         derived.insert("category".into(), Value::String(category.id.clone()));
 
-        // Side-split context, merged flat into `private` as before; `_parent_highway` is gone
-        // (redundant with the parent's own `highway` tag, already reachable through
-        // `ectx.parent_tags` for anything that needs it).
-        private.insert("_side".into(), Value::String(ectx.split.obj_side.to_owned()));
-        if let Some(p) = ectx.split.prefix {
-            private.insert("_prefix".into(), Value::String(p.to_owned()));
-        }
-        if let Some(i) = ectx.split.infix {
-            private.insert("_infix".into(), Value::String(i.to_owned()));
+        // Side-split context, written generically via `SplitContext::iter` (`_side`, plus
+        // `_prefix`/`_infix` for a side object); `_parent_highway` is gone (redundant with the
+        // parent's own `highway` tag, already reachable through `ectx.parent_tags`).
+        for (k, v) in ectx.split.iter() {
+            private.insert(format!("_{k}"), Value::String(v.to_owned()));
         }
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the

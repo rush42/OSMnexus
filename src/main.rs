@@ -56,7 +56,6 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let cfg = Config::parse();
-    osmnexus::profile::init_from_env();
 
     anyhow::ensure!(
         cfg.output == Output::Pg || !cfg.emit_relation_geometries,
@@ -315,7 +314,6 @@ async fn main() -> anyhow::Result<()> {
     // Await the producer first: it drops the senders, closing every writer channel so the writer
     // tasks drain their tails, finish the COPY, and return their counts.
     producer.await.context("reader/processing task panicked")??;
-    osmnexus::profile::report();
 
     let mut tag_counts = vec![0usize; n];
     for (i, handles) in tag_handles.into_iter().enumerate() {

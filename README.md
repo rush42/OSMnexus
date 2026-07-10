@@ -173,8 +173,6 @@ Database connection uses the standard libpq env vars, overridable per flag: `PGH
 (empty → Unix socket, peer auth), `PGDATABASE`/`--db-name`, `PGUSER`/`--db-user`,
 `PGPASSWORD`/`--db-password`, `PGPORT`/`--db-port`.
 
-Profiling: set `PASS_C_PROFILE=1` for a per-stage CPU breakdown; `RUST_LOG=info` for phase timings.
-
 ## Topics are data
 
 Each topic lives under `<config-dir>/<name>/` and is pure data — no Rust changes to add or edit
