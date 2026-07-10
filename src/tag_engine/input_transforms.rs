@@ -7,6 +7,7 @@
 use serde_json::Value;
 
 use crate::tag_engine::producer::{ExtractCtx, Producer};
+use crate::tag_engine::transform::side_split::SplitContext;
 use crate::osm::types::RawTags;
 
 /// One in-place tag mutation, applied to an object's tags before categorization — either at the
@@ -36,18 +37,17 @@ impl InputTransform {
         &self,
         tags: &mut RawTags,
         parent_tags: Option<&RawTags>,
-        obj_side: &str,
-        prefix: Option<&str>,
-        infix: Option<&str>,
+        obj_side: &'static str,
+        prefix: Option<&'static str>,
+        infix: Option<&'static str>,
     ) {
         match self {
             InputTransform::TagRule { output, source } => {
                 let ctx = ExtractCtx {
                     obj_tags: tags,
                     parent_tags,
-                    obj_side,
-                    prefix,
-                    infix,
+                    split: SplitContext { obj_side, prefix, infix },
+                    id: "",
                 };
                 if let Some(p) = source.eval(&ctx) {
                     match p.value {

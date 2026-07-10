@@ -14,6 +14,7 @@ use serde::Deserialize;
 use crate::tag_engine::keys::first_present;
 use crate::tag_engine::producer::ExtractCtx;
 use crate::tag_engine::sanitize::{resolve_sanitize, AtomicChain, SanitizeRef};
+use crate::tag_engine::transform::side_split::SplitContext;
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
 
@@ -259,9 +260,9 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
                 .map(|v| v.ends_with(ends_with.as_str()))
                 .unwrap_or(false),
 
-        Filter::Side { side } => ctx.obj_side == side.as_str(),
-        Filter::Prefix    { prefix    } => ctx.prefix == Some(prefix.as_str()),
-        Filter::Infix     { infix     } => ctx.infix  == Some(infix.as_str()),
+        Filter::Side { side } => ctx.split.obj_side == side.as_str(),
+        Filter::Prefix    { prefix    } => ctx.split.prefix == Some(prefix.as_str()),
+        Filter::Infix     { infix     } => ctx.split.infix  == Some(infix.as_str()),
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
@@ -315,12 +316,6 @@ fn read_str<'a>(raw: Option<&'a str>, sanitize: Option<&SanitizeRef>) -> Option<
 /// Evaluate a Filter against raw tags with a neutral context (side=self, no parent).
 /// Used by the topic engine for way-level exclude_condition checks.
 pub fn eval_filter(filter: &Filter, tags: &RawTags) -> bool {
-    let ctx = ExtractCtx {
-        obj_tags: tags,
-        parent_tags: None,
-        obj_side: "self",
-        prefix: None,
-        infix: None,
-    };
+    let ctx = ExtractCtx { obj_tags: tags, parent_tags: None, split: SplitContext::default(), id: "" };
     eval(filter, &ctx)
 }

@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 
-use crate::topic::pipeline::{build_geom_rows, build_way_geom_row};
+use crate::topic::geom::{build_geom_rows, build_way_geom_row};
 use crate::topic::TopicRunner;
 use crate::osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData, WayMeta};
 use crate::output::{

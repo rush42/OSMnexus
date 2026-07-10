@@ -5,34 +5,34 @@ use serde_json::{Map, Value};
 use crate::tag_engine::categories::categorize;
 use crate::tag_engine::filter::eval_filter;
 use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::transform::side_split::get_transformed_objects;
+use crate::tag_engine::transform::side_split::{get_transformed_objects, iter_with_ctx};
 use crate::topic::runner::TopicRunner;
 use crate::topic::spec::Field;
-use crate::osm::types::{ElementKind, OsmWay, RawTags};
+use crate::osm::types::{ElementKind, RawTags};
 use crate::output::{
-    geometry::{haversine_length_m, point_to_ewkb, to_ewkb, wgs84_to_3857},
-    rows::{GeomRow, NodeRow, TopicRow, WayGeomRow},
+    rows::TopicRow,
     types::{OsmMeta, Side},
 };
-use rustc_hash::FxHashMap;
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 
 /// Evaluate each `Field`'s producer against `ctx`, inserting non-empty results into `map`.
 /// When a value carries provenance, also emit `<output>_source` / `<output>_confidence`.
 /// Each produced output key is recorded in `written` so the caller can tell which const
-/// defaults were overwritten (used to gate bundled-const companion emission).
+/// defaults were overwritten (used to gate bundled-const companion emission). `written` borrows
+/// from `fields` rather than cloning `output` again — it's only ever queried with `.contains()`,
+/// never handed out, so there's nothing an owned copy buys here.
 /// Used for `osm_fields`, sanitizers, and derivers alike.
-fn eval_fields(
-    fields: &[Field],
+fn eval_fields<'a>(
+    fields: &'a [Field],
     ctx: &ExtractCtx,
     map: &mut Map<String, Value>,
-    written: &mut HashSet<String>,
+    written: &mut HashSet<&'a str>,
 ) {
     for field in fields {
         if let Some(p) = field.source.eval(ctx) {
             map.insert(field.output.clone(), p.value);
-            written.insert(field.output.clone());
+            written.insert(&field.output);
             // Companion consts → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
             for (k, v) in p.consts {
                 map.insert(format!("{}_{}", field.output, k), v);
@@ -105,9 +105,10 @@ pub fn build_topic_rows(
     // Side-split (center-line) transforms are way-oriented; nodes/relations are never side-split.
     let no_transforms = Vec::new();
     let transformations = if kind == ElementKind::Way { &runner.transformations } else { &no_transforms };
+    let default_id = format!("{}/{}", kind.id_prefix(), osm_id);
     // Moves `tags` into the self object rather than cloning it (the common no-side-split case).
     let mut transformed = crate::profile::time(&crate::profile::SIDESPLIT, || {
-        get_transformed_objects(tags, transformations)
+        get_transformed_objects(tags, transformations, &default_id)
     });
 
     // Per-object post-split steps (currently just `directed_keys`/`self_directed_keys`, ported
@@ -133,26 +134,12 @@ pub fn build_topic_rows(
     }
     let mut rows = Vec::new();
 
-    for obj in &transformed {
-        // Side objects read their parent (the self object, always index 0) for parent-highway
-        // tags; the self object owns the way's tags now that they're moved rather than cloned.
-        let parent_tags: Option<&RawTags> =
-            obj.parent_highway.as_ref().map(|_| &transformed[0].tags);
-        let side_str = match obj.side {
-            Side::Left  => "left",
-            Side::Right => "right",
-            Side::Self_ => "self",
-        };
-        // One `ExtractCtx` serves both categorization and field evaluation now — they're the same
-        // "object state", just consumed by two different evaluators (`Filter`/`Producer`).
-        let ectx = ExtractCtx {
-            obj_tags: &obj.tags,
-            parent_tags,
-            obj_side: side_str,
-            prefix: obj.prefix,
-            infix: obj.infix,
-        };
-
+    // `iter_with_ctx` pairs each transformed object with its `ExtractCtx` (side objects' `parent_tags`
+    // resolved against the self object) — the only place per-object side/prefix/infix/parent
+    // addressing gets assembled; every earlier tag-only transform never touches it. One `ExtractCtx`
+    // serves both categorization and field evaluation — same "object state", just consumed by two
+    // different evaluators (`Filter`/`Producer`).
+    for ectx in iter_with_ctx(&transformed) {
         let category = match crate::profile::time(&crate::profile::CATEGORIZE, || categorize(&ectx, categories)) {
             Some(c) => c,
             None => continue,
@@ -197,7 +184,7 @@ pub fn build_topic_rows(
         // contributes `oneway_confidence`).
         if let Some(consts) = consts {
             for (k, v) in consts {
-                if written.contains(k) {
+                if written.contains(k.as_str()) {
                     continue;
                 }
                 if let (_, Some(companions)) = const_entry(v) {
@@ -210,31 +197,27 @@ pub fn build_topic_rows(
 
         derived.insert("category".into(), Value::String(category.id.clone()));
 
-        private.insert("_side".into(), Value::String(side_str.to_owned()));
-        if let Some(p) = obj.prefix {
+        // Side-split context, merged flat into `private` as before; `_parent_highway` is gone
+        // (redundant with the parent's own `highway` tag, already reachable through
+        // `ectx.parent_tags` for anything that needs it).
+        private.insert("_side".into(), Value::String(ectx.split.obj_side.to_owned()));
+        if let Some(p) = ectx.split.prefix {
             private.insert("_prefix".into(), Value::String(p.to_owned()));
         }
-        if let Some(i) = obj.infix {
+        if let Some(i) = ectx.split.infix {
             private.insert("_infix".into(), Value::String(i.to_owned()));
-        }
-        if let Some(ph) = &obj.parent_highway {
-            private.insert("_parent_highway".into(), Value::String(ph.clone()));
         }
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
-        // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time.
-        let prefix = kind.id_prefix();
-        let id = match obj.side {
-            Side::Self_ => format!("{}/{}", prefix, osm_id),
-            Side::Left  => format!("{}/{}/{}/left",  prefix, osm_id, obj.prefix.unwrap_or("cycleway")),
-            Side::Right => format!("{}/{}/{}/right", prefix, osm_id, obj.prefix.unwrap_or("cycleway")),
-        };
-        derived.insert("id".into(), Value::String(id.clone()));
+        // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time. `ectx.id`
+        // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"` — computed once
+        // by `get_transformed_objects` rather than re-derived here.
+        derived.insert("id".into(), Value::String(ectx.id.to_owned()));
 
         rows.push(TopicRow {
             osm_id,
             osm_type: kind.osm_type(),
-            id,
+            id: ectx.id.to_owned(),
             osm,
             derived,
             private,
@@ -245,71 +228,3 @@ pub fn build_topic_rows(
     rows
 }
 
-/// Build the graph-edge rows for a way: one `GeomRow` per consecutive `cut_points` pair (the
-/// sub-linestring `geom.0[s..=e]`, inclusive so the shared node joins both neighbours), with
-/// per-segment `start_id`/`end_id`/`length_m`. A way with no interior cut-points yields a single
-/// edge spanning the whole way. Topic-independent (same for every topic and every side object), so
-/// computed once per way and written to the shared `edges` table.
-///
-/// `node_ids` is the `osm node id -> internal id` map built once by `assign_node_ids` before the
-/// geometry pass starts; every cut-point node is guaranteed a spot in it (shared, endpoint, or
-/// selected), so `start_id`/`end_id` are always resolvable.
-pub fn build_geom_rows(
-    way: &OsmWay,
-    geom: &geo::LineString<f64>,
-    length_m: f64,
-    node_ids: &FxHashMap<i64, i64>,
-) -> Vec<GeomRow> {
-    let node_id = |osm_id: i64| -> i64 {
-        *node_ids.get(&osm_id).expect("cut-point node missing from internal node id map")
-    };
-    let first_node = way.cut_points.first().map(|c| node_id(c.1)).unwrap_or(0);
-    let last_node = way.cut_points.last().map(|c| node_id(c.1)).unwrap_or(0);
-
-    let mut rows = Vec::new();
-
-    if way.cut_points.len() > 2 {
-        for (i, w) in way.cut_points.windows(2).enumerate() {
-            let (s, e) = (w[0].0 as usize, w[1].0 as usize);
-            let seg_line = geo::LineString::new(geom.0[s..=e].to_vec());
-            let seg_len = haversine_length_m(&way.coords[s..=e]);
-            rows.push(GeomRow {
-                osm_id: way.id,
-                seg_idx: i,
-                start_id: node_id(w[0].1),
-                end_id: node_id(w[1].1),
-                geom_ewkb: to_ewkb(&seg_line),
-                length_m: seg_len,
-                total_length_m: length_m,
-                cost: seg_len,
-                reverse_cost: seg_len,
-            });
-        }
-    } else {
-        // No interior intersections: the whole way is a single edge.
-        rows.push(GeomRow {
-            osm_id: way.id,
-            seg_idx: 0,
-            start_id: first_node,
-            end_id: last_node,
-            geom_ewkb: to_ewkb(geom),
-            length_m,
-            total_length_m: length_m,
-            cost: length_m,
-            reverse_cost: length_m,
-        });
-    }
-
-    rows
-}
-
-/// Build the whole-way linestring row for a way, emitted only with `--emit-way-geometries`.
-pub fn build_way_geom_row(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> WayGeomRow {
-    WayGeomRow { osm_id: way.id, geom_ewkb: to_ewkb(geom), length_m }
-}
-
-/// Build a `nodes` table row for a graph vertex — always emitted (see `assign_node_ids`).
-pub fn build_node_row(id: i64, osm_id: i64, lon: f64, lat: f64) -> NodeRow {
-    let (x, y) = wgs84_to_3857(lon, lat);
-    NodeRow { id, osm_id, geom_ewkb: point_to_ewkb(x, y) }
-}

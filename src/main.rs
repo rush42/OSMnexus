@@ -17,7 +17,7 @@ use db::{
     schema,
     schema::{GeomTables, EDGE_TABLE, MEMBER_TABLE, NODE_TABLE, WAY_GEOM_TABLE},
 };
-use topic::pipeline::build_node_row;
+use topic::geom::build_node_row;
 use topic::TopicRunner;
 use osm::reader::{stream_osm, Callbacks};
 use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};

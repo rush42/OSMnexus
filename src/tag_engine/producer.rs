@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::keys;
 use crate::tag_engine::sanitize::{resolve_sanitize, AtomicChain, SanitizeRef};
+use crate::tag_engine::transform::side_split::SplitContext;
 use crate::osm::types::RawTags;
 
 /// A produced value plus optional provenance. The `consts` are arbitrary key/value pairs the
@@ -22,20 +23,18 @@ pub struct Produced {
     pub consts: Map<String, Value>,
 }
 
-/// Per-object addressing: which tags, which side/prefix/infix, which category scope. `Copy` so a
-/// producer can cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running
-/// itself against a different tagset.
+/// Which tags (`obj_tags`, `parent_tags`), plus side-split addressing (`split` — see
+/// `transform::side_split::SplitContext`, whose only non-trivial constructor is
+/// `TransformedObject::extract_ctx`) and `id` — the row id for this object, defaulted to the
+/// element's own id and overwritten by `get_transformed_objects` for a side object (e.g.
+/// `"way/123/cycleway/left"`). `Copy` so a producer can cheaply build a variant (e.g. swapping
+/// `obj_tags` to the parent) when re-running itself against a different tagset.
 #[derive(Clone, Copy)]
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags,
     pub parent_tags: Option<&'a RawTags>,
-    pub obj_side: &'a str,
-    /// The prefix that produced this object (e.g. "cycleway"; `None` for the self object) and the
-    /// infix that matched during side-splitting — a `Classify`/`SharedClassify`/`Cond` producer's
-    /// rules (and `Filter::Prefix`/`Infix`) can condition on these exactly like a category
-    /// condition can, since they're evaluated with this same `ExtractCtx`.
-    pub prefix: Option<&'a str>,
-    pub infix: Option<&'a str>,
+    pub split: SplitContext,
+    pub id: &'a str,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -176,7 +175,7 @@ impl Producer {
                 if ctx.obj_tags.contains_key(key) {
                     return None; // already set (e.g. by an earlier unnest) — don't override it
                 }
-                let suffix = match (ctx.obj_side, crate::traffic::is_left_hand_traffic()) {
+                let suffix = match (ctx.split.obj_side, crate::traffic::is_left_hand_traffic()) {
                     ("left", false) | ("right", true) => ":backward",
                     ("right", false) | ("left", true) => ":forward",
                     _ => return None, // "self": no direction to resolve
@@ -293,13 +292,7 @@ mod classify_bool_tests {
     use crate::tag_engine::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
-        ExtractCtx {
-            obj_tags: obj,
-            parent_tags: parent,
-            obj_side: "self",
-            prefix: None,
-            infix: None,
-        }
+        ExtractCtx { obj_tags: obj, parent_tags: parent, split: SplitContext::default(), id: "" }
     }
 
     /// A `Classify` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
@@ -350,10 +343,12 @@ mod directed_extract_tests {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
     }
 
-    fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, obj_side: &'a str) -> ExtractCtx<'a> {
+    fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, obj_side: &'static str) -> ExtractCtx<'a> {
         ExtractCtx {
-            obj_tags: obj, parent_tags: parent, obj_side,
-            prefix: None, infix: None,
+            obj_tags: obj,
+            parent_tags: parent,
+            split: SplitContext { obj_side, prefix: None, infix: None },
+            id: "",
         }
     }
 

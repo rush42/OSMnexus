@@ -118,10 +118,10 @@ fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
 /// context. `None` means "no matching enumerated child" → fall through to the wildcard.
 fn branch_key<'a>(ctx: &'a ExtractCtx, tag: &str) -> Option<&'a str> {
     match tag {
-        SIDE_KEY => Some(ctx.obj_side),
+        SIDE_KEY => Some(ctx.split.obj_side),
         HAS_PARENT_KEY => Some(if ctx.parent_tags.is_some() { "true" } else { "false" }),
-        PREFIX_KEY => ctx.prefix,
-        INFIX_KEY => ctx.infix,
+        PREFIX_KEY => ctx.split.prefix,
+        INFIX_KEY => ctx.split.infix,
         _ => ctx.obj_tags.get(tag).map(String::as_str),
     }
 }
@@ -569,6 +569,7 @@ mod tests {
     use crate::tag_engine::categories::{categorize, categorize_linear, CategoriesFile, OrderedNode};
     use crate::tag_engine::filter::Filter;
     use crate::tag_engine::producer::ExtractCtx;
+    use crate::tag_engine::transform::side_split::SplitContext;
     use crate::lint::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use crate::osm::types::RawTags;
 
@@ -660,9 +661,8 @@ mod tests {
                         let ctx = ExtractCtx {
                             obj_tags: &tags,
                             parent_tags: side_parent_tags,
-                            obj_side: side,
-                            prefix,
-                            infix: None,
+                            split: SplitContext { obj_side: side, prefix, infix: None },
+                            id: "",
                         };
                         let a = categorize(&ctx, &cats).map(|c| c.id.clone());
                         let b = categorize_linear(&ctx, &cats).map(|c| c.id.clone());

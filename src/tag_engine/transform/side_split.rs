@@ -1,6 +1,27 @@
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
+use crate::tag_engine::producer::ExtractCtx;
 use crate::value_sets::value_set;
+
+/// The side-split-specific slice of an `ExtractCtx`: which side/prefix/infix this object is.
+/// `parent_tags` is *not* here — it's a plain `ExtractCtx` field, since it's meaningful (or not)
+/// independent of side-splitting (e.g. a directed-key `InputTransform` sets it without any
+/// prefix/infix). The one thing that ever varies this across a way is `get_transformed_objects`
+/// deciding cardinality — tag-only `InputTransform`s never touch it. `TransformedObject::extract_ctx`
+/// is the sole non-trivial constructor of a full `ExtractCtx`; elsewhere (the pre-split pass,
+/// `eval_filter`) uses `SplitContext::default()`.
+#[derive(Clone, Copy)]
+pub struct SplitContext {
+    pub obj_side: &'static str,
+    pub prefix: Option<&'static str>,
+    pub infix: Option<&'static str>,
+}
+
+impl Default for SplitContext {
+    fn default() -> Self {
+        SplitContext { obj_side: "self", prefix: None, infix: None }
+    }
+}
 
 /// A way object after center-line splitting.
 pub struct TransformedObject {
@@ -10,8 +31,11 @@ pub struct TransformedObject {
     /// The infix that matched: "" = bare prefix, "both", "left", or "right".
     /// None for the self object.
     pub infix: Option<&'static str>,
-    /// Original highway value of the parent way (for left/right objects).
-    pub parent_highway: Option<String>,
+    /// Whether this object has a parent way (true for left/right objects). Just a flag — the
+    /// parent's own tags (incl. its `highway`) are reachable through `ExtractCtx::parent_tags`
+    /// once `extract_ctx` resolves it against the self object, so nothing here needs to duplicate
+    /// the parent's `highway` value.
+    pub has_parent: bool,
     /// The effective highway value for this object.
     pub highway: String,
     /// Flattened tags for this object (no `_`-prefixed internal keys). Only unnesting has run —
@@ -19,6 +43,31 @@ pub struct TransformedObject {
     /// `InputTransform` pass (see `CenterLineTransformation::directed_steps` and its call site in
     /// `topic::pipeline`), not something the split itself does.
     pub tags: RawTags,
+    /// This object's row id: `default_id` unchanged for the self object, or
+    /// `"{default_id}/{prefix}/{side}"` for a side object (e.g. `"way/123/cycleway/left"`) —
+    /// see `get_transformed_objects`'s `default_id` parameter.
+    pub id: String,
+}
+
+impl TransformedObject {
+    /// Build this object's full `ExtractCtx` — its own tags, `self_obj`'s tags as `parent_tags`
+    /// when this object has a parent, and its side/prefix/infix. `self_obj` is always
+    /// `&transformed[0]`, the self object; passing it explicitly avoids a self-referential borrow
+    /// into the `Vec` `get_transformed_objects` returned it from — see `iter_with_ctx` for the
+    /// usual way to get one of these per object without threading that reference by hand.
+    pub fn extract_ctx<'a>(&'a self, self_obj: &'a TransformedObject) -> ExtractCtx<'a> {
+        let obj_side = match self.side {
+            Side::Left => "left",
+            Side::Right => "right",
+            Side::Self_ => "self",
+        };
+        ExtractCtx {
+            obj_tags: &self.tags,
+            parent_tags: self.has_parent.then_some(&self_obj.tags),
+            split: SplitContext { obj_side, prefix: self.prefix, infix: self.infix },
+            id: &self.id,
+        }
+    }
 }
 
 /// Describes how a prefix (e.g. "cycleway") is split into side objects.
@@ -59,10 +108,15 @@ pub fn apply_sidepath_self(tags: &mut RawTags, prefixes: &[&str]) {
 
 /// Port of `GetTransformedObjects` from transformations.lua.
 ///
+/// `default_id` is the element's own row id (e.g. `"way/123"`); the self object keeps it
+/// unchanged, each side object gets `"{default_id}/{prefix}/{side}"` (e.g.
+/// `"way/123/cycleway/left"`) — see `TransformedObject::id`.
+///
 /// Returns an ordered list: [self, left?, right?, ...] for all transformations.
 pub fn get_transformed_objects(
     tags: RawTags,
     transformations: &[CenterLineTransformation],
+    default_id: &str,
 ) -> Vec<TransformedObject> {
     let highway = tags.get("highway").cloned().unwrap_or_default();
 
@@ -73,9 +127,10 @@ pub fn get_transformed_objects(
             side: Side::Self_,
             prefix: None,
             infix: None,
-            parent_highway: None,
+            has_parent: false,
             highway,
             tags,
+            id: default_id.to_owned(),
         }];
     }
 
@@ -129,9 +184,10 @@ pub fn get_transformed_objects(
                 side,
                 prefix: Some(transformation.prefix),
                 infix: Some(matched_infix),
-                parent_highway: Some(highway.clone()),
+                has_parent: true,
                 highway: transformation.highway.to_owned(),
                 tags: obj,
+                id: format!("{default_id}/{}/{side_str}", transformation.prefix),
             });
         }
     }
@@ -142,12 +198,22 @@ pub fn get_transformed_objects(
         side: Side::Self_,
         prefix: None,
         infix: None,
-        parent_highway: None,
+        has_parent: false,
         highway,
         tags,
+        id: default_id.to_owned(),
     });
     results.extend(side_objects);
     results
+}
+
+/// Turn every object `get_transformed_objects` returned into its `ExtractCtx` — the usual way to
+/// consume that result: callers (`topic::pipeline`) iterate `ExtractCtx`s directly and never
+/// construct one, or touch `TransformedObject`/`SplitContext`, by hand. `transformed[0]` (the self
+/// object) supplies `parent_tags` to every side object.
+pub fn iter_with_ctx(transformed: &[TransformedObject]) -> impl Iterator<Item = ExtractCtx<'_>> {
+    let self_obj = &transformed[0];
+    transformed.iter().map(move |obj| obj.extract_ctx(self_obj))
 }
 
 /// Unnest tags matching `{meta}{prefix}[:{infix}]` onto `dest`.
