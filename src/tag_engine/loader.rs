@@ -14,6 +14,26 @@ use crate::tag_engine::filter::Filter;
 use crate::tag_engine::producer::AtomicChain;
 use crate::osm::types::ElementKind;
 
+/// Shallow merge, more-specific-scope-wins: every key in `over` overwrites the same key in
+/// `base`; keys only in `over` are added. The one primitive behind every "shared/default,
+/// specific-scope overrides" cascade in the engine — macros and sanitizers (shared → topic) here,
+/// consts and private (topic → category) in `topic_runner.rs`. Works over any map-like type
+/// (`HashMap`, `serde_json::Map`) via the standard `IntoIterator`/`Extend` traits, so one
+/// implementation covers every level any concept happens to have — there's no single universal
+/// shared→topic→category cascade, different concepts stop at different levels (see the doc on
+/// `TopicRunner::load`'s macro/sanitizer loading).
+pub fn merge<K, V, M>(base: &M, over: &M) -> M
+where
+    K: Clone,
+    V: Clone,
+    M: Clone + Extend<(K, V)>,
+    for<'a> &'a M: IntoIterator<Item = (&'a K, &'a V)>,
+{
+    let mut merged = base.clone();
+    merged.extend(over.into_iter().map(|(k, v)| (k.clone(), v.clone())));
+    merged
+}
+
 /// Load a topic's per-kind category sets from its directory. Reads the optional topic-wide
 /// `macros.json`, then for each of `node`/`way`/`relation` that exists as a subfolder, loads its
 /// `*.json` category files into a `CategoriesFile` (seeded with the topic macros). Only present
@@ -105,11 +125,9 @@ pub fn load_topic_sanitizers(
             Ok(HashMap::new())
         }
     };
-    let mut sanitizers = read(&shared_dir.join("sanitizers.json"))?;
-    for (k, v) in read(&topic_dir.join("sanitizers.json"))? {
-        sanitizers.insert(k, v); // topic-local overrides shared
-    }
-    Ok(sanitizers)
+    let shared = read(&shared_dir.join("sanitizers.json"))?;
+    let local = read(&topic_dir.join("sanitizers.json"))?;
+    Ok(merge(&shared, &local))
 }
 
 /// Load shared, cross-topic macros from `topics/_shared/macros/<name>.json` (one Filter per

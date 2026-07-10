@@ -5,26 +5,13 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
 use crate::tag_engine::filter::Filter;
-use crate::tag_engine::loader::{load_topic_macros, load_topic_sanitizers};
+use crate::tag_engine::loader::{load_topic_macros, load_topic_sanitizers, merge};
 use crate::tag_engine::producer::{ExtractCtx, Producer, TagSet};
 use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, SplitSidesSpec, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
 use crate::tag_engine::transform::side_split::CenterLineTransformation;
-
-/// Per-key overlay: the topic-level default map with the category's entries layered on top.
-/// The shared shape behind both `consts` (→ derived) and `private` (→ private column).
-fn overlay(
-    base: &serde_json::Map<String, serde_json::Value>,
-    over: &serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut merged = base.clone();
-    for (k, v) in over {
-        merged.insert(k.clone(), v.clone());
-    }
-    merged
-}
 
 /// One in-place tag mutation, applied to an object's tags before categorization — either at the
 /// whole-way, pre-split stage (`obj_side: "self"`, no `parent_tags`), or, for `directed`-style
@@ -207,10 +194,8 @@ impl TopicRunner {
         // does a live macro lookup and an unknown/cyclic macro is a load-time error, not a
         // per-object runtime no-op (see `Filter::expand`).
         let shared_macros = load_shared_macros(&shared_dir).with_context(|| "loading topics/_shared/")?;
-        let mut raw_macros = shared_macros;
-        for (k, v) in load_topic_macros(&base)? {
-            raw_macros.insert(k, v); // topic-local overrides shared
-        }
+        let topic_macros = load_topic_macros(&base)?;
+        let raw_macros = merge(&shared_macros, &topic_macros);
         let macros: HashMap<String, Filter> = raw_macros.iter()
             .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros, &sanitizers)?)))
             .collect::<anyhow::Result<_>>()
@@ -371,8 +356,8 @@ impl TopicRunner {
                     category_derivers
                         .insert(cat.id.clone(), apply_overrides(&topic_derivers, overrides));
                 }
-                category_consts.insert(cat.id.clone(), overlay(&spec.consts, &cat.consts));
-                category_private.insert(cat.id.clone(), overlay(&spec.private, &cat.private));
+                category_consts.insert(cat.id.clone(), merge(&spec.consts, &cat.consts));
+                category_private.insert(cat.id.clone(), merge(&spec.private, &cat.private));
             }
         }
 
