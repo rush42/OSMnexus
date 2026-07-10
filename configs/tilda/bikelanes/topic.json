@@ -13,7 +13,7 @@
   "exclude_condition": {
     "macro": "standard_exclude"
   },
-  "transforms": [
+  "input_transforms": [
     {
       "output": "highway",
       "rules": [

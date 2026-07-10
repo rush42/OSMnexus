@@ -3,7 +3,7 @@
   "private": {
     "_implicit_oneway_confidence": "not_applicable"
   },
-  "transforms": [
+  "input_transforms": [
     {
       "output": "highway",
       "rules": [

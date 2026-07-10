@@ -3,17 +3,17 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde_json::Map;
 
-use crate::tag_engine::producer::categories::CategoriesFile;
-use crate::tag_engine::producer::filter::Filter;
-use crate::tag_engine::loader::{load_shared_macros, load_topic_categories, load_topic_macros, load_topic_sanitizers, merge};
+use crate::tag_engine::categories::CategoriesFile;
+use crate::tag_engine::filter::Filter;
+use crate::tag_engine::input_transforms::InputTransform;
 use crate::tag_engine::producer::{Producer, TagSet};
-use crate::tag_engine::producer::runner::build_topic_rows;
-use crate::tag_engine::producer::topic_runner::PreCatStep;
-use crate::tag_engine::loader::topic::{DeriverBinding, Field, ParamTransform, SplitSidesSpec, TopicSpec};
+use crate::tag_engine::transform::side_split::CenterLineTransformation;
+use crate::topic::load::{load_shared_macros, load_topic_categories, load_topic_macros, load_topic_sanitizers, merge};
+use crate::topic::pipeline::build_topic_rows;
+use crate::topic::spec::{Field, InputTransformSpec, SplitSidesSpec, TopicSpec};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
-use crate::tag_engine::producer::transform::side_split::CenterLineTransformation;
 
 /// A fully loaded topic ready to process ways.
 pub struct TopicRunner {
@@ -25,7 +25,7 @@ pub struct TopicRunner {
     /// In-place tag mutations applied to each way's tags, in declared order, split around
     /// `exclude_condition` at `exclude_check_at` — so, unlike a deriver, these can influence which
     /// category a way matches (or whether `exclude_condition` excludes it at all).
-    pub pre_cat_steps: Vec<PreCatStep>,
+    pub pre_cat_steps: Vec<InputTransform>,
     /// Index into `pre_cat_steps` where `exclude_condition` is evaluated: `pre_cat_steps[..n]` run
     /// first, then `exclude_condition`, then `pre_cat_steps[n..]`. Set to the first `SidepathSelf`
     /// step's index (or `pre_cat_steps.len()` if there is none) — mirrors the original two-stage
@@ -34,7 +34,7 @@ pub struct TopicRunner {
     /// directly) always ran after it.
     pub exclude_check_at: usize,
     /// Center-line side split (from a `split_sides` entry); empty if the topic has none. Applied
-    /// after every `PreCatStep`, since it changes object cardinality rather than mutating tags.
+    /// after every `InputTransform`, since it changes object cardinality rather than mutating tags.
     pub transformations: Vec<CenterLineTransformation>,
     /// Desugared `sanitizers`, kept only for the topic-load summary log (`main.rs`) — evaluation
     /// doesn't use this list; it's folded into `topic_derivers` (see there) so sanitizers and
@@ -62,7 +62,7 @@ pub struct TopicRunner {
 /// dangling reference (load-time validation — the cost of name indirection bought back).
 fn resolve_bindings(
     lib: &HashMap<String, Producer>,
-    bindings: &[DeriverBinding],
+    bindings: &[crate::tag_engine::categories::DeriverBinding],
     topic: &str,
 ) -> anyhow::Result<Vec<Field>> {
     bindings
@@ -232,17 +232,17 @@ impl TopicRunner {
         for s in &spec.split_sides {
             let SplitSidesSpec { highway, prefix, directed_keys, self_directed_keys } = s;
             // `directed_keys`/`self_directed_keys` are just key names in JSON — translated here
-            // into ordinary `PreCatStep::TagRule`s (a `directed` `Producer::Extract` per key),
-            // applied per side object post-split (see `tag_engine::producer::runner`). The split
-            // itself never sees these; it only unnests.
-            let directed_step = |key: &String, from: TagSet| PreCatStep::TagRule {
+            // into ordinary `InputTransform`s (a `directed` `Producer::Extract` per key), applied
+            // per side object post-split (see `topic::pipeline`). The split itself never sees
+            // these; it only unnests.
+            let directed_step = |key: &String, from: TagSet| InputTransform::TagRule {
                 output: key.clone(),
                 source: Producer::Extract {
                     key: Some(key.clone()), keys: None, from, side: None, sanitize: None,
                     consts: Map::new(), directed: true,
                 },
             };
-            let steps: Vec<PreCatStep> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
+            let steps: Vec<InputTransform> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
                 .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))
                 .collect();
             transformations.push(CenterLineTransformation {
@@ -252,26 +252,26 @@ impl TopicRunner {
             });
         }
 
-        // Split the declared transform pipeline into one ordered list of in-place `PreCatStep`s,
-        // applied in declaration order before `exclude_condition`/categorization.
+        // Split the declared input-transform pipeline into one ordered list of in-place
+        // `InputTransform`s, applied in declaration order before `exclude_condition`/categorization.
         let mut pre_cat_steps = Vec::new();
-        for t in &spec.transforms {
+        for t in &spec.input_transforms {
             match t {
-                ParamTransform::UnnestSidepathSelf { prefix } => {
+                InputTransformSpec::UnnestSidepathSelf { prefix } => {
                     let prefix = Box::leak(prefix.clone().into_boxed_str()) as &'static str;
-                    pre_cat_steps.push(PreCatStep::SidepathSelf { prefix });
+                    pre_cat_steps.push(InputTransform::SidepathSelf { prefix });
                 }
-                ParamTransform::TagRules { output, source } => {
-                    pre_cat_steps.push(PreCatStep::TagRule {
+                InputTransformSpec::TagRules { output, source } => {
+                    pre_cat_steps.push(InputTransform::TagRule {
                         output: output.clone(),
                         source: source.resolve(&macros, &sanitizers)
-                            .with_context(|| format!("topics/{name}/topic.json: transforms.{output}"))?,
+                            .with_context(|| format!("topics/{name}/topic.json: input_transforms.{output}"))?,
                     });
                 }
-                ParamTransform::StripPrefix {
+                InputTransformSpec::StripPrefix {
                     prefix, stamp_key, stamp_value, stamp_nested_under,
                 } => {
-                    pre_cat_steps.push(PreCatStep::StripPrefix {
+                    pre_cat_steps.push(InputTransform::StripPrefix {
                         prefix: prefix.clone(),
                         stamp_key: stamp_key.clone(),
                         stamp_value: stamp_value.clone(),
@@ -282,7 +282,7 @@ impl TopicRunner {
         }
         let exclude_check_at = pre_cat_steps
             .iter()
-            .position(|s| matches!(s, PreCatStep::SidepathSelf { .. }))
+            .position(|s| matches!(s, InputTransform::SidepathSelf { .. }))
             .unwrap_or(pre_cat_steps.len());
 
         // Precompute per-category effective derivers/consts/private across every kind. Category ids

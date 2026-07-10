@@ -2,11 +2,12 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
-use crate::tag_engine::producer::categories::categorize;
-use crate::tag_engine::producer::filter::eval_filter;
+use crate::tag_engine::categories::categorize;
+use crate::tag_engine::filter::eval_filter;
 use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::loader::topic::Field;
-use crate::tag_engine::loader::topic_runner::TopicRunner;
+use crate::tag_engine::transform::side_split::get_transformed_objects;
+use crate::topic::runner::TopicRunner;
+use crate::topic::spec::Field;
 use crate::osm::types::{ElementKind, OsmWay, RawTags};
 use crate::output::{
     geometry::{haversine_length_m, point_to_ewkb, to_ewkb, wgs84_to_3857},
@@ -14,7 +15,6 @@ use crate::output::{
     types::{OsmMeta, Side},
 };
 use rustc_hash::FxHashMap;
-use crate::tag_engine::producer::transform::side_split::get_transformed_objects;
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 
@@ -111,8 +111,8 @@ pub fn build_topic_rows(
     });
 
     // Per-object post-split steps (currently just `directed_keys`/`self_directed_keys`, ported
-    // from `split_sides`'s config into ordinary `PreCatStep`s): applied to each side object's own
-    // tags, using the self object's tags as `parent_tags` — still pre-categorization (it can
+    // from `split_sides`'s config into ordinary `InputTransform`s): applied to each side object's
+    // own tags, using the self object's tags as `parent_tags` — still pre-categorization (it can
     // influence which category a side object matches), just after cardinality is decided, since it
     // needs each object's resolved `side` to pick `:forward`/`:backward`. `side_split` itself only
     // ever does unnesting; this is what makes `directed_keys` an ordinary data-defined transform

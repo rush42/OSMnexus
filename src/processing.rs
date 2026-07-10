@@ -1,7 +1,7 @@
 use rustc_hash::FxHashMap;
 
-use crate::tag_engine::producer::runner::{build_geom_rows, build_way_geom_row};
-use crate::tag_engine::loader::topic_runner::TopicRunner;
+use crate::topic::pipeline::{build_geom_rows, build_way_geom_row};
+use crate::topic::TopicRunner;
 use crate::osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData, WayMeta};
 use crate::output::{
     geometry::{haversine_length_m, project_line},

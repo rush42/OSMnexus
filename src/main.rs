@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use osmnexus::{config, db, osm, output, processing, tag_engine};
+use osmnexus::{config, db, osm, output, processing, topic};
 
 use anyhow::Context;
 use clap::Parser;
@@ -17,8 +17,8 @@ use db::{
     schema,
     schema::{GeomTables, EDGE_TABLE, MEMBER_TABLE, NODE_TABLE, WAY_GEOM_TABLE},
 };
-use tag_engine::producer::runner::build_node_row;
-use tag_engine::loader::topic_runner::TopicRunner;
+use topic::pipeline::build_node_row;
+use topic::TopicRunner;
 use osm::reader::{stream_osm, Callbacks};
 use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};
 use output::rows::{

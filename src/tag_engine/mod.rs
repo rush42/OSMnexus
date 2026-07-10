@@ -1,15 +1,38 @@
-//! The tag-processing engine: how a way's raw OSM tags become one topic's output rows.
+//! The generic, topic-agnostic tag-rule engine: a JSON-rule tool for evaluating predicates
+//! (`Filter`) and values (`Producer`) against an object's tags, plus the category-matching
+//! machinery (`categories`/`decision_tree`) built on top of them. Nothing here knows about the
+//! `topics/<name>/{node,way,relation}/` directory convention or `topic.json` — that's
+//! `crate::topic`, which loads a topic directory and drives one element through this engine.
+//! See the `[[unbiased-engine-principle]]`: no tag-value/category/country literals live here
+//! either — everything domain-specific is data, not Rust.
 //!
-//! Split into two directory modules along a load-time/runtime boundary:
-//!
-//! - `producer`: pure per-object evaluation — the `Producer` engine (`Extract`/`Fallback`/`Cond`/
-//!   `Classify`/`SharedClassify`), the `Filter` predicate evaluator, the category discrimination
-//!   net walk, and the per-element pipeline (`pre_cat_steps` → `exclude_condition` → `transform` →
-//!   categorize → field evaluation). No disk I/O, no name lookups — every macro/sanitizer/
-//!   shared-classifier reference has already been resolved by the time anything here runs.
-//! - `loader`: JSON parsing plus resolving every named reference into that ready-to-run form —
-//!   `Filter::expand`, `Producer::resolve`, the category `excludes`-relation compiler, and
-//!   `TopicRunner::load`, which orchestrates all of it into one loaded topic.
+//! Each module owns one concept end-to-end, both its load-time reference resolution
+//! (macro/sanitizer expansion) and its runtime evaluation, rather than splitting those across
+//! separate directories:
+//! - `filter`: the `Filter` predicate AST, `expand` (macro/sanitize resolution), and `eval`.
+//! - `producer`: the `Producer` value engine (`Extract`/`Fallback`/`Cond`/`Classify`/
+//!   `SharedClassify`), its `resolve`, and its context (`ExtractCtx`/`TagSet`) and result
+//!   (`Produced`) types.
+//! - `sanitize`: the atomic `&str -> atomic` chain machinery (`SanitizeRef`/`AtomicChain`/`Step`)
+//!   underneath an `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
+//! - `classifier`: the generic first-match-wins rule table underneath `Producer::Classify`, plus
+//!   the load-time registry of shared, named classifiers.
+//! - `categories`: the category data model, its runtime first-match evaluator, and the load-time
+//!   compiler (`build_order`) of a category set's `excludes` relation into a priority order.
+//! - `decision_tree`: the discrimination net that prunes `categorize`'s first-match walk, plus its
+//!   load-time compiler.
+//! - `input_transforms`: `InputTransform`, the runtime in-place tag-mutation step.
+//! - `transform`: object-cardinality-changing steps (center-line side-split) and `strip_prefix` —
+//!   the operations needing dynamic key iteration a single `Producer` output can't express.
+//! - `keys`: generic tag-key selection helpers (`first_present`/`sided_keys`) shared by `producer`
+//!   and `filter`.
 
-pub mod loader;
+pub mod categories;
+pub mod classifier;
+pub mod decision_tree;
+pub mod filter;
+pub mod input_transforms;
+pub mod keys;
 pub mod producer;
+pub mod sanitize;
+pub mod transform;

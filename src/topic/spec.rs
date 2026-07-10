@@ -3,25 +3,28 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use crate::tag_engine::producer::filter::Filter;
-use crate::tag_engine::producer::{Producer, StrOrVec, TagSet};
+use crate::tag_engine::categories::DeriverBinding;
+use crate::tag_engine::filter::Filter;
+use crate::tag_engine::producer::{Producer, TagSet};
+use crate::tag_engine::sanitize::{SanitizeRef, StrOrVec};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
     pub table: String,
     /// Center-line splits — the engine's one built-in cardinality-changing transform (unnests a
     /// side's tags onto its own object; see `SplitSidesSpec`). Always applied last, after every
-    /// `transforms` entry, regardless of where it'd fall in declaration order — so it lives in its
-    /// own top-level list rather than interleaved into `transforms`.
+    /// `input_transforms` entry, regardless of where it'd fall in declaration order — so it lives
+    /// in its own top-level list rather than interleaved into `input_transforms`.
     #[serde(default)]
     pub split_sides: Vec<SplitSidesSpec>,
     /// Ordered pipeline of in-place tag rewrites, applied before categorization (see
-    /// `PreCatStep`). Each entry is data-driven — no `transform` discriminator: a bare
-    /// `{ "output": ..., <producer fields> }` (the common case) writes `output` from any full
-    /// `Producer`; `strip_prefix`/`unnest_sidepath_self`-shaped entries (see `ParamTransform`) are
-    /// the few operations needing dynamic key iteration a single `Producer` output can't express.
+    /// `tag_engine::input_transforms::InputTransform`). Each entry is data-driven — no `transform`
+    /// discriminator: a bare `{ "output": ..., <producer fields> }` (the common case) writes
+    /// `output` from any full `Producer`; `strip_prefix`/`unnest_sidepath_self`-shaped entries (see
+    /// `InputTransformSpec`) are the few operations needing dynamic key iteration a single
+    /// `Producer` output can't express.
     #[serde(default)]
-    pub transforms: Vec<ParamTransform>,
+    pub input_transforms: Vec<InputTransformSpec>,
     pub osm_fields: Vec<Field>,
     /// Simple field sanitizers: read one tag (or first present of several), clean it with a
     /// named `&str -> atomic` sanitizer, write to `tag`. Just sugar over `Field` — see
@@ -68,10 +71,10 @@ pub struct SplitSidesSpec {
     pub self_directed_keys: Vec<String>,
 }
 
-/// A `transforms` entry. Shape alone picks the variant (see `Deserialize` below) — no `transform`
-/// discriminator to write.
+/// An `input_transforms` entry. Shape alone picks the variant (see `Deserialize` below) — no
+/// `transform` discriminator to write.
 #[derive(Debug)]
-pub enum ParamTransform {
+pub enum InputTransformSpec {
     /// Strip `prefix` from matching keys, re-key onto the base tag, and stamp a lifecycle-style
     /// marker (`<base>:<stamp_key>` when nested under one of `stamp_nested_under`, else `stamp_key`).
     /// The one step needing dynamic key iteration, so it isn't expressible as a bare `Producer`.
@@ -109,7 +112,7 @@ pub enum ParamTransform {
     },
 }
 
-impl<'de> serde::Deserialize<'de> for ParamTransform {
+impl<'de> serde::Deserialize<'de> for InputTransformSpec {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -126,7 +129,7 @@ impl<'de> serde::Deserialize<'de> for ParamTransform {
                 stamp_nested_under: Vec<String>,
             }
             let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
-            Ok(ParamTransform::StripPrefix {
+            Ok(InputTransformSpec::StripPrefix {
                 prefix: r.prefix,
                 stamp_key: r.stamp_key,
                 stamp_value: r.stamp_value,
@@ -134,17 +137,17 @@ impl<'de> serde::Deserialize<'de> for ParamTransform {
             })
         } else if v.len() == 1 && v.contains_key("prefix") {
             let prefix = v["prefix"].as_str().ok_or_else(|| D::Error::custom("`prefix` must be a string"))?;
-            Ok(ParamTransform::UnnestSidepathSelf { prefix: prefix.to_owned() })
+            Ok(InputTransformSpec::UnnestSidepathSelf { prefix: prefix.to_owned() })
         } else {
             let output = v
                 .get("output")
                 .and_then(Value::as_str)
-                .ok_or_else(|| D::Error::custom("transforms entry needs an `output` field"))?
+                .ok_or_else(|| D::Error::custom("input_transforms entry needs an `output` field"))?
                 .to_owned();
             let mut rest = v;
             rest.remove("output");
             let source = Producer::deserialize(Value::Object(rest)).map_err(D::Error::custom)?;
-            Ok(ParamTransform::TagRules { output, source })
+            Ok(InputTransformSpec::TagRules { output, source })
         }
     }
 }
@@ -203,30 +206,11 @@ impl<'de> serde::Deserialize<'de> for Field {
                     keys: Some(in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![tag])),
                     from,
                     side: None,
-                    sanitize: Some(crate::tag_engine::producer::SanitizeRef::Name(name)),
+                    sanitize: Some(SanitizeRef::Name(name)),
                     consts: serde_json::Map::new(),
                     directed: false,
                 },
             },
         })
-    }
-}
-
-/// A reference from `topic.json` (or a category) into the `derivers.json` library.
-/// A bare string names a deriver whose output equals its name; the object form binds a
-/// deriver to a different output (e.g. `surface_from_parent` → `surface`).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum DeriverBinding {
-    Named(String),
-    Bound { deriver: String, output: String },
-}
-
-impl DeriverBinding {
-    pub fn deriver(&self) -> &str {
-        match self { DeriverBinding::Named(s) => s, DeriverBinding::Bound { deriver, .. } => deriver }
-    }
-    pub fn output(&self) -> &str {
-        match self { DeriverBinding::Named(s) => s, DeriverBinding::Bound { output, .. } => output }
     }
 }

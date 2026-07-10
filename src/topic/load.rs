@@ -1,43 +1,26 @@
-//! The load-time half of the tag engine: parsing JSON and resolving every named reference
-//! (macros, sanitizers, shared classifiers, deriver bindings) into a fully-resolved, ready-to-run
-//! form. Nothing here runs per-object — see `tag_engine::producer` for that.
-//!
-//! - `mod.rs` (this file): loading categories and shared macros/sanitizers from the `topics/` tree.
-//! - `filter`/`producer`/`classifier`: resolving the named references a `Filter`/`Producer` can
-//!   carry (`Filter::expand`, `Producer::resolve`, the shared-classifier registry).
-//! - `categories`/`decision_tree`: compiling a `CategoriesFile`'s `excludes` relation into a
-//!   priority order plus its discrimination-net pruning index.
-//! - `topic`: the JSON schema types (`TopicSpec` and friends) a topic's `topic.json` deserializes
-//!   into.
-//! - `topic_runner`: `TopicRunner`, the fully loaded, ready-to-run topic (orchestrates every
-//!   loader above into one struct `producer::runner` then evaluates against).
+//! Loading a topic's data from its `topics/<name>/` directory: categories, macros, and
+//! sanitizers. Encodes the topic-directory-layout convention (`{node,way,relation}/`,
+//! `macros.json`, `sanitizers.json`, `_shared/macros/`) — nothing generic-engine lives here, only
+//! the disk-I/O side of getting a topic's raw data into the shape `tag_engine` types expect.
 //!
 //! Layout: a topic organizes its categories into per-kind subfolders directly under the topic dir
 //! — `topics/<t>/{node,way,relation}/*.json` (one category per file, id = file stem). Topic-wide
 //! macros live in `topics/<t>/macros.json`. Each present kind subfolder becomes one `CategoriesFile`.
-
-pub mod categories;
-pub mod classifier;
-pub mod decision_tree;
-pub mod filter;
-pub mod producer;
-pub mod topic;
-pub mod topic_runner;
 
 use std::collections::HashMap;
 
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use crate::tag_engine::producer::categories::CategoriesFile;
-use crate::tag_engine::producer::filter::Filter;
-use crate::tag_engine::producer::AtomicChain;
+use crate::tag_engine::categories::CategoriesFile;
+use crate::tag_engine::filter::Filter;
+use crate::tag_engine::sanitize::AtomicChain;
 use crate::osm::types::ElementKind;
 
 /// Shallow merge, more-specific-scope-wins: every key in `over` overwrites the same key in
 /// `base`; keys only in `over` are added. The one primitive behind every "shared/default,
 /// specific-scope overrides" cascade in the engine — macros and sanitizers (shared → topic) here,
-/// consts and private (topic → category) in `topic_runner.rs`. Works over any map-like type
+/// consts and private (topic → category) in `runner.rs`. Works over any map-like type
 /// (`HashMap`, `serde_json::Map`) via the standard `IntoIterator`/`Extend` traits, so one
 /// implementation covers every level any concept happens to have — there's no single universal
 /// shared→topic→category cascade, different concepts stop at different levels (see the doc on

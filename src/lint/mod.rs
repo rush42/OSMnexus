@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::tag_engine::loader::{load_shared_macros, load_topic_categories};
-use crate::tag_engine::producer::categories::CategoriesFile;
-use crate::tag_engine::producer::filter::Filter;
+use crate::topic::load::{load_shared_macros, load_topic_categories};
+use crate::tag_engine::categories::CategoriesFile;
+use crate::tag_engine::filter::Filter;
 use crate::osm::types::ElementKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

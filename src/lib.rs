@@ -7,6 +7,7 @@ pub mod paths;
 pub mod processing;
 pub mod profile;
 pub mod tag_engine;
+pub mod topic;
 pub mod traffic;
 pub mod units;
 pub mod value_sets;

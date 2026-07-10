@@ -1,77 +1,17 @@
-//! The runtime half of the tag engine: pure per-object evaluation over an already-resolved
-//! `Producer`/`Filter`/etc — no disk I/O, no name lookups (every macro/sanitizer/shared-classifier
-//! reference has already been substituted at load time, see `tag_engine::loader`).
-//!
-//! - `mod.rs` (this file): the `Producer` engine (`Extract`/`Fallback`/`Cond`/`Classify`/
-//!   `SharedClassify`) that evaluates one field's value — shared by `osm_fields`, sanitizers, and
-//!   derivers alike. Atomic `&str -> atomic` chain steps (`Step`, data-defined, plus the one
-//!   built-in, `parse_length`) live here too, as the building blocks of a `sanitize:` chain.
-//! - `filter`/`classifier`: the generic first-match-wins rule table and predicate AST underneath
-//!   `Producer::Classify`, category matching, and `exclude_condition`.
-//! - `categories`/`decision_tree`: the category data model and its priority-order pruning net.
-//! - `keys`: generic tag-key selection helpers (`first_present`/`sided_keys`) shared by this
-//!   module and `filter`.
-//! - `topic_runner`: `PreCatStep`, the in-place tag-mutation step applied before categorization.
-//! - `runner`: the per-element pipeline (`pre_cat_steps` → `exclude_condition` → `transform` →
-//!   categorize → `producer` field evaluation).
-//! - `transform`: object-cardinality-changing steps (center-line side-split) — the one thing that
-//!   isn't a per-object field evaluation.
-
-pub mod categories;
-pub mod classifier;
-pub mod decision_tree;
-pub mod filter;
-pub mod keys;
-pub mod runner;
-pub mod topic_runner;
-pub mod transform;
+//! The `Producer` engine (`Extract`/`Fallback`/`Cond`/`Classify`/`SharedClassify`) that evaluates
+//! one field's value — shared by `osm_fields`, sanitizers, and derivers alike — its load-time
+//! reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result
+//! (`Produced`) types it evaluates over.
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::tag_engine::producer::filter::Filter;
+use crate::tag_engine::filter::Filter;
+use crate::tag_engine::keys;
+use crate::tag_engine::sanitize::{resolve_sanitize, AtomicChain, SanitizeRef};
 use crate::osm::types::RawTags;
-
-/// The identity atomic transform: the value a bare tag read produces when no `sanitize` is named.
-/// Not a special case — every `Extract` terminates in exactly one atomic transform; absent
-/// `sanitize` just means "the identity one," same as any named entry in `sanitizers.json`.
-fn identity(raw: &str) -> Value {
-    Value::String(raw.to_owned())
-}
-
-/// An `Extract`/`Filter` `sanitize` reference. `Name` is what raw JSON always deserializes into
-/// (tried first, so a plain string never lands in `Inline`); `resolve` (called once at load time,
-/// alongside `Filter::expand`/`Producer::expand_macros`) replaces it with the actual chain, so
-/// `eval` never does a registry lookup — same "resolve names once at load" treatment macros get.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum SanitizeRef {
-    Name(String),
-    Inline(AtomicChain),
-}
-
-impl SanitizeRef {
-    fn eval(&self, raw: &str) -> Option<Value> {
-        match self {
-            SanitizeRef::Inline(chain) => chain.eval(raw),
-            SanitizeRef::Name(name) => {
-                tracing::error!("unresolved sanitizer '{name}' reached eval — resolve should have run at load");
-                None
-            }
-        }
-    }
-}
-
-/// Evaluate a resolved `sanitize` reference against `raw`. `None` is the identity transform
-/// (always succeeds) — see `SanitizeRef`.
-pub fn resolve_sanitize(sanitize: Option<&SanitizeRef>, raw: &str) -> Option<Value> {
-    match sanitize {
-        None => Some(identity(raw)),
-        Some(r) => r.eval(raw),
-    }
-}
 
 /// A produced value plus optional provenance. The `consts` are arbitrary key/value pairs the
 /// winning fallback branch (or a Rust deriver) contributes; each is emitted as `<field>_<k>`
@@ -147,7 +87,7 @@ pub enum Producer {
     /// remaining limitation: rules only see raw obj/parent tags, not fields derived earlier in the
     /// same pass.
     Classify {
-        rules: Vec<crate::tag_engine::producer::classifier::Rule>,
+        rules: Vec<crate::tag_engine::classifier::Rule>,
         #[serde(default)] default: Option<Value>,
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
@@ -207,7 +147,7 @@ impl Producer {
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
                 rctx.obj_tags = tags;
-                crate::tag_engine::producer::classifier::classify_rules(rules, &rctx)
+                crate::tag_engine::classifier::classify_rules(rules, &rctx)
                     .or_else(|| default.clone())
                     .map(|value| Produced { value, consts: consts.clone() })
             }
@@ -218,13 +158,13 @@ impl Producer {
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
                 rctx.obj_tags = tags;
-                crate::tag_engine::loader::classifier::shared_classifier(shared)
+                crate::tag_engine::classifier::shared_classifier(shared)
                     .classify(&rctx)
                     .map(|value| Produced { value, consts: consts.clone() })
             }
 
             Producer::Cond { cond, then, r#else } => {
-                if crate::tag_engine::producer::filter::eval(cond, ctx) {
+                if crate::tag_engine::filter::eval(cond, ctx) {
                     then.eval(ctx)
                 } else {
                     r#else.as_ref().and_then(|p| p.eval(ctx))
@@ -263,186 +203,65 @@ impl Producer {
     }
 }
 
-/// An atomic `&str -> atomic` chain: a single `Step`, or a `Vec<Step>` folded left (each step
-/// consumes the previous string; the terminal step may yield any atomic `Value`). A bare string
-/// step (`Step::Builtin`) is a chain-of-one alias to a built-in transform.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum AtomicChain {
-    Chain(Vec<Step>),
-    One(Step),
-}
+// ── Load-time resolution ──────────────────────────────────────────────────────
 
-impl AtomicChain {
-    fn eval(&self, raw: &str) -> Option<Value> {
-        match self {
-            AtomicChain::One(step) => step.apply(raw),
-            AtomicChain::Chain(steps) => {
-                let mut cur = Value::String(raw.to_owned());
-                for s in steps {
-                    cur = s.apply(cur.as_str()?)?;
-                }
-                Some(cur)
-            }
-        }
-    }
-}
-
-// ── Chain steps: the atomic `&str -> atomic value` building blocks of an `AtomicChain` ──────
-
-/// Accepts either `"foo"` or `["foo", "bar"]` in JSON.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum StrOrVec {
-    One(String),
-    Many(Vec<String>),
-}
-
-impl StrOrVec {
-    pub(crate) fn into_vec(self) -> Vec<String> {
-        match self {
-            StrOrVec::One(s) => vec![s],
-            StrOrVec::Many(v) => v,
-        }
-    }
-
-    fn contains(&self, v: &str) -> bool {
-        match self {
-            StrOrVec::One(s) => s == v,
-            StrOrVec::Many(vs) => vs.iter().any(|s| s == v),
-        }
-    }
-}
-
-/// One transform step: a lookup table or an allow-list.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum Step {
-    /// Table lookup. Values may be any atomic JSON (string/bool/number) so a step can produce
-    /// e.g. a boolean (`{ "yes": true }`). On a miss, `on_miss` decides: "keep" (passthrough),
-    /// "drop"/absent (null), or any other string (a constant default).
-    Mapping {
-        mapping: HashMap<String, Value>,
-        #[serde(default)]
-        on_miss: Option<String>,
-    },
-    /// Inverted lookup shorthand: `{ "<output>": "<input>" | ["<input>", ...] }`. Collapses the
-    /// common case of many inputs → one output.
-    Cases {
-        cases: HashMap<String, StrOrVec>,
-        #[serde(default)]
-        on_miss: Option<String>,
-    },
-    /// Keep the value iff it is in the set, else drop (sugar for an identity mapping + drop).
-    Filter { filter: Vec<String> },
-    /// Drop the value iff it is in the set, else keep — the reject-list counterpart to `filter`.
-    /// Dropping short-circuits the chain (e.g. `{ "drop": [""] }` to discard empty input).
-    Drop { drop: Vec<String> },
-    /// Literal string rewrites, applied in order (each transforms the running value, then the
-    /// next sees the result — sed-like). A general, country-agnostic alternative to a hardcoded
-    /// normalizer (e.g. the former `traffic_sign` builtin). Never drops.
-    Replace { replace: Vec<ReplaceRule> },
-    /// A built-in Rust transform as a (terminal) chain step, e.g. `"parse_length"`. Lets a data
-    /// chain end in an algorithmic, possibly non-string transform.
-    Builtin(String),
-}
-
-/// One literal rewrite for a `replace` step.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReplaceRule {
-    from: String,
-    to: String,
-    #[serde(default)]
-    at: ReplaceAt,
-}
-
-/// Where a `ReplaceRule` matches: anywhere (replace every occurrence) or only as a prefix
-/// (rewrite the leading `from`, keep the suffix; no-op when absent).
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReplaceAt {
-    #[default]
-    Anywhere,
-    Prefix,
-}
-
-impl ReplaceRule {
-    fn apply(&self, s: &str) -> String {
-        match self.at {
-            ReplaceAt::Anywhere => s.replace(&self.from, &self.to),
-            ReplaceAt::Prefix => match s.strip_prefix(&self.from) {
-                Some(rest) => format!("{}{rest}", self.to),
-                None => s.to_owned(),
+impl Producer {
+    /// Resolve every named reference this producer (transitively) carries, once, at load time:
+    /// macros embedded in a `Classify`'s `rules[].when` or a `Cond`'s `cond` (`Filter::expand`),
+    /// `Extract`'s `sanitize:` (`SanitizeRef::resolve`), and `SharedClassify` (inlined into an
+    /// equivalent `Classify` — its rules go through the same macro/sanitize resolution as any
+    /// other `Classify`'s). After this, `eval` never does a registry lookup of any kind.
+    pub fn resolve(
+        &self,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, AtomicChain>,
+    ) -> anyhow::Result<Producer> {
+        Ok(match self {
+            Producer::Fallback { fallback } => Producer::Fallback {
+                fallback: fallback.iter().map(|p| p.resolve(macros, sanitizers)).collect::<anyhow::Result<_>>()?,
             },
-        }
-    }
-}
-
-impl Step {
-    fn apply(&self, v: &str) -> Option<Value> {
-        match self {
-            Step::Mapping { mapping, on_miss } => match mapping.get(v) {
-                Some(mapped) => Some(mapped.clone()),
-                None => apply_on_miss(on_miss.as_deref(), v),
+            Producer::Classify { rules, default, from, consts } => Producer::Classify {
+                rules: rules.iter()
+                    .map(|r| Ok(crate::tag_engine::classifier::Rule {
+                        when: r.when.expand(macros, sanitizers)?,
+                        value: r.value.clone(),
+                    }))
+                    .collect::<anyhow::Result<_>>()?,
+                default: default.clone(),
+                from: *from,
+                consts: consts.clone(),
             },
-            // Linear scan over the (typically short) case lists — no separate normalize-to-Mapping
-            // pass needed; `cases` is authoring sugar, not a performance-sensitive hot path.
-            Step::Cases { cases, on_miss } => {
-                match cases.iter().find(|(_, inputs)| inputs.contains(v)) {
-                    Some((output, _)) => Some(Value::String(output.clone())),
-                    None => apply_on_miss(on_miss.as_deref(), v),
+            Producer::SharedClassify { shared, from, consts } => {
+                let classifier = crate::tag_engine::classifier::shared_classifier(shared);
+                let rules = classifier.rules.iter()
+                    .map(|r| Ok(crate::tag_engine::classifier::Rule {
+                        when: r.when.expand(macros, sanitizers)?,
+                        value: r.value.clone(),
+                    }))
+                    .collect::<anyhow::Result<_>>()?;
+                Producer::Classify {
+                    rules,
+                    default: classifier.default.clone(),
+                    from: *from,
+                    consts: consts.clone(),
                 }
             }
-            Step::Filter { filter } => {
-                filter.iter().any(|a| a == v).then(|| Value::String(v.to_owned()))
-            }
-            Step::Drop { drop } => {
-                (!drop.iter().any(|a| a == v)).then(|| Value::String(v.to_owned()))
-            }
-            Step::Replace { replace } => {
-                let out = replace.iter().fold(v.to_owned(), |s, r| r.apply(&s));
-                Some(Value::String(out))
-            }
-            Step::Builtin(name) => apply_builtin(name, v),
-        }
+            Producer::Cond { cond, then, r#else } => Producer::Cond {
+                cond: cond.expand(macros, sanitizers)?,
+                then: Box::new(then.resolve(macros, sanitizers)?),
+                r#else: r#else.as_ref().map(|p| p.resolve(macros, sanitizers)).transpose()?.map(Box::new),
+            },
+            Producer::Extract { key, keys, from, side, sanitize, consts, directed } => Producer::Extract {
+                key: key.clone(),
+                keys: keys.clone(),
+                from: *from,
+                side: side.clone(),
+                sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
+                consts: consts.clone(),
+                directed: *directed,
+            },
+        })
     }
-}
-
-/// Shared `on_miss` handling for `Mapping`/`Cases`: "keep" (passthrough), "drop"/absent (null),
-/// or any other string (a constant default).
-fn apply_on_miss(on_miss: Option<&str>, v: &str) -> Option<Value> {
-    match on_miss {
-        Some("keep") => Some(Value::String(v.to_owned())),
-        Some("drop") | None => None,
-        Some(constant) => Some(Value::String(constant.to_owned())),
-    }
-}
-
-// ── Built-in registry ───────────────────────────────────────────────────
-
-/// Apply a named built-in `&str -> atomic` transform. Returns None when the value is rejected
-/// (not in an allowed set / unparseable).
-pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
-    match name {
-        "parse_length" => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
-        // `parse_length` is the lone built-in: universal unit arithmetic, not a finite table.
-        // Everything else (incl. the former `traffic_sign` country normalizer) lives in
-        // sanitizers.json — as mapping/cases/filter/replace chains.
-        other => { tracing::warn!("unknown built-in atomic transform: {other}"); None }
-    }
-}
-
-fn float_to_json(v: f32) -> serde_json::Number {
-    serde_json::Number::from_f64(v as f64).unwrap_or_else(|| serde_json::Number::from(0))
-}
-
-// ── parse_length ──────────────────────────────────────────────────────────────
-
-/// Converts OSM length strings to metres. Handles: "2.5", "2.5 m", "250 cm", "2500 mm", "8 ft",
-/// "8'6\"", … — the general `parse_compound_unit` algorithm over the `"length"` unit table
-/// (`_shared/units.json`); no unit-specific logic lives here.
-pub fn parse_length(raw: &str) -> Option<f32> {
-    crate::units::parse_compound_unit(raw, crate::units::unit_table("length"))
 }
 
 /// Resolve the raw string for an Extract — all three forms are a first-present fallback over a
@@ -470,8 +289,8 @@ fn read_raw<'a>(
 #[cfg(test)]
 mod classify_bool_tests {
     use super::*;
-    use crate::tag_engine::producer::classifier::{Rule, ValueSpec};
-    use crate::tag_engine::producer::filter::Filter;
+    use crate::tag_engine::classifier::{Rule, ValueSpec};
+    use crate::tag_engine::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
         ExtractCtx {
