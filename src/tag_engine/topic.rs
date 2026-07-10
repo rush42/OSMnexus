@@ -1,8 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 use crate::tag_engine::categories::Filter;
-use crate::tag_engine::sanitize::StrOrVec;
-use crate::tag_engine::producer::{Producer, TagSet};
+use crate::tag_engine::producer::{Producer, StrOrVec, TagSet};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {

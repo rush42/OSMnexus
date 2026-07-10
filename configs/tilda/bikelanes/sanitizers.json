@@ -1,6 +1,21 @@
 {
   "mtb_scale": [
-    { "replace": [ { "from": "+", "to": "" }, { "from": "-", "to": "" }, { "from": " ", "to": "" } ] }
+    {
+      "replace": [
+        {
+          "from": "+",
+          "to": ""
+        },
+        {
+          "from": "-",
+          "to": ""
+        },
+        {
+          "from": " ",
+          "to": ""
+        }
+      ]
+    }
   ],
   "marking": {
     "filter": [
@@ -15,35 +30,98 @@
   "separation": [
     {
       "cases": {
-        "bump": ["separation_kerb", "lane_separator"],
-        "no": ["surface"],
-        "tree_row": ["tree_row;kerb", "kerb;tree_row", "tree_row;kerb;parking_lane", "grass_verge;tree_row"],
-        "kerb": ["kerb;greenery"],
-        "parking_lane": ["parking_lane;kerb", "solid_line;parking_lane"]
+        "bump": [
+          "separation_kerb",
+          "lane_separator"
+        ],
+        "no": [
+          "surface"
+        ],
+        "tree_row": [
+          "tree_row;kerb",
+          "kerb;tree_row",
+          "tree_row;kerb;parking_lane",
+          "grass_verge;tree_row"
+        ],
+        "kerb": [
+          "kerb;greenery"
+        ],
+        "parking_lane": [
+          "parking_lane;kerb",
+          "solid_line;parking_lane"
+        ]
       },
       "on_miss": "keep"
     },
     {
-      "filter": ["no", "bollard", "flex_post", "vertical_panel", "studs", "bump", "planter", "kerb",
-                 "fence", "jersey_barrier", "guard_rail", "structure", "ditch", "greenery", "hedge",
-                 "tree_row", "cone", "kerb;parking_lane", "kerb;bollard", "yes"]
+      "filter": [
+        "no",
+        "bollard",
+        "flex_post",
+        "vertical_panel",
+        "studs",
+        "bump",
+        "planter",
+        "kerb",
+        "fence",
+        "jersey_barrier",
+        "guard_rail",
+        "structure",
+        "ditch",
+        "greenery",
+        "hedge",
+        "tree_row",
+        "cone",
+        "kerb;parking_lane",
+        "kerb;bollard",
+        "yes"
+      ]
     }
   ],
   "traffic_mode": [
     {
-      "cases": { "foot": "foot;bicycle", "motor_vehicle": "motorized", "no": "none" },
+      "cases": {
+        "foot": "foot;bicycle",
+        "motor_vehicle": "motorized",
+        "no": "none"
+      },
       "on_miss": "keep"
     },
     {
-      "filter": ["no", "motor_vehicle", "parking", "psv", "bicycle", "foot"]
+      "filter": [
+        "no",
+        "motor_vehicle",
+        "parking",
+        "psv",
+        "bicycle",
+        "foot"
+      ]
     }
   ],
   "parking": {
-    "cases": { "parking": ["yes", "lane", "street_side", "on_kerb", "half_on_kerb", "shoulder", "separate"] },
+    "cases": {
+      "parking": [
+        "yes",
+        "lane",
+        "street_side",
+        "on_kerb",
+        "half_on_kerb",
+        "shoulder",
+        "separate"
+      ]
+    },
     "on_miss": "drop"
   },
   "buffer": [
-    { "cases": { "0": ["no", "none"] }, "on_miss": "keep" },
+    {
+      "cases": {
+        "0": [
+          "no",
+          "none"
+        ]
+      },
+      "on_miss": "keep"
+    },
     "parse_length"
   ],
   "surface_color": {
@@ -70,7 +148,7 @@
     },
     "on_miss": "drop"
   },
-  "surface": {
+  "surface_normalize": {
     "cases": {
       "ground": [
         "earth",

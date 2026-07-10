@@ -14,18 +14,16 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::keys;
 use crate::tag_engine::filter::{CategoryContext, Filter};
-use crate::tag_engine::sanitize::{self, Step};
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
 
-/// A named atomic chain (a `sanitizers.json`-style entry, or any `Producer::Atomic`): resolves
-/// `name` in `registry` and evaluates it against `raw`; an unknown name falls back to the
-/// built-in registry (`sanitize::apply_builtin`) — same precedence `SanitizerRegistry` used to
-/// implement, now just a lookup against a plain `Producer` map.
+/// A named atomic chain (any `Producer::Atomic` entry, in `derivers.json` or folded in from
+/// `sanitizers.json` at load time): resolves `name` in `registry` and evaluates it against `raw`;
+/// an unknown name falls back to the built-in registry (`apply_builtin`).
 pub fn resolve_sanitize(registry: &HashMap<String, Producer>, name: &str, raw: &str) -> Option<Value> {
     match registry.get(name) {
         Some(p) => p.eval_atomic(raw),
-        None => sanitize::apply_builtin(name, raw),
+        None => apply_builtin(name, raw),
     }
 }
 
@@ -63,12 +61,13 @@ pub struct ExtractCtx<'a> {
 /// "what tools are available" — don't get tangled.
 #[derive(Clone, Copy)]
 pub struct Env<'a> {
-    /// Named atomic chains (`sanitizers.json`, data-defined) used to resolve `sanitize` names;
-    /// an unknown name falls back to the built-in registry (`resolve_sanitize`). A separate map
-    /// from a topic's `derivers.json` — despite sharing the `Producer` type, the two are different
-    /// namespaces (e.g. bikelanes' `surface` names both an atomic sanitizer and a composite
-    /// deriver — same name, different concepts, kept apart on purpose).
-    pub sanitizers: &'a HashMap<String, Producer>,
+    /// The topic's deriver library — `derivers.json` plus every `sanitizers.json` entry folded in
+    /// at load time (one registry, one `Producer` type; see `TopicRunner::load`). Used to resolve
+    /// `sanitize` names (`resolve_sanitize`, falling back to the built-in registry when a name
+    /// isn't found) and, at the `TopicRunner` level, `derivers` field bindings. A composite
+    /// producer can't reference another composite producer by name here — only `Producer::Atomic`
+    /// entries are resolvable via `sanitize:`.
+    pub derivers: &'a HashMap<String, Producer>,
     /// This kind's category macros (`categories/macros.json` + shared) — lets a `Classify`/`Cond`
     /// rule reference a `{"macro": "..."}` the same way a category condition can.
     pub macros: &'a HashMap<String, Filter>,
@@ -92,7 +91,7 @@ impl<'a> ExtractCtx<'a> {
             parent_highway: self.parent_tags.and_then(|t| t.get("highway")).map(String::as_str),
             parent_tags: self.parent_tags,
             infix: self.infix,
-            sanitizers: env.sanitizers,
+            sanitizers: env.derivers,
         }
     }
 }
@@ -255,7 +254,7 @@ impl Producer {
                     _ => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
                 }?;
                 let value = match sanitize {
-                    Some(name) => resolve_sanitize(env.sanitizers, name, raw)?,
+                    Some(name) => resolve_sanitize(env.derivers, name, raw)?,
                     None => Value::String(raw.to_owned()),
                 };
                 Some(Produced { value, consts: consts.clone() })
@@ -265,7 +264,7 @@ impl Producer {
                 let tags = from.resolve(ctx)?;
                 let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
                 let value = match sanitize {
-                    Some(name) => resolve_sanitize(env.sanitizers, name, raw)?,
+                    Some(name) => resolve_sanitize(env.derivers, name, raw)?,
                     None => Value::String(raw.to_owned()),
                 };
                 Some(Produced { value, consts: consts.clone() })
@@ -311,6 +310,163 @@ impl AtomicChain {
     }
 }
 
+// ── Chain steps: the atomic `&str -> atomic value` building blocks of an `AtomicChain` ──────
+
+/// Accepts either `"foo"` or `["foo", "bar"]` in JSON.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum StrOrVec {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl StrOrVec {
+    pub(crate) fn into_vec(self) -> Vec<String> {
+        match self {
+            StrOrVec::One(s) => vec![s],
+            StrOrVec::Many(v) => v,
+        }
+    }
+
+    fn contains(&self, v: &str) -> bool {
+        match self {
+            StrOrVec::One(s) => s == v,
+            StrOrVec::Many(vs) => vs.iter().any(|s| s == v),
+        }
+    }
+}
+
+/// One transform step: a lookup table or an allow-list.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Step {
+    /// Table lookup. Values may be any atomic JSON (string/bool/number) so a step can produce
+    /// e.g. a boolean (`{ "yes": true }`). On a miss, `on_miss` decides: "keep" (passthrough),
+    /// "drop"/absent (null), or any other string (a constant default).
+    Mapping {
+        mapping: HashMap<String, Value>,
+        #[serde(default)]
+        on_miss: Option<String>,
+    },
+    /// Inverted lookup shorthand: `{ "<output>": "<input>" | ["<input>", ...] }`. Collapses the
+    /// common case of many inputs → one output.
+    Cases {
+        cases: HashMap<String, StrOrVec>,
+        #[serde(default)]
+        on_miss: Option<String>,
+    },
+    /// Keep the value iff it is in the set, else drop (sugar for an identity mapping + drop).
+    Filter { filter: Vec<String> },
+    /// Drop the value iff it is in the set, else keep — the reject-list counterpart to `filter`.
+    /// Dropping short-circuits the chain (e.g. `{ "drop": [""] }` to discard empty input).
+    Drop { drop: Vec<String> },
+    /// Literal string rewrites, applied in order (each transforms the running value, then the
+    /// next sees the result — sed-like). A general, country-agnostic alternative to a hardcoded
+    /// normalizer (e.g. the former `traffic_sign` builtin). Never drops.
+    Replace { replace: Vec<ReplaceRule> },
+    /// A built-in Rust transform as a (terminal) chain step, e.g. `"parse_length"`. Lets a data
+    /// chain end in an algorithmic, possibly non-string transform.
+    Builtin(String),
+}
+
+/// One literal rewrite for a `replace` step.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReplaceRule {
+    from: String,
+    to: String,
+    #[serde(default)]
+    at: ReplaceAt,
+}
+
+/// Where a `ReplaceRule` matches: anywhere (replace every occurrence) or only as a prefix
+/// (rewrite the leading `from`, keep the suffix; no-op when absent).
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplaceAt {
+    #[default]
+    Anywhere,
+    Prefix,
+}
+
+impl ReplaceRule {
+    fn apply(&self, s: &str) -> String {
+        match self.at {
+            ReplaceAt::Anywhere => s.replace(&self.from, &self.to),
+            ReplaceAt::Prefix => match s.strip_prefix(&self.from) {
+                Some(rest) => format!("{}{rest}", self.to),
+                None => s.to_owned(),
+            },
+        }
+    }
+}
+
+impl Step {
+    fn apply(&self, v: &str) -> Option<Value> {
+        match self {
+            Step::Mapping { mapping, on_miss } => match mapping.get(v) {
+                Some(mapped) => Some(mapped.clone()),
+                None => apply_on_miss(on_miss.as_deref(), v),
+            },
+            // Linear scan over the (typically short) case lists — no separate normalize-to-Mapping
+            // pass needed; `cases` is authoring sugar, not a performance-sensitive hot path.
+            Step::Cases { cases, on_miss } => {
+                match cases.iter().find(|(_, inputs)| inputs.contains(v)) {
+                    Some((output, _)) => Some(Value::String(output.clone())),
+                    None => apply_on_miss(on_miss.as_deref(), v),
+                }
+            }
+            Step::Filter { filter } => {
+                filter.iter().any(|a| a == v).then(|| Value::String(v.to_owned()))
+            }
+            Step::Drop { drop } => {
+                (!drop.iter().any(|a| a == v)).then(|| Value::String(v.to_owned()))
+            }
+            Step::Replace { replace } => {
+                let out = replace.iter().fold(v.to_owned(), |s, r| r.apply(&s));
+                Some(Value::String(out))
+            }
+            Step::Builtin(name) => apply_builtin(name, v),
+        }
+    }
+}
+
+/// Shared `on_miss` handling for `Mapping`/`Cases`: "keep" (passthrough), "drop"/absent (null),
+/// or any other string (a constant default).
+fn apply_on_miss(on_miss: Option<&str>, v: &str) -> Option<Value> {
+    match on_miss {
+        Some("keep") => Some(Value::String(v.to_owned())),
+        Some("drop") | None => None,
+        Some(constant) => Some(Value::String(constant.to_owned())),
+    }
+}
+
+// ── Built-in registry ───────────────────────────────────────────────────
+
+/// Apply a named built-in `&str -> atomic` transform. Returns None when the value is rejected
+/// (not in an allowed set / unparseable).
+pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
+    match name {
+        "parse_length" => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
+        // `parse_length` is the lone built-in: universal unit arithmetic, not a finite table.
+        // Everything else (incl. the former `traffic_sign` country normalizer) lives in
+        // sanitizers.json — as mapping/cases/filter/replace chains.
+        other => { tracing::warn!("unknown built-in atomic transform: {other}"); None }
+    }
+}
+
+fn float_to_json(v: f32) -> serde_json::Number {
+    serde_json::Number::from_f64(v as f64).unwrap_or_else(|| serde_json::Number::from(0))
+}
+
+// ── parse_length ──────────────────────────────────────────────────────────────
+
+/// Converts OSM length strings to metres. Handles: "2.5", "2.5 m", "250 cm", "2500 mm", "8 ft",
+/// "8'6\"", … — the general `parse_compound_unit` algorithm over the `"length"` unit table
+/// (`_shared/units.json`); no unit-specific logic lives here.
+pub fn parse_length(raw: &str) -> Option<f32> {
+    crate::units::parse_compound_unit(raw, crate::units::unit_table("length"))
+}
+
 /// Resolve the raw string for an Extract — all three forms are a first-present fallback over a
 /// candidate key list: a sided expansion (`key:{side}` → `:both` → bare-left), a single `key`,
 /// or the explicit `keys` list.
@@ -351,10 +507,10 @@ mod classify_bool_tests {
     }
 
     fn env<'a>(
-        sanitizers: &'a HashMap<String, Producer>,
+        derivers: &'a HashMap<String, Producer>,
         macros: &'a HashMap<String, Filter>,
     ) -> Env<'a> {
-        Env { sanitizers, macros }
+        Env { derivers, macros }
     }
 
     /// A `Classify` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
@@ -416,10 +572,10 @@ mod directed_extract_tests {
     }
 
     fn env<'a>(
-        sanitizers: &'a HashMap<String, Producer>,
+        derivers: &'a HashMap<String, Producer>,
         macros: &'a HashMap<String, Filter>,
     ) -> Env<'a> {
-        Env { sanitizers, macros }
+        Env { derivers, macros }
     }
 
     fn directed(key: &str, from: TagSet) -> Producer {

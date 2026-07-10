@@ -78,7 +78,7 @@ pub fn build_topic_rows(
     // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
     // checks (which only ever saw the pre-unnest tags in the original pipeline).
     // Topic-wide lookup tables — identical for every step/object below, so built once.
-    let env = Env { sanitizers: &runner.sanitizers, macros: &categories.macros };
+    let env = Env { derivers: &runner.deriver_lib, macros: &categories.macros };
 
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {
@@ -90,7 +90,7 @@ pub fn build_topic_rows(
 
     if let Some(cond) = &topic.exclude_condition {
         let excluded = crate::profile::time(&crate::profile::EXCLUDE, || {
-            eval_filter(cond, &tags, &categories.macros, &runner.sanitizers)
+            eval_filter(cond, &tags, &categories.macros, &runner.deriver_lib)
         });
         if excluded {
             return Vec::new();
@@ -148,7 +148,7 @@ pub fn build_topic_rows(
             parent_highway: obj.parent_highway.as_deref(),
             parent_tags,
             infix: obj.infix,
-            sanitizers: &runner.sanitizers,
+            sanitizers: &runner.deriver_lib,
         };
 
         let category = match crate::profile::time(&crate::profile::CATEGORIZE, || categorize(&ctx, categories)) {
