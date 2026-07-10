@@ -564,7 +564,7 @@ mod tests {
         categorize, categorize_linear, load_shared_macros, load_topic_categories, CategoryContext,
         CategoriesFile, OrderedNode,
     };
-    use crate::tag_engine::sanitize::SanitizerRegistry;
+    use crate::tag_engine::producer::Producer;
     use crate::lint::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use crate::osm::types::RawTags;
     use crate::output::types::Side;
@@ -598,7 +598,7 @@ mod tests {
     /// object we can construct — the tree only drops provably-false nodes.
     #[test]
     fn tree_matches_linear() {
-        let sanitizers = SanitizerRegistry::new(HashMap::new());
+        let sanitizers: HashMap<String, Producer> = HashMap::new();
 
         for (topic, dir) in topic_category_dirs() {
           let shared = dir.parent().unwrap().join("_shared");

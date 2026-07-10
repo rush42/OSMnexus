@@ -77,10 +77,6 @@
     {
       "deriver": "surface_from_parent",
       "output": "surface"
-    },
-    {
-      "deriver": "smoothness_from_parent",
-      "output": "smoothness"
     }
   ],
   "consts": {

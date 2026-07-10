@@ -109,8 +109,8 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
             vals.sort();
             Expr::Lit(Literal::Pos(Predicate::FirstTagIn(first_tag.clone(), vals)))
         },
-        Filter::FirstTagExists { first_tag, exists: true } => Expr::Lit(Literal::Pos(Predicate::Exists(first_tag[0].clone()))), // approximation
-        Filter::FirstTagExists { first_tag, exists: false } => Expr::Lit(Literal::Neg(Predicate::Exists(first_tag[0].clone()))),
+        Filter::FirstTagExists { first_tag, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(first_tag[0].clone()))), // approximation
+        Filter::FirstTagExists { first_tag, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(first_tag[0].clone()))),
 
         Filter::ParentTagEq { parent_tag, eq, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(format!("parent_{}", parent_tag), eq.clone()))),
         Filter::ParentTagContains { parent_tag, contains } => Expr::Lit(Literal::Pos(Predicate::Contains(format!("parent_{}", parent_tag), contains.clone()))),

@@ -1,7 +1,8 @@
-//! Sanitizers: pure `&str -> atomic value` functions (the counterpart to `derive.rs`).
-//! Each takes a single already-extracted tag value and returns a cleaned/validated atomic
-//! output. Tag selection (which key, which side, obj/parent/centerline, fallbacks) is the
-//! extraction layer's job (`producer.rs`, via `keys.rs`'s primitives), not the sanitizer's.
+//! Atomic `&str -> atomic value` transform steps — the building blocks of a `Producer::Atomic`
+//! chain (`producer.rs`). Each step takes a single already-extracted tag value and returns a
+//! cleaned/validated atomic output. Tag selection (which key, which side, obj/parent/centerline,
+//! fallbacks) is the extraction layer's job (`producer.rs`, via `keys.rs`'s primitives), not a
+//! step's.
 
 use std::collections::HashMap;
 
@@ -12,14 +13,12 @@ fn float_to_json(v: f32) -> Number {
     Number::from_f64(v as f64).unwrap_or_else(|| Number::from(0))
 }
 
-// ── Data-driven sanitizer chains (sanitizers.json) ────────────────────────────────
+// ── Chain steps (sanitizers.json, and any `Producer::Atomic` chain) ──────────────
 //
-// A `SanitizerDef` is a pure `&str -> Option<atomic>` transform defined in data:
-//   - an array of steps  → a chain (folded left, short-circuiting on drop)
-//   - a single step object → `{ "mapping": {…}, "on_miss": … }` or `{ "filter": [...] }`
-//   - a bare string        → an alias to a built-in Rust sanitizer
-// Tag selection (which key, side, fallbacks) stays in the extraction layer; a sanitizer
-// only ever sees one already-extracted value.
+// A chain is `Vec<Step>`, folded left (each step consumes the previous string, short-circuiting
+// on drop); the terminal step may yield any atomic `Value`. A bare string step is an alias to a
+// built-in Rust transform (`apply_builtin`). Tag selection (which key, side, fallbacks) stays in
+// the extraction layer; a step only ever sees one already-extracted value.
 
 /// Accepts either `"foo"` or `["foo", "bar"]` in JSON.
 #[derive(Debug, Clone, Deserialize)]
@@ -34,6 +33,13 @@ impl StrOrVec {
         match self {
             StrOrVec::One(s) => vec![s],
             StrOrVec::Many(v) => v,
+        }
+    }
+
+    fn contains(&self, v: &str) -> bool {
+        match self {
+            StrOrVec::One(s) => s == v,
+            StrOrVec::Many(vs) => vs.iter().any(|s| s == v),
         }
     }
 }
@@ -51,7 +57,7 @@ pub enum Step {
         on_miss: Option<String>,
     },
     /// Inverted lookup shorthand: `{ "<output>": "<input>" | ["<input>", ...] }`. Collapses the
-    /// common case of many inputs → one output. Normalized into a forward `Mapping` at load.
+    /// common case of many inputs → one output.
     Cases {
         cases: HashMap<String, StrOrVec>,
         #[serde(default)]
@@ -103,38 +109,20 @@ impl ReplaceRule {
 }
 
 impl Step {
-    /// Expand a `Cases` step into the equivalent forward `Mapping`; other steps pass through.
-    /// Done once at registry build so `apply` stays an O(1) lookup.
-    fn normalize(self) -> Step {
-        match self {
-            Step::Cases { cases, on_miss } => {
-                let mut mapping = HashMap::new();
-                for (output, inputs) in cases {
-                    for input in inputs.into_vec() {
-                        let val = Value::String(output.clone());
-                        if let Some(prev) = mapping.insert(input.clone(), val) {
-                            tracing::warn!(
-                                "sanitizer `cases`: input {input:?} maps to both {prev:?} and {output:?}"
-                            );
-                        }
-                    }
-                }
-                Step::Mapping { mapping, on_miss }
-            }
-            other => other,
-        }
-    }
-
-    fn apply(&self, v: &str) -> Option<Value> {
+    pub(crate) fn apply(&self, v: &str) -> Option<Value> {
         match self {
             Step::Mapping { mapping, on_miss } => match mapping.get(v) {
                 Some(mapped) => Some(mapped.clone()),
-                None => match on_miss.as_deref() {
-                    Some("keep") => Some(Value::String(v.to_owned())),
-                    Some("drop") | None => None,
-                    Some(constant) => Some(Value::String(constant.to_owned())),
-                },
+                None => apply_on_miss(on_miss.as_deref(), v),
             },
+            // Linear scan over the (typically short) case lists — no separate normalize-to-Mapping
+            // pass needed; `cases` is authoring sugar, not a performance-sensitive hot path.
+            Step::Cases { cases, on_miss } => {
+                match cases.iter().find(|(_, inputs)| inputs.contains(v)) {
+                    Some((output, _)) => Some(Value::String(output.clone())),
+                    None => apply_on_miss(on_miss.as_deref(), v),
+                }
+            }
             Step::Filter { filter } => {
                 filter.iter().any(|a| a == v).then(|| Value::String(v.to_owned()))
             }
@@ -146,73 +134,21 @@ impl Step {
                 Some(Value::String(out))
             }
             Step::Builtin(name) => apply_builtin(name, v),
-            // Normalized into Mapping at registry build (SanitizerRegistry::new).
-            Step::Cases { .. } => unreachable!("`cases` step must be normalized before apply"),
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum SanitizerDef {
-    Chain(Vec<Step>),
-    One(Step),
-    /// Alias to a built-in Rust sanitizer (e.g. `"parse_length"`).
-    Alias(String),
-}
-
-impl SanitizerDef {
-    /// Normalize every `Cases` step into its forward `Mapping` (done once at registry build).
-    fn normalize(self) -> Self {
-        match self {
-            SanitizerDef::One(step) => SanitizerDef::One(step.normalize()),
-            SanitizerDef::Chain(steps) => {
-                SanitizerDef::Chain(steps.into_iter().map(Step::normalize).collect())
-            }
-            alias => alias,
-        }
-    }
-
-    /// Fold the steps. String-producing steps chain (each consumes the previous string); the
-    /// final step may yield any atomic `Value`. `Alias` is resolved by the registry first.
-    fn apply_chain(&self, raw: &str) -> Option<Value> {
-        match self {
-            SanitizerDef::One(step) => step.apply(raw),
-            SanitizerDef::Chain(steps) => {
-                let mut cur = Value::String(raw.to_owned());
-                for s in steps {
-                    cur = s.apply(cur.as_str()?)?;
-                }
-                Some(cur)
-            }
-            SanitizerDef::Alias(_) => None,
-        }
+/// Shared `on_miss` handling for `Mapping`/`Cases`: "keep" (passthrough), "drop"/absent (null),
+/// or any other string (a constant default).
+fn apply_on_miss(on_miss: Option<&str>, v: &str) -> Option<Value> {
+    match on_miss {
+        Some("keep") => Some(Value::String(v.to_owned())),
+        Some("drop") | None => None,
+        Some(constant) => Some(Value::String(constant.to_owned())),
     }
 }
 
-/// Resolves a sanitizer name to either a data-defined chain (sanitizers.json) or a built-in.
-/// Custom definitions win; an unknown name falls back to the built-in registry.
-#[derive(Debug, Default)]
-pub struct SanitizerRegistry {
-    custom: HashMap<String, SanitizerDef>,
-}
-
-impl SanitizerRegistry {
-    pub fn new(custom: HashMap<String, SanitizerDef>) -> Self {
-        let custom = custom.into_iter().map(|(k, v)| (k, v.normalize())).collect();
-        Self { custom }
-    }
-
-    pub fn apply(&self, name: &str, raw: &str) -> Option<Value> {
-        match self.custom.get(name) {
-            Some(SanitizerDef::Alias(builtin)) => apply_builtin(builtin, raw),
-            Some(def) => def.apply_chain(raw),
-            None => apply_builtin(name, raw),
-        }
-    }
-}
-
-// ── Built-in sanitizer registry ───────────────────────────────────────────────────
+// ── Built-in registry ───────────────────────────────────────────────────
 
 /// Apply a named built-in `&str -> atomic` sanitizer. Returns None when the value is
 /// rejected (not in an allowed set / unparseable).

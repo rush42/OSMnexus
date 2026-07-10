@@ -55,8 +55,12 @@
       "output": "surface"
     },
     {
-      "deriver": "smoothness_from_parent",
-      "output": "smoothness"
+      "deriver": "traffic_mode_left_from_parking_both",
+      "output": "traffic_mode_left"
+    },
+    {
+      "deriver": "traffic_mode_right_from_parking_both",
+      "output": "traffic_mode_right"
     }
   ],
   "consts": {

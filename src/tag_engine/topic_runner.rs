@@ -4,9 +4,7 @@ use anyhow::Context;
 use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
-use crate::tag_engine::filter::Filter;
-use crate::tag_engine::sanitize::{SanitizerDef, SanitizerRegistry};
-use crate::tag_engine::producer::{ExtractCtx, Producer, TagSet};
+use crate::tag_engine::producer::{Env, ExtractCtx, Producer, TagSet};
 use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, SplitSidesSpec, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
@@ -56,9 +54,7 @@ impl PreCatStep {
         obj_side: &str,
         prefix: Option<&str>,
         infix: Option<&str>,
-        sanitizers: &SanitizerRegistry,
-        derivers: &HashMap<String, Producer>,
-        macros: &HashMap<String, Filter>,
+        env: &Env,
     ) {
         match self {
             PreCatStep::TagRule { output, source } => {
@@ -69,11 +65,8 @@ impl PreCatStep {
                     obj_side,
                     prefix,
                     infix,
-                    sanitizers,
-                    derivers,
-                    macros,
                 };
-                if let Some(p) = source.eval(&ctx) {
+                if let Some(p) = source.eval(&ctx, env) {
                     match p.value {
                         Value::Null => { tags.remove(output); }
                         Value::String(s) => { tags.insert(output.clone(), s); }
@@ -118,10 +111,11 @@ pub struct TopicRunner {
     /// doesn't use this list; it's folded into `topic_derivers` (see there) so sanitizers and
     /// derivers run as one list through one `eval_fields` call.
     pub sanitizer_fields: Vec<Field>,
-    /// Data-defined sanitizer chains (sanitizers.json) layered over the built-in registry.
-    pub sanitizers: SanitizerRegistry,
-    /// The deriver library (derivers.json) — kept so Rust derivers can re-evaluate a sibling
-    /// by name (e.g. smoothness_parent re-runs the base smoothness fallback on the parent).
+    /// Named atomic chains (sanitizers.json); an unknown name falls back to the built-in registry
+    /// (`resolve_sanitize`). Kept as its own map/namespace, separate from `deriver_lib` — see the
+    /// field doc on `ExtractCtx::sanitizers` for why they can't just be one flat map.
+    pub sanitizers: HashMap<String, Producer>,
+    /// The deriver library (derivers.json).
     pub deriver_lib: HashMap<String, Producer>,
     /// Topic-default fields applied to every object regardless of category: desugared sanitizers
     /// first, then resolved `derivers.json` bindings (`topic.json`'s `derivers` list) — sanitizers
@@ -212,9 +206,14 @@ impl TopicRunner {
         // JSON syntax needed.
         let sanitizer_fields: Vec<Field> = spec.sanitizers.clone();
 
-        // Load the data-defined sanitizer chains: shared (topics/_shared/sanitizers.json) merged
-        // with the topic's own, topic-local winning on name conflict. Names win over built-ins.
-        let read_sanitizers = |path: &std::path::Path| -> anyhow::Result<HashMap<String, SanitizerDef>> {
+        // Load the data-defined atomic chains (named `sanitize` targets): shared
+        // (topics/_shared/sanitizers.json) merged with the topic's own, topic-local winning on
+        // name conflict. An unrecognized name falls back to the built-in registry
+        // (`resolve_sanitize`), not handled here. Same `Producer` type as `derivers.json` below,
+        // but kept as a separate map/namespace — a name can (and does, e.g. bikelanes' `surface`)
+        // mean an atomic sanitizer and a composite deriver at once; flattening into one map would
+        // silently let one clobber the other.
+        let read_sanitizers = |path: &std::path::Path| -> anyhow::Result<HashMap<String, Producer>> {
             if path.exists() {
                 Ok(serde_json::from_str(&std::fs::read_to_string(path)?)
                     .with_context(|| format!("parsing {}", path.display()))?)
@@ -223,11 +222,10 @@ impl TopicRunner {
             }
         };
         let shared_dir = base.parent().expect("topics/<name> has a parent").join("_shared");
-        let mut sanitizer_defs = read_sanitizers(&shared_dir.join("sanitizers.json"))?;
+        let mut sanitizers = read_sanitizers(&shared_dir.join("sanitizers.json"))?;
         for (k, v) in read_sanitizers(&base.join("sanitizers.json"))? {
-            sanitizer_defs.insert(k, v); // topic-local overrides shared
+            sanitizers.insert(k, v); // topic-local overrides shared
         }
-        let sanitizers = SanitizerRegistry::new(sanitizer_defs);
 
         // Load the deriver library (named single-output extractors). Optional: a topic with no
         // derivers (e.g. barrierLines) may omit the file.

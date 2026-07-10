@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::tag_engine::keys::first_present;
-use crate::tag_engine::sanitize::SanitizerRegistry;
+use crate::tag_engine::producer::{resolve_sanitize, Producer};
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
 use crate::value_sets::value_set;
@@ -23,8 +23,9 @@ pub struct CategoryContext<'a> {
     pub parent_tags: Option<&'a RawTags>,
     /// The infix that matched during side splitting (e.g. "", "left", "both").
     pub infix: Option<&'a str>,
-    /// Sanitizer registry — lets predicates normalize separation/traffic_mode via data.
-    pub sanitizers: &'a SanitizerRegistry,
+    /// Named atomic chains (`sanitizers.json`) — lets predicates normalize separation/traffic_mode
+    /// via data (`resolve_sanitize`).
+    pub sanitizers: &'a HashMap<String, Producer>,
 }
 
 /// Filter expression. Variants are tried in declaration order by serde's untagged deserializer,
@@ -65,7 +66,11 @@ pub enum Filter {
     /// First-present sibling of `TagInSet`; also honours an optional `sanitize` chain.
     FirstTagInSet { first_tag: Vec<String>, in_set: String, #[serde(default)] sanitize: Option<String> },
     FirstTagIn   { first_tag: Vec<String>, r#in:     Vec<String>, #[serde(default)] sanitize: Option<String> },
-    FirstTagExists { first_tag: Vec<String>, exists: bool        },
+    /// With `sanitize` set, "exists" means "the first-present candidate's value survives that
+    /// sanitizer" (e.g. an unrecognized/garbage tag value counts as absent), not mere raw key
+    /// presence — matching how a sided producer read (`first_present` + `sanitize`) decides
+    /// whether it produced anything.
+    FirstTagExists { first_tag: Vec<String>, exists: bool, #[serde(default)] sanitize: Option<String> },
 
     // Parent tag predicates
     ParentTagIn        { parent_tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<String> },
@@ -139,8 +144,10 @@ pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<Stri
         Filter::FirstTagIn { first_tag, r#in, sanitize } =>
             read_str(first_present(ctx.tags, first_tag), sanitize, ctx.sanitizers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
-        Filter::FirstTagExists { first_tag, exists } =>
+        Filter::FirstTagExists { first_tag, exists, sanitize: None } =>
             first_tag.iter().any(|k| ctx.tags.contains_key(k)) == *exists,
+        Filter::FirstTagExists { first_tag, exists, sanitize: Some(name) } =>
+            read_str(first_present(ctx.tags, first_tag), &Some(name.clone()), ctx.sanitizers).is_some() == *exists,
 
         Filter::ParentTagEq { parent_tag, eq, sanitize } =>
             read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, ctx.sanitizers)
@@ -186,7 +193,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<Stri
 fn read_num(ctx: &CategoryContext, key: &str, sanitize: &Option<String>) -> Option<f64> {
     let raw = ctx.tags.get(key)?;
     match sanitize {
-        Some(name) => num_from_value(&ctx.sanitizers.apply(name, raw)?),
+        Some(name) => num_from_value(&resolve_sanitize(ctx.sanitizers, name, raw)?),
         None => raw.trim().parse().ok(),
     }
 }
@@ -207,12 +214,12 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
 fn read_str<'a>(
     raw: Option<&'a str>,
     sanitize: &Option<String>,
-    reg: &SanitizerRegistry,
+    reg: &HashMap<String, Producer>,
 ) -> Option<std::borrow::Cow<'a, str>> {
     let raw = raw?;
     match sanitize {
         None => Some(std::borrow::Cow::Borrowed(raw)),
-        Some(name) => match reg.apply(name, raw)? {
+        Some(name) => match resolve_sanitize(reg, name, raw)? {
             serde_json::Value::String(s) => Some(std::borrow::Cow::Owned(s)),
             other => other.as_str().map(|s| std::borrow::Cow::Owned(s.to_owned())),
         },
@@ -225,7 +232,7 @@ pub fn eval_filter(
     filter: &Filter,
     tags: &RawTags,
     macros: &HashMap<String, Filter>,
-    sanitizers: &SanitizerRegistry,
+    sanitizers: &HashMap<String, Producer>,
 ) -> bool {
     let ctx = CategoryContext {
         tags,
