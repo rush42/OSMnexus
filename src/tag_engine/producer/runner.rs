@@ -2,10 +2,11 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
-use crate::tag_engine::categories::{categorize, eval_filter};
+use crate::tag_engine::producer::categories::categorize;
+use crate::tag_engine::producer::filter::eval_filter;
 use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::topic::Field;
-use crate::tag_engine::topic_runner::TopicRunner;
+use crate::tag_engine::loader::topic::Field;
+use crate::tag_engine::loader::topic_runner::TopicRunner;
 use crate::osm::types::{ElementKind, OsmWay, RawTags};
 use crate::output::{
     geometry::{haversine_length_m, point_to_ewkb, to_ewkb, wgs84_to_3857},
@@ -13,7 +14,7 @@ use crate::output::{
     types::{OsmMeta, Side},
 };
 use rustc_hash::FxHashMap;
-use crate::tag_engine::transform::side_split::get_transformed_objects;
+use crate::tag_engine::producer::transform::side_split::get_transformed_objects;
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 

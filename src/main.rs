@@ -17,8 +17,8 @@ use db::{
     schema,
     schema::{GeomTables, EDGE_TABLE, MEMBER_TABLE, NODE_TABLE, WAY_GEOM_TABLE},
 };
-use tag_engine::runner::build_node_row;
-use tag_engine::topic_runner::TopicRunner;
+use tag_engine::producer::runner::build_node_row;
+use tag_engine::loader::topic_runner::TopicRunner;
 use osm::reader::{stream_osm, Callbacks};
 use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};
 use output::rows::{

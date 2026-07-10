@@ -1,19 +1,37 @@
-//! The extraction layer: how a field's value is produced from a way's tags.
+//! The runtime half of the tag engine: pure per-object evaluation over an already-resolved
+//! `Producer`/`Filter`/etc — no disk I/O, no name lookups (every macro/sanitizer/shared-classifier
+//! reference has already been substituted at load time, see `tag_engine::loader`).
 //!
-//! A `Producer` is either an `Extract` (read a tag — single `key` or first-present `keys`,
-//! from obj/parent/centerline, optional `side` expansion, optional `sanitize`), a `fallback`
-//! over producers (first non-empty wins), or a `cond` (produce from one of two producers, gated
-//! by a `Filter`). This one combinator subsumes the old obj-then-parent lookup, multi-key
-//! lookup, the sided (`key:{side}`→`:both`→bare-left) lookup, and the
-//! `surface:colour`/`surface:color` fallback.
+//! - `mod.rs` (this file): the `Producer` engine (`Extract`/`Fallback`/`Cond`/`Classify`/
+//!   `SharedClassify`) that evaluates one field's value — shared by `osm_fields`, sanitizers, and
+//!   derivers alike. Atomic `&str -> atomic` chain steps (`Step`, data-defined, plus the one
+//!   built-in, `parse_length`) live here too, as the building blocks of a `sanitize:` chain.
+//! - `filter`/`classifier`: the generic first-match-wins rule table and predicate AST underneath
+//!   `Producer::Classify`, category matching, and `exclude_condition`.
+//! - `categories`/`decision_tree`: the category data model and its priority-order pruning net.
+//! - `keys`: generic tag-key selection helpers (`first_present`/`sided_keys`) shared by this
+//!   module and `filter`.
+//! - `topic_runner`: `PreCatStep`, the in-place tag-mutation step applied before categorization.
+//! - `runner`: the per-element pipeline (`pre_cat_steps` → `exclude_condition` → `transform` →
+//!   categorize → `producer` field evaluation).
+//! - `transform`: object-cardinality-changing steps (center-line side-split) — the one thing that
+//!   isn't a per-object field evaluation.
+
+pub mod categories;
+pub mod classifier;
+pub mod decision_tree;
+pub mod filter;
+pub mod keys;
+pub mod runner;
+pub mod topic_runner;
+pub mod transform;
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::tag_engine::keys;
-use crate::tag_engine::filter::Filter;
+use crate::tag_engine::producer::filter::Filter;
 use crate::osm::types::RawTags;
 
 /// The identity atomic transform: the value a bare tag read produces when no `sanitize` is named.
@@ -35,22 +53,6 @@ pub enum SanitizeRef {
 }
 
 impl SanitizeRef {
-    /// `name` not found in `sanitizers` falls back to a built-in alias (`Step::Builtin`, e.g.
-    /// `"parse_length"`) rather than erroring — mirrors the pre-inlining fallback
-    /// (`None => apply_builtin(name, raw)`). A truly unrecognized name still isn't caught until
-    /// `apply_builtin` runs (it has no load-time name registry of its own, just one built-in), so
-    /// it warns-and-drops per row rather than failing to load — the same looseness the built-in
-    /// fallback always had.
-    pub(crate) fn resolve(&self, sanitizers: &HashMap<String, AtomicChain>) -> anyhow::Result<SanitizeRef> {
-        match self {
-            SanitizeRef::Name(name) => Ok(SanitizeRef::Inline(match sanitizers.get(name) {
-                Some(chain) => chain.clone(),
-                None => AtomicChain::One(Step::Builtin(name.clone())),
-            })),
-            SanitizeRef::Inline(_) => Ok(self.clone()),
-        }
-    }
-
     fn eval(&self, raw: &str) -> Option<Value> {
         match self {
             SanitizeRef::Inline(chain) => chain.eval(raw),
@@ -60,13 +62,6 @@ impl SanitizeRef {
             }
         }
     }
-}
-
-fn resolve_opt_sanitize(
-    sanitize: &Option<SanitizeRef>,
-    sanitizers: &HashMap<String, AtomicChain>,
-) -> anyhow::Result<Option<SanitizeRef>> {
-    sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()
 }
 
 /// Evaluate a resolved `sanitize` reference against `raw`. `None` is the identity transform
@@ -152,7 +147,7 @@ pub enum Producer {
     /// remaining limitation: rules only see raw obj/parent tags, not fields derived earlier in the
     /// same pass.
     Classify {
-        rules: Vec<crate::tag_engine::classifier::Rule>,
+        rules: Vec<crate::tag_engine::producer::classifier::Rule>,
         #[serde(default)] default: Option<Value>,
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
@@ -203,63 +198,6 @@ pub enum Producer {
 }
 
 impl Producer {
-    /// Resolve every named reference this producer (transitively) carries, once, at load time:
-    /// macros embedded in a `Classify`'s `rules[].when` or a `Cond`'s `cond` (`Filter::expand`),
-    /// `Extract`'s `sanitize:` (`SanitizeRef::resolve`), and `SharedClassify` (inlined into an
-    /// equivalent `Classify` — its rules go through the same macro/sanitize resolution as any
-    /// other `Classify`'s). After this, `eval` never does a registry lookup of any kind.
-    pub fn resolve(
-        &self,
-        macros: &HashMap<String, Filter>,
-        sanitizers: &HashMap<String, AtomicChain>,
-    ) -> anyhow::Result<Producer> {
-        Ok(match self {
-            Producer::Fallback { fallback } => Producer::Fallback {
-                fallback: fallback.iter().map(|p| p.resolve(macros, sanitizers)).collect::<anyhow::Result<_>>()?,
-            },
-            Producer::Classify { rules, default, from, consts } => Producer::Classify {
-                rules: rules.iter()
-                    .map(|r| Ok(crate::tag_engine::classifier::Rule {
-                        when: r.when.expand(macros, sanitizers)?,
-                        value: r.value.clone(),
-                    }))
-                    .collect::<anyhow::Result<_>>()?,
-                default: default.clone(),
-                from: *from,
-                consts: consts.clone(),
-            },
-            Producer::SharedClassify { shared, from, consts } => {
-                let classifier = crate::tag_engine::classifier::shared_classifier(shared);
-                let rules = classifier.rules.iter()
-                    .map(|r| Ok(crate::tag_engine::classifier::Rule {
-                        when: r.when.expand(macros, sanitizers)?,
-                        value: r.value.clone(),
-                    }))
-                    .collect::<anyhow::Result<_>>()?;
-                Producer::Classify {
-                    rules,
-                    default: classifier.default.clone(),
-                    from: *from,
-                    consts: consts.clone(),
-                }
-            }
-            Producer::Cond { cond, then, r#else } => Producer::Cond {
-                cond: cond.expand(macros, sanitizers)?,
-                then: Box::new(then.resolve(macros, sanitizers)?),
-                r#else: r#else.as_ref().map(|p| p.resolve(macros, sanitizers)).transpose()?.map(Box::new),
-            },
-            Producer::Extract { key, keys, from, side, sanitize, consts, directed } => Producer::Extract {
-                key: key.clone(),
-                keys: keys.clone(),
-                from: *from,
-                side: side.clone(),
-                sanitize: resolve_opt_sanitize(sanitize, sanitizers)?,
-                consts: consts.clone(),
-                directed: *directed,
-            },
-        })
-    }
-
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
             // First non-empty branch wins, carrying its own source/confidence.
@@ -269,7 +207,7 @@ impl Producer {
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
                 rctx.obj_tags = tags;
-                crate::tag_engine::classifier::classify_rules(rules, &rctx)
+                crate::tag_engine::producer::classifier::classify_rules(rules, &rctx)
                     .or_else(|| default.clone())
                     .map(|value| Produced { value, consts: consts.clone() })
             }
@@ -280,13 +218,13 @@ impl Producer {
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
                 rctx.obj_tags = tags;
-                crate::tag_engine::classifier::shared_classifier(shared)
+                crate::tag_engine::loader::classifier::shared_classifier(shared)
                     .classify(&rctx)
                     .map(|value| Produced { value, consts: consts.clone() })
             }
 
             Producer::Cond { cond, then, r#else } => {
-                if crate::tag_engine::filter::eval(cond, ctx) {
+                if crate::tag_engine::producer::filter::eval(cond, ctx) {
                     then.eval(ctx)
                 } else {
                     r#else.as_ref().and_then(|p| p.eval(ctx))
@@ -532,8 +470,8 @@ fn read_raw<'a>(
 #[cfg(test)]
 mod classify_bool_tests {
     use super::*;
-    use crate::tag_engine::classifier::{Rule, ValueSpec};
-    use crate::tag_engine::filter::Filter;
+    use crate::tag_engine::producer::classifier::{Rule, ValueSpec};
+    use crate::tag_engine::producer::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
         ExtractCtx {
@@ -656,4 +594,3 @@ mod directed_extract_tests {
         assert_eq!(produced.value, Value::String("lane".to_owned()));
     }
 }
-

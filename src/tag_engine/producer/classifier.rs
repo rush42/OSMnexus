@@ -6,13 +6,10 @@
 //! copies the tag's own value (used e.g. to fall back to the raw `highway` value). All domain
 //! knowledge lives in the JSON; this module is just the evaluator.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
-
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::tag_engine::filter::{eval, Filter};
+use crate::tag_engine::producer::filter::{eval, Filter};
 use crate::tag_engine::producer::ExtractCtx;
 
 /// The value a matching rule produces. `Const` holds any JSON literal (string, number, bool) so
@@ -53,7 +50,7 @@ impl Classifier {
 }
 
 /// First matching rule's value, or `None` if no rule matches (first-match-wins). Shared by the
-/// standalone `road` classifier and the data-defined `rules` value producer (`producer.rs`).
+/// standalone `road` classifier and the data-defined `rules` value producer (`producer/mod.rs`).
 /// Evaluated against a full `ExtractCtx` — same predicate evaluator (`filter::eval`) and same
 /// context shape category matching uses, so a rule's `when` can see side/prefix/infix/parent, not
 /// just raw tags. Does not apply a `default` — callers needing one (e.g. `Classifier::classify`,
@@ -71,37 +68,4 @@ pub fn classify_rules(rules: &[Rule], ctx: &ExtractCtx) -> Option<Value> {
         }
     }
     None
-}
-
-/// Shared, named classifiers loaded once from `topics/_shared/classifiers/<name>.json`
-/// (name = file stem). Referenced from data via a `Classify`-style producer's `{ "shared": "<name>" }`,
-/// so a rule table (e.g. the `road` classification) can be reused across topics without duplication.
-fn shared_classifiers() -> &'static HashMap<String, Classifier> {
-    static CLASSIFIERS: OnceLock<HashMap<String, Classifier>> = OnceLock::new();
-    CLASSIFIERS.get_or_init(|| {
-        let dir = crate::paths::shared_dir().join("classifiers");
-        let dir = dir.display().to_string();
-        let mut map = HashMap::new();
-        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("reading {dir}: {e}"));
-        for entry in entries {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let name = path.file_stem().unwrap().to_string_lossy().to_string();
-            let raw = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-            let classifier = serde_json::from_str(&raw)
-                .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
-            map.insert(name, classifier);
-        }
-        map
-    })
-}
-
-/// The shared classifier registered under `name`, panicking if undefined (a config error).
-pub fn shared_classifier(name: &str) -> &'static Classifier {
-    shared_classifiers()
-        .get(name)
-        .unwrap_or_else(|| panic!("no shared classifier named '{name}' in topics/_shared/classifiers"))
 }

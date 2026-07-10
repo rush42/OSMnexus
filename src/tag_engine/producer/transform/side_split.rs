@@ -17,7 +17,7 @@ pub struct TransformedObject {
     /// Flattened tags for this object (no `_`-prefixed internal keys). Only unnesting has run —
     /// `directed_keys`/`self_directed_keys` projection is a separate, later, per-object
     /// `PreCatStep` pass (see `CenterLineTransformation::directed_steps` and its call site in
-    /// `tag_engine::runner`), not something the split itself does.
+    /// `tag_engine::producer::runner`), not something the split itself does.
     pub tags: RawTags,
 }
 
@@ -31,7 +31,7 @@ pub struct CenterLineTransformation {
     /// `self_directed_keys` as `TagSet::Obj`-sourced ones — see `topic_runner`'s `SplitSides`
     /// parsing), applied to each resulting side object's own tags — after the split decides
     /// cardinality, but still before that object is categorized.
-    pub directed_steps: &'static [crate::tag_engine::topic_runner::PreCatStep],
+    pub directed_steps: &'static [crate::tag_engine::producer::topic_runner::PreCatStep],
 }
 
 pub(crate) const META_PREFIXES: &[&str] = &["source:", "note:"];
@@ -205,4 +205,3 @@ pub(crate) fn unnest_prefixed_tags(
         }
     }
 }
-

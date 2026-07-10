@@ -1,6 +1,9 @@
+//! The JSON schema types a topic's `topic.json` (plus `sanitizers`/`derivers` desugaring)
+//! deserializes into. Pure load-time data model — no per-object evaluation lives here.
+
 use serde::Deserialize;
 use serde_json::Value;
-use crate::tag_engine::categories::Filter;
+use crate::tag_engine::producer::filter::Filter;
 use crate::tag_engine::producer::{Producer, StrOrVec, TagSet};
 
 #[derive(Debug, Deserialize)]
@@ -227,4 +230,3 @@ impl DeriverBinding {
         match self { DeriverBinding::Named(s) => s, DeriverBinding::Bound { output, .. } => output }
     }
 }
-
