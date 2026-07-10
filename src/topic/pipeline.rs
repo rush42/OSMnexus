@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use crate::tag_engine::categories::categorize;
 use crate::tag_engine::filter::eval_filter;
 use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::transform::side_split::{get_transformed_objects, iter_with_ctx};
+use crate::tag_engine::transform::side_split::generate_sides;
 use crate::topic::runner::TopicRunner;
 use crate::topic::spec::Field;
 use crate::osm::types::{ElementKind, RawTags};
@@ -98,14 +98,12 @@ pub fn build_topic_rows(
     let default_id = format!("{}/{}", kind.id_prefix(), osm_id);
     // Moves `tags` into the self object rather than cloning it (the common no-side-split case).
     // Post-split `directed_keys`/`self_directed_keys` steps are applied inside this call too — no
-    // side-specific logic lives here, only iteration over the `ExtractCtx`s it hands back.
-    let transformed = get_transformed_objects(tags, transformations, &default_id);
+    // side-specific logic lives here, only the per-`ExtractCtx` callback below.
     let mut rows = Vec::new();
 
-    for ectx in iter_with_ctx(&transformed) {
-        let category = match categorize(&ectx, categories) {
-            Some(c) => c,
-            None => continue,
+    generate_sides(tags, transformations, &default_id, |ectx| {
+        let Some(category) = categorize(&ectx, categories) else {
+            return;
         };
 
         let mut osm = Map::new();
@@ -168,7 +166,7 @@ pub fn build_topic_rows(
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time. `ectx.id`
         // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"` — computed once
-        // by `get_transformed_objects` rather than re-derived here.
+        // by `generate_sides` rather than re-derived here.
         derived.insert("id".into(), Value::String(ectx.id.to_owned()));
 
         rows.push(TopicRow {
@@ -180,7 +178,7 @@ pub fn build_topic_rows(
             private,
             meta: meta.clone(),
         });
-    }
+    });
 
     rows
 }

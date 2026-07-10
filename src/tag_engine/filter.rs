@@ -266,7 +266,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
-        // `parent_tags` is only ever `Some` for those (see `get_transformed_objects`).
+        // `parent_tags` is only ever `Some` for those (see `generate_sides`).
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
 
         Filter::NumLt  { num, sanitize, lt  } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n <  *lt),

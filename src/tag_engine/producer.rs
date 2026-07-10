@@ -25,8 +25,8 @@ pub struct Produced {
 
 /// Which tags (`obj_tags`, `parent_tags`), plus side-split addressing (`split` — see
 /// `transform::side_split::SplitContext`, whose only non-trivial constructor is
-/// `TransformedObject::extract_ctx`) and `id` — the row id for this object, defaulted to the
-/// element's own id and overwritten by `get_transformed_objects` for a side object (e.g.
+/// `side_split::generate_sides`) and `id` — the row id for this object, defaulted to the
+/// element's own id and overwritten by `generate_sides` for a side object (e.g.
 /// `"way/123/cycleway/left"`). `Copy` so a producer can cheaply build a variant (e.g. swapping
 /// `obj_tags` to the parent) when re-running itself against a different tagset.
 #[derive(Clone, Copy)]
