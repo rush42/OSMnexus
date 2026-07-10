@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use serde_json::Map;
+use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::CategoriesFile;
 use crate::tag_engine::filter::Filter;
@@ -46,14 +46,18 @@ pub struct TopicRunner {
     /// declaring an entry in this one list. Order matters only if a sanitizer and a deriver ever
     /// target the same output: the deriver (evaluated later) wins.
     pub topic_derivers: Vec<Field>,
-    /// Per-category effective derivers — present only for categories that override a deriver
-    /// (topic defaults with the category's re-bindings applied by output). Categories absent
-    /// from this map use `topic_derivers` directly.
+    /// Per-category effective derivers: topic defaults, with the category's own deriver
+    /// re-bindings applied by output, and the category's effective (topic ⊕ category) consts
+    /// folded in as a trailing `Producer::Fallback` branch on each const's output — so a const is
+    /// just the lowest-priority producer for its key, evaluated by the same `eval_fields` pass as
+    /// any sanitizer/deriver, with no separate seed-then-backfill step needed. Present for every
+    /// category (unlike a plain override map, every category's effective consts can differ from
+    /// the topic defaults even with no deriver override).
     pub category_derivers: HashMap<String, Vec<Field>>,
-    /// Per-category effective consts (topic-level `consts` overlaid by the category's), seeded
-    /// into `derived` as the lowest-priority layer — except `_`-prefixed keys, which seed
-    /// `private` instead (see `TopicSpec::consts`). Present for every category.
-    pub category_consts: HashMap<String, serde_json::Map<String, serde_json::Value>>,
+    /// Per-category effective *private* consts only (`_`-prefixed keys of topic ⊕ category
+    /// `consts` — see `TopicSpec::consts`): nothing ever produces these outside `consts` itself,
+    /// so they're seeded into `private` unconditionally rather than folded into a producer chain.
+    pub category_private_consts: HashMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Resolve a list of deriver bindings against the `derivers.json` library, erroring on any
@@ -84,6 +88,60 @@ fn apply_overrides(base: &[Field], overrides: Vec<Field>) -> Vec<Field> {
         match fields.iter_mut().find(|f| f.output == ov.output) {
             Some(existing) => existing.source = ov.source,
             None => fields.push(ov),
+        }
+    }
+    fields
+}
+
+/// Every field's `output` is unique within `fields` — a config error otherwise: two entries
+/// racing for the same output would make the winner an unreadable function of construction
+/// order, and `eval_fields` no longer needs an intra-call `written` set to tell them apart when
+/// this invariant holds. Called at every point a `Vec<Field>` is assembled from independent
+/// sources (topic-level derivers, category overrides, consts) rather than once at the end, so
+/// the error names the exact assembly step at fault.
+fn check_unique_outputs(fields: &[Field], context: &str) -> anyhow::Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for f in fields {
+        if !seen.insert(f.output.as_str()) {
+            anyhow::bail!("{context}: output '{}' is produced by more than one entry", f.output);
+        }
+    }
+    Ok(())
+}
+
+/// A `consts` JSON entry as a `Producer`: a bundled `{ "value": ..., "consts": {...} }` object
+/// carries its companions as the producer's own `consts` (so `Producer::eval` emits them exactly
+/// when this branch produces — no separate "did the const survive" bookkeeping needed elsewhere);
+/// any other JSON is a bare literal with no companions. `rules: []` means `Classify` always falls
+/// through to `default`, so this unconditionally "produces" — the const is only ever *reached* via
+/// `Fallback` when nothing higher-priority did.
+fn const_producer(v: &Value) -> Producer {
+    let (value, consts) = match v {
+        Value::Object(obj) if obj.contains_key("value") => {
+            (obj["value"].clone(), obj.get("consts").and_then(Value::as_object).cloned().unwrap_or_default())
+        }
+        _ => (v.clone(), Map::new()),
+    };
+    Producer::Classify { rules: Vec::new(), default: Some(value), from: TagSet::Obj, consts }
+}
+
+/// Fold `consts`' public (non-`_`-prefixed) keys into `fields` as the lowest-priority producer for
+/// their output: appended as a trailing `Fallback` branch onto an existing field targeting that
+/// output (so the const only takes effect when the real producer returns `None`), or pushed as a
+/// new const-only field when nothing else targets it (e.g. a bare literal like `minzoom`).
+/// `_`-prefixed keys are skipped — see `TopicRunner::category_private_consts`.
+fn merge_const_fields(mut fields: Vec<Field>, consts: &Map<String, Value>) -> Vec<Field> {
+    for (k, v) in consts {
+        if k.starts_with('_') {
+            continue;
+        }
+        let const_source = const_producer(v);
+        match fields.iter_mut().find(|f| &f.output == k) {
+            Some(existing) => {
+                let primary = std::mem::replace(&mut existing.source, Producer::Fallback { fallback: Vec::new() });
+                existing.source = Producer::Fallback { fallback: vec![primary, const_source] };
+            }
+            None => fields.push(Field { output: k.clone(), source: const_source }),
         }
     }
     fields
@@ -192,6 +250,7 @@ impl TopicRunner {
         // overriding a sanitizer's output is fine — that override is explicit by construction:
         // it names the output it's replacing.)
         let topic_derivers_resolved = resolve_bindings(&deriver_lib, &spec.derivers, name)?;
+        check_unique_outputs(&topic_derivers_resolved, &format!("topics/{name}/topic.json: derivers"))?;
         if let Some(dup) = topic_derivers_resolved.iter()
             .find(|d| sanitizer_fields.iter().any(|s| s.output == d.output))
         {
@@ -283,19 +342,33 @@ impl TopicRunner {
             .position(|s| matches!(s, InputTransform::SidepathSelf { .. }))
             .unwrap_or(input_transforms.len());
 
-        // Precompute per-category effective derivers/consts/private across every kind. Category ids
-        // are expected unique within a topic (they're file stems); a node and a way category sharing
-        // a stem would collide here — keep stems distinct per topic.
+        // Precompute per-category effective derivers (topic defaults ± overrides, with the
+        // category's effective consts folded in — see `merge_const_fields`) and private consts,
+        // across every kind. Every category gets an entry, even with no deriver override: its
+        // effective consts can still differ from the topic's. Category ids are expected unique
+        // within a topic (they're file stems); a node and a way category sharing a stem would
+        // collide here — keep stems distinct per topic.
         let mut category_derivers = HashMap::new();
-        let mut category_consts = HashMap::new();
+        let mut category_private_consts = HashMap::new();
         for cats in categories.values() {
             for cat in &cats.categories {
-                if let Some(bindings) = &cat.derivers {
-                    let overrides = resolve_bindings(&deriver_lib, bindings, name)?;
-                    category_derivers
-                        .insert(cat.id.clone(), apply_overrides(&topic_derivers, overrides));
-                }
-                category_consts.insert(cat.id.clone(), merge(&spec.consts, &cat.consts));
+                let base = match &cat.derivers {
+                    Some(bindings) => {
+                        let overrides = resolve_bindings(&deriver_lib, bindings, name)?;
+                        check_unique_outputs(
+                            &overrides,
+                            &format!("topics/{name}: category '{}' derivers", cat.id),
+                        )?;
+                        apply_overrides(&topic_derivers, overrides)
+                    }
+                    None => topic_derivers.clone(),
+                };
+                let consts = merge(&spec.consts, &cat.consts);
+                category_derivers.insert(cat.id.clone(), merge_const_fields(base, &consts));
+                category_private_consts.insert(
+                    cat.id.clone(),
+                    consts.into_iter().filter(|(k, _)| k.starts_with('_')).collect(),
+                );
             }
         }
 
@@ -308,7 +381,7 @@ impl TopicRunner {
             sanitizer_fields,
             topic_derivers,
             category_derivers,
-            category_consts,
+            category_private_consts,
         })
     }
 
