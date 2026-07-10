@@ -45,13 +45,9 @@ pub struct CategoryDef {
     pub derivers: Option<Vec<DeriverBinding>>,
     /// Per-category constants (override the topic-level `consts` per key). Seeded into `derived`
     /// as the lowest-priority layer; a sanitizer/deriver producing the same key overrides them.
+    /// A `_`-prefixed key (e.g. `_implicit_oneway_confidence`) routes into `private` instead.
     #[serde(default)]
     pub consts: serde_json::Map<String, serde_json::Value>,
-    /// Per-category private metadata (override the topic-level `private` per key). Emitted into the
-    /// `private` output column verbatim — the explicit counterpart to `consts`, for internal keys
-    /// like `_implicit_oneway_confidence` that are not part of the public `derived` payload.
-    #[serde(default)]
-    pub private: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

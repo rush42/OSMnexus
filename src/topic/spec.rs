@@ -43,13 +43,11 @@ pub struct TopicSpec {
     pub exclude_condition: Option<Filter>,
     /// Topic-level default constants seeded into `derived` (lowest priority — any sanitizer/
     /// deriver producing the same key overrides them). Categories override per-key via their own
-    /// `consts`.
+    /// `consts`. A key starting with `_` routes into the `private` column instead of `derived`
+    /// (the same convention `SplitContext::iter` uses for `_side`/`_prefix`/`_infix`) — there's no
+    /// separate `private` map to declare one explicitly.
     #[serde(default)]
     pub consts: serde_json::Map<String, serde_json::Value>,
-    /// Topic-level default private metadata, emitted into the `private` column. Categories override
-    /// per-key via their own `private`. The private counterpart to `consts`.
-    #[serde(default)]
-    pub private: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One center-line split: unnest tags with `prefix` onto a side object whose effective highway

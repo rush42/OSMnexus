@@ -120,18 +120,19 @@ pub fn build_topic_rows(
         let mut derived = Map::new();
         let mut private = Map::new();
         // Lowest-priority layer: seed category const *values* (bundled entries contribute only
-        // their `value` here). Any bundled companions are emitted after field evaluation, and
-        // only for keys no sanitizer/deriver overwrote ("the const wins").
+        // their `value` here). A `_`-prefixed key routes into `private` instead of `derived` (no
+        // sanitizer/deriver ever targets it, so it's seeded there unconditionally, not layered).
+        // Any bundled companions are emitted after field evaluation, and only for `derived` keys
+        // no sanitizer/deriver overwrote ("the const wins").
         let consts = runner.category_consts.get(&category.id);
         if let Some(consts) = consts {
             for (k, v) in consts {
                 let (value, _) = const_entry(v);
-                derived.insert(k.clone(), value.clone());
-            }
-        }
-        if let Some(privates) = runner.category_private.get(&category.id) {
-            for (k, v) in privates {
-                private.insert(k.clone(), v.clone());
+                if k.starts_with('_') {
+                    private.insert(k.clone(), value.clone());
+                } else {
+                    derived.insert(k.clone(), value.clone());
+                }
             }
         }
         let mut written = HashSet::new();
@@ -143,7 +144,7 @@ pub fn build_topic_rows(
         // contributes `oneway_confidence`).
         if let Some(consts) = consts {
             for (k, v) in consts {
-                if written.contains(k.as_str()) {
+                if k.starts_with('_') || written.contains(k.as_str()) {
                     continue;
                 }
                 if let (_, Some(companions)) = const_entry(v) {

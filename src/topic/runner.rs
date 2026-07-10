@@ -51,11 +51,9 @@ pub struct TopicRunner {
     /// from this map use `topic_derivers` directly.
     pub category_derivers: HashMap<String, Vec<Field>>,
     /// Per-category effective consts (topic-level `consts` overlaid by the category's), seeded
-    /// into `derived` as the lowest-priority layer. Present for every category.
+    /// into `derived` as the lowest-priority layer — except `_`-prefixed keys, which seed
+    /// `private` instead (see `TopicSpec::consts`). Present for every category.
     pub category_consts: HashMap<String, serde_json::Map<String, serde_json::Value>>,
-    /// Per-category effective private metadata (topic-level `private` overlaid by the category's),
-    /// emitted into the `private` column. Present for every category.
-    pub category_private: HashMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Resolve a list of deriver bindings against the `derivers.json` library, erroring on any
@@ -290,7 +288,6 @@ impl TopicRunner {
         // a stem would collide here — keep stems distinct per topic.
         let mut category_derivers = HashMap::new();
         let mut category_consts = HashMap::new();
-        let mut category_private = HashMap::new();
         for cats in categories.values() {
             for cat in &cats.categories {
                 if let Some(bindings) = &cat.derivers {
@@ -299,7 +296,6 @@ impl TopicRunner {
                         .insert(cat.id.clone(), apply_overrides(&topic_derivers, overrides));
                 }
                 category_consts.insert(cat.id.clone(), merge(&spec.consts, &cat.consts));
-                category_private.insert(cat.id.clone(), merge(&spec.private, &cat.private));
             }
         }
 
@@ -313,7 +309,6 @@ impl TopicRunner {
             topic_derivers,
             category_derivers,
             category_consts,
-            category_private,
         })
     }
 
