@@ -13,9 +13,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::tag_engine::keys;
-use crate::tag_engine::filter::{CategoryContext, Filter};
+use crate::tag_engine::filter::Filter;
 use crate::osm::types::RawTags;
-use crate::output::types::Side;
 
 /// A named atomic chain (any `Producer::Atomic` entry, in `derivers.json` or folded in from
 /// `sanitizers.json` at load time): resolves `name` in `registry` and evaluates it against `raw`;
@@ -45,9 +44,9 @@ pub struct ExtractCtx<'a> {
     pub parent_tags: Option<&'a RawTags>,
     pub obj_side: &'a str,
     /// The prefix that produced this object (e.g. "cycleway"; `None` for the self object) and the
-    /// infix that matched during side-splitting — same fields `CategoryContext` carries, so a
-    /// `Classify`/`SharedClassify`/`Cond` producer's rules can condition on them exactly like a
-    /// category condition can (`as_category_context` below).
+    /// infix that matched during side-splitting — a `Classify`/`SharedClassify`/`Cond` producer's
+    /// rules (and `Filter::Prefix`/`Infix`) can condition on these exactly like a category
+    /// condition can, since they're evaluated with this same `ExtractCtx`.
     pub prefix: Option<&'a str>,
     pub infix: Option<&'a str>,
 }
@@ -68,29 +67,6 @@ pub struct Env<'a> {
     /// This kind's category macros (`categories/macros.json` + shared) — lets a `Classify`/`Cond`
     /// rule reference a `{"macro": "..."}` the same way a category condition can.
     pub macros: &'a HashMap<String, Filter>,
-}
-
-impl<'a> ExtractCtx<'a> {
-    /// Build the richer `CategoryContext` a `Classify`/`SharedClassify`/`Cond` producer's rules
-    /// need to see everything a category condition sees. `tags` points at whichever tagset `from`
-    /// resolved (obj or parent) — but `side`/`prefix`/`infix` always describe *this* object, not
-    /// the resolved tagset, and `parent_tags` is always the object's real parent (unaffected by
-    /// which tagset the rules are reading).
-    fn as_category_context(&self, tags: &'a RawTags, env: &Env<'a>) -> CategoryContext<'a> {
-        CategoryContext {
-            tags,
-            side: match self.obj_side {
-                "left" => Side::Left,
-                "right" => Side::Right,
-                _ => Side::Self_,
-            },
-            prefix: self.prefix,
-            parent_highway: self.parent_tags.and_then(|t| t.get("highway")).map(String::as_str),
-            parent_tags: self.parent_tags,
-            infix: self.infix,
-            sanitizers: env.derivers,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
@@ -156,9 +132,9 @@ pub enum Producer {
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
     },
-    /// Conditional producer selection: evaluate `cond` against this object's own tags (same
-    /// `Filter`/`CategoryContext` machinery a category `condition` uses — tags, side, prefix,
-    /// infix, macros), and produce from `then` if it holds, else from `r#else` (absent `r#else`
+    /// Conditional producer selection: evaluate `cond` against this object's own `ExtractCtx` (same
+    /// `Filter` machinery a category `condition` uses — tags, side, prefix, infix, macros), and
+    /// produce from `then` if it holds, else from `r#else` (absent `r#else`
     /// means "produce nothing" when `cond` is false). Must come before `Extract` below, since
     /// `cond`/`then` are required fields and so unambiguously distinguish it (`Extract`'s fields
     /// are all optional, so it would otherwise match first).
@@ -204,23 +180,24 @@ impl Producer {
 
             Producer::Classify { rules, default, from, consts } => {
                 let tags = from.resolve(ctx)?;
-                let cctx = ctx.as_category_context(tags, env);
-                crate::tag_engine::classifier::classify_rules(rules, &cctx, env.macros)
+                let mut rctx = *ctx;
+                rctx.obj_tags = tags;
+                crate::tag_engine::classifier::classify_rules(rules, &rctx, env)
                     .or_else(|| default.clone())
                     .map(|value| Produced { value, consts: consts.clone() })
             }
 
             Producer::SharedClassify { shared, from, consts } => {
                 let tags = from.resolve(ctx)?;
-                let cctx = ctx.as_category_context(tags, env);
+                let mut rctx = *ctx;
+                rctx.obj_tags = tags;
                 crate::tag_engine::classifier::shared_classifier(shared)
-                    .classify(&cctx, env.macros)
+                    .classify(&rctx, env)
                     .map(|value| Produced { value, consts: consts.clone() })
             }
 
             Producer::Cond { cond, then, r#else } => {
-                let cctx = ctx.as_category_context(ctx.obj_tags, env);
-                if crate::tag_engine::filter::eval(cond, &cctx, env.macros) {
+                if crate::tag_engine::filter::eval(cond, ctx, env) {
                     then.eval(ctx, env)
                 } else {
                     r#else.as_ref().and_then(|p| p.eval(ctx, env))

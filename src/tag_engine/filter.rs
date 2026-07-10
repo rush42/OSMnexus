@@ -1,32 +1,17 @@
-//! The `Filter` predicate AST and its evaluator, plus the categorization context. The category
-//! *data model* and the priority-order compiler live in `categories`; this module is purely
-//! "given a context, does a predicate hold".
+//! The `Filter` predicate AST and its evaluator. Shares its context/lookup-table pair
+//! (`ExtractCtx`/`Env`, both in `producer.rs`) with `Producer::eval` — a predicate is just another
+//! "(object state, lookup tables) → output" evaluator, output `bool` instead of `Option<Value>`.
+//! The category *data model* and the priority-order compiler live in `categories`; this module is
+//! purely "given a context, does a predicate hold".
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 
 use crate::tag_engine::keys::first_present;
-use crate::tag_engine::producer::{resolve_sanitize, Producer};
+use crate::tag_engine::producer::{resolve_sanitize, Env, ExtractCtx, Producer};
 use crate::osm::types::RawTags;
-use crate::output::types::Side;
 use crate::value_sets::value_set;
-
-/// Context passed to categorization predicates.
-pub struct CategoryContext<'a> {
-    pub tags: &'a RawTags,
-    pub side: Side,
-    pub prefix: Option<&'a str>,
-    /// Original highway value of the parent way (set for left/right transformed objects).
-    pub parent_highway: Option<&'a str>,
-    /// Tags of the parent way (set for left/right transformed objects).
-    pub parent_tags: Option<&'a RawTags>,
-    /// The infix that matched during side splitting (e.g. "", "left", "both").
-    pub infix: Option<&'a str>,
-    /// Named atomic chains (`sanitizers.json`) — lets predicates normalize separation/traffic_mode
-    /// via data (`resolve_sanitize`).
-    pub sanitizers: &'a HashMap<String, Producer>,
-}
 
 /// Filter expression. Variants are tried in declaration order by serde's untagged deserializer,
 /// so more-specific variants (those with unique secondary fields) come before catch-alls.
@@ -100,31 +85,31 @@ pub enum Filter {
 
 // ── Filter evaluator ──────────────────────────────────────────────────────────
 
-/// Evaluate `filter` against `ctx`. Shared by categorization and the way-level exclude check
+/// Evaluate `filter` against `ctx`/`env`. Shared by categorization and the way-level exclude check
 /// (`eval_filter`, which builds a neutral `ctx`).
-pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<String, Filter>) -> bool {
+pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx, env: &Env) -> bool {
     match filter {
         Filter::Bool(b) => *b,
-        Filter::And { and } => and.iter().all(|f| eval(f, ctx, macros)),
-        Filter::Or  { or  } => or.iter().any(|f| eval(f, ctx, macros)),
-        Filter::Not { not } => !eval(not, ctx, macros),
+        Filter::And { and } => and.iter().all(|f| eval(f, ctx, env)),
+        Filter::Or  { or  } => or.iter().any(|f| eval(f, ctx, env)),
+        Filter::Not { not } => !eval(not, ctx, env),
 
         // JSON-defined macros (per-topic categories/macros.json + shared topics/_shared/).
-        Filter::Macro { r#macro: name } => macros
+        Filter::Macro { r#macro: name } => env.macros
             .get(name)
-            .map(|f| eval(f, ctx, macros))
+            .map(|f| eval(f, ctx, env))
             .unwrap_or_else(|| { tracing::warn!("unknown macro: {}", name); false }),
 
         Filter::TagEq { tag, eq, sanitize } =>
-            read_str(ctx.tags.get(tag).map(String::as_str), sanitize, ctx.sanitizers)
+            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize, env.derivers)
                 .is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::TagInSet { tag, in_set } =>
-            ctx.tags.get(tag).map(|v| value_set(in_set).contains(v)).unwrap_or(false),
+            ctx.obj_tags.get(tag).map(|v| value_set(in_set).contains(v)).unwrap_or(false),
         Filter::TagIn { tag, r#in, sanitize } =>
-            read_str(ctx.tags.get(tag).map(String::as_str), sanitize, ctx.sanitizers)
+            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize, env.derivers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::TagContains { tag, contains, case_insensitive } =>
-            ctx.tags.get(tag).map(|v| {
+            ctx.obj_tags.get(tag).map(|v| {
                 if *case_insensitive {
                     v.to_lowercase().contains(contains.as_str())
                 } else {
@@ -132,28 +117,28 @@ pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<Stri
                 }
             }).unwrap_or(false),
         Filter::TagStartsWith { tag, starts_with } =>
-            ctx.tags.get(tag).map(|v| v.starts_with(starts_with.as_str())).unwrap_or(false),
+            ctx.obj_tags.get(tag).map(|v| v.starts_with(starts_with.as_str())).unwrap_or(false),
         Filter::TagEndsWith { tag, ends_with } =>
-            ctx.tags.get(tag).map(|v| v.ends_with(ends_with.as_str())).unwrap_or(false),
+            ctx.obj_tags.get(tag).map(|v| v.ends_with(ends_with.as_str())).unwrap_or(false),
         Filter::TagExists { tag, exists } =>
-            ctx.tags.contains_key(tag) == *exists,
+            ctx.obj_tags.contains_key(tag) == *exists,
 
         Filter::FirstTagInSet { first_tag, in_set, sanitize } =>
-            read_str(first_present(ctx.tags, first_tag), sanitize, ctx.sanitizers)
+            read_str(first_present(ctx.obj_tags, first_tag), sanitize, env.derivers)
                 .is_some_and(|v| value_set(in_set).contains(v.as_ref())),
         Filter::FirstTagIn { first_tag, r#in, sanitize } =>
-            read_str(first_present(ctx.tags, first_tag), sanitize, ctx.sanitizers)
+            read_str(first_present(ctx.obj_tags, first_tag), sanitize, env.derivers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::FirstTagExists { first_tag, exists, sanitize: None } =>
-            first_tag.iter().any(|k| ctx.tags.contains_key(k)) == *exists,
+            first_tag.iter().any(|k| ctx.obj_tags.contains_key(k)) == *exists,
         Filter::FirstTagExists { first_tag, exists, sanitize: Some(name) } =>
-            read_str(first_present(ctx.tags, first_tag), &Some(name.clone()), ctx.sanitizers).is_some() == *exists,
+            read_str(first_present(ctx.obj_tags, first_tag), &Some(name.clone()), env.derivers).is_some() == *exists,
 
         Filter::ParentTagEq { parent_tag, eq, sanitize } =>
-            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, ctx.sanitizers)
+            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, env.derivers)
                 .is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::ParentTagIn { parent_tag, r#in, sanitize } =>
-            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, ctx.sanitizers)
+            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, env.derivers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::ParentTagContains { parent_tag, contains } =>
             ctx.parent_tags.and_then(|t| t.get(parent_tag))
@@ -168,20 +153,19 @@ pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<Stri
                 .map(|v| v.ends_with(ends_with.as_str()))
                 .unwrap_or(false),
 
-        Filter::Side { side } => {
-            let s = match ctx.side { Side::Self_ => "self", Side::Left => "left", Side::Right => "right" };
-            s == side.as_str()
-        }
+        Filter::Side { side } => ctx.obj_side == side.as_str(),
         Filter::Prefix    { prefix    } => ctx.prefix == Some(prefix.as_str()),
         Filter::Infix     { infix     } => ctx.infix  == Some(infix.as_str()),
         Filter::HasKeyPrefix { has_key_prefix } =>
-            ctx.tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
-        Filter::HasParent { has_parent } => ctx.parent_highway.is_some() == *has_parent,
+            ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
+        // True iff there's a parent way (i.e. this is a left/right side-split object) —
+        // `parent_tags` is only ever `Some` for those (see `get_transformed_objects`).
+        Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
 
-        Filter::NumLt  { num, sanitize, lt  } => read_num(ctx, num, sanitize).is_some_and(|n| n <  *lt),
-        Filter::NumLte { num, sanitize, lte } => read_num(ctx, num, sanitize).is_some_and(|n| n <= *lte),
-        Filter::NumGt  { num, sanitize, gt  } => read_num(ctx, num, sanitize).is_some_and(|n| n >  *gt),
-        Filter::NumGte { num, sanitize, gte } => read_num(ctx, num, sanitize).is_some_and(|n| n >= *gte),
+        Filter::NumLt  { num, sanitize, lt  } => read_num(ctx, env, num, sanitize).is_some_and(|n| n <  *lt),
+        Filter::NumLte { num, sanitize, lte } => read_num(ctx, env, num, sanitize).is_some_and(|n| n <= *lte),
+        Filter::NumGt  { num, sanitize, gt  } => read_num(ctx, env, num, sanitize).is_some_and(|n| n >  *gt),
+        Filter::NumGte { num, sanitize, gte } => read_num(ctx, env, num, sanitize).is_some_and(|n| n >= *gte),
     }
 }
 
@@ -190,10 +174,10 @@ pub(crate) fn eval(filter: &Filter, ctx: &CategoryContext, macros: &HashMap<Stri
 /// coercing to f64. Returns None when the tag is absent or the value is unparseable — so every
 /// numeric comparison is false on missing/garbage input. No geometry-derived values (length, …)
 /// are available: classification is tag-only.
-fn read_num(ctx: &CategoryContext, key: &str, sanitize: &Option<String>) -> Option<f64> {
-    let raw = ctx.tags.get(key)?;
+fn read_num(ctx: &ExtractCtx, env: &Env, key: &str, sanitize: &Option<String>) -> Option<f64> {
+    let raw = ctx.obj_tags.get(key)?;
     match sanitize {
-        Some(name) => num_from_value(&resolve_sanitize(ctx.sanitizers, name, raw)?),
+        Some(name) => num_from_value(&resolve_sanitize(env.derivers, name, raw)?),
         None => raw.trim().parse().ok(),
     }
 }
@@ -228,20 +212,13 @@ fn read_str<'a>(
 
 /// Evaluate a Filter against raw tags with a neutral context (side=self, no parent).
 /// Used by the topic engine for way-level exclude_condition checks.
-pub fn eval_filter(
-    filter: &Filter,
-    tags: &RawTags,
-    macros: &HashMap<String, Filter>,
-    sanitizers: &HashMap<String, Producer>,
-) -> bool {
-    let ctx = CategoryContext {
-        tags,
-        side: Side::Self_,
-        prefix: None,
-        parent_highway: None,
+pub fn eval_filter(filter: &Filter, tags: &RawTags, env: &Env) -> bool {
+    let ctx = ExtractCtx {
+        obj_tags: tags,
         parent_tags: None,
+        obj_side: "self",
+        prefix: None,
         infix: None,
-        sanitizers,
     };
-    eval(filter, &ctx, macros)
+    eval(filter, &ctx, env)
 }

@@ -16,7 +16,7 @@
 //! Only sanitize-free tags are branch keys: a sanitized comparison tests a *derived* value, so
 //! branching on the raw tag value would be unsound (and `filter_to_expr` drops the sanitize flag).
 //!
-//! `side`/`has_parent`/`prefix`/`infix` branch on `CategoryContext` fields rather than `ctx.tags`,
+//! `side`/`has_parent`/`prefix`/`infix` branch on `ExtractCtx` fields rather than `ctx.obj_tags`,
 //! using sentinel keys (`SIDE_KEY` etc. — a leading NUL byte no real OSM tag can contain) so they
 //! reuse the same `Branch` shape and `used`/`choose_branch_tag` machinery as tag branching.
 //!
@@ -30,9 +30,9 @@ use std::collections::HashMap;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::tag_engine::categories::{CategoriesFile, CategoryContext, Filter, OrderedNode};
+use crate::tag_engine::categories::{CategoriesFile, Filter, OrderedNode};
+use crate::tag_engine::producer::ExtractCtx;
 use crate::lint::{filter_to_expr, to_nnf, Expr, Literal, NumOp, Predicate};
-use crate::output::types::Side;
 
 /// Sentinel branch key for `Predicate::Side`. Domain is exactly `{"self","left","right"}` — always
 /// fully known for a given object, so this branch never needs a wildcard fallback in practice.
@@ -84,7 +84,7 @@ impl Default for DecisionTree {
 
 impl DecisionTree {
     /// Descend to the leaf's candidate node-index slice for this object.
-    pub fn candidates<'a>(&'a self, ctx: &CategoryContext) -> &'a [usize] {
+    pub fn candidates<'a>(&'a self, ctx: &ExtractCtx) -> &'a [usize] {
         let mut node = self;
         loop {
             match node {
@@ -104,35 +104,31 @@ impl DecisionTree {
 /// `AtomBranch` is ever built from (`Contains`/`StartsWith`/`EndsWith`/`Num`/`Exists`/`HasKeyPrefix`
 /// on a plain, non-parent tag) — all total functions of `ctx.tags`, mirroring `eval`'s semantics
 /// for a missing tag (false, not unknown).
-fn eval_atom(atom: &Predicate, ctx: &CategoryContext) -> bool {
+fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
     match atom {
-        Predicate::Contains(k, s) => ctx.tags.get(k).is_some_and(|v| v.contains(s.as_str())),
-        Predicate::StartsWith(k, s) => ctx.tags.get(k).is_some_and(|v| v.starts_with(s.as_str())),
-        Predicate::EndsWith(k, s) => ctx.tags.get(k).is_some_and(|v| v.ends_with(s.as_str())),
-        Predicate::Exists(k) => ctx.tags.contains_key(k),
+        Predicate::Contains(k, s) => ctx.obj_tags.get(k).is_some_and(|v| v.contains(s.as_str())),
+        Predicate::StartsWith(k, s) => ctx.obj_tags.get(k).is_some_and(|v| v.starts_with(s.as_str())),
+        Predicate::EndsWith(k, s) => ctx.obj_tags.get(k).is_some_and(|v| v.ends_with(s.as_str())),
+        Predicate::Exists(k) => ctx.obj_tags.contains_key(k),
         Predicate::Num(k, op, bits) => ctx
-            .tags
+            .obj_tags
             .get(k)
             .and_then(|v| v.trim().parse::<f64>().ok())
             .is_some_and(|n| num_cmp(n, op, f64::from_bits(*bits))),
-        Predicate::HasKeyPrefix(p) => ctx.tags.keys().any(|k| k.starts_with(p.as_str())),
+        Predicate::HasKeyPrefix(p) => ctx.obj_tags.keys().any(|k| k.starts_with(p.as_str())),
         _ => unreachable!("AtomBranch only built for Contains/StartsWith/EndsWith/Exists/Num/HasKeyPrefix"),
     }
 }
 
 /// Resolve a branch key (a raw tag name, or one of the `*_KEY` sentinels) against the object's
 /// context. `None` means "no matching enumerated child" → fall through to the wildcard.
-fn branch_key<'a>(ctx: &'a CategoryContext, tag: &str) -> Option<&'a str> {
+fn branch_key<'a>(ctx: &'a ExtractCtx, tag: &str) -> Option<&'a str> {
     match tag {
-        SIDE_KEY => Some(match ctx.side {
-            Side::Self_ => "self",
-            Side::Left => "left",
-            Side::Right => "right",
-        }),
-        HAS_PARENT_KEY => Some(if ctx.parent_highway.is_some() { "true" } else { "false" }),
+        SIDE_KEY => Some(ctx.obj_side),
+        HAS_PARENT_KEY => Some(if ctx.parent_tags.is_some() { "true" } else { "false" }),
         PREFIX_KEY => ctx.prefix,
         INFIX_KEY => ctx.infix,
-        _ => ctx.tags.get(tag).map(String::as_str),
+        _ => ctx.obj_tags.get(tag).map(String::as_str),
     }
 }
 
@@ -561,13 +557,12 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     use crate::tag_engine::categories::{
-        categorize, categorize_linear, load_shared_macros, load_topic_categories, CategoryContext,
+        categorize, categorize_linear, load_shared_macros, load_topic_categories,
         CategoriesFile, OrderedNode,
     };
-    use crate::tag_engine::producer::Producer;
+    use crate::tag_engine::producer::{Env, ExtractCtx, Producer};
     use crate::lint::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use crate::osm::types::RawTags;
-    use crate::output::types::Side;
 
     /// Positive Eq (plain-tag) atoms across every order-node condition → tag → observed values.
     fn referenced_eq(cats: &CategoriesFile) -> BTreeMap<String, BTreeSet<String>> {
@@ -598,7 +593,7 @@ mod tests {
     /// object we can construct — the tree only drops provably-false nodes.
     #[test]
     fn tree_matches_linear() {
-        let sanitizers: HashMap<String, Producer> = HashMap::new();
+        let derivers: HashMap<String, Producer> = HashMap::new();
 
         for (topic, dir) in topic_category_dirs() {
           let shared = dir.parent().unwrap().join("_shared");
@@ -609,6 +604,7 @@ mod tests {
                 cats.macros.entry(k.clone()).or_insert_with(|| v.clone());
             }
             cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
+            let env = Env { derivers: &derivers, macros: &cats.macros };
 
             let refs = referenced_eq(&cats);
             let hw_vals: Vec<Option<String>> = {
@@ -628,7 +624,9 @@ mod tests {
                 }
             }
 
-            let sides = [Side::Self_, Side::Left, Side::Right];
+            let sides = ["self", "left", "right"];
+            let parent_tags: RawTags =
+                [("highway".to_owned(), "secondary".to_owned())].into_iter().collect();
             let mut checked = 0usize;
             for hw in &hw_vals {
                 for other in &others {
@@ -640,21 +638,19 @@ mod tests {
                         if let Some((t, v)) = other {
                             tags.insert(t.clone(), v.clone());
                         }
-                        let (prefix, parent_highway): (Option<&str>, Option<&str>) = match side {
-                            Side::Self_ => (None, None),
-                            _ => (Some("cycleway"), Some("secondary")),
+                        let (prefix, side_parent_tags): (Option<&str>, Option<&RawTags>) = match side {
+                            "self" => (None, None),
+                            _ => (Some("cycleway"), Some(&parent_tags)),
                         };
-                        let ctx = CategoryContext {
-                            tags: &tags,
-                            side,
+                        let ctx = ExtractCtx {
+                            obj_tags: &tags,
+                            parent_tags: side_parent_tags,
+                            obj_side: side,
                             prefix,
-                            parent_highway,
-                            parent_tags: None,
                             infix: None,
-                            sanitizers: &sanitizers,
                         };
-                        let a = categorize(&ctx, &cats).map(|c| c.id.clone());
-                        let b = categorize_linear(&ctx, &cats).map(|c| c.id.clone());
+                        let a = categorize(&ctx, &env, &cats).map(|c| c.id.clone());
+                        let b = categorize_linear(&ctx, &env, &cats).map(|c| c.id.clone());
                         assert_eq!(
                             a, b,
                             "[{topic}] tree≠linear for highway={hw:?} other={other:?} side={side:?}"

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
-use crate::tag_engine::categories::{categorize, eval_filter, CategoryContext};
+use crate::tag_engine::categories::{categorize, eval_filter};
 use crate::tag_engine::producer::{Env, ExtractCtx};
 use crate::tag_engine::topic::Field;
 use crate::tag_engine::topic_runner::TopicRunner;
@@ -90,7 +90,7 @@ pub fn build_topic_rows(
 
     if let Some(cond) = &topic.exclude_condition {
         let excluded = crate::profile::time(&crate::profile::EXCLUDE, || {
-            eval_filter(cond, &tags, &categories.macros, &runner.deriver_lib)
+            eval_filter(cond, &tags, &env)
         });
         if excluded {
             return Vec::new();
@@ -141,29 +141,13 @@ pub fn build_topic_rows(
         // tags; the self object owns the way's tags now that they're moved rather than cloned.
         let parent_tags: Option<&RawTags> =
             obj.parent_highway.as_ref().map(|_| &transformed[0].tags);
-        let ctx = CategoryContext {
-            tags: &obj.tags,
-            side: obj.side,
-            prefix: obj.prefix,
-            parent_highway: obj.parent_highway.as_deref(),
-            parent_tags,
-            infix: obj.infix,
-            sanitizers: &runner.deriver_lib,
-        };
-
-        let category = match crate::profile::time(&crate::profile::CATEGORIZE, || categorize(&ctx, categories)) {
-            Some(c) => c,
-            None => continue,
-        };
-        // Times the rest of this iteration (field eval + const seeding + row build).
-        let _extract = crate::profile::scope(&crate::profile::EXTRACT);
-
         let side_str = match obj.side {
             Side::Left  => "left",
             Side::Right => "right",
             Side::Self_ => "self",
         };
-
+        // One `ExtractCtx` serves both categorization and field evaluation now — they're the same
+        // "object state", just consumed by two different evaluators (`Filter`/`Producer`).
         let ectx = ExtractCtx {
             obj_tags: &obj.tags,
             parent_tags,
@@ -171,6 +155,13 @@ pub fn build_topic_rows(
             prefix: obj.prefix,
             infix: obj.infix,
         };
+
+        let category = match crate::profile::time(&crate::profile::CATEGORIZE, || categorize(&ectx, &env, categories)) {
+            Some(c) => c,
+            None => continue,
+        };
+        // Times the rest of this iteration (field eval + const seeding + row build).
+        let _extract = crate::profile::scope(&crate::profile::EXTRACT);
 
         let mut osm = Map::new();
         let mut osm_written = HashSet::new();
