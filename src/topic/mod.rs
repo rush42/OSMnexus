@@ -9,7 +9,7 @@
 //!   `topics/<name>/...` directory convention.
 //! - `runner`: `TopicRunner`, the fully loaded, ready-to-run topic — load-time orchestration
 //!   (`load`/`load_all`) plus a thin per-element dispatch (`process`).
-//! - `pipeline`: the actual per-element runtime pipeline (`pre_cat_steps` → `exclude_condition` →
+//! - `pipeline`: the actual per-element runtime pipeline (`input_transforms` → `exclude_condition` →
 //!   side-split → categorize → field evaluation), which `TopicRunner::process` delegates to.
 
 pub mod load;

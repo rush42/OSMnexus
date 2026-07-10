@@ -25,10 +25,10 @@ pub struct TopicRunner {
     /// In-place tag mutations applied to each way's tags, in declared order, split around
     /// `exclude_condition` at `exclude_check_at` — so, unlike a deriver, these can influence which
     /// category a way matches (or whether `exclude_condition` excludes it at all).
-    pub pre_cat_steps: Vec<InputTransform>,
-    /// Index into `pre_cat_steps` where `exclude_condition` is evaluated: `pre_cat_steps[..n]` run
-    /// first, then `exclude_condition`, then `pre_cat_steps[n..]`. Set to the first `SidepathSelf`
-    /// step's index (or `pre_cat_steps.len()` if there is none) — mirrors the original two-stage
+    pub input_transforms: Vec<InputTransform>,
+    /// Index into `input_transforms` where `exclude_condition` is evaluated: `input_transforms[..n]` run
+    /// first, then `exclude_condition`, then `input_transforms[n..]`. Set to the first `SidepathSelf`
+    /// step's index (or `input_transforms.len()` if there is none) — mirrors the original two-stage
     /// pipeline, where tag rewrites ran before `exclude_condition` but unnesting (which can promote
     /// a `cycleway:access=no`-style tag onto a bare `access` that `exclude_condition` checks
     /// directly) always ran after it.
@@ -226,7 +226,7 @@ impl TopicRunner {
                 .with_context(|| format!("building category order for topics/{name}"))?;
         }
 
-        // Center-line splits: change object cardinality, so handled separately from `pre_cat_steps`
+        // Center-line splits: change object cardinality, so handled separately from `input_transforms`
         // and always applied last (see `SplitSidesSpec`).
         let mut transformations = Vec::new();
         for s in &spec.split_sides {
@@ -254,15 +254,15 @@ impl TopicRunner {
 
         // Split the declared input-transform pipeline into one ordered list of in-place
         // `InputTransform`s, applied in declaration order before `exclude_condition`/categorization.
-        let mut pre_cat_steps = Vec::new();
+        let mut input_transforms = Vec::new();
         for t in &spec.input_transforms {
             match t {
                 InputTransformSpec::UnnestSidepathSelf { prefix } => {
                     let prefix = Box::leak(prefix.clone().into_boxed_str()) as &'static str;
-                    pre_cat_steps.push(InputTransform::SidepathSelf { prefix });
+                    input_transforms.push(InputTransform::SidepathSelf { prefix });
                 }
                 InputTransformSpec::TagRules { output, source } => {
-                    pre_cat_steps.push(InputTransform::TagRule {
+                    input_transforms.push(InputTransform::TagRule {
                         output: output.clone(),
                         source: source.resolve(&macros, &sanitizers)
                             .with_context(|| format!("topics/{name}/topic.json: input_transforms.{output}"))?,
@@ -271,7 +271,7 @@ impl TopicRunner {
                 InputTransformSpec::StripPrefix {
                     prefix, stamp_key, stamp_value, stamp_nested_under,
                 } => {
-                    pre_cat_steps.push(InputTransform::StripPrefix {
+                    input_transforms.push(InputTransform::StripPrefix {
                         prefix: prefix.clone(),
                         stamp_key: stamp_key.clone(),
                         stamp_value: stamp_value.clone(),
@@ -280,10 +280,10 @@ impl TopicRunner {
                 }
             }
         }
-        let exclude_check_at = pre_cat_steps
+        let exclude_check_at = input_transforms
             .iter()
             .position(|s| matches!(s, InputTransform::SidepathSelf { .. }))
-            .unwrap_or(pre_cat_steps.len());
+            .unwrap_or(input_transforms.len());
 
         // Precompute per-category effective derivers/consts/private across every kind. Category ids
         // are expected unique within a topic (they're file stems); a node and a way category sharing
@@ -306,7 +306,7 @@ impl TopicRunner {
         Ok(Self {
             spec,
             categories,
-            pre_cat_steps,
+            input_transforms,
             exclude_check_at,
             transformations,
             sanitizer_fields,
@@ -327,7 +327,7 @@ impl TopicRunner {
     }
 
     /// Run the topic's pipeline for one element of `kind`: clone its raw tags, then hand off to
-    /// `build_topic_rows`, which applies `pre_cat_steps` (way kind only — they're way-oriented),
+    /// `build_topic_rows`, which applies `input_transforms` (way kind only — they're way-oriented),
     /// `exclude_condition`, side-split, categorize/extract into tag rows against the kind's
     /// category set. `raw_tags` are the element's untouched tags. Geometry is produced separately
     /// (way-only) via `build_geom_rows`.

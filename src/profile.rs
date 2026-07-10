@@ -22,7 +22,7 @@ pub static CATEGORIZE: AtomicU64 = AtomicU64::new(0); // first-match category se
 pub static EXTRACT: AtomicU64 = AtomicU64::new(0); // field eval + const seeding + row build
 pub static TAGCLONE: AtomicU64 = AtomicU64::new(0); // raw_tags.clone() per topic per element
 pub static EXCLUDE: AtomicU64 = AtomicU64::new(0); // exclude_condition eval_filter
-pub static PRECAT: AtomicU64 = AtomicU64::new(0); // unified pre_cat_steps (way-only, pre-categorize)
+pub static INPUT_TRANSFORMS: AtomicU64 = AtomicU64::new(0); // unified input_transforms (way-only, pre-categorize)
 pub static SIDESPLIT: AtomicU64 = AtomicU64::new(0); // get_transformed_objects
 
 /// Enable profiling if `PASS_C_PROFILE` is set in the environment. Call once at startup.
@@ -76,10 +76,10 @@ pub fn report() {
     let secs = |b: &AtomicU64| b.load(Ordering::Relaxed) as f64 / 1e9;
     let (d, t, r, g, c) = (secs(&DECODE), secs(&TAGBUILD), secs(&RESOLVE), secs(&GEOMETRY), secs(&CLASSIFY));
     let (cat, ext) = (secs(&CATEGORIZE), secs(&EXTRACT));
-    let (clone, excl, precat, split) = (secs(&TAGCLONE), secs(&EXCLUDE), secs(&PRECAT), secs(&SIDESPLIT));
+    let (clone, excl, input_transforms, split) = (secs(&TAGCLONE), secs(&EXCLUDE), secs(&INPUT_TRANSFORMS), secs(&SIDESPLIT));
     let total = d + t + r + g + c;
     let pct = |x: f64| if total > 0.0 { 100.0 * x / total } else { 0.0 };
-    let known = cat + ext + clone + excl + precat + split;
+    let known = cat + ext + clone + excl + input_transforms + split;
     tracing::info!(
         "[pass-c-profile] thread-summed CPU-s (share of Pass C work):\n\
          \tdecode   {:7.1}s  {:4.1}%\n\
@@ -87,10 +87,10 @@ pub fn report() {
          \tresolve  {:7.1}s  {:4.1}%\n\
          \tgeometry {:7.1}s  {:4.1}%\n\
          \tclassify {:7.1}s  {:4.1}%  (categorize {:.1}s / extract {:.1}s /\n\
-         \t                    tagclone {:.1}s / exclude {:.1}s / precat {:.1}s / sidesplit {:.1}s /\n\
+         \t                    tagclone {:.1}s / exclude {:.1}s / input_transforms {:.1}s / sidesplit {:.1}s /\n\
          \t                    unaccounted {:.1}s)\n\
          \ttotal    {:7.1}s",
         d, pct(d), t, pct(t), r, pct(r), g, pct(g), c, pct(c),
-        cat, ext, clone, excl, precat, split, (c - known).max(0.0), total
+        cat, ext, clone, excl, input_transforms, split, (c - known).max(0.0), total
     );
 }

@@ -78,8 +78,8 @@ pub fn build_topic_rows(
     // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
     // checks (which only ever saw the pre-unnest tags in the original pipeline).
     if kind == ElementKind::Way {
-        crate::profile::time(&crate::profile::PRECAT, || {
-            for step in &runner.pre_cat_steps[..runner.exclude_check_at] {
+        crate::profile::time(&crate::profile::INPUT_TRANSFORMS, || {
+            for step in &runner.input_transforms[..runner.exclude_check_at] {
                 step.apply(&mut tags, None, "self", None, None);
             }
         });
@@ -95,8 +95,8 @@ pub fn build_topic_rows(
     }
 
     if kind == ElementKind::Way {
-        crate::profile::time(&crate::profile::PRECAT, || {
-            for step in &runner.pre_cat_steps[runner.exclude_check_at..] {
+        crate::profile::time(&crate::profile::INPUT_TRANSFORMS, || {
+            for step in &runner.input_transforms[runner.exclude_check_at..] {
                 step.apply(&mut tags, None, "self", None, None);
             }
         });
