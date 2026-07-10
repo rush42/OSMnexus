@@ -5,7 +5,6 @@
   },
   "transforms": [
     {
-      "transform": "tag_rules",
       "output": "highway",
       "rules": [
         {
@@ -28,7 +27,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "lifecycle",
       "rules": [
         {
@@ -225,7 +223,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "construction",
       "rules": [
         {
@@ -238,7 +235,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "access",
       "rules": [
         {
@@ -254,7 +250,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "bicycle",
       "rules": [
         {
@@ -278,7 +273,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "foot",
       "rules": [
         {
@@ -302,11 +296,9 @@
       ]
     },
     {
-      "transform": "unnest_sidepath_self",
       "prefix": "cycleway"
     },
     {
-      "transform": "tag_rules",
       "output": "traffic_sign",
       "rules": [
         {

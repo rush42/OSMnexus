@@ -7,7 +7,7 @@ use crate::tag_engine::categories::{load_shared_macros, load_topic_categories, C
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::sanitize::{SanitizerDef, SanitizerRegistry};
 use crate::tag_engine::producer::{ExtractCtx, Producer, TagSet};
-use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, TopicSpec}};
+use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, SplitSidesSpec, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
@@ -277,37 +277,37 @@ impl TopicRunner {
                 .with_context(|| format!("building category order for topics/{name}"))?;
         }
 
-        // Split the declared transform pipeline into one ordered list of in-place `PreCatStep`s
-        // (applied together, in declaration order, before `exclude_condition`/categorization) and
-        // the parameterized center-line splits (which change object cardinality, handled
-        // separately and always last).
-        let mut pre_cat_steps = Vec::new();
+        // Center-line splits: change object cardinality, so handled separately from `pre_cat_steps`
+        // and always applied last (see `SplitSidesSpec`).
         let mut transformations = Vec::new();
+        for s in &spec.split_sides {
+            let SplitSidesSpec { highway, prefix, directed_keys, self_directed_keys } = s;
+            // `directed_keys`/`self_directed_keys` are just key names in JSON — translated here
+            // into ordinary `PreCatStep::TagRule`s (a `directed` `Producer::Extract` per key),
+            // applied per side object post-split (see `tag_engine::runner`). The split itself
+            // never sees these; it only unnests.
+            let directed_step = |key: &String, from: TagSet| PreCatStep::TagRule {
+                output: key.clone(),
+                source: Producer::Extract {
+                    key: Some(key.clone()), keys: None, from, side: None, sanitize: None,
+                    consts: Map::new(), directed: true,
+                },
+            };
+            let steps: Vec<PreCatStep> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
+                .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))
+                .collect();
+            transformations.push(CenterLineTransformation {
+                highway: Box::leak(highway.clone().into_boxed_str()),
+                prefix:  Box::leak(prefix.clone().into_boxed_str()),
+                directed_steps: Box::leak(steps.into_boxed_slice()),
+            });
+        }
+
+        // Split the declared transform pipeline into one ordered list of in-place `PreCatStep`s,
+        // applied in declaration order before `exclude_condition`/categorization.
+        let mut pre_cat_steps = Vec::new();
         for t in &spec.transforms {
             match t {
-                ParamTransform::SplitSides {
-                    highway, prefix, directed_keys, self_directed_keys,
-                } => {
-                    // `directed_keys`/`self_directed_keys` are just key names in JSON — translated
-                    // here into ordinary `PreCatStep::TagRule`s (a `directed` `Producer::Extract`
-                    // per key), applied per side object post-split (see `tag_engine::runner`). The
-                    // split itself never sees these; it only unnests.
-                    let directed_step = |key: &String, from: TagSet| PreCatStep::TagRule {
-                        output: key.clone(),
-                        source: Producer::Extract {
-                            key: Some(key.clone()), keys: None, from, side: None, sanitize: None,
-                            consts: Map::new(), directed: true,
-                        },
-                    };
-                    let steps: Vec<PreCatStep> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
-                        .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))
-                        .collect();
-                    transformations.push(CenterLineTransformation {
-                        highway: Box::leak(highway.clone().into_boxed_str()),
-                        prefix:  Box::leak(prefix.clone().into_boxed_str()),
-                        directed_steps: Box::leak(steps.into_boxed_slice()),
-                    });
-                }
                 ParamTransform::UnnestSidepathSelf { prefix } => {
                     let prefix = Box::leak(prefix.clone().into_boxed_str()) as &'static str;
                     pre_cat_steps.push(PreCatStep::SidepathSelf { prefix });

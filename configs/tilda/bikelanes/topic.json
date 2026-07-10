@@ -15,7 +15,6 @@
   },
   "transforms": [
     {
-      "transform": "tag_rules",
       "output": "highway",
       "rules": [
         {
@@ -38,7 +37,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "lifecycle",
       "rules": [
         {
@@ -235,7 +233,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "construction",
       "rules": [
         {
@@ -248,7 +245,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "access",
       "rules": [
         {
@@ -264,7 +260,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "bicycle",
       "rules": [
         {
@@ -288,7 +283,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "foot",
       "rules": [
         {
@@ -312,7 +306,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "oneway:bicycle",
       "rules": [
         {
@@ -329,7 +322,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "cycleway:left",
       "rules": [
         {
@@ -349,7 +341,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "cycleway",
       "rules": [
         {
@@ -366,7 +357,6 @@
       ]
     },
     {
-      "transform": "strip_prefix",
       "prefix": "construction:",
       "stamp_key": "lifecycle",
       "stamp_value": "construction",
@@ -376,7 +366,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "cycleway:both",
       "rules": [
         {
@@ -391,7 +380,6 @@
       ]
     },
     {
-      "transform": "tag_rules",
       "output": "cycleway",
       "rules": [
         {
@@ -404,11 +392,9 @@
       ]
     },
     {
-      "transform": "unnest_sidepath_self",
       "prefix": "cycleway"
     },
     {
-      "transform": "tag_rules",
       "output": "traffic_sign",
       "rules": [
         {
@@ -440,9 +426,10 @@
           }
         }
       ]
-    },
+    }
+  ],
+  "split_sides": [
     {
-      "transform": "split_sides",
       "highway": "cycleway",
       "prefix": "cycleway",
       "directed_keys": [
@@ -454,7 +441,6 @@
       ]
     },
     {
-      "transform": "split_sides",
       "highway": "footway",
       "prefix": "sidewalk",
       "self_directed_keys": [
