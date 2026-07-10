@@ -1,5 +1,4 @@
 {
-  "parking_inference": "both",
   "condition": {
     "and": [
       {

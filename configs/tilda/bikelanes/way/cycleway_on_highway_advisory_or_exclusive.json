@@ -1,5 +1,4 @@
 {
-  "parking_inference": "directional",
   "condition": {
     "macro": "is_advisory_or_exclusive"
   },

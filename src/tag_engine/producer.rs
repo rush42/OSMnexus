@@ -43,9 +43,6 @@ pub struct Produced {
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags,
     pub parent_tags: Option<&'a RawTags>,
-    /// The matched category's parking-inference scope (`both`/`directional`/none) and the
-    /// transformed object's side — used by the `traffic_mode` derivers.
-    pub parking_inference: Option<&'a str>,
     pub obj_side: &'a str,
     /// The prefix that produced this object (e.g. "cycleway"; `None` for the self object) and the
     /// infix that matched during side-splitting — same fields `CategoryContext` carries, so a
@@ -499,7 +496,6 @@ mod classify_bool_tests {
         ExtractCtx {
             obj_tags: obj,
             parent_tags: parent,
-            parking_inference: None,
             obj_side: "self",
             prefix: None,
             infix: None,
@@ -566,7 +562,7 @@ mod directed_extract_tests {
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, obj_side: &'a str) -> ExtractCtx<'a> {
         ExtractCtx {
-            obj_tags: obj, parent_tags: parent, parking_inference: None, obj_side,
+            obj_tags: obj, parent_tags: parent, obj_side,
             prefix: None, infix: None,
         }
     }

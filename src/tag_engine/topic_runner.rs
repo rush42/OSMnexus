@@ -61,7 +61,6 @@ impl PreCatStep {
                 let ctx = ExtractCtx {
                     obj_tags: tags,
                     parent_tags,
-                    parking_inference: None,
                     obj_side,
                     prefix,
                     infix,

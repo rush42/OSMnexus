@@ -1,5 +1,4 @@
 {
-  "parking_inference": "directional",
   "condition": {
     "and": [
       {

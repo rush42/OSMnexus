@@ -32,11 +32,6 @@ pub struct CategoryDef {
     /// like `_implicit_oneway_confidence` that are not part of the public `derived` payload.
     #[serde(default)]
     pub private: serde_json::Map<String, serde_json::Value>,
-    /// Scope of parking-based `traffic_mode` inference for this category: `"both"` (infer both
-    /// sides, e.g. bicycle roads) or `"directional"` (infer only the transformed side, e.g.
-    /// on-highway cycleway lanes). Absent = no parking inference.
-    #[serde(default)]
-    pub parking_inference: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
