@@ -560,7 +560,8 @@ mod tests {
         categorize, categorize_linear, load_shared_macros, load_topic_categories,
         CategoriesFile, OrderedNode,
     };
-    use crate::tag_engine::producer::{Env, ExtractCtx, Producer};
+    use crate::tag_engine::filter::Filter;
+    use crate::tag_engine::producer::{AtomicChain, Env, ExtractCtx, Producer};
     use crate::lint::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use crate::osm::types::RawTags;
 
@@ -593,18 +594,28 @@ mod tests {
     /// object we can construct — the tree only drops provably-false nodes.
     #[test]
     fn tree_matches_linear() {
+        let sanitizers: HashMap<String, AtomicChain> = HashMap::new();
         let derivers: HashMap<String, Producer> = HashMap::new();
+        let env = Env { sanitizers: &sanitizers, derivers: &derivers };
 
         for (topic, dir) in topic_category_dirs() {
           let shared = dir.parent().unwrap().join("_shared");
           let shared_macros = load_shared_macros(&shared).expect("shared macros");
           for (kind, mut cats) in load_topic_categories(&dir).expect("load categories") {
             let topic = format!("{topic}/{}", kind.subdir());
-            for (k, v) in &shared_macros {
-                cats.macros.entry(k.clone()).or_insert_with(|| v.clone());
+            let mut raw_macros = shared_macros.clone();
+            for (k, v) in &cats.macros {
+                raw_macros.insert(k.clone(), v.clone()); // topic-local overrides shared
+            }
+            let expanded: HashMap<String, Filter> = raw_macros.iter()
+                .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros)?)))
+                .collect::<anyhow::Result<_>>()
+                .expect("expand macros");
+            cats.macros = expanded.clone();
+            for cat in &mut cats.categories {
+                cat.condition = cat.condition.expand(&expanded).expect("expand category condition");
             }
             cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
-            let env = Env { derivers: &derivers, macros: &cats.macros };
 
             let refs = referenced_eq(&cats);
             let hw_vals: Vec<Option<String>> = {

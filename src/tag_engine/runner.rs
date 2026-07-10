@@ -78,7 +78,7 @@ pub fn build_topic_rows(
     // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
     // checks (which only ever saw the pre-unnest tags in the original pipeline).
     // Topic-wide lookup tables — identical for every step/object below, so built once.
-    let env = Env { derivers: &runner.deriver_lib, macros: &categories.macros };
+    let env = Env { sanitizers: &runner.sanitizers, derivers: &runner.deriver_lib };
 
     if kind == ElementKind::Way {
         crate::profile::time(&crate::profile::PRECAT, || {

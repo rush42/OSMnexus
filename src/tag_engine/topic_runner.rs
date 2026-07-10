@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use crate::tag_engine::categories::{load_shared_macros, load_topic_categories, CategoriesFile};
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::loader::load_topic_macros;
-use crate::tag_engine::producer::{Env, ExtractCtx, Producer, TagSet};
+use crate::tag_engine::producer::{AtomicChain, Env, ExtractCtx, Producer, TagSet};
 use crate::tag_engine::{runner::build_topic_rows, topic::{DeriverBinding, Field, ParamTransform, SplitSidesSpec, TopicSpec}};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
@@ -112,10 +112,12 @@ pub struct TopicRunner {
     /// doesn't use this list; it's folded into `topic_derivers` (see there) so sanitizers and
     /// derivers run as one list through one `eval_fields` call.
     pub sanitizer_fields: Vec<Field>,
-    /// The deriver library: `derivers.json` plus every `sanitizers.json` entry folded in at load
-    /// (hard error on name collision — see `load`). One registry, resolved both by `sanitize`
-    /// names (via `resolve_sanitize`, falling back to the built-in registry when absent) and by
-    /// `derivers` bindings.
+    /// Atomic `&str -> Value` transforms (`sanitizers.json`, shared + topic-local). Resolved by
+    /// `sanitize:` names (`resolve_sanitize`, falling back to the built-in registry when absent).
+    /// A separate registry/namespace from `deriver_lib` below — see `Env`'s doc for why.
+    pub sanitizers: HashMap<String, AtomicChain>,
+    /// The deriver library (`derivers.json`): named composite producers, resolved by `derivers`
+    /// bindings.
     pub deriver_lib: HashMap<String, Producer>,
     /// Topic-default fields applied to every object regardless of category: desugared sanitizers
     /// first, then resolved `derivers.json` bindings (`topic.json`'s `derivers` list) — sanitizers
@@ -233,11 +235,15 @@ impl TopicRunner {
         // plain `Extract`, which carries no `Filter`.)
         let sanitizer_fields: Vec<Field> = spec.sanitizers.clone();
 
-        // Load the data-defined atomic chains (named `sanitize` targets): shared
+        // Load the data-defined atomic transforms (named `sanitize:` targets): shared
         // (topics/_shared/sanitizers.json) merged with the topic's own, topic-local winning on
         // name conflict. An unrecognized name falls back to the built-in registry
-        // (`resolve_sanitize`), not handled here.
-        let read_named_producers = |path: &std::path::Path| -> anyhow::Result<HashMap<String, Producer>> {
+        // (`resolve_sanitize`), not handled here. A separate registry/namespace from `deriver_lib`
+        // below — atomic chains and composite producers are different *types*
+        // (`AtomicChain`/`Producer`), so there's no risk of a name meaning two things at once; no
+        // collision check needed. `AtomicChain` never embeds a `Filter`, so no macro expansion
+        // pass applies here either.
+        let read_sanitizers = |path: &std::path::Path| -> anyhow::Result<HashMap<String, AtomicChain>> {
             if path.exists() {
                 Ok(serde_json::from_str(&std::fs::read_to_string(path)?)
                     .with_context(|| format!("parsing {}", path.display()))?)
@@ -245,35 +251,20 @@ impl TopicRunner {
                 Ok(HashMap::new())
             }
         };
-        let mut sanitizers = read_named_producers(&shared_dir.join("sanitizers.json"))?;
-        for (k, v) in read_named_producers(&base.join("sanitizers.json"))? {
+        let mut sanitizers = read_sanitizers(&shared_dir.join("sanitizers.json"))?;
+        for (k, v) in read_sanitizers(&base.join("sanitizers.json"))? {
             sanitizers.insert(k, v); // topic-local overrides shared
         }
 
-        // Load the deriver library (named single-output extractors). Optional: a topic with no
-        // derivers (e.g. barrierLines) may omit the file.
+        // Load the deriver library (named composite producers). Optional: a topic with no derivers
+        // (e.g. barrierLines) may omit the file.
         let derivers_path = base.join("derivers.json");
-        let mut deriver_lib: HashMap<String, Producer> = if derivers_path.exists() {
+        let deriver_lib: HashMap<String, Producer> = if derivers_path.exists() {
             serde_json::from_str(&std::fs::read_to_string(&derivers_path)?)
                 .with_context(|| format!("parsing topics/{name}/derivers.json"))?
         } else {
             HashMap::new()
         };
-
-        // Fold every sanitizer into the same registry as the derivers — one `Producer` map, one
-        // name → rule lookup, no separate "sanitizer registry" concept left. A name can't mean two
-        // things at once (e.g. bikelanes had both a `surface` atomic sanitizer and a `surface`
-        // composite deriver until this was caught and one renamed) — hard-error on collision rather
-        // than silently letting one clobber the other.
-        for (k, v) in sanitizers {
-            if deriver_lib.contains_key(&k) {
-                anyhow::bail!(
-                    "topics/{name}: '{k}' is defined in both sanitizers.json and derivers.json — \
-                     rename one; they now share a single registry",
-                );
-            }
-            deriver_lib.insert(k, v);
-        }
 
         // Expand every deriver's embedded macros now, before anything downstream (`resolve_bindings`,
         // category overrides) clones entries out of this map — every clone then inherits the
@@ -409,6 +400,7 @@ impl TopicRunner {
             exclude_check_at,
             transformations,
             sanitizer_fields,
+            sanitizers,
             deriver_lib,
             topic_derivers,
             category_derivers,

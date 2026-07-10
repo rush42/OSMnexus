@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::tag_engine::keys::first_present;
-use crate::tag_engine::producer::{resolve_sanitize, Env, ExtractCtx, Producer};
+use crate::tag_engine::producer::{resolve_sanitize, AtomicChain, Env, ExtractCtx};
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
 
@@ -136,19 +136,20 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx, env: &Env) -> bool {
         Filter::Or  { or  } => or.iter().any(|f| eval(f, ctx, env)),
         Filter::Not { not } => !eval(not, ctx, env),
 
-        // JSON-defined macros (per-topic categories/macros.json + shared topics/_shared/).
-        Filter::Macro { r#macro: name } => env.macros
-            .get(name)
-            .map(|f| eval(f, ctx, env))
-            .unwrap_or_else(|| { tracing::warn!("unknown macro: {}", name); false }),
+        // Macros are expanded away at load time (`Filter::expand`) — a live tree should never
+        // contain one; `Env` doesn't even carry a macro table to resolve this against.
+        Filter::Macro { r#macro: name } => {
+            tracing::error!("unexpanded macro '{name}' reached eval — Filter::expand should have run at load");
+            false
+        }
 
         Filter::TagEq { tag, eq, sanitize } =>
-            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize, env.derivers)
+            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize, env.sanitizers)
                 .is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::TagInSet { tag, in_set } =>
             ctx.obj_tags.get(tag).map(|v| value_set(in_set).contains(v)).unwrap_or(false),
         Filter::TagIn { tag, r#in, sanitize } =>
-            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize, env.derivers)
+            read_str(ctx.obj_tags.get(tag).map(String::as_str), sanitize, env.sanitizers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::TagContains { tag, contains, case_insensitive } =>
             ctx.obj_tags.get(tag).map(|v| {
@@ -166,21 +167,21 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx, env: &Env) -> bool {
             ctx.obj_tags.contains_key(tag) == *exists,
 
         Filter::FirstTagInSet { first_tag, in_set, sanitize } =>
-            read_str(first_present(ctx.obj_tags, first_tag), sanitize, env.derivers)
+            read_str(first_present(ctx.obj_tags, first_tag), sanitize, env.sanitizers)
                 .is_some_and(|v| value_set(in_set).contains(v.as_ref())),
         Filter::FirstTagIn { first_tag, r#in, sanitize } =>
-            read_str(first_present(ctx.obj_tags, first_tag), sanitize, env.derivers)
+            read_str(first_present(ctx.obj_tags, first_tag), sanitize, env.sanitizers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::FirstTagExists { first_tag, exists, sanitize: None } =>
             first_tag.iter().any(|k| ctx.obj_tags.contains_key(k)) == *exists,
         Filter::FirstTagExists { first_tag, exists, sanitize: Some(name) } =>
-            read_str(first_present(ctx.obj_tags, first_tag), &Some(name.clone()), env.derivers).is_some() == *exists,
+            read_str(first_present(ctx.obj_tags, first_tag), &Some(name.clone()), env.sanitizers).is_some() == *exists,
 
         Filter::ParentTagEq { parent_tag, eq, sanitize } =>
-            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, env.derivers)
+            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, env.sanitizers)
                 .is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::ParentTagIn { parent_tag, r#in, sanitize } =>
-            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, env.derivers)
+            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize, env.sanitizers)
                 .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::ParentTagContains { parent_tag, contains } =>
             ctx.parent_tags.and_then(|t| t.get(parent_tag))
@@ -219,7 +220,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx, env: &Env) -> bool {
 fn read_num(ctx: &ExtractCtx, env: &Env, key: &str, sanitize: &Option<String>) -> Option<f64> {
     let raw = ctx.obj_tags.get(key)?;
     match sanitize {
-        Some(name) => num_from_value(&resolve_sanitize(env.derivers, name, raw)?),
+        Some(name) => num_from_value(&resolve_sanitize(env.sanitizers, Some(name.as_str()), raw)?),
         None => raw.trim().parse().ok(),
     }
 }
@@ -240,12 +241,12 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
 fn read_str<'a>(
     raw: Option<&'a str>,
     sanitize: &Option<String>,
-    reg: &HashMap<String, Producer>,
+    reg: &HashMap<String, AtomicChain>,
 ) -> Option<std::borrow::Cow<'a, str>> {
     let raw = raw?;
     match sanitize {
         None => Some(std::borrow::Cow::Borrowed(raw)),
-        Some(name) => match resolve_sanitize(reg, name, raw)? {
+        Some(name) => match resolve_sanitize(reg, Some(name.as_str()), raw)? {
             serde_json::Value::String(s) => Some(std::borrow::Cow::Owned(s)),
             other => other.as_str().map(|s| std::borrow::Cow::Owned(s.to_owned())),
         },
