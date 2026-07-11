@@ -73,7 +73,7 @@
     "separate_geometry",
     "shared_bus_lane_bike_with_bus"
   ],
-  "consts": {
+  "defaults": {
     "oneway": {
       "value": "implicit_yes",
       "consts": {

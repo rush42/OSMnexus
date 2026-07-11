@@ -20,7 +20,7 @@
     "shared_bus_lane_bike_with_bus",
     "shared_bus_lane_bus_with_bike"
   ],
-  "consts": {
+  "defaults": {
     "oneway": {
       "value": "assumed_no",
       "consts": {

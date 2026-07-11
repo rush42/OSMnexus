@@ -19,7 +19,7 @@
     "service_uncategorized",
     "unspecified_road"
   ],
-  "consts": {
+  "defaults": {
     "minzoom": 11
   }
 }

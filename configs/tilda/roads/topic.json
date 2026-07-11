@@ -438,7 +438,7 @@
       }
     ]
   },
-  "consts": {
+  "defaults": {
     "minzoom": 0,
     "_implicit_oneway_confidence": "not_applicable"
   }

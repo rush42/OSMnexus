@@ -3,7 +3,7 @@
     "tag": "bicycle_road",
     "eq": "yes"
   },
-  "consts": {
+  "defaults": {
     "minzoom": 11
   }
 }

@@ -23,11 +23,11 @@ pub struct CategoryDef {
     /// the parent highway. Same value shapes as `TopicSpec::outputs` (see `resolve_output_entry`).
     #[serde(default)]
     pub outputs: serde_json::Map<String, serde_json::Value>,
-    /// Per-category constants (override the topic-level `consts` per key). Seeded into `derived`
-    /// as the lowest-priority layer; a sanitizer/deriver producing the same key overrides them.
+    /// Per-category default values (override the topic-level `defaults` per key). Seeded into
+    /// `derived` as the lowest-priority layer; any output producing the same key overrides them.
     /// A `_`-prefixed key (e.g. `_implicit_oneway_confidence`) routes into `private` instead.
     #[serde(default)]
-    pub consts: serde_json::Map<String, serde_json::Value>,
+    pub defaults: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

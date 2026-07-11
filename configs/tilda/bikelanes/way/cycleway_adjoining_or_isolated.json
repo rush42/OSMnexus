@@ -24,7 +24,7 @@
     "shared_bus_lane_bus_with_bike",
     "shared_motor_vehicle_lane"
   ],
-  "consts": {
+  "defaults": {
     "oneway": {
       "value": "assumed_no",
       "consts": {

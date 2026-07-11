@@ -40,13 +40,13 @@ pub struct TopicSpec {
     /// Uses the same Filter JSON syntax as category conditions.
     #[serde(default)]
     pub exclude_condition: Option<Filter>,
-    /// Topic-level default constants seeded into `derived` (lowest priority — any sanitizer/
-    /// deriver producing the same key overrides them). Categories override per-key via their own
-    /// `consts`. A key starting with `_` routes into the `private` column instead of `derived`
-    /// (the same convention `SplitContext::iter` uses for `_side`/`_prefix`/`_infix`) — there's no
-    /// separate `private` map to declare one explicitly.
+    /// Topic-level default values seeded into `derived` (lowest priority — any output producing
+    /// the same key overrides them). Categories override per-key via their own `defaults`. A key
+    /// starting with `_` routes into the `private` column instead of `derived` (the same
+    /// convention `SplitContext::iter` uses for `_side`/`_prefix`/`_infix`) — there's no separate
+    /// `private` map to declare one explicitly.
     #[serde(default)]
-    pub consts: serde_json::Map<String, serde_json::Value>,
+    pub defaults: serde_json::Map<String, serde_json::Value>,
     /// Which geometry outputs this topic wants, per element kind — replaces the old global
     /// `--emit-way-geometries`/`--emit-relation-geometries`/`--topic-edges` CLI flags with a
     /// per-topic declaration. See `GeometryShape`.

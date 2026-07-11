@@ -43,16 +43,18 @@ pub struct TopicRunner {
     pub default_outputs: Vec<Field>,
     /// Per-category effective outputs: the topic's `outputs` map merged with the category's own
     /// `outputs` overrides (category wins, by key — plain JSON-object merge, see `TopicSpec::outputs`),
-    /// then resolved into `Producer`s, with the category's effective (topic ⊕ category) consts
-    /// folded in as a trailing `Producer::Fallback` branch on each const's output — so a const is
-    /// just the lowest-priority producer for its key, evaluated by the same `eval_fields` pass as
-    /// any other output. Present for every category (unlike a plain override map, every category's
-    /// effective consts can still differ from the topic defaults even with no `outputs` override).
+    /// then resolved into `Producer`s, with the category's effective (topic ⊕ category) `defaults`
+    /// folded in as a trailing `Producer::Fallback` branch on each default's output — so a default
+    /// is just the lowest-priority producer for its key, evaluated by the same `eval_fields` pass
+    /// as any other output. Present for every category (unlike a plain override map, every
+    /// category's effective defaults can still differ from the topic's even with no `outputs`
+    /// override).
     pub category_outputs: HashMap<String, Vec<Field>>,
-    /// Per-category effective *private* consts only (`_`-prefixed keys of topic ⊕ category
-    /// `consts` — see `TopicSpec::consts`): nothing ever produces these outside `consts` itself,
-    /// so they're seeded into `private` unconditionally rather than folded into a producer chain.
-    pub category_private_consts: HashMap<String, serde_json::Map<String, serde_json::Value>>,
+    /// Per-category effective *private* defaults only (`_`-prefixed keys of topic ⊕ category
+    /// `defaults` — see `TopicSpec::defaults`): nothing ever produces these outside `defaults`
+    /// itself, so they're seeded into `private` unconditionally rather than folded into a producer
+    /// chain.
+    pub category_private_defaults: HashMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Resolve one topic's or category's raw `outputs` map (already merged by key, category winning)
@@ -78,13 +80,13 @@ fn resolve_outputs(
         .collect()
 }
 
-/// A `consts` JSON entry as a `Producer`: a bundled `{ "value": ..., "consts": {...} }` object
+/// A `defaults` JSON entry as a `Producer`: a bundled `{ "value": ..., "consts": {...} }` object
 /// carries its companions as the producer's own `consts` (so `Producer::eval` emits them exactly
-/// when this branch produces — no separate "did the const survive" bookkeeping needed elsewhere);
-/// any other JSON is a bare literal with no companions. `rules: []` means `Classify` always falls
-/// through to `default`, so this unconditionally "produces" — the const is only ever *reached* via
-/// `Fallback` when nothing higher-priority did.
-fn const_producer(v: &Value) -> Producer {
+/// when this branch produces — no separate "did the default survive" bookkeeping needed
+/// elsewhere); any other JSON is a bare literal with no companions. `rules: []` means `Classify`
+/// always falls through to `default`, so this unconditionally "produces" — the default value is
+/// only ever *reached* via `Fallback` when nothing higher-priority did.
+fn default_value_producer(v: &Value) -> Producer {
     let (value, consts) = match v {
         Value::Object(obj) if obj.contains_key("value") => {
             (obj["value"].clone(), obj.get("consts").and_then(Value::as_object).cloned().unwrap_or_default())
@@ -94,23 +96,23 @@ fn const_producer(v: &Value) -> Producer {
     Producer::Classify { rules: Vec::new(), default: Some(value), from: TagSet::Obj, consts }
 }
 
-/// Fold `consts`' public (non-`_`-prefixed) keys into `fields` as the lowest-priority producer for
-/// their output: appended as a trailing `Fallback` branch onto an existing field targeting that
-/// output (so the const only takes effect when the real producer returns `None`), or pushed as a
-/// new const-only field when nothing else targets it (e.g. a bare literal like `minzoom`).
-/// `_`-prefixed keys are skipped — see `TopicRunner::category_private_consts`.
-fn merge_const_fields(mut fields: Vec<Field>, consts: &Map<String, Value>) -> Vec<Field> {
-    for (k, v) in consts {
+/// Fold `defaults`' public (non-`_`-prefixed) keys into `fields` as the lowest-priority producer
+/// for their output: appended as a trailing `Fallback` branch onto an existing field targeting
+/// that output (so the default only takes effect when the real producer returns `None`), or
+/// pushed as a new default-only field when nothing else targets it (e.g. a bare literal like
+/// `minzoom`). `_`-prefixed keys are skipped — see `TopicRunner::category_private_defaults`.
+fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -> Vec<Field> {
+    for (k, v) in defaults {
         if k.starts_with('_') {
             continue;
         }
-        let const_source = const_producer(v);
+        let default_source = default_value_producer(v);
         match fields.iter_mut().find(|f| &f.output == k) {
             Some(existing) => {
                 let primary = std::mem::replace(&mut existing.source, Producer::Fallback { fallback: Vec::new() });
-                existing.source = Producer::Fallback { fallback: vec![primary, const_source] };
+                existing.source = Producer::Fallback { fallback: vec![primary, default_source] };
             }
-            None => fields.push(Field { output: k.clone(), source: const_source }),
+            None => fields.push(Field { output: k.clone(), source: default_source }),
         }
     }
     fields
@@ -272,24 +274,25 @@ impl TopicRunner {
             .position(|s| matches!(s, InputTransform::SidepathSelf { .. }))
             .unwrap_or(input_transforms.len());
 
-        // Topic-default outputs, topic-level consts folded in — the defensive fallback for a
+        // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
-        let default_outputs = merge_const_fields(
+        let default_outputs = merge_default_fields(
             resolve_outputs(
                 spec.outputs.clone(), &deriver_lib, &macros, &sanitizers,
                 &format!("topics/{name}/topic.json: outputs"),
             )?,
-            &spec.consts,
+            &spec.defaults,
         );
 
         // Precompute per-category effective outputs (topic `outputs` ⊕ category `outputs`,
-        // merged by key before resolving — see `TopicSpec::outputs`) and effective consts folded
-        // in (`merge_const_fields`), plus private consts, across every kind. Every category gets
-        // an entry, even with no `outputs` override: its effective consts can still differ from
-        // the topic's. Category ids are expected unique within a topic (they're file stems); a
-        // node and a way category sharing a stem would collide here — keep stems distinct per topic.
+        // merged by key before resolving — see `TopicSpec::outputs`) and effective `defaults`
+        // folded in (`merge_default_fields`), plus private defaults, across every kind. Every
+        // category gets an entry, even with no `outputs` override: its effective defaults can
+        // still differ from the topic's. Category ids are expected unique within a topic (they're
+        // file stems); a node and a way category sharing a stem would collide here — keep stems
+        // distinct per topic.
         let mut category_outputs = HashMap::new();
-        let mut category_private_consts = HashMap::new();
+        let mut category_private_defaults = HashMap::new();
         for cats in categories.values() {
             for cat in &cats.categories {
                 let raw = merge(&spec.outputs, &cat.outputs);
@@ -297,11 +300,11 @@ impl TopicRunner {
                     raw, &deriver_lib, &macros, &sanitizers,
                     &format!("topics/{name}: category '{}' outputs", cat.id),
                 )?;
-                let consts = merge(&spec.consts, &cat.consts);
-                category_outputs.insert(cat.id.clone(), merge_const_fields(fields, &consts));
-                category_private_consts.insert(
+                let defaults = merge(&spec.defaults, &cat.defaults);
+                category_outputs.insert(cat.id.clone(), merge_default_fields(fields, &defaults));
+                category_private_defaults.insert(
                     cat.id.clone(),
-                    consts.into_iter().filter(|(k, _)| k.starts_with('_')).collect(),
+                    defaults.into_iter().filter(|(k, _)| k.starts_with('_')).collect(),
                 );
             }
         }
@@ -314,7 +317,7 @@ impl TopicRunner {
             transformations,
             default_outputs,
             category_outputs,
-            category_private_consts,
+            category_private_defaults,
         })
     }
 

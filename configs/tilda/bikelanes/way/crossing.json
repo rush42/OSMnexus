@@ -8,7 +8,7 @@
     "not_expected",
     "separate_geometry"
   ],
-  "consts": {
+  "defaults": {
     "oneway": {
       "value": "implicit_yes",
       "consts": {

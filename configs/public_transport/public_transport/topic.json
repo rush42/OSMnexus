@@ -29,7 +29,7 @@
     },
     "layer": true
   },
-  "consts": {
+  "defaults": {
     "minzoom": 0
   }
 }

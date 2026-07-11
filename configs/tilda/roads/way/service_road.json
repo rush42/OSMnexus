@@ -20,7 +20,7 @@
     "service_emergency_access",
     "service_parking_aisle"
   ],
-  "consts": {
+  "defaults": {
     "minzoom": 11
   }
 }

@@ -86,8 +86,8 @@ pub fn build_topic_rows(
         };
 
         // This category's effective outputs (topic `outputs` ⊕ category `outputs`, see
-        // `TopicSpec::outputs`), plus this category's effective consts (folded in as each const
-        // output's lowest-priority `Fallback` branch — see `runner::merge_const_fields`), share
+        // `TopicSpec::outputs`), plus this category's effective `defaults` (folded in as each
+        // default's lowest-priority `Fallback` branch — see `runner::merge_default_fields`), share
         // one column and one eval pass.
         let outputs = runner
             .category_outputs
@@ -96,10 +96,10 @@ pub fn build_topic_rows(
         let mut derived = Map::new();
         eval_fields(outputs, &ectx, &mut derived);
 
-        // Private consts (`_`-prefixed `consts` keys): nothing else ever targets these, so they're
-        // seeded into `private` unconditionally rather than folded into a producer chain.
+        // Private defaults (`_`-prefixed `defaults` keys): nothing else ever targets these, so
+        // they're seeded into `private` unconditionally rather than folded into a producer chain.
         let mut private = Map::new();
-        if let Some(privates) = runner.category_private_consts.get(&category.id) {
+        if let Some(privates) = runner.category_private_defaults.get(&category.id) {
             for (k, v) in privates {
                 private.insert(k.clone(), v.clone());
             }

@@ -17,7 +17,7 @@
   "excludes": [
     "bicycle_road"
   ],
-  "consts": {
+  "defaults": {
     "minzoom": 11
   }
 }

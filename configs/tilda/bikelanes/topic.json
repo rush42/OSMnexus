@@ -157,7 +157,7 @@
     "traffic_mode_right": "traffic_mode_right",
     "road": "road"
   },
-  "consts": {
+  "defaults": {
     "oneway": {
       "value": "assumed_no",
       "consts": {
