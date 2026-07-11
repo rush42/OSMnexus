@@ -24,7 +24,7 @@ pub struct CategoryDef {
     #[serde(default)]
     pub outputs: serde_json::Map<String, serde_json::Value>,
     /// Per-category default values (override the topic-level `defaults` per key). Seeded into
-    /// `derived` as the lowest-priority layer; any output producing the same key overrides them.
+    /// `produced` as the lowest-priority layer; any output producing the same key overrides them.
     #[serde(default)]
     pub defaults: serde_json::Map<String, serde_json::Value>,
 }

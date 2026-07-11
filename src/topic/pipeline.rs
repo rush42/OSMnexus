@@ -93,11 +93,10 @@ pub fn build_topic_rows(
             .category_outputs
             .get(&category.id)
             .unwrap_or(&runner.default_outputs);
-        let mut derived = Map::new();
-        eval_fields(outputs, &ectx, &mut derived);
+        let mut produced = Map::new();
+        eval_fields(outputs, &ectx, &mut produced);
 
         let mut private = Map::new();
-        derived.insert("category".into(), Value::String(category.id.clone()));
 
         // Side-split context, written generically via `SplitContext::iter` (`_side`, plus
         // `_prefix`/`_infix` for a side object); `_parent_highway` is gone (redundant with the
@@ -109,14 +108,14 @@ pub fn build_topic_rows(
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time. `ectx.id`
         // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"` — computed once
-        // by `generate_sides` rather than re-derived here.
-        derived.insert("id".into(), Value::String(ectx.id.to_owned()));
-
+        // by `generate_sides` rather than re-produced here. `category`/`id` are dedicated `TopicRow`
+        // columns, not `produced` keys — see `TopicRow::category`.
         rows.push(TopicRow {
             osm_id,
             osm_type: kind.osm_type(),
             id: ectx.id.to_owned(),
-            derived,
+            category: category.id.clone(),
+            produced,
             private,
             meta: meta.clone(),
         });

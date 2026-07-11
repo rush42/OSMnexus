@@ -40,7 +40,7 @@ pub struct TopicSpec {
     /// Uses the same Filter JSON syntax as category conditions.
     #[serde(default)]
     pub exclude_condition: Option<Filter>,
-    /// Topic-level default values seeded into `derived` (lowest priority — any output producing
+    /// Topic-level default values seeded into `produced` (lowest priority — any output producing
     /// the same key overrides them). Categories override per-key via their own `defaults`.
     #[serde(default)]
     pub defaults: serde_json::Map<String, serde_json::Value>,

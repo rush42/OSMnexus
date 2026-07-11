@@ -85,7 +85,7 @@ pub struct Config {
     /// `TopicRunner::wants_way_graph`) — built as a post-processing SQL step after the shared edge
     /// table is loaded (and indexed, if `--create-index` is set). `pgrouting` emits only the
     /// routing columns; `all` additionally joins in the topic's own tag columns
-    /// (`derived`/`private`/`meta`). Postgres output only; ignored by topics that don't
+    /// (`produced`/`private`/`meta`). Postgres output only; ignored by topics that don't
     /// declare `graph`.
     #[arg(long, value_enum, default_value_t = TopicEdgeMode::Pgrouting)]
     pub topic_edges: TopicEdgeMode,
@@ -103,6 +103,6 @@ pub enum Output {
 pub enum TopicEdgeMode {
     /// Just the routing columns: id/seg/start/end/geom/length/cost/reverse_cost.
     Pgrouting,
-    /// The above, plus the topic's own tag columns (`derived`/`private`/`meta`) joined in.
+    /// The above, plus the topic's own tag columns (`produced`/`private`/`meta`) joined in.
     All,
 }
