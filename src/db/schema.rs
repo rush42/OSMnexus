@@ -8,11 +8,8 @@ use tokio_postgres::Client;
 pub const EDGE_TABLE: &str = "edges";
 
 /// Relation → member-way link table. Relations have no materialized geometry; a relation's tag row
-/// joins here to reach its member ways' rows in `EDGE_TABLE` (or `WAY_GEOM_TABLE`).
+/// joins here to reach its member ways' rows in `EDGE_TABLE` (or a topic's own `{table}_geom`).
 pub const MEMBER_TABLE: &str = "relation_members";
-
-/// Whole-way linestring table, populated only with `--emit-way-geometries`.
-pub const WAY_GEOM_TABLE: &str = "way_geometries";
 
 /// Graph-vertex table: one row per node referenced as a `start_id`/`end_id` in `EDGE_TABLE` — shared
 /// between ≥2 ways, a way endpoint, or forced by a node classifier. Always populated (this is the
@@ -20,9 +17,17 @@ pub const WAY_GEOM_TABLE: &str = "way_geometries";
 /// internal sequential id `edges` joins on; `osm_id` is the original OSM node id.
 pub const NODE_TABLE: &str = "nodes";
 
-/// Merged relation-geometry table, populated only with `--emit-relation-geometries` (a post-COPY SQL
-/// step — see `main.rs`).
-pub const RELATION_GEOM_TABLE: &str = "relation_geometries";
+/// This topic's whole-way linestring table name (populated only for topics declaring
+/// `"geometry": { "way": ["linestring"] }` — see `TopicRunner::wants_way_linestring`).
+pub fn way_geom_table(table: &str) -> String {
+    format!("{table}_geom")
+}
+
+/// This topic's merged relation-linestring table name (populated only for topics declaring
+/// `"geometry": { "relation": ["linestring"] }` — see `db::topic_geometries`).
+pub fn relation_geom_table(table: &str) -> String {
+    format!("{table}_relation_geom")
+}
 
 fn create_member_table_sql() -> String {
     format!(r#"
@@ -81,9 +86,10 @@ CREATE TABLE IF NOT EXISTS {EDGE_TABLE} (
 )"#)
 }
 
-fn create_way_geom_table_sql() -> String {
+fn create_way_geom_table_sql(table: &str) -> String {
+    let way_geom = way_geom_table(table);
     format!(r#"
-CREATE TABLE IF NOT EXISTS {WAY_GEOM_TABLE} (
+CREATE TABLE IF NOT EXISTS {way_geom} (
   osm_id   bigint,
   geom     geometry(LineString, 3857),
   length_m double precision
@@ -113,10 +119,11 @@ fn drop_edge_indexes_sql() -> String {
     )
 }
 
-fn drop_way_geom_indexes_sql() -> String {
+fn drop_way_geom_indexes_sql(table: &str) -> String {
+    let way_geom = way_geom_table(table);
     format!(
-        "DROP INDEX IF EXISTS {WAY_GEOM_TABLE}_geom_idx;\n\
-         DROP INDEX IF EXISTS {WAY_GEOM_TABLE}_osm_id_idx"
+        "DROP INDEX IF EXISTS {way_geom}_geom_idx;\n\
+         DROP INDEX IF EXISTS {way_geom}_osm_id_idx"
     )
 }
 
@@ -144,10 +151,11 @@ fn edge_index_stmts() -> [String; 2] {
     ]
 }
 
-fn way_geom_index_stmts() -> [String; 2] {
+fn way_geom_index_stmts(table: &str) -> [String; 2] {
+    let way_geom = way_geom_table(table);
     [
-        format!("CREATE INDEX IF NOT EXISTS {WAY_GEOM_TABLE}_geom_idx ON {WAY_GEOM_TABLE} USING GIST (geom)"),
-        format!("CREATE INDEX IF NOT EXISTS {WAY_GEOM_TABLE}_osm_id_idx ON {WAY_GEOM_TABLE} (osm_id)"),
+        format!("CREATE INDEX IF NOT EXISTS {way_geom}_geom_idx ON {way_geom} USING GIST (geom)"),
+        format!("CREATE INDEX IF NOT EXISTS {way_geom}_osm_id_idx ON {way_geom} (osm_id)"),
     ]
 }
 
@@ -159,47 +167,43 @@ fn node_index_stmts() -> [String; 3] {
     ]
 }
 
-/// Which optional geometry tables to create/index/truncate, alongside the always-present
-/// `EDGE_TABLE` + `MEMBER_TABLE` + `NODE_TABLE`. Mirrors `Config`'s `emit_*` flags.
-#[derive(Copy, Clone)]
-pub struct GeomTables {
-    pub way: bool,
-}
-
-pub async fn create_tables(client: &Client, tables: &[&str], geom: GeomTables) -> anyhow::Result<()> {
+/// `way_geom_tables`: the (topic) table names whose `{table}_geom` whole-way-linestring table
+/// should exist — i.e. topics declaring `"geometry": { "way": ["linestring"] }` (see
+/// `TopicRunner::wants_way_linestring`). Threaded through `create_tables`/`truncate_tables`/
+/// `drop_indexes`/`create_indexes` alongside the always-present `EDGE_TABLE` + `MEMBER_TABLE` +
+/// `NODE_TABLE`, replacing the old global `Config::emit_way_geometries` flag.
+pub async fn create_tables(client: &Client, tables: &[&str], way_geom_tables: &[&str]) -> anyhow::Result<()> {
     for table in tables {
         client.batch_execute(&create_tag_table_sql(table)).await?;
     }
     client.batch_execute(&create_edge_table_sql()).await?;
     client.batch_execute(&create_member_table_sql()).await?;
     client.batch_execute(&create_node_table_sql()).await?;
-    if geom.way {
-        client.batch_execute(&create_way_geom_table_sql()).await?;
+    for table in way_geom_tables {
+        client.batch_execute(&create_way_geom_table_sql(table)).await?;
     }
     Ok(())
 }
 
-pub async fn truncate_tables(client: &Client, tables: &[&str], geom: GeomTables) -> anyhow::Result<()> {
+pub async fn truncate_tables(client: &Client, tables: &[&str], way_geom_tables: &[&str]) -> anyhow::Result<()> {
     let mut all: Vec<String> = tables.iter().map(|t| t.to_string()).collect();
     all.push(EDGE_TABLE.to_string());
     all.push(MEMBER_TABLE.to_string());
     all.push(NODE_TABLE.to_string());
-    if geom.way {
-        all.push(WAY_GEOM_TABLE.to_string());
-    }
+    all.extend(way_geom_tables.iter().map(|t| way_geom_table(t)));
     client.batch_execute(&format!("TRUNCATE TABLE {}", all.join(", "))).await?;
     Ok(())
 }
 
-pub async fn drop_indexes(client: &Client, tables: &[&str], geom: GeomTables) -> anyhow::Result<()> {
+pub async fn drop_indexes(client: &Client, tables: &[&str], way_geom_tables: &[&str]) -> anyhow::Result<()> {
     for table in tables {
         client.batch_execute(&drop_tag_indexes_sql(table)).await?;
     }
     client.batch_execute(&drop_edge_indexes_sql()).await?;
     client.batch_execute(&drop_member_indexes_sql()).await?;
     client.batch_execute(&drop_node_indexes_sql()).await?;
-    if geom.way {
-        client.batch_execute(&drop_way_geom_indexes_sql()).await?;
+    for table in way_geom_tables {
+        client.batch_execute(&drop_way_geom_indexes_sql(table)).await?;
     }
     Ok(())
 }
@@ -211,14 +215,14 @@ pub async fn drop_indexes(client: &Client, tables: &[&str], geom: GeomTables) ->
 /// Two levers, both measured on a Germany import (8 cores): each session raises
 /// `maintenance_work_mem` + `max_parallel_maintenance_workers` (parallel sort / GiST build), and
 /// the units build in parallel so the small tables hide under the dominant edge-table GiST.
-pub async fn create_indexes(pool: &Pool, tables: &[&str], geom: GeomTables) -> anyhow::Result<()> {
+pub async fn create_indexes(pool: &Pool, tables: &[&str], way_geom_tables: &[&str]) -> anyhow::Result<()> {
     // One build unit per tag table, plus the shared edge table.
     let mut units: Vec<Vec<String>> = tables.iter().map(|t| tag_index_stmts(t).to_vec()).collect();
     units.push(edge_index_stmts().to_vec());
     units.push(member_index_stmts().to_vec());
     units.push(node_index_stmts().to_vec());
-    if geom.way {
-        units.push(way_geom_index_stmts().to_vec());
+    for table in way_geom_tables {
+        units.push(way_geom_index_stmts(table).to_vec());
     }
 
     let handles: Vec<_> = units

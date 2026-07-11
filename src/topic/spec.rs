@@ -48,6 +48,39 @@ pub struct TopicSpec {
     /// separate `private` map to declare one explicitly.
     #[serde(default)]
     pub consts: serde_json::Map<String, serde_json::Value>,
+    /// Which geometry outputs this topic wants, per element kind — replaces the old global
+    /// `--emit-way-geometries`/`--emit-relation-geometries`/`--topic-edges` CLI flags with a
+    /// per-topic declaration. See `GeometryShape`.
+    #[serde(default)]
+    pub geometry: GeometrySpec,
+}
+
+/// Per-kind geometry output declarations (`topic.json`'s `"geometry"`). Node geometry (raw point)
+/// isn't wired up yet — only `way`/`relation` shapes exist today.
+#[derive(Debug, Deserialize, Default)]
+pub struct GeometrySpec {
+    /// Geometry outputs for this topic's ways.
+    #[serde(default)]
+    pub way: Vec<GeometryShape>,
+    /// Geometry outputs for this topic's relations. Always a post-processing SQL step (Postgres
+    /// output only) — a relation is classified before any member way's geometry is resolved (see
+    /// `db::topic_geometries`), unlike `way`'s shapes, which are computed during streaming.
+    #[serde(default)]
+    pub relation: Vec<GeometryShape>,
+}
+
+/// One geometry output a topic can opt into for a given element kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeometryShape {
+    /// Ways only: this topic's kept ways feed into a per-topic `{table}_edge` pgRouting-shaped
+    /// table (intersection-split, `cost`/`reverse_cost` from the topic's own `cost`/`is_directed`
+    /// fields — see `db::topic_edges`). Requires the topic to define a `cost` field.
+    Graph,
+    /// The whole (unsplit) linestring per kept way, or one merged multi-linestring per kept
+    /// relation (its member ways' geometries collected + line-merged) — see
+    /// `db::topic_geometries`.
+    Linestring,
 }
 
 /// One center-line split: unnest tags with `prefix` onto a side object whose effective highway

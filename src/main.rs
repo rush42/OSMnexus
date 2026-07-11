@@ -15,7 +15,7 @@ use config::{Config, Output};
 use db::{
     pool::build_pool,
     schema,
-    schema::{GeomTables, EDGE_TABLE, MEMBER_TABLE, NODE_TABLE, WAY_GEOM_TABLE},
+    schema::{EDGE_TABLE, MEMBER_TABLE, NODE_TABLE},
 };
 use topic::geom::build_node_row;
 use topic::TopicRunner;
@@ -47,6 +47,25 @@ fn route_tag_rows(
     any
 }
 
+/// Fan a way's whole-way linestring row out to every topic that both declared
+/// `"geometry": { "way": ["linestring"] }` and kept this way (`mask` — see `ClassifyOutput`).
+/// `way_linestring_topics[i]` is the bit index into `mask` for `senders[i]`/`rr[i]`.
+fn route_way_geom_row(
+    row: &WayGeomRow,
+    mask: u32,
+    way_linestring_topics: &[usize],
+    senders: &[Vec<mpsc::Sender<Vec<WayGeomRow>>>],
+    rr: &[AtomicUsize],
+    w: usize,
+) {
+    for (i, &topic_idx) in way_linestring_topics.iter().enumerate() {
+        if mask & (1 << topic_idx) != 0 {
+            let kk = rr[i].fetch_add(1, Ordering::Relaxed) % w;
+            let _ = senders[i][kk].blocking_send(vec![row.clone()]);
+        }
+    }
+}
+
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
 const WRITER_CHAN_CAP: usize = 256;
 
@@ -56,12 +75,6 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let cfg = Config::parse();
-
-    anyhow::ensure!(
-        cfg.output == Output::Pg || !cfg.emit_relation_geometries,
-        "--emit-relation-geometries requires --output pg (it merges member-way geometries with a \
-         post-import SQL step, which needs a live database — CSV output has no table to merge from)"
-    );
 
     osmnexus::traffic::set_left_hand_traffic(cfg.left_hand_traffic);
     if cfg.left_hand_traffic {
@@ -104,12 +117,25 @@ async fn main() -> anyhow::Result<()> {
     // coords are always collected regardless (needed for the always-on `nodes` table).
     let has_relations = runners.iter().any(|r| r.has_kind(ElementKind::Relation));
     let has_nodes = runners.iter().any(|r| r.has_kind(ElementKind::Node));
-    let geom_tables = GeomTables { way: cfg.emit_way_geometries };
+
+    // Topics opting into geometry outputs (see `TopicSpec::geometry`) — replaces the old global
+    // `--emit-way-geometries`/`--emit-relation-geometries`/unconditional `--topic-edges` flags.
+    let way_linestring_topics: Vec<usize> =
+        (0..runners.len()).filter(|&i| runners[i].wants_way_linestring()).collect();
+    let any_relation_linestring = runners.iter().any(|r| r.wants_relation_linestring());
+    anyhow::ensure!(
+        cfg.output == Output::Pg || !any_relation_linestring,
+        "a topic declares \"geometry\": {{ \"relation\": [\"linestring\"] }}, which requires \
+         --output pg (it merges member-way geometries with a post-import SQL step, which needs a \
+         live database — CSV output has no table to merge from)"
+    );
+    // Plain topic table names (schema functions format `{table}_geom` themselves).
+    let way_geom_table_refs: Vec<&str> = way_linestring_topics.iter().map(|&i| table_refs[i]).collect();
 
     let n = tables.len();
-    // Extra sharded-writer tables beyond the per-topic tag tables: edges + members + nodes, plus the
-    // optional way geom table.
-    let extra_tables = 3 + geom_tables.way as usize;
+    // Extra sharded-writer tables beyond the per-topic tag tables: edges + members + nodes, plus one
+    // per topic wanting way linestrings.
+    let extra_tables = 3 + way_linestring_topics.len();
 
     // Output backend. `w` = parallel writers per table: k sharded COPY connections for Postgres, a
     // single file writer for CSV. `pool` is `None` for CSV.
@@ -119,11 +145,11 @@ async fn main() -> anyhow::Result<()> {
             let pool = build_pool(&cfg)?;
             let client_setup = pool.get().await.context("getting DB connection")?;
             info!("Setting up schema...");
-            schema::create_tables(&client_setup, &table_refs, geom_tables).await?;
+            schema::create_tables(&client_setup, &table_refs, &way_geom_table_refs).await?;
             if cfg.truncate {
-                schema::truncate_tables(&client_setup, &table_refs, geom_tables).await?;
+                schema::truncate_tables(&client_setup, &table_refs, &way_geom_table_refs).await?;
             }
-            schema::drop_indexes(&client_setup, &table_refs, geom_tables).await?;
+            schema::drop_indexes(&client_setup, &table_refs, &way_geom_table_refs).await?;
             drop(client_setup);
             let k = cfg.db_writers.max(1);
             // Pool must supply every writer connection at once: k per tag table + k per extra table.
@@ -190,19 +216,23 @@ async fn main() -> anyhow::Result<()> {
         member_handles.push(h);
         member_senders.push(tx);
     }
-    // Optional: whole-way linestrings (`--emit-way-geometries`).
-    let mut way_geom_senders: Vec<mpsc::Sender<Vec<WayGeomRow>>> = Vec::with_capacity(w);
-    let mut way_geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
-    if cfg.emit_way_geometries {
+    // One whole-way-linestring table per topic declaring `"geometry": { "way": ["linestring"] }`.
+    let mut way_geom_senders: Vec<Vec<mpsc::Sender<Vec<WayGeomRow>>>> = Vec::with_capacity(way_linestring_topics.len());
+    let mut way_geom_handles: Vec<Vec<tokio::task::JoinHandle<anyhow::Result<usize>>>> = Vec::with_capacity(way_linestring_topics.len());
+    for &table_name in &way_geom_table_refs {
+        let way_geom_table = schema::way_geom_table(table_name);
+        let (mut ts, mut th) = (Vec::with_capacity(w), Vec::with_capacity(w));
         for _ in 0..w {
             let (tx, rx) = mpsc::channel::<Vec<WayGeomRow>>(WRITER_CHAN_CAP);
             let h = match cfg.output {
-                Output::Pg => tokio::spawn(copy_writer::<WayGeomRow>(pool.clone().unwrap(), WAY_GEOM_TABLE.to_owned(), WAY_GEOM_COLUMNS, rx)),
-                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<WayGeomRow>(out_dir.join(format!("{WAY_GEOM_TABLE}.csv")), WAY_GEOM_COLUMNS, rx)),
+                Output::Pg => tokio::spawn(copy_writer::<WayGeomRow>(pool.clone().unwrap(), way_geom_table.clone(), WAY_GEOM_COLUMNS, rx)),
+                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<WayGeomRow>(out_dir.join(format!("{way_geom_table}.csv")), WAY_GEOM_COLUMNS, rx)),
             };
-            way_geom_handles.push(h);
-            way_geom_senders.push(tx);
+            th.push(h);
+            ts.push(tx);
         }
+        way_geom_senders.push(ts);
+        way_geom_handles.push(th);
     }
     // Graph-vertex table (always emitted — see `NODE_TABLE`).
     let mut node_senders: Vec<mpsc::Sender<Vec<NodeRow>>> = Vec::with_capacity(w);
@@ -221,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
     // pool (CPU-bound rayon work). Dropping the producer drops all senders, closing the writer
     // channels.
     let pbf_file = cfg.pbf_file.clone();
-    let emit_way_geometries = cfg.emit_way_geometries;
+    let way_linestring_topics = Arc::new(way_linestring_topics);
     // Shared, thread-safe state captured by the reader's callbacks (called from rayon workers).
     let runners = Arc::new(runners);
     let tag_senders = Arc::new(tag_senders);
@@ -233,15 +263,23 @@ async fn main() -> anyhow::Result<()> {
     let geom_rr = Arc::new(AtomicUsize::new(0));
     let member_rr = Arc::new(AtomicUsize::new(0));
     let node_rr = Arc::new(AtomicUsize::new(0));
+    let way_geom_rr: Arc<Vec<AtomicUsize>> =
+        Arc::new((0..way_geom_senders.len()).map(|_| AtomicUsize::new(0)).collect());
+    // `runners` is still needed after the producer for post-processing (graph/relation-linestring
+    // materialization), so the producer closure gets its own clone rather than moving the original.
+    let producer_runners = runners.clone();
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let runners = producer_runners;
         // Ways pass: emit tag rows; keep the way if some topic categorized it OR it is a relation
-        // member (`in_keep`). Payload is `()` — geometry is topic-independent (one shared table).
+        // member (`in_keep`). Payload is the per-topic keep bitmask (see `ClassifyOutput`), used by
+        // `build_geom_cb` to route way-linestring rows to just the topics that both kept the way
+        // and want one.
         let classify_way_cb = {
             let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
-            move |wd: &WayData, in_keep: bool| -> Option<()> {
+            move |wd: &WayData, in_keep: bool| -> Option<u32> {
                 let out = classify_way(&runners, wd);
                 let kept_by_topic = route_tag_rows(out.topic_rows, &tag_senders, &tag_rr, w);
-                (kept_by_topic || in_keep).then_some(())
+                (kept_by_topic || in_keep).then_some(out.mask)
             }
         };
         // Relations pass: emit relation tag rows + `relation_members` links; kept iff some topic
@@ -284,16 +322,19 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         };
-        // Geometry pass: write the resolved way's graph edges to the shared table, plus the
-        // whole-way linestring when `--emit-way-geometries` is set.
+        // Geometry pass: write the resolved way's graph edges to the shared table, plus its
+        // whole-way linestring to every topic that both kept this way (`mask`) and declared
+        // `"geometry": { "way": ["linestring"] }` (see `route_way_geom_row`).
         let build_geom_cb = {
             let (geom_senders, geom_rr) = (geom_senders.clone(), geom_rr.clone());
             let way_geom_senders = way_geom_senders.clone();
-            move |way: &OsmWay, _kept: (), node_ids: &FxHashMap<i64, i64>| {
+            let (way_geom_rr, way_linestring_topics) = (way_geom_rr.clone(), way_linestring_topics.clone());
+            move |way: &OsmWay, mask: u32, node_ids: &FxHashMap<i64, i64>| {
                 let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
                 let _ = geom_senders[kk].blocking_send(geom_rows_for(way, node_ids));
-                if emit_way_geometries {
-                    let _ = way_geom_senders[kk].blocking_send(vec![way_geom_row_for(way)]);
+                if !way_linestring_topics.is_empty() {
+                    let row = way_geom_row_for(way);
+                    route_way_geom_row(&row, mask, &way_linestring_topics, &way_geom_senders, &way_geom_rr, w);
                 }
             }
         };
@@ -329,9 +370,11 @@ async fn main() -> anyhow::Result<()> {
     for h in member_handles {
         member_count += h.await.context("member writer panicked")??;
     }
-    let mut way_geom_count = 0usize;
-    for h in way_geom_handles {
-        way_geom_count += h.await.context("way-geom writer panicked")??;
+    let mut way_geom_counts = vec![0usize; way_geom_handles.len()];
+    for (i, handles) in way_geom_handles.into_iter().enumerate() {
+        for h in handles {
+            way_geom_counts[i] += h.await.context("way-geom writer panicked")??;
+        }
     }
     let mut node_count = 0usize;
     for h in node_handles {
@@ -344,8 +387,8 @@ async fn main() -> anyhow::Result<()> {
     info!("Wrote {geom_count} edge rows → {EDGE_TABLE}");
     info!("Wrote {member_count} relation-member links → {MEMBER_TABLE}");
     info!("Wrote {node_count} node rows → {NODE_TABLE}");
-    if cfg.emit_way_geometries {
-        info!("Wrote {way_geom_count} way rows → {WAY_GEOM_TABLE}");
+    for (i, &table_name) in way_geom_table_refs.iter().enumerate() {
+        info!("Wrote {} way rows → {}_geom", way_geom_counts[i], table_name);
     }
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
 
@@ -353,7 +396,7 @@ async fn main() -> anyhow::Result<()> {
         (Output::Pg, true) => {
             info!("Creating indexes...");
             let t_idx = std::time::Instant::now();
-            schema::create_indexes(pool.as_ref().unwrap(), &table_refs, geom_tables).await?;
+            schema::create_indexes(pool.as_ref().unwrap(), &table_refs, &way_geom_table_refs).await?;
             info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
         }
         (Output::Pg, false) => info!("Skipping index creation (pass --create-index to enable)"),
@@ -361,12 +404,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cfg.output == Output::Pg {
-        if let Some(mode) = cfg.topic_edges {
-            let client = pool.as_ref().unwrap().get().await?;
-            for table in &tables {
-                info!("Materializing graph edges → {table}_edge");
-                db::topic_edges::materialize(&client, table, mode, cfg.create_index).await?;
-            }
+        let client = pool.as_ref().unwrap().get().await?;
+        for r in runners.iter().filter(|r| r.wants_way_graph()) {
+            info!("Materializing graph edges → {}_edge", r.table());
+            db::topic_edges::materialize(&client, r.table(), cfg.topic_edges, cfg.create_index).await?;
         }
     }
 
@@ -378,11 +419,16 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    if cfg.output == Output::Pg && cfg.emit_relation_geometries {
+    if cfg.output == Output::Pg && any_relation_linestring {
         info!("Materializing relation geometries...");
         let t_rel = std::time::Instant::now();
         let client = pool.as_ref().unwrap().get().await?;
-        db::relations::materialize_relation_geometries(&client, cfg.emit_way_geometries).await?;
+        db::topic_geometries::ensure_way_geom_staging(&client).await?;
+        for r in runners.iter().filter(|r| r.wants_relation_linestring()) {
+            info!("Materializing relation linestrings → {}_relation_geom", r.table());
+            db::topic_geometries::materialize_relation_linestrings(&client, r.table(), cfg.create_index).await?;
+        }
+        db::topic_geometries::drop_way_geom_staging(&client).await?;
         info!("Relation geometry materialization: {:.1}s", t_rel.elapsed().as_secs_f32());
     }
 

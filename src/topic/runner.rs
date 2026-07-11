@@ -10,7 +10,7 @@ use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::transform::side_split::CenterLineTransformation;
 use crate::topic::load::{load_shared_macros, load_topic_categories, load_topic_macros, load_topic_sanitizers, merge};
 use crate::topic::pipeline::build_topic_rows;
-use crate::topic::spec::{Field, InputTransformSpec, SplitSidesSpec, TopicSpec};
+use crate::topic::spec::{Field, GeometryShape, InputTransformSpec, SplitSidesSpec, TopicSpec};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
@@ -392,6 +392,22 @@ impl TopicRunner {
     /// Whether this topic has any categories for `kind` (i.e. a `topics/<t>/<kind>/` folder).
     pub fn has_kind(&self, kind: ElementKind) -> bool {
         self.categories.contains_key(&kind)
+    }
+
+    /// This topic wants a per-topic `{table}_edge` pgRouting table (see `db::topic_edges`).
+    pub fn wants_way_graph(&self) -> bool {
+        self.spec.geometry.way.contains(&GeometryShape::Graph)
+    }
+
+    /// This topic wants whole-way linestrings, routed per-way during streaming (see
+    /// `db::topic_geometries` / `main.rs`'s `build_geom_cb`).
+    pub fn wants_way_linestring(&self) -> bool {
+        self.spec.geometry.way.contains(&GeometryShape::Linestring)
+    }
+
+    /// This topic wants merged relation linestrings (see `db::topic_geometries`).
+    pub fn wants_relation_linestring(&self) -> bool {
+        self.spec.geometry.relation.contains(&GeometryShape::Linestring)
     }
 
     /// Run the topic's pipeline for one element of `kind`: clone its raw tags, then hand off to

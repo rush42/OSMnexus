@@ -84,7 +84,11 @@ impl CsvRow for GeomRow {
     }
 }
 
-/// A whole-way linestring row (`way_geometries` table), emitted only with `--emit-way-geometries`.
+/// A whole-way linestring row, routed to whichever topics kept the way and declared
+/// `"geometry": { "way": ["linestring"] }` (see `TopicRunner::wants_way_linestring`,
+/// `main.rs`'s `build_geom_cb`) — one `{table}_geom` table per such topic. `Clone` since the same
+/// row is fanned out to however many topics want it.
+#[derive(Clone)]
 pub struct WayGeomRow {
     pub osm_id: i64,
     pub geom_ewkb: Vec<u8>,

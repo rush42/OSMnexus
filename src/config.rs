@@ -52,19 +52,6 @@ pub struct Config {
     #[arg(long, default_value_t = false)]
     pub left_hand_traffic: bool,
 
-    /// Also emit whole-way linestrings into a dedicated `way_geometries` table (in addition to the
-    /// always-emitted intersection-split `geometries` table). Needed to materialize relation
-    /// geometries without re-merging split segments at query time.
-    #[arg(long, default_value_t = false)]
-    pub emit_way_geometries: bool,
-
-    /// Emit one merged-linestring row per kept relation into a `relation_geometries` table, built
-    /// (as a post-processing SQL step) by merging each relation's member-way geometries — reusing
-    /// `way_geometries` if `--emit-way-geometries` is also set, otherwise merging the split segments
-    /// on the fly. Postgres output only.
-    #[arg(long, default_value_t = false)]
-    pub emit_relation_geometries: bool,
-
     /// Create indexes on the tag/geom tables after loading. Off by default: indexing a large
     /// import (especially the split geom table's GiST) can dominate runtime, so it's opt-in for
     /// when the tables are actually queried.
@@ -93,14 +80,15 @@ pub struct Config {
     #[arg(long, default_value_t = DEFAULT_TREE_MAX_DEPTH)]
     pub tree_max_depth: usize,
 
-    /// Materialize a `{table}_edge` table per topic that defines `cost`/`is_directed` fields
-    /// (pgRouting-shaped: `cost`/`reverse_cost`, `-1` = unusable in that direction), as a
-    /// post-processing SQL step after the shared edge table is loaded (and indexed, if
-    /// `--create-index` is set). `pgrouting` emits only the routing columns; `all` additionally
-    /// joins in the topic's own tag columns (`osm`/`derived`/`private`/`meta`). Omit to skip
-    /// entirely. Postgres output only.
-    #[arg(long, value_enum)]
-    pub topic_edges: Option<TopicEdgeMode>,
+    /// Shape of the per-topic `{table}_edge` pgRouting table, for topics that declare
+    /// `"geometry": { "way": ["graph"] }` in their `topic.json` (see
+    /// `TopicRunner::wants_way_graph`) — built as a post-processing SQL step after the shared edge
+    /// table is loaded (and indexed, if `--create-index` is set). `pgrouting` emits only the
+    /// routing columns; `all` additionally joins in the topic's own tag columns
+    /// (`osm`/`derived`/`private`/`meta`). Postgres output only; ignored by topics that don't
+    /// declare `graph`.
+    #[arg(long, value_enum, default_value_t = TopicEdgeMode::Pgrouting)]
+    pub topic_edges: TopicEdgeMode,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]

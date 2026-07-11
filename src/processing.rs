@@ -81,7 +81,8 @@ pub fn geom_rows_for(way: &OsmWay, node_ids: &FxHashMap<i64, i64>) -> Vec<GeomRo
     build_geom_rows(way, &geom, length_m, node_ids)
 }
 
-/// Build the whole-way linestring row for a resolved way, only when `--emit-way-geometries` is set.
+/// Build the whole-way linestring row for a resolved way. Only called when some topic declared
+/// `"geometry": { "way": ["linestring"] }` (see `main.rs`'s `build_geom_cb`).
 pub fn way_geom_row_for(way: &OsmWay) -> WayGeomRow {
     let length_m = haversine_length_m(&way.coords);
     let geom = project_line(&way.coords);

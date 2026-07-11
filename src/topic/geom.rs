@@ -67,7 +67,8 @@ pub fn build_geom_rows(
     rows
 }
 
-/// Build the whole-way linestring row for a way, emitted only with `--emit-way-geometries`.
+/// Build the whole-way linestring row for a way — routed (see `main.rs`'s `build_geom_cb`) to
+/// every topic that declares `"geometry": { "way": ["linestring"] }` and kept this way.
 pub fn build_way_geom_row(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> WayGeomRow {
     WayGeomRow { osm_id: way.id, geom_ewkb: to_ewkb(geom), length_m }
 }

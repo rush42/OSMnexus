@@ -63,16 +63,17 @@ One extracted graph; each topic is a disjoint attribute layer over it.
   geom(LineString,3857), length_m, total_length_m, cost, reverse_cost`. `start_id`/`end_id` join
   `nodes.id`; `cost`/`reverse_cost` (pgRouting-style) always equal `length_m` here — this shared
   table stays topic-neutral. A topic that wants real routing weights defines `cost`/`is_directed`
-  fields and opts into `--topic-edges` (below) for a `{topic}_edge` table with those baked in.
+  fields and declares `"geometry": { "way": ["graph"] }` (below) for a `{topic}_edge` table with
+  those baked in.
 - **`nodes`** — always emitted, one row per graph vertex: every node referenced as a `start_id`/
   `end_id` in `edges` (shared by ≥2 ways, a way endpoint, or forced by a node classifier). Columns:
   `id, osm_id, geom(Point,3857)`. `id` is the internal sequential vertex id; `osm_id` is the
   original OSM node id, kept for lookups/debugging.
-- **`way_geometries`** (opt-in, `--emit-way-geometries`) — one whole-way linestring per way,
-  uncut. Needed to materialize relation geometries without re-merging split segments.
-- **`relation_geometries`** (opt-in, `--emit-relation-geometries`, Postgres output only) — one
-  merged linestring per kept relation, built as a post-load SQL step from its member ways'
-  geometries (reusing `way_geometries` if present, otherwise merging split segments on the fly).
+- **`{topic}_geom`** — for a topic declaring `"geometry": { "way": ["linestring"] }`: one
+  whole-way linestring per way that topic kept, uncut.
+- **`{topic}_relation_geom`** — for a topic declaring `"geometry": { "relation": ["linestring"] }`
+  (Postgres output only): one merged linestring per relation that topic kept, built as a post-load
+  SQL step from its member ways' geometries.
 - **`relation_members`** — link table, `relation_id` ↔ member `way_id`, for joining relation rows
   back to their constituent ways' geometry.
 
@@ -86,23 +87,37 @@ FROM roads r JOIN edges g USING (osm_id);
 Classification is **tag-only** — no geometry-derived criteria (length, etc.). Length/graph-based
 filtering belongs to a downstream geometry/graph stage, not to tag classification.
 
-### Per-topic routing tables (`--topic-edges`)
+### Per-topic geometry outputs (`topic.json`'s `"geometry"`)
 
-A topic can define two extra fields to describe its own graph semantics, using the same
-field/filter machinery as everything else — no bespoke expression language:
+Which geometry tables a topic gets is declared in its own `topic.json`, not a global CLI flag:
 
-- **`cost`** — a numeric field (an `osm_fields`/`sanitizers` entry, or a topic/category `consts`
-  value), e.g. `{ "tag": "cost", "name": "parse_length", "in": ["width"] }`.
-- **`is_directed`** — a boolean field driven by a `Filter` condition (a `Classify` producer with a
-  single rule + `default`), e.g. `{ "output": "is_directed", "source": { "rules": [{ "when": {
-  "tag": "oneway", "in": ["yes", "-1"] }, "value": true }], "default": false } }`.
+```json
+"geometry": {
+  "way": ["graph", "linestring"],
+  "relation": ["linestring"]
+}
+```
 
-Pass `--topic-edges <pgrouting|all>` and, as a post-load SQL step, any topic that defines `cost`
-gets a `{topic}_edge` table: `cost`/`reverse_cost` (pgRouting convention — `-1` means unusable in
-that direction) computed from the topic's `cost`/`is_directed` fields and split proportionally by
-segment share (`length_m / total_length_m`) of the shared `edges` table. `all` additionally joins
-in the topic's own tag columns (`osm`/`derived`/`private`/`meta`); `pgrouting` emits only the
-routing columns. Indexes on `{topic}_edge` respect `--create-index` like every other table.
+- **`way: ["graph"]`** — a `{topic}_edge` pgRouting table. Requires the topic to define two extra
+  fields, using the same field/filter machinery as everything else — no bespoke expression
+  language:
+  - **`cost`** — a numeric field (an `osm_fields`/`sanitizers` entry, or a topic/category `consts`
+    value), e.g. `{ "tag": "cost", "name": "parse_length", "in": ["width"] }`.
+  - **`is_directed`** — a boolean field driven by a `Filter` condition (a `Classify` producer with
+    a single rule + `default`), e.g. `{ "output": "is_directed", "source": { "rules": [{ "when":
+    { "tag": "oneway", "in": ["yes", "-1"] }, "value": true }], "default": false } }`.
+
+  Built as a post-load SQL step: `cost`/`reverse_cost` (pgRouting convention — `-1` means unusable
+  in that direction) computed from the topic's `cost`/`is_directed` fields and split
+  proportionally by segment share (`length_m / total_length_m`) of the shared `edges` table.
+  `--topic-edges <pgrouting|all>` picks the table shape globally for every topic that opted in:
+  `all` additionally joins in the topic's own tag columns (`osm`/`derived`/`private`/`meta`);
+  `pgrouting` (the default) emits only the routing columns. Indexes on `{topic}_edge` respect
+  `--create-index` like every other table.
+- **`way: ["linestring"]`** — a `{topic}_geom` table, computed during streaming (Postgres, CSV,
+  and GeoJSON output all support this).
+- **`relation: ["linestring"]`** — a `{topic}_relation_geom` table, built as a post-load SQL step
+  (Postgres output only — a relation is classified before any member way's geometry is resolved).
 
 ## Quick start
 
@@ -123,13 +138,11 @@ automatically.
 
 ### Example
 
-A typical PostGIS run that also materializes whole-way and relation geometries and builds indexes
-afterwards:
+A typical PostGIS run that builds indexes afterwards (whole-way/relation linestring tables are
+whatever topics in `--config-dir` declare via `"geometry"` — see above):
 
 ```bash
 cargo run --release -- brandenburg-latest.osm.pbf \
-    --emit-way-geometries \      # materialize uncut whole-way linestrings
-    --emit-relation-geometries \ # merge member-way geometries per relation (needs the above)
     --create-index \             # build the GiST/btree indexes after load
     --db-writers 8                # parallel COPY connections per table
 ```
@@ -152,10 +165,8 @@ Add `RUST_LOG=info` in front of either command for per-phase timings.
 | `--config-dir <path>` | `configs/tilda` | topic config folder to run (e.g. [`configs/osmnx`](configs/osmnx)) |
 | `--output <backend>` | `pg` | `pg` (COPY into PostGIS), `csv` (one file per tag table + geometry tables), or `geojson` (same CSVs, plus one `<topic>.geojson` per topic) |
 | `--out-dir <path>` | `out` | directory for CSV/GeoJSON output (`--output csv`/`geojson` only) |
-| `--emit-way-geometries` | off | also emit uncut whole-way linestrings (`way_geometries`) |
-| `--emit-relation-geometries` | off | also emit one merged linestring per kept relation (`relation_geometries`, `pg` only) |
 | `--create-index` | off | build indexes after load (the split-geom GiST can dominate runtime; `pg` only) |
-| `--topic-edges <mode>` | off | materialize `{topic}_edge` routing tables for topics that define `cost`; `pgrouting` (routing columns only) or `all` (+ joined tag columns) — see [Per-topic routing tables](#per-topic-routing-tables---topic-edges) (`pg` only) |
+| `--topic-edges <mode>` | `pgrouting` | shape of `{topic}_edge` for topics declaring `"geometry": { "way": ["graph"] }`; `pgrouting` (routing columns only) or `all` (+ joined tag columns) — see [Per-topic geometry outputs](#per-topic-geometry-outputs-topicjsons-geometry) (`pg` only) |
 | `--db-writers <k>` | `4` | parallel COPY connections per table, rows round-robined (`pg` only) |
 | `--truncate` | on | truncate tables before loading (`pg` only) |
 | `--threads <n>` | `1` | rayon pool size for the CPU-bound passes (`0` = all cores) |
