@@ -14,7 +14,7 @@ pub struct Config {
     #[arg(env = "PBF_FILE")]
     pub pbf_file: String,
 
-    /// Config directory: a self-contained folder of topic dirs plus a `_shared/` library
+    /// Config directory: a self-contained folder of topic dirs plus a shared config-root library
     /// (macros, sanitizers, value_sets.json, classifiers/). Selects which set of topics to run,
     /// e.g. `configs/tilda`, `configs/example`, `configs/public_transport`.
     #[arg(long, default_value = "configs/tilda")]

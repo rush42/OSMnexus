@@ -603,9 +603,9 @@ mod tests {
     #[test]
     fn tree_matches_linear() {
         for (topic, dir) in topic_category_dirs() {
-          let shared = dir.parent().unwrap().join("_shared");
-          let shared_macros = load_shared_macros(&shared).expect("shared macros");
-          let sanitizers = load_topic_sanitizers(&dir, &shared).expect("load sanitizers");
+          let config_root = dir.parent().unwrap();
+          let shared_macros = load_shared_macros(config_root).expect("shared macros");
+          let sanitizers = load_topic_sanitizers(&dir, config_root).expect("load sanitizers");
           for (kind, mut cats) in load_topic_categories(&dir).expect("load categories") {
             let topic = format!("{topic}/{}", kind.subdir());
             let mut raw_macros = shared_macros.clone();

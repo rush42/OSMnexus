@@ -1,7 +1,8 @@
 //! Loading a topic's data from its `topics/<name>/` directory: categories, macros, and
 //! sanitizers. Encodes the topic-directory-layout convention (`{node,way,relation}/`,
-//! `macros.json`, `sanitizers.json`, `_shared/macros/`) — nothing generic-engine lives here, only
-//! the disk-I/O side of getting a topic's raw data into the shape `tag_engine` types expect.
+//! `macros.json`, `sanitizers.json`, plus the config-root-level shared `macros.json`/
+//! `sanitizers.json`) — nothing generic-engine lives here, only the disk-I/O side of getting a
+//! topic's raw data into the shape `tag_engine` types expect.
 //!
 //! Layout: a topic organizes its categories into per-kind subfolders directly under the topic dir
 //! — `topics/<t>/{node,way,relation}/*.json` (one category per file, id = file stem). Topic-wide
@@ -69,9 +70,9 @@ fn read_macros(path: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
 }
 
 /// Read a topic's own `macros.json` (`{ name: Filter }`) as `Filter` values directly, else an
-/// empty map. Distinct from `load_shared_macros` (cross-topic, `_shared/macros/*.json`, one file
-/// per macro name) — this is one file, holding every topic-local macro. Used to build the raw
-/// (pre-`Filter::expand`) macro map a topic's conditions/producers are expanded against.
+/// empty map. Distinct from `load_shared_macros` (cross-topic, `<config_root>/macros.json`) —
+/// this is one file, holding every topic-local macro. Used to build the raw (pre-`Filter::expand`)
+/// macro map a topic's conditions/producers are expanded against.
 pub fn load_topic_macros(topic_dir: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
     let path = topic_dir.join("macros.json");
     if path.exists() {
@@ -112,13 +113,13 @@ pub fn load_categories_dir(
     Ok(serde_json::from_value(combined)?)
 }
 
-/// Load a topic's atomic sanitizer registry: shared (`_shared/sanitizers.json`) merged with the
-/// topic's own (`<topic>/sanitizers.json`), topic-local winning on name conflict. Self-contained —
-/// a `Step` never references another named sanitizer — so nothing here needs a resolution pass;
-/// only whatever references an entry by name (`sanitize:`) does.
+/// Load a topic's atomic sanitizer registry: shared (`<config_root>/sanitizers.json`) merged with
+/// the topic's own (`<topic>/sanitizers.json`), topic-local winning on name conflict.
+/// Self-contained — a `Step` never references another named sanitizer — so nothing here needs a
+/// resolution pass; only whatever references an entry by name (`sanitize:`) does.
 pub fn load_topic_sanitizers(
     topic_dir: &std::path::Path,
-    shared_dir: &std::path::Path,
+    config_root: &std::path::Path,
 ) -> anyhow::Result<HashMap<String, AtomicChain>> {
     let read = |path: &std::path::Path| -> anyhow::Result<HashMap<String, AtomicChain>> {
         if path.exists() {
@@ -128,31 +129,19 @@ pub fn load_topic_sanitizers(
             Ok(HashMap::new())
         }
     };
-    let shared = read(&shared_dir.join("sanitizers.json"))?;
+    let shared = read(&config_root.join("sanitizers.json"))?;
     let local = read(&topic_dir.join("sanitizers.json"))?;
     Ok(merge(&shared, &local))
 }
 
-/// Load shared, cross-topic macros from `topics/_shared/macros/<name>.json` (one Filter per
-/// file, macro name = file stem). Referenced by name from any topic's conditions, e.g.
-/// `{ "macro": "standard_exclude" }`. `shared_dir` is `topics/_shared`; only its `macros/`
-/// subdirectory holds Filter macros — the data libraries (sanitizers.json, value_sets.json,
-/// classifiers/) live at the `_shared/` root and are loaded explicitly elsewhere.
-pub fn load_shared_macros(shared_dir: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
-    let mut macros = HashMap::new();
-    let dir = shared_dir.join("macros");
-    if !dir.exists() {
-        return Ok(macros);
+/// Load shared, cross-topic macros from `<config_root>/macros.json` (`{ name: Filter }`).
+/// Referenced by name from any topic's conditions, e.g. `{ "macro": "standard_exclude" }`.
+pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
+    let path = config_root.join("macros.json");
+    if path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&path)?)
+            .with_context(|| format!("parsing {}", path.display()))
+    } else {
+        Ok(HashMap::new())
     }
-    for entry in std::fs::read_dir(&dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let name = path.file_stem().unwrap().to_string_lossy().to_string();
-        let filter: Filter = serde_json::from_str(&std::fs::read_to_string(&path)?)
-            .with_context(|| format!("parsing shared macro {}", path.display()))?;
-        macros.insert(name, filter);
-    }
-    Ok(macros)
 }

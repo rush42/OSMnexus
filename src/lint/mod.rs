@@ -72,10 +72,10 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::Or { or } => Expr::Or(or.iter().map(|f| filter_to_expr(f, macros)).collect()),
         Filter::Not { not } => Expr::Not(Box::new(filter_to_expr(not, macros))),
 
-        // Every macro resolves to a JSON `Filter` (per-topic `categories/macros.json` + the shared
-        // `topics/_shared/macros/`, merged in by `find_all_topic_overlaps`). An unknown name is a
-        // config bug — `build_order` already hard-errors on it — so panic rather than model it as an
-        // opaque atom.
+        // Every macro resolves to a JSON `Filter` (per-topic `categories/macros.json` + the
+        // shared config-root `macros.json`, merged in by `find_all_topic_overlaps`). An unknown
+        // name is a config bug — `build_order` already hard-errors on it — so panic rather than
+        // model it as an opaque atom.
         Filter::Macro { r#macro } => {
             let mac = macros.get(r#macro)
                 .unwrap_or_else(|| panic!("unknown macro '{}' in overlap analysis", r#macro));
@@ -343,7 +343,8 @@ pub fn find_overlaps(cats: &CategoriesFile) -> Vec<Overlap> {
 }
 
 /// Every topic directory holding at least one category kind subfolder, as `(topic name, topic dir)`,
-/// sorted by name (skips `_shared` and any topic without categories). Used by lint + tests.
+/// sorted by name (skips shared config-root files and any topic without categories). Used by
+/// lint + tests.
 pub fn topic_category_dirs() -> Vec<(String, PathBuf)> {
     let topics = crate::paths::config_root();
     let mut out = Vec::new();
@@ -366,8 +367,8 @@ pub fn find_all_topic_overlaps() -> anyhow::Result<Vec<(String, Vec<Overlap>)>> 
             .map_err(|e| anyhow::anyhow!("loading {topic} categories: {e}"))?;
         // Merge shared cross-topic macros so `filter_to_expr` can inline every `Macro` reference,
         // mirroring the runtime merge in `topic_runner`. `dir` is `topics/<name>`.
-        let shared = load_shared_macros(&dir.parent().expect("topics/<name> has parent").join("_shared"))
-            .map_err(|e| anyhow::anyhow!("loading topics/_shared/ macros: {e}"))?;
+        let shared = load_shared_macros(dir.parent().expect("topics/<name> has parent"))
+            .map_err(|e| anyhow::anyhow!("loading shared macros.json: {e}"))?;
         for (kind, mut cats) in per_kind {
             for (k, v) in &shared {
                 cats.macros.entry(k.clone()).or_insert_with(|| v.clone());

@@ -92,7 +92,7 @@ pub enum Producer {
         #[serde(default)] consts: Map<String, Value>,
     },
     /// Like `Classify`, but the rule table is a named shared classifier loaded from
-    /// `topics/_shared/classifiers/<shared>.json` — lets topics reuse one table (e.g. the `road`
+    /// `<config_root>/producers.json` — lets topics reuse one table (e.g. the `road`
     /// classification) without duplicating it in every topic's own JSON. `from`/`consts` behave
     /// as in `Classify`; the shared table's own `default` (if any) applies. Only exists
     /// pre-`resolve`: inlined into an equivalent `Classify` at load time (small tables — a

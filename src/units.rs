@@ -1,4 +1,4 @@
-//! Generic access to the named unit-conversion tables in `topics/_shared/units.json`, plus the
+//! Generic access to the named unit-conversion tables in `<config_root>/units.json`, plus the
 //! one general algorithm that reads them: `parse_compound_unit`.
 //!
 //! This module holds no domain knowledge — which units exist and their factors relative to the
@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 fn all_units() -> &'static HashMap<String, Vec<(String, f32)>> {
     static UNITS: OnceLock<HashMap<String, Vec<(String, f32)>>> = OnceLock::new();
     UNITS.get_or_init(|| {
-        let path = crate::paths::shared_dir().join("units.json");
+        let path = crate::paths::config_root().join("units.json");
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()))

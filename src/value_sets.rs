@@ -1,4 +1,4 @@
-//! Generic access to the named string-sets in `topics/_shared/value_sets.json`.
+//! Generic access to the named string-sets in `<config_root>/value_sets.json`.
 //!
 //! This module holds no domain knowledge: it loads a JSON object of
 //! `set-name → [values]` once, and hands back a set by name. What the sets *mean*
@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 fn all_sets() -> &'static HashMap<String, HashSet<String>> {
     static SETS: OnceLock<HashMap<String, HashSet<String>>> = OnceLock::new();
     SETS.get_or_init(|| {
-        let path = crate::paths::shared_dir().join("value_sets.json");
+        let path = crate::paths::config_root().join("value_sets.json");
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()))

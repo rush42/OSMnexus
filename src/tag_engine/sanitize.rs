@@ -240,7 +240,7 @@ fn float_to_json(v: f32) -> serde_json::Number {
 
 /// Converts OSM length strings to metres. Handles: "2.5", "2.5 m", "250 cm", "2500 mm", "8 ft",
 /// "8'6\"", … — the general `parse_compound_unit` algorithm over the `"length"` unit table
-/// (`_shared/units.json`); no unit-specific logic lives here.
+/// (`<config_root>/units.json`); no unit-specific logic lives here.
 pub fn parse_length(raw: &str) -> Option<f32> {
     crate::units::parse_compound_unit(raw, crate::units::unit_table("length"))
 }

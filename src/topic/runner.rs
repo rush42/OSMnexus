@@ -110,8 +110,11 @@ fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -
 }
 
 impl TopicRunner {
-    /// Discover and load every topic under the active config directory, skipping `_`-prefixed
-    /// directories (e.g. `_shared/`). Returned in sorted name order for deterministic output.
+    /// Discover and load every topic under the active config directory. Only directories are
+    /// considered (the shared `macros.json`/`sanitizers.json`/`producers.json`/`value_sets.json`/
+    /// `units.json` files at the config root are skipped automatically), and any `_`-prefixed
+    /// directory is skipped too, as a general hidden-directory convention. Returned in sorted
+    /// name order for deterministic output.
     pub fn load_all(tree_max_depth: usize) -> anyhow::Result<Vec<Self>> {
         let topics_dir = crate::paths::config_root();
         let mut names: Vec<String> = std::fs::read_dir(&topics_dir)
@@ -132,7 +135,7 @@ impl TopicRunner {
     /// Load a topic from its directory `<config_root>/<name>/`.
     pub fn load(name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
         let base = crate::paths::config_root().join(name);
-        let shared_dir = base.parent().expect("topics/<name> has a parent").join("_shared");
+        let config_root = base.parent().expect("topics/<name> has a parent").to_path_buf();
 
         let mut spec: TopicSpec = serde_json::from_str(
             &std::fs::read_to_string(base.join("topic.json"))
@@ -145,15 +148,15 @@ impl TopicRunner {
         // producers are different *types* (`AtomicChain`/`Producer`), so there's no risk of a
         // name meaning two things at once. Loaded before macros, since a macro's own condition can
         // carry a `sanitize:` too.
-        let sanitizers = load_topic_sanitizers(&base, &shared_dir)?;
+        let sanitizers = load_topic_sanitizers(&base, &config_root)?;
 
-        // Every macro this topic can reference: shared (topics/_shared/macros/) plus the topic's
-        // own macros.json, topic-local winning on name conflict. Expanded once, here, against
-        // itself (so a macro referencing another macro resolves too) — every `Filter`/`Producer`
-        // this topic owns is then expanded against the *expanded* result below, so `eval` never
-        // does a live macro lookup and an unknown/cyclic macro is a load-time error, not a
-        // per-object runtime no-op (see `Filter::expand`).
-        let shared_macros = load_shared_macros(&shared_dir).with_context(|| "loading topics/_shared/")?;
+        // Every macro this topic can reference: shared (config root's macros.json) plus the
+        // topic's own macros.json, topic-local winning on name conflict. Expanded once, here,
+        // against itself (so a macro referencing another macro resolves too) — every
+        // `Filter`/`Producer` this topic owns is then expanded against the *expanded* result
+        // below, so `eval` never does a live macro lookup and an unknown/cyclic macro is a
+        // load-time error, not a per-object runtime no-op (see `Filter::expand`).
+        let shared_macros = load_shared_macros(&config_root).with_context(|| "loading shared macros.json")?;
         let topic_macros = load_topic_macros(&base)?;
         let raw_macros = merge(&shared_macros, &topic_macros);
         let macros: HashMap<String, Filter> = raw_macros.iter()

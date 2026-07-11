@@ -1,6 +1,7 @@
-//! The active **config directory** — a self-contained folder of topics plus a `_shared/` library
-//! (macros, sanitizers, value_sets.json, classifiers/). Selected at startup via `--config-dir` and
-//! read here as a process-global, so the topic loader and the `_shared` singletons (`value_sets`,
+//! The active **config directory** — a self-contained folder of topic subdirectories plus a
+//! shared library of flat files at its root (`macros.json`, `sanitizers.json`,
+//! `producers.json`, `value_sets.json`, `units.json`). Selected at startup via `--config-dir` and
+//! read here as a process-global, so the topic loader and the shared singletons (`value_sets`,
 //! shared classifiers) all resolve against the same root without threading a path through every call.
 
 use std::path::{Path, PathBuf};
@@ -25,9 +26,4 @@ pub fn config_root() -> PathBuf {
         return PathBuf::from(p);
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/tilda")
-}
-
-/// The config's `_shared/` library directory (`<config_root>/_shared`).
-pub fn shared_dir() -> PathBuf {
-    config_root().join("_shared")
 }

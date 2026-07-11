@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         info!("rayon thread pool capped at {} threads", cfg.threads);
     }
 
-    // Select the config directory (a self-contained set of topics + its `_shared/` library) and
+    // Select the config directory (a self-contained set of topics + a shared config-root library) and
     // discover its topics (skipping `_`-prefixed dirs). Drop a new `<config>/<name>/` dir in and
     // it's picked up — no code changes needed.
     osmnexus::paths::set_config_root(cfg.config_dir.clone());

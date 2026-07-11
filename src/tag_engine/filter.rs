@@ -32,7 +32,7 @@ pub enum Filter {
     And { and: Vec<Filter> },
     Or  { or:  Vec<Filter> },
     Not { not: Box<Filter> },
-    /// Reference to a named macro defined in `macros.json`/`_shared/macros/`. Only exists
+    /// Reference to a named macro defined in `macros.json` (topic-local or shared config-root). Only exists
     /// pre-`expand` — every `Filter` actually reached by `eval` has had every `Macro` node
     /// substituted with its (recursively expanded) definition at load time (see `expand` below),
     /// so `eval`'s own `Macro` arm should never fire in practice.
@@ -42,7 +42,7 @@ pub enum Filter {
     // The equality/membership predicates accept an optional `sanitize` chain: when set, the raw
     // tag value is normalized through that sanitizer before comparison (a dropped value behaves
     // as absent → false), mirroring the `num` predicate's `sanitize`.
-    /// Membership in a named set from `_shared/value_sets.json` (keeps long value lists in data).
+    /// Membership in a named set from `<config_root>/value_sets.json` (keeps long value lists in data).
     TagInSet     { tag: String, in_set:      String      },
     TagIn        { tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<SanitizeRef> },
     /// `case_insensitive` lower-cases both the tag value and `contains` before comparing — use it
