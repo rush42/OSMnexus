@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS {table} (
   osm_id    bigint,
   osm_type  text,
   id        text NOT NULL,
-  osm       jsonb,
   derived   jsonb,
   private   jsonb,
   meta      jsonb

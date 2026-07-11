@@ -1,5 +1,17 @@
 {
   "table": "bike",
+  "outputs": {
+    "highway": true,
+    "name": true,
+    "ref": true,
+    "access": true,
+    "bicycle": true,
+    "service": true,
+    "area": true,
+    "landuse": true,
+    "bridge": true,
+    "tunnel": true
+  },
   "exclude_condition": {
     "or": [
       {
@@ -48,17 +60,5 @@
         ]
       }
     ]
-  },
-  "osm_fields": [
-    "highway",
-    "name",
-    "ref",
-    "access",
-    "bicycle",
-    "service",
-    "area",
-    "landuse",
-    "bridge",
-    "tunnel"
-  ]
+  }
 }

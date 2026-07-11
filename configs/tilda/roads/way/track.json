@@ -1,7 +1,4 @@
 {
-  "derivers": [
-    { "deriver": "track_minzoom", "output": "minzoom" }
-  ],
   "condition": {
     "tag": "highway",
     "eq": "track"
@@ -21,5 +18,8 @@
     "service_road",
     "service_uncategorized",
     "unspecified_road"
-  ]
+  ],
+  "outputs": {
+    "minzoom": "track_minzoom"
+  }
 }

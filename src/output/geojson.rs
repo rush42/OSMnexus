@@ -98,7 +98,7 @@ fn merge_properties(target: &mut Map<String, Value>, json_str: &str) {
 /// Reads `{table}.csv` (per `tables`) + `edges.csv` from `out_dir` and writes `{table}.geojson`
 /// alongside them: `{"type": "FeatureCollection", "features": [...], "cutPoints": {...}}`.
 pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
-    debug_assert_eq!(TAG_COLUMNS, "osm_id,osm_type,id,osm,derived,private,meta");
+    debug_assert_eq!(TAG_COLUMNS, "osm_id,osm_type,id,derived,private,meta");
     let edges = read_edges(&out_dir.join("edges.csv"))?;
     let nodes_path = out_dir.join("nodes.csv");
     let nodes = if nodes_path.exists() { read_nodes(&nodes_path)? } else { HashMap::new() };
@@ -134,7 +134,6 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
                     properties.insert("id".to_owned(), json!(&record[2]));
                     merge_properties(&mut properties, &record[3]);
                     merge_properties(&mut properties, &record[4]);
-                    merge_properties(&mut properties, &record[5]);
 
                     features.push(json!({
                         "type": "Feature",
@@ -156,12 +155,11 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
             properties.insert("osm_id".to_owned(), json!(osm_id));
             properties.insert("id".to_owned(), json!(&record[2]));
             merge_properties(&mut properties, &record[3]);
-            merge_properties(&mut properties, &record[4]);
             // `private` carries internal-only fields (e.g. `_side`, the side-split object's
             // left/right/self side) that are excluded from the public `derived` payload elsewhere
             // (Postgres/CSV output) but are exactly what local tooling like the live editor wants
             // for debugging/rendering (e.g. a line-offset expression keyed on `_side`).
-            merge_properties(&mut properties, &record[5]);
+            merge_properties(&mut properties, &record[4]);
 
             for segment in &segments {
                 let mut properties = properties.clone();

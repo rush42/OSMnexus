@@ -102,12 +102,10 @@ async fn main() -> anyhow::Result<()> {
 
     for r in &runners {
         info!(
-            "Loaded topic '{}' ({} categories, {} osm fields, {} sanitizers, {} derivers)",
+            "Loaded topic '{}' ({} categories, {} outputs)",
             r.table(),
             r.categories.values().map(|c| c.categories.len()).sum::<usize>(),
-            r.spec.osm_fields.len(),
-            r.sanitizer_fields.len(),
-            r.topic_derivers.len()
+            r.spec.outputs.len(),
         );
     }
 

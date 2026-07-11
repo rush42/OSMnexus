@@ -1,9 +1,12 @@
-//! The JSON schema types a topic's `topic.json` (plus `sanitizers`/`derivers` desugaring)
-//! deserializes into. Pure load-time data model — no per-object evaluation lives here.
+//! The JSON schema types a topic's `topic.json` deserializes into, plus `resolve_output_entry`,
+//! which turns one raw `outputs` map value into a resolved `Field`. Pure load-time data model —
+//! no per-object evaluation lives here.
 
+use std::collections::HashMap;
+
+use anyhow::Context;
 use serde::Deserialize;
-use serde_json::Value;
-use crate::tag_engine::categories::DeriverBinding;
+use serde_json::{Map, Value};
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::sanitize::{SanitizeRef, StrOrVec};
@@ -25,17 +28,13 @@ pub struct TopicSpec {
     /// `Producer` output can't express.
     #[serde(default)]
     pub input_transforms: Vec<InputTransformSpec>,
-    pub osm_fields: Vec<Field>,
-    /// Simple field sanitizers: read one tag (or first present of several), clean it with a
-    /// named `&str -> atomic` sanitizer, write to `tag`. Just sugar over `Field` — see
-    /// `Field`'s `Deserialize` impl — so no distinct Rust type is needed downstream.
+    /// One entry per output field, keyed by output name — replaces the former separate
+    /// `osm_fields`/`sanitizers`/`derivers` lists, all of which produced the same
+    /// `Field{output, source: Producer}` shape and are now just different value shapes of one
+    /// `outputs` map (see `resolve_output_entry`). A category can override any subset of these by
+    /// declaring its own `outputs` map, merged over the topic's by key (category wins).
     #[serde(default)]
-    pub sanitizers: Vec<Field>,
-    /// References (by name) into the topic's `derivers.json` library. Each binding names a
-    /// single-output deriver and the output field it writes. Categories may override these
-    /// by re-binding a different deriver to the same output.
-    #[serde(default)]
-    pub derivers: Vec<DeriverBinding>,
+    pub outputs: Map<String, Value>,
     /// Optional Filter condition evaluated against raw way tags before categorization.
     /// If the condition matches, the way is skipped entirely for this topic.
     /// Uses the same Filter JSON syntax as category conditions.
@@ -183,65 +182,75 @@ impl<'de> serde::Deserialize<'de> for InputTransformSpec {
     }
 }
 
-/// One produced field: `{ "output": ..., "source": <Producer> }`. Used for `osm_fields`,
-/// desugared sanitizers, and resolved derivers alike — they all share one eval path.
-///
-/// A bare JSON string is shorthand for the common case of "read this tag verbatim, output under
-/// the same name" — `"highway"` desugars to `{ "output": "highway", "source": { "key": "highway" } }`.
+/// One produced field: `{ output, source: Producer }`. The resolved form every `outputs` map
+/// entry (see `resolve_output_entry`) turns into — used for the topic's own fields and every
+/// category's effective fields alike, all sharing one eval path (`pipeline::eval_fields`).
 #[derive(Debug, Clone)]
 pub struct Field {
     pub output: String,
     pub source: Producer,
 }
 
-impl<'de> serde::Deserialize<'de> for Field {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
+/// Resolve one raw `outputs` map value (topic- or category-level, already merged by key) into a
+/// `Field`. Four value shapes, tried in this order:
+/// - `true` — verbatim extract of the identically-named tag: `"surface": true` desugars to
+///   `{ output: "surface", source: { key: "surface" } }`.
+/// - a JSON string — a named reference into `deriver_lib` (the topic's `derivers.json`),
+///   resolved once here rather than falling back silently on a miss (unlike `SanitizeRef`'s
+///   builtin fallback) — a typo'd name should fail loudly at load time.
+/// - an object shaped `{ name, in?, from? }` (no `key`/`keys`/`fallback`/`rules`/`cond` — those
+///   uniquely identify a full `Producer` instead): sugar for "read the first present of `in`
+///   (default `[output]`) from `from` (default obj), clean it with the `name` sanitizer." The
+///   map key supplies the output/default-input name, so unlike the old list-based sanitizer sugar
+///   there's no redundant `tag` field.
+/// - any other object — a full inline `Producer` (`Extract`/`Fallback`/`Cond`/`Classify`/
+///   `SharedClassify`; `Extract` already supports `sanitize` directly for the general case).
+pub fn resolve_output_entry(
+    output: &str,
+    value: Value,
+    deriver_lib: &HashMap<String, Producer>,
+) -> anyhow::Result<Field> {
+    let is_sanitizer_shorthand = matches!(&value, Value::Object(m) if m.contains_key("name")
+        && !m.contains_key("key") && !m.contains_key("keys")
+        && !m.contains_key("fallback") && !m.contains_key("rules") && !m.contains_key("cond"));
+
+    let source = if is_sanitizer_shorthand {
         #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Repr {
-            Named(String),
-            Full { output: String, source: Producer },
-            /// A simple sanitizer: `{ tag, name, in?, from? }`. Reads the first present of `in`
-            /// (default `[tag]`) from `from` (default obj), applies the `name` sanitizer, writes
-            /// to `tag`. Sugar for the equivalent `Producer::Extract`.
-            Sanitizer {
-                tag: String,
-                name: String,
-                #[serde(default, rename = "in")]
-                in_keys: Option<StrOrVec>,
-                #[serde(default)]
-                from: TagSet,
-            },
+        struct SanitizerRepr {
+            name: String,
+            #[serde(default, rename = "in")]
+            in_keys: Option<StrOrVec>,
+            #[serde(default)]
+            from: TagSet,
         }
-        Ok(match Repr::deserialize(deserializer)? {
-            Repr::Named(key) => Field {
-                output: key.clone(),
-                source: Producer::Extract {
-                    key: Some(key),
-                    keys: None,
-                    from: TagSet::Obj,
-                    side: None,
-                    sanitize: None,
-                    consts: serde_json::Map::new(),
-                    directed: false,
-                },
+        let r: SanitizerRepr = serde_json::from_value(value)
+            .with_context(|| format!("topic outputs.{output}"))?;
+        Producer::Extract {
+            key: None,
+            keys: Some(r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()])),
+            from: r.from,
+            side: None,
+            sanitize: Some(SanitizeRef::Name(r.name)),
+            consts: Map::new(),
+            directed: false,
+        }
+    } else {
+        match value {
+            Value::Bool(true) => Producer::Extract {
+                key: Some(output.to_owned()),
+                keys: None,
+                from: TagSet::Obj,
+                side: None,
+                sanitize: None,
+                consts: Map::new(),
+                directed: false,
             },
-            Repr::Full { output, source } => Field { output, source },
-            Repr::Sanitizer { tag, name, in_keys, from } => Field {
-                output: tag.clone(),
-                source: Producer::Extract {
-                    key: None,
-                    keys: Some(in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![tag])),
-                    from,
-                    side: None,
-                    sanitize: Some(SanitizeRef::Name(name)),
-                    consts: serde_json::Map::new(),
-                    directed: false,
-                },
-            },
-        })
-    }
+            Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),
+            Value::String(name) => deriver_lib.get(&name).cloned().ok_or_else(|| {
+                anyhow::anyhow!("topic outputs.{output}: deriver '{name}' not found in derivers.json")
+            })?,
+            other => Producer::deserialize(other).with_context(|| format!("topic outputs.{output}"))?,
+        }
+    };
+    Ok(Field { output: output.to_owned(), source })
 }

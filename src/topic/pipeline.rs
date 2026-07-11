@@ -13,12 +13,11 @@ use crate::output::{rows::TopicRow, types::OsmMeta};
 
 /// Evaluate each `Field`'s producer against `ctx`, inserting non-empty results into `map`.
 /// When a value carries provenance, also emit `<output>_source` / `<output>_confidence`. Every
-/// field's `output` is unique within `fields` (checked at load time — see
-/// `runner::check_unique_outputs`), so later fields never race earlier ones for the same key: a
-/// const default reaches `map` only via a field whose own producer is a `Fallback` ending in that
-/// const (see `runner::merge_const_fields`), which is why no separate "did the const survive"
-/// tracking is needed here.
-/// Used for `osm_fields`, sanitizers, and derivers alike.
+/// field's `output` is unique within `fields` (guaranteed by construction — see
+/// `runner::resolve_outputs`, built from a JSON map keyed by output), so later fields never race
+/// earlier ones for the same key: a const default reaches `map` only via a field whose own
+/// producer is a `Fallback` ending in that const (see `runner::merge_const_fields`), which is why
+/// no separate "did the const survive" tracking is needed here.
 fn eval_fields(fields: &[Field], ctx: &ExtractCtx, map: &mut Map<String, Value>) {
     for field in fields {
         if let Some(p) = field.source.eval(ctx) {
@@ -86,19 +85,16 @@ pub fn build_topic_rows(
             return;
         };
 
-        let mut osm = Map::new();
-        eval_fields(&topic.osm_fields, &ectx, &mut osm);
-
-        // Sanitizer + deriver outputs, plus this category's effective consts (folded in as each
-        // const output's lowest-priority `Fallback` branch — see `runner::merge_const_fields`),
-        // share one column and one eval pass: `derivers` is desugared-sanitizers-then-derivers
-        // (see `TopicRunner::topic_derivers`) from this category's effective set.
-        let derivers = runner
-            .category_derivers
+        // This category's effective outputs (topic `outputs` ⊕ category `outputs`, see
+        // `TopicSpec::outputs`), plus this category's effective consts (folded in as each const
+        // output's lowest-priority `Fallback` branch — see `runner::merge_const_fields`), share
+        // one column and one eval pass.
+        let outputs = runner
+            .category_outputs
             .get(&category.id)
-            .unwrap_or(&runner.topic_derivers);
+            .unwrap_or(&runner.default_outputs);
         let mut derived = Map::new();
-        eval_fields(derivers, &ectx, &mut derived);
+        eval_fields(outputs, &ectx, &mut derived);
 
         // Private consts (`_`-prefixed `consts` keys): nothing else ever targets these, so they're
         // seeded into `private` unconditionally rather than folded into a producer chain.
@@ -128,7 +124,6 @@ pub fn build_topic_rows(
             osm_id,
             osm_type: kind.osm_type(),
             id: ectx.id.to_owned(),
-            osm,
             derived,
             private,
             meta: meta.clone(),

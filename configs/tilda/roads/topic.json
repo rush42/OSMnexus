@@ -1,5 +1,30 @@
 {
   "table": "roads",
+  "outputs": {
+    "highway": true,
+    "name": true,
+    "ref": true,
+    "surface": true,
+    "smoothness": true,
+    "maxspeed": true,
+    "oneway": true,
+    "oneway:bicycle": true,
+    "lit": true,
+    "bridge": {
+      "name": "yes_flag"
+    },
+    "tunnel": {
+      "name": "yes_flag"
+    },
+    "operator_type": true,
+    "informal": true,
+    "covered": true,
+    "traffic_sign": {
+      "name": "traffic_sign"
+    },
+    "lifecycle": "lifecycle",
+    "road": "road"
+  },
   "input_transforms": [
     {
       "output": "highway",
@@ -413,41 +438,6 @@
       }
     ]
   },
-  "osm_fields": [
-    "highway",
-    "name",
-    "ref",
-    "surface",
-    "smoothness",
-    "maxspeed",
-    "oneway",
-    "oneway:bicycle",
-    "lit",
-    "bridge",
-    "tunnel",
-    "operator_type",
-    "informal",
-    "covered",
-    "traffic_sign"
-  ],
-  "sanitizers": [
-    {
-      "tag": "bridge",
-      "name": "yes_flag"
-    },
-    {
-      "tag": "tunnel",
-      "name": "yes_flag"
-    },
-    {
-      "tag": "traffic_sign",
-      "name": "traffic_sign"
-    }
-  ],
-  "derivers": [
-    "lifecycle",
-    "road"
-  ],
   "consts": {
     "minzoom": 0,
     "_implicit_oneway_confidence": "not_applicable"

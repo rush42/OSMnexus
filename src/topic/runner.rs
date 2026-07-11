@@ -10,7 +10,7 @@ use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::transform::side_split::CenterLineTransformation;
 use crate::topic::load::{load_shared_macros, load_topic_categories, load_topic_macros, load_topic_sanitizers, merge};
 use crate::topic::pipeline::build_topic_rows;
-use crate::topic::spec::{Field, GeometryShape, InputTransformSpec, SplitSidesSpec, TopicSpec};
+use crate::topic::spec::{resolve_output_entry, Field, GeometryShape, InputTransformSpec, SplitSidesSpec, TopicSpec};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
@@ -36,77 +36,46 @@ pub struct TopicRunner {
     /// Center-line side split (from a `split_sides` entry); empty if the topic has none. Applied
     /// after every `InputTransform`, since it changes object cardinality rather than mutating tags.
     pub transformations: Vec<CenterLineTransformation>,
-    /// Desugared `sanitizers`, kept only for the topic-load summary log (`main.rs`) — evaluation
-    /// doesn't use this list; it's folded into `topic_derivers` (see there) so sanitizers and
-    /// derivers run as one list through one `eval_fields` call.
-    pub sanitizer_fields: Vec<Field>,
-    /// Topic-default fields applied to every object regardless of category: desugared sanitizers
-    /// first, then resolved `derivers.json` bindings (`topic.json`'s `derivers` list) — sanitizers
-    /// and derivers are the same `Producer`-evaluation mechanism, just two JSON shorthands for
-    /// declaring an entry in this one list. Order matters only if a sanitizer and a deriver ever
-    /// target the same output: the deriver (evaluated later) wins.
-    pub topic_derivers: Vec<Field>,
-    /// Per-category effective derivers: topic defaults, with the category's own deriver
-    /// re-bindings applied by output, and the category's effective (topic ⊕ category) consts
+    /// Topic-default fields (`spec.outputs`, resolved, with topic-level `consts` folded in as
+    /// each const's lowest-priority `Fallback` branch — see `merge_const_fields`) — the fallback
+    /// used if a category id somehow isn't in `category_outputs` (shouldn't normally happen: every
+    /// category gets its own entry at load time below).
+    pub default_outputs: Vec<Field>,
+    /// Per-category effective outputs: the topic's `outputs` map merged with the category's own
+    /// `outputs` overrides (category wins, by key — plain JSON-object merge, see `TopicSpec::outputs`),
+    /// then resolved into `Producer`s, with the category's effective (topic ⊕ category) consts
     /// folded in as a trailing `Producer::Fallback` branch on each const's output — so a const is
     /// just the lowest-priority producer for its key, evaluated by the same `eval_fields` pass as
-    /// any sanitizer/deriver, with no separate seed-then-backfill step needed. Present for every
-    /// category (unlike a plain override map, every category's effective consts can differ from
-    /// the topic defaults even with no deriver override).
-    pub category_derivers: HashMap<String, Vec<Field>>,
+    /// any other output. Present for every category (unlike a plain override map, every category's
+    /// effective consts can still differ from the topic defaults even with no `outputs` override).
+    pub category_outputs: HashMap<String, Vec<Field>>,
     /// Per-category effective *private* consts only (`_`-prefixed keys of topic ⊕ category
     /// `consts` — see `TopicSpec::consts`): nothing ever produces these outside `consts` itself,
     /// so they're seeded into `private` unconditionally rather than folded into a producer chain.
     pub category_private_consts: HashMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
-/// Resolve a list of deriver bindings against the `derivers.json` library, erroring on any
-/// dangling reference (load-time validation — the cost of name indirection bought back).
-fn resolve_bindings(
-    lib: &HashMap<String, Producer>,
-    bindings: &[crate::tag_engine::categories::DeriverBinding],
-    topic: &str,
+/// Resolve one topic's or category's raw `outputs` map (already merged by key, category winning)
+/// into a `Vec<Field>` — the actual payoff of keying `outputs` by name: no more `apply_overrides`/
+/// `resolve_bindings`/`check_unique_outputs` Vec-scanning, just one merge then one resolve pass.
+/// Duplicate keys can't arise (JSON object keys are inherently unique per map), so no separate
+/// uniqueness check is needed either.
+fn resolve_outputs(
+    raw: Map<String, Value>,
+    deriver_lib: &HashMap<String, Producer>,
+    macros: &HashMap<String, Filter>,
+    sanitizers: &HashMap<String, crate::tag_engine::sanitize::AtomicChain>,
+    context: &str,
 ) -> anyhow::Result<Vec<Field>> {
-    bindings
-        .iter()
-        .map(|b| {
-            let source = lib.get(b.deriver()).cloned().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "topics/{topic}: deriver '{}' not found in derivers.json",
-                    b.deriver()
-                )
-            })?;
-            Ok(Field { output: b.output().to_owned(), source })
+    raw.into_iter()
+        .map(|(output, value)| {
+            let mut field = resolve_output_entry(&output, value, deriver_lib)
+                .with_context(|| context.to_owned())?;
+            field.source = field.source.resolve(macros, sanitizers)
+                .with_context(|| format!("{context}.{output}"))?;
+            Ok(field)
         })
         .collect()
-}
-
-/// Apply a category's deriver overrides on top of the topic defaults, replacing by output.
-fn apply_overrides(base: &[Field], overrides: Vec<Field>) -> Vec<Field> {
-    let mut fields = base.to_vec();
-    for ov in overrides {
-        match fields.iter_mut().find(|f| f.output == ov.output) {
-            Some(existing) => existing.source = ov.source,
-            None => fields.push(ov),
-        }
-    }
-    fields
-}
-
-/// Every field's `output` is unique within `fields` — a config error otherwise: two entries
-/// racing for the same output would make the winner an unreadable function of construction
-/// order, and `eval_fields` no longer needs an intra-call `written` set to tell them apart when
-/// this invariant holds. Called at every point a `Vec<Field>` is assembled from independent
-/// sources (topic-level derivers, category overrides, consts) rather than once at the end, so
-/// the error names the exact assembly step at fault.
-fn check_unique_outputs(fields: &[Field], context: &str) -> anyhow::Result<()> {
-    let mut seen = std::collections::HashSet::new();
-    for f in fields {
-        if !seen.insert(f.output.as_str()) {
-            anyhow::bail!("{context}: output '{}' is produced by more than one entry", f.output);
-        }
-    }
-    Ok(())
 }
 
 /// A `consts` JSON entry as a `Producer`: a bundled `{ "value": ..., "consts": {...} }` object
@@ -203,24 +172,6 @@ impl TopicRunner {
             spec.exclude_condition = Some(cond.expand(&macros, &sanitizers)
                 .with_context(|| format!("topics/{name}/topic.json: exclude_condition"))?);
         }
-        for f in &mut spec.osm_fields {
-            f.source = f.source.resolve(&macros, &sanitizers)
-                .with_context(|| format!("topics/{name}/topic.json: osm_fields.{}", f.output))?;
-        }
-
-        // Sanitizers already deserialize straight into `Field` (see `Field`'s `Deserialize` impl) —
-        // `{tag, name}` is just a terser JSON shorthand for the common single-`Extract`-with-
-        // `sanitize` case, the same `Producer`-evaluation path as derivers. Folded into
-        // `topic_derivers` below (not kept as a separate list) so a category can override a
-        // sanitizer's output exactly the way it overrides a deriver's — same mechanism, no new
-        // JSON syntax needed. Its `sanitize:` reference still needs resolving like any other.
-        let sanitizer_fields: Vec<Field> = spec.sanitizers.iter()
-            .map(|f| Ok(Field {
-                output: f.output.clone(),
-                source: f.source.resolve(&macros, &sanitizers)
-                    .with_context(|| format!("topics/{name}/topic.json: sanitizers.{}", f.output))?,
-            }))
-            .collect::<anyhow::Result<_>>()?;
 
         // Load the deriver library (named composite producers). Optional: a topic with no derivers
         // (e.g. barrierLines) may omit the file.
@@ -242,27 +193,6 @@ impl TopicRunner {
                 Ok((k, resolved))
             })
             .collect::<anyhow::Result<_>>()?;
-
-        // Resolve the topic-default deriver bindings (validates references), appended after the
-        // sanitizer fields. A sanitizer and a topic-level deriver silently sharing an output would
-        // mean the deriver wins with no visible signal *why* the sanitizer never took effect — so
-        // that overlap is a config error, not a documented precedence rule. (A *category*
-        // overriding a sanitizer's output is fine — that override is explicit by construction:
-        // it names the output it's replacing.)
-        let topic_derivers_resolved = resolve_bindings(&deriver_lib, &spec.derivers, name)?;
-        check_unique_outputs(&topic_derivers_resolved, &format!("topics/{name}/topic.json: derivers"))?;
-        if let Some(dup) = topic_derivers_resolved.iter()
-            .find(|d| sanitizer_fields.iter().any(|s| s.output == d.output))
-        {
-            anyhow::bail!(
-                "topics/{name}: sanitizer and deriver both target output '{}' — remove one, or \
-                 if this is an intentional per-category override, move it into that category's \
-                 `derivers` list instead of the topic-level one",
-                dup.output
-            );
-        }
-        let mut topic_derivers = sanitizer_fields.clone();
-        topic_derivers.extend(topic_derivers_resolved);
 
         // Load per-kind category sets from topics/<name>/{node,way,relation}/.
         let mut categories = load_topic_categories(&base)
@@ -342,29 +272,33 @@ impl TopicRunner {
             .position(|s| matches!(s, InputTransform::SidepathSelf { .. }))
             .unwrap_or(input_transforms.len());
 
-        // Precompute per-category effective derivers (topic defaults ± overrides, with the
-        // category's effective consts folded in — see `merge_const_fields`) and private consts,
-        // across every kind. Every category gets an entry, even with no deriver override: its
-        // effective consts can still differ from the topic's. Category ids are expected unique
-        // within a topic (they're file stems); a node and a way category sharing a stem would
-        // collide here — keep stems distinct per topic.
-        let mut category_derivers = HashMap::new();
+        // Topic-default outputs, topic-level consts folded in — the defensive fallback for a
+        // category id missing from `category_outputs` (shouldn't normally happen; see below).
+        let default_outputs = merge_const_fields(
+            resolve_outputs(
+                spec.outputs.clone(), &deriver_lib, &macros, &sanitizers,
+                &format!("topics/{name}/topic.json: outputs"),
+            )?,
+            &spec.consts,
+        );
+
+        // Precompute per-category effective outputs (topic `outputs` ⊕ category `outputs`,
+        // merged by key before resolving — see `TopicSpec::outputs`) and effective consts folded
+        // in (`merge_const_fields`), plus private consts, across every kind. Every category gets
+        // an entry, even with no `outputs` override: its effective consts can still differ from
+        // the topic's. Category ids are expected unique within a topic (they're file stems); a
+        // node and a way category sharing a stem would collide here — keep stems distinct per topic.
+        let mut category_outputs = HashMap::new();
         let mut category_private_consts = HashMap::new();
         for cats in categories.values() {
             for cat in &cats.categories {
-                let base = match &cat.derivers {
-                    Some(bindings) => {
-                        let overrides = resolve_bindings(&deriver_lib, bindings, name)?;
-                        check_unique_outputs(
-                            &overrides,
-                            &format!("topics/{name}: category '{}' derivers", cat.id),
-                        )?;
-                        apply_overrides(&topic_derivers, overrides)
-                    }
-                    None => topic_derivers.clone(),
-                };
+                let raw = merge(&spec.outputs, &cat.outputs);
+                let fields = resolve_outputs(
+                    raw, &deriver_lib, &macros, &sanitizers,
+                    &format!("topics/{name}: category '{}' outputs", cat.id),
+                )?;
                 let consts = merge(&spec.consts, &cat.consts);
-                category_derivers.insert(cat.id.clone(), merge_const_fields(base, &consts));
+                category_outputs.insert(cat.id.clone(), merge_const_fields(fields, &consts));
                 category_private_consts.insert(
                     cat.id.clone(),
                     consts.into_iter().filter(|(k, _)| k.starts_with('_')).collect(),
@@ -378,9 +312,8 @@ impl TopicRunner {
             input_transforms,
             exclude_check_at,
             transformations,
-            sanitizer_fields,
-            topic_derivers,
-            category_derivers,
+            default_outputs,
+            category_outputs,
             category_private_consts,
         })
     }

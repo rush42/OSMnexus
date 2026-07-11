@@ -1,40 +1,34 @@
 {
   "table": "public_transport",
-  "osm_fields": [
-    "type",
-    "route",
-    "public_transport",
-    "railway",
-    "name",
-    "ref",
-    "colour",
-    "operator",
-    "network",
-    "from",
-    "to",
-    "via",
-    "interval",
-    "duration",
-    "usage",
-    "service",
-    "electrified",
-    "gauge",
-    "maxspeed",
-    "tracks",
-    "bridge",
-    "tunnel",
-    "layer"
-  ],
-  "sanitizers": [
-    {
-      "tag": "bridge",
+  "outputs": {
+    "type": true,
+    "route": true,
+    "public_transport": true,
+    "railway": true,
+    "name": true,
+    "ref": true,
+    "colour": true,
+    "operator": true,
+    "network": true,
+    "from": true,
+    "to": true,
+    "via": true,
+    "interval": true,
+    "duration": true,
+    "usage": true,
+    "service": true,
+    "electrified": true,
+    "gauge": true,
+    "maxspeed": true,
+    "tracks": true,
+    "bridge": {
       "name": "yes_flag"
     },
-    {
-      "tag": "tunnel",
+    "tunnel": {
       "name": "yes_flag"
-    }
-  ],
+    },
+    "layer": true
+  },
   "consts": {
     "minzoom": 0
   }

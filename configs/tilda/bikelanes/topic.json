@@ -1,5 +1,162 @@
 {
   "table": "bikelanes",
+  "outputs": {
+    "name": {
+      "fallback": [
+        {
+          "key": "name"
+        },
+        {
+          "key": "name",
+          "from": "parent"
+        }
+      ]
+    },
+    "surface": "surface",
+    "smoothness": "smoothness",
+    "width": {
+      "name": "parse_length"
+    },
+    "source:width": true,
+    "bridge": {
+      "name": "yes_flag",
+      "from": "parent_or_obj"
+    },
+    "tunnel": {
+      "name": "yes_flag",
+      "from": "parent_or_obj"
+    },
+    "oneway": "oneway",
+    "oneway:bicycle": {
+      "fallback": [
+        {
+          "key": "oneway:bicycle"
+        },
+        {
+          "key": "oneway:bicycle",
+          "from": "parent"
+        }
+      ]
+    },
+    "traffic_sign": {
+      "name": "traffic_sign"
+    },
+    "is_directed": {
+      "rules": [
+        {
+          "when": {
+            "tag": "oneway",
+            "in": [
+              "yes",
+              "-1"
+            ]
+          },
+          "value": true
+        }
+      ],
+      "default": false
+    },
+    "informal": {
+      "key": "informal",
+      "from": "parent"
+    },
+    "covered": {
+      "key": "covered",
+      "from": "parent"
+    },
+    "operator_type": {
+      "key": "operator_type",
+      "from": "parent"
+    },
+    "mapillary": {
+      "key": "mapillary",
+      "from": "parent"
+    },
+    "segregated": true,
+    "bicycle": true,
+    "foot": true,
+    "description": true,
+    "note": true,
+    "temporary": true,
+    "separation:left": true,
+    "separation:right": true,
+    "separation:both": true,
+    "marking:left": true,
+    "marking:right": true,
+    "marking:both": true,
+    "traffic_mode:left": true,
+    "traffic_mode:right": true,
+    "traffic_mode:both": true,
+    "buffer:left": true,
+    "buffer:right": true,
+    "buffer:both": true,
+    "surface:colour": {
+      "keys": [
+        "surface:colour",
+        "surface:color"
+      ]
+    },
+    "separation_left": {
+      "name": "separation",
+      "in": [
+        "separation:left",
+        "separation:both",
+        "separation"
+      ]
+    },
+    "separation_right": {
+      "name": "separation",
+      "in": [
+        "separation:right",
+        "separation:both"
+      ]
+    },
+    "marking_left": {
+      "name": "marking",
+      "in": [
+        "marking:left",
+        "marking:both",
+        "marking"
+      ]
+    },
+    "marking_right": {
+      "name": "marking",
+      "in": [
+        "marking:right",
+        "marking:both"
+      ]
+    },
+    "buffer_left": {
+      "name": "buffer",
+      "in": [
+        "buffer:left",
+        "buffer:both",
+        "buffer"
+      ]
+    },
+    "buffer_right": {
+      "name": "buffer",
+      "in": [
+        "buffer:right",
+        "buffer:both"
+      ]
+    },
+    "surface_color": {
+      "name": "surface_color",
+      "in": [
+        "surface:colour",
+        "surface:color"
+      ]
+    },
+    "width_effective": {
+      "name": "parse_length",
+      "in": "width:effective"
+    },
+    "lifecycle": "lifecycle",
+    "traffic_mode_left": "traffic_mode_left",
+    "traffic_mode_right": "traffic_mode_right",
+    "road": "road"
+  },
   "consts": {
     "oneway": {
       "value": "assumed_no",
@@ -447,221 +604,5 @@
         "traffic_sign"
       ]
     }
-  ],
-  "osm_fields": [
-    {
-      "output": "name",
-      "source": {
-        "fallback": [
-          {
-            "key": "name"
-          },
-          {
-            "key": "name",
-            "from": "parent"
-          }
-        ]
-      }
-    },
-    "surface",
-    "smoothness",
-    "width",
-    "source:width",
-    {
-      "output": "bridge",
-      "source": {
-        "key": "bridge",
-        "from": "parent"
-      }
-    },
-    {
-      "output": "tunnel",
-      "source": {
-        "key": "tunnel",
-        "from": "parent"
-      }
-    },
-    "oneway",
-    {
-      "output": "oneway:bicycle",
-      "source": {
-        "fallback": [
-          {
-            "key": "oneway:bicycle"
-          },
-          {
-            "key": "oneway:bicycle",
-            "from": "parent"
-          }
-        ]
-      }
-    },
-    "traffic_sign",
-    {
-      "output": "is_directed",
-      "source": {
-        "rules": [
-          {
-            "when": {
-              "tag": "oneway",
-              "in": [
-                "yes",
-                "-1"
-              ]
-            },
-            "value": true
-          }
-        ],
-        "default": false
-      }
-    },
-    {
-      "output": "informal",
-      "source": {
-        "key": "informal",
-        "from": "parent"
-      }
-    },
-    {
-      "output": "covered",
-      "source": {
-        "key": "covered",
-        "from": "parent"
-      }
-    },
-    {
-      "output": "operator_type",
-      "source": {
-        "key": "operator_type",
-        "from": "parent"
-      }
-    },
-    {
-      "output": "mapillary",
-      "source": {
-        "key": "mapillary",
-        "from": "parent"
-      }
-    },
-    "segregated",
-    "bicycle",
-    "foot",
-    "description",
-    "note",
-    "temporary",
-    "separation:left",
-    "separation:right",
-    "separation:both",
-    "marking:left",
-    "marking:right",
-    "marking:both",
-    "traffic_mode:left",
-    "traffic_mode:right",
-    "traffic_mode:both",
-    "buffer:left",
-    "buffer:right",
-    "buffer:both",
-    {
-      "output": "surface:colour",
-      "source": {
-        "keys": [
-          "surface:colour",
-          "surface:color"
-        ]
-      }
-    }
-  ],
-  "sanitizers": [
-    {
-      "tag": "traffic_sign",
-      "name": "traffic_sign"
-    },
-    {
-      "tag": "separation_left",
-      "name": "separation",
-      "in": [
-        "separation:left",
-        "separation:both",
-        "separation"
-      ]
-    },
-    {
-      "tag": "separation_right",
-      "name": "separation",
-      "in": [
-        "separation:right",
-        "separation:both"
-      ]
-    },
-    {
-      "tag": "marking_left",
-      "name": "marking",
-      "in": [
-        "marking:left",
-        "marking:both",
-        "marking"
-      ]
-    },
-    {
-      "tag": "marking_right",
-      "name": "marking",
-      "in": [
-        "marking:right",
-        "marking:both"
-      ]
-    },
-    {
-      "tag": "buffer_left",
-      "name": "buffer",
-      "in": [
-        "buffer:left",
-        "buffer:both",
-        "buffer"
-      ]
-    },
-    {
-      "tag": "buffer_right",
-      "name": "buffer",
-      "in": [
-        "buffer:right",
-        "buffer:both"
-      ]
-    },
-    {
-      "tag": "surface_color",
-      "name": "surface_color",
-      "in": [
-        "surface:colour",
-        "surface:color"
-      ]
-    },
-    {
-      "tag": "bridge",
-      "name": "yes_flag",
-      "from": "parent_or_obj"
-    },
-    {
-      "tag": "tunnel",
-      "name": "yes_flag",
-      "from": "parent_or_obj"
-    },
-    {
-      "tag": "width",
-      "name": "parse_length"
-    },
-    {
-      "tag": "width_effective",
-      "name": "parse_length",
-      "in": "width:effective"
-    }
-  ],
-  "derivers": [
-    "oneway",
-    "lifecycle",
-    "surface",
-    "smoothness",
-    "traffic_mode_left",
-    "traffic_mode_right",
-    "road"
   ]
 }

@@ -69,12 +69,6 @@
     "not_expected",
     "separate_geometry"
   ],
-  "derivers": [
-    {
-      "deriver": "surface_from_parent",
-      "output": "surface"
-    }
-  ],
   "consts": {
     "oneway": {
       "value": "implicit_yes",
@@ -82,5 +76,8 @@
         "confidence": "high"
       }
     }
+  },
+  "outputs": {
+    "surface": "surface_from_parent"
   }
 }

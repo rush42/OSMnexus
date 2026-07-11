@@ -13,36 +13,16 @@ use crate::tag_engine::producer::ExtractCtx;
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
-/// A reference from `topic.json` (or a category) into the `derivers.json` library.
-/// A bare string names a deriver whose output equals its name; the object form binds a
-/// deriver to a different output (e.g. `surface_from_parent` → `surface`). Generic naming/
-/// override concept, not topic-directory-specific — lives here (rather than `topic::spec`)
-/// since `CategoryDef` embeds it directly.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum DeriverBinding {
-    Named(String),
-    Bound { deriver: String, output: String },
-}
-
-impl DeriverBinding {
-    pub fn deriver(&self) -> &str {
-        match self { DeriverBinding::Named(s) => s, DeriverBinding::Bound { deriver, .. } => deriver }
-    }
-    pub fn output(&self) -> &str {
-        match self { DeriverBinding::Named(s) => s, DeriverBinding::Bound { output, .. } => output }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct CategoryDef {
     pub id: String,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
-    /// Per-category deriver overrides: re-bind a different deriver to an output (replacing the
-    /// topic default for that output). E.g. surface/smoothness sourced from the parent highway.
+    /// Per-category output overrides: merged over the topic's `outputs` map by key (category
+    /// wins), before resolving into `Producer`s — e.g. re-sourcing `surface`/`smoothness` from
+    /// the parent highway. Same value shapes as `TopicSpec::outputs` (see `resolve_output_entry`).
     #[serde(default)]
-    pub derivers: Option<Vec<DeriverBinding>>,
+    pub outputs: serde_json::Map<String, serde_json::Value>,
     /// Per-category constants (override the topic-level `consts` per key). Seeded into `derived`
     /// as the lowest-priority layer; a sanitizer/deriver producing the same key overrides them.
     /// A `_`-prefixed key (e.g. `_implicit_oneway_confidence`) routes into `private` instead.

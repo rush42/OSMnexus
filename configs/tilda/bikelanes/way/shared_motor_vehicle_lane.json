@@ -20,12 +20,6 @@
     "shared_bus_lane_bike_with_bus",
     "shared_bus_lane_bus_with_bike"
   ],
-  "derivers": [
-    {
-      "deriver": "surface_from_parent",
-      "output": "surface"
-    }
-  ],
   "consts": {
     "oneway": {
       "value": "assumed_no",
@@ -33,5 +27,8 @@
         "confidence": "high"
       }
     }
+  },
+  "outputs": {
+    "surface": "surface_from_parent"
   }
 }
