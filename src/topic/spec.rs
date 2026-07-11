@@ -41,10 +41,7 @@ pub struct TopicSpec {
     #[serde(default)]
     pub exclude_condition: Option<Filter>,
     /// Topic-level default values seeded into `derived` (lowest priority — any output producing
-    /// the same key overrides them). Categories override per-key via their own `defaults`. A key
-    /// starting with `_` routes into the `private` column instead of `derived` (the same
-    /// convention `SplitContext::iter` uses for `_side`/`_prefix`/`_infix`) — there's no separate
-    /// `private` map to declare one explicitly.
+    /// the same key overrides them). Categories override per-key via their own `defaults`.
     #[serde(default)]
     pub defaults: serde_json::Map<String, serde_json::Value>,
     /// Which geometry outputs this topic wants, per element kind — replaces the old global

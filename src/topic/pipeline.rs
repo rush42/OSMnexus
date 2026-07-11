@@ -96,15 +96,7 @@ pub fn build_topic_rows(
         let mut derived = Map::new();
         eval_fields(outputs, &ectx, &mut derived);
 
-        // Private defaults (`_`-prefixed `defaults` keys): nothing else ever targets these, so
-        // they're seeded into `private` unconditionally rather than folded into a producer chain.
         let mut private = Map::new();
-        if let Some(privates) = runner.category_private_defaults.get(&category.id) {
-            for (k, v) in privates {
-                private.insert(k.clone(), v.clone());
-            }
-        }
-
         derived.insert("category".into(), Value::String(category.id.clone()));
 
         // Side-split context, written generically via `SplitContext::iter` (`_side`, plus

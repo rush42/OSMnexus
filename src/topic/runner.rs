@@ -36,10 +36,10 @@ pub struct TopicRunner {
     /// Center-line side split (from a `split_sides` entry); empty if the topic has none. Applied
     /// after every `InputTransform`, since it changes object cardinality rather than mutating tags.
     pub transformations: Vec<CenterLineTransformation>,
-    /// Topic-default fields (`spec.outputs`, resolved, with topic-level `consts` folded in as
-    /// each const's lowest-priority `Fallback` branch — see `merge_const_fields`) — the fallback
-    /// used if a category id somehow isn't in `category_outputs` (shouldn't normally happen: every
-    /// category gets its own entry at load time below).
+    /// Topic-default fields (`spec.outputs`, resolved, with topic-level `defaults` folded in as
+    /// each default's lowest-priority `Fallback` branch — see `merge_default_fields`) — the
+    /// fallback used if a category id somehow isn't in `category_outputs` (shouldn't normally
+    /// happen: every category gets its own entry at load time below).
     pub default_outputs: Vec<Field>,
     /// Per-category effective outputs: the topic's `outputs` map merged with the category's own
     /// `outputs` overrides (category wins, by key — plain JSON-object merge, see `TopicSpec::outputs`),
@@ -50,11 +50,6 @@ pub struct TopicRunner {
     /// category's effective defaults can still differ from the topic's even with no `outputs`
     /// override).
     pub category_outputs: HashMap<String, Vec<Field>>,
-    /// Per-category effective *private* defaults only (`_`-prefixed keys of topic ⊕ category
-    /// `defaults` — see `TopicSpec::defaults`): nothing ever produces these outside `defaults`
-    /// itself, so they're seeded into `private` unconditionally rather than folded into a producer
-    /// chain.
-    pub category_private_defaults: HashMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Resolve one topic's or category's raw `outputs` map (already merged by key, category winning)
@@ -96,16 +91,12 @@ fn default_value_producer(v: &Value) -> Producer {
     Producer::Classify { rules: Vec::new(), default: Some(value), from: TagSet::Obj, consts }
 }
 
-/// Fold `defaults`' public (non-`_`-prefixed) keys into `fields` as the lowest-priority producer
-/// for their output: appended as a trailing `Fallback` branch onto an existing field targeting
-/// that output (so the default only takes effect when the real producer returns `None`), or
-/// pushed as a new default-only field when nothing else targets it (e.g. a bare literal like
-/// `minzoom`). `_`-prefixed keys are skipped — see `TopicRunner::category_private_defaults`.
+/// Fold `defaults`' keys into `fields` as the lowest-priority producer for their output:
+/// appended as a trailing `Fallback` branch onto an existing field targeting that output (so the
+/// default only takes effect when the real producer returns `None`), or pushed as a new
+/// default-only field when nothing else targets it (e.g. a bare literal like `minzoom`).
 fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -> Vec<Field> {
     for (k, v) in defaults {
-        if k.starts_with('_') {
-            continue;
-        }
         let default_source = default_value_producer(v);
         match fields.iter_mut().find(|f| &f.output == k) {
             Some(existing) => {
@@ -286,13 +277,11 @@ impl TopicRunner {
 
         // Precompute per-category effective outputs (topic `outputs` ⊕ category `outputs`,
         // merged by key before resolving — see `TopicSpec::outputs`) and effective `defaults`
-        // folded in (`merge_default_fields`), plus private defaults, across every kind. Every
-        // category gets an entry, even with no `outputs` override: its effective defaults can
-        // still differ from the topic's. Category ids are expected unique within a topic (they're
-        // file stems); a node and a way category sharing a stem would collide here — keep stems
-        // distinct per topic.
+        // folded in (`merge_default_fields`), across every kind. Every category gets an entry,
+        // even with no `outputs` override: its effective defaults can still differ from the
+        // topic's. Category ids are expected unique within a topic (they're file stems); a node
+        // and a way category sharing a stem would collide here — keep stems distinct per topic.
         let mut category_outputs = HashMap::new();
-        let mut category_private_defaults = HashMap::new();
         for cats in categories.values() {
             for cat in &cats.categories {
                 let raw = merge(&spec.outputs, &cat.outputs);
@@ -302,10 +291,6 @@ impl TopicRunner {
                 )?;
                 let defaults = merge(&spec.defaults, &cat.defaults);
                 category_outputs.insert(cat.id.clone(), merge_default_fields(fields, &defaults));
-                category_private_defaults.insert(
-                    cat.id.clone(),
-                    defaults.into_iter().filter(|(k, _)| k.starts_with('_')).collect(),
-                );
             }
         }
 
@@ -317,7 +302,6 @@ impl TopicRunner {
             transformations,
             default_outputs,
             category_outputs,
-            category_private_defaults,
         })
     }
 
