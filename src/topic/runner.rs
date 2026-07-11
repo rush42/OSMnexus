@@ -23,8 +23,8 @@ pub struct TopicRunner {
     /// with only a `way/` folder has just the `Way` entry. `categorize` is the same function for all.
     pub categories: HashMap<ElementKind, CategoriesFile>,
     /// In-place tag mutations applied to each way's tags, in declared order, split around
-    /// `exclude_condition` at `exclude_check_at` — so, unlike a deriver, these can influence which
-    /// category a way matches (or whether `exclude_condition` excludes it at all).
+    /// `exclude_condition` at `exclude_check_at` — so, unlike an output's producer, these can
+    /// influence which category a way matches (or whether `exclude_condition` excludes it at all).
     pub input_transforms: Vec<InputTransform>,
     /// Index into `input_transforms` where `exclude_condition` is evaluated: `input_transforms[..n]` run
     /// first, then `exclude_condition`, then `input_transforms[n..]`. Set to the first `SidepathSelf`
@@ -59,14 +59,14 @@ pub struct TopicRunner {
 /// uniqueness check is needed either.
 fn resolve_outputs(
     raw: Map<String, Value>,
-    deriver_lib: &HashMap<String, Producer>,
+    producer_lib: &HashMap<String, Producer>,
     macros: &HashMap<String, Filter>,
     sanitizers: &HashMap<String, crate::tag_engine::sanitize::AtomicChain>,
     context: &str,
 ) -> anyhow::Result<Vec<Field>> {
     raw.into_iter()
         .map(|(output, value)| {
-            let mut field = resolve_output_entry(&output, value, deriver_lib)
+            let mut field = resolve_output_entry(&output, value, producer_lib)
                 .with_context(|| context.to_owned())?;
             field.source = field.source.resolve(macros, sanitizers)
                 .with_context(|| format!("{context}.{output}"))?;
@@ -141,7 +141,7 @@ impl TopicRunner {
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
 
         // Named atomic transforms (`sanitize:` targets), shared+topic-local. A separate
-        // registry/namespace from the deriver library below — atomic chains and composite
+        // registry/namespace from the producer library below — atomic chains and composite
         // producers are different *types* (`AtomicChain`/`Producer`), so there's no risk of a
         // name meaning two things at once. Loaded before macros, since a macro's own condition can
         // carry a `sanitize:` too.
@@ -166,23 +166,23 @@ impl TopicRunner {
                 .with_context(|| format!("topics/{name}/topic.json: exclude_condition"))?);
         }
 
-        // Load the deriver library (named composite producers). Optional: a topic with no derivers
-        // (e.g. barrierLines) may omit the file.
-        let derivers_path = base.join("derivers.json");
-        let deriver_lib: HashMap<String, Producer> = if derivers_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(&derivers_path)?)
-                .with_context(|| format!("parsing topics/{name}/derivers.json"))?
+        // Load the named producer library. Optional: a topic with no named producers (e.g.
+        // barrierLines) may omit the file.
+        let producers_path = base.join("producers.json");
+        let producer_lib: HashMap<String, Producer> = if producers_path.exists() {
+            serde_json::from_str(&std::fs::read_to_string(&producers_path)?)
+                .with_context(|| format!("parsing topics/{name}/producers.json"))?
         } else {
             HashMap::new()
         };
 
-        // Resolve every deriver's embedded macros/sanitizers/shared-classifier references now,
-        // before anything downstream (`resolve_bindings`, category overrides) clones entries out
-        // of this map — every clone then inherits the resolution for free.
-        let deriver_lib: HashMap<String, Producer> = deriver_lib.into_iter()
+        // Resolve every producer's embedded macros/sanitizers/shared-classifier references now,
+        // before anything downstream (category `outputs` overrides) clones entries out of this
+        // map — every clone then inherits the resolution for free.
+        let producer_lib: HashMap<String, Producer> = producer_lib.into_iter()
             .map(|(k, v)| {
                 let resolved = v.resolve(&macros, &sanitizers)
-                    .with_context(|| format!("topics/{name}: deriver '{k}'"))?;
+                    .with_context(|| format!("topics/{name}: producer '{k}'"))?;
                 Ok((k, resolved))
             })
             .collect::<anyhow::Result<_>>()?;
@@ -269,7 +269,7 @@ impl TopicRunner {
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
         let default_outputs = merge_default_fields(
             resolve_outputs(
-                spec.outputs.clone(), &deriver_lib, &macros, &sanitizers,
+                spec.outputs.clone(), &producer_lib, &macros, &sanitizers,
                 &format!("topics/{name}/topic.json: outputs"),
             )?,
             &spec.defaults,
@@ -286,7 +286,7 @@ impl TopicRunner {
             for cat in &cats.categories {
                 let raw = merge(&spec.outputs, &cat.outputs);
                 let fields = resolve_outputs(
-                    raw, &deriver_lib, &macros, &sanitizers,
+                    raw, &producer_lib, &macros, &sanitizers,
                     &format!("topics/{name}: category '{}' outputs", cat.id),
                 )?;
                 let defaults = merge(&spec.defaults, &cat.defaults);

@@ -120,10 +120,10 @@ pub enum InputTransformSpec {
     /// separate child objects. Also needs dynamic key iteration. Identified by being *only*
     /// `{ "prefix": ... }` — nothing else has that exact single-key shape.
     UnnestSidepathSelf { prefix: String },
-    /// Write `output` from any full `Producer` (`rules`/`fallback`/`key`/`derive` — the same shape
-    /// used for `osm_fields`/sanitizers/derivers), evaluated against the way's own tags (no
-    /// parent, no category/side context yet) and applied as a raw-tag mutation *before*
-    /// categorization — so, unlike a deriver, this can influence which category a way matches.
+    /// Write `output` from any full `Producer` (`rules`/`fallback`/`key`/`cond` — the same shape
+    /// used for `outputs`), evaluated against the way's own tags (no parent, no category/side
+    /// context yet) and applied as a raw-tag mutation *before* categorization — so, unlike an
+    /// `outputs` entry, this can influence which category a way matches.
     /// A produced `null` deletes `output`; a produced non-null value must be a string and
     /// overwrites it; no match (`None`) leaves `output` untouched. The default (and by far most
     /// common) shape — identified by its required `output` field. e.g. deriving `traffic_sign`
@@ -192,7 +192,7 @@ pub struct Field {
 /// `Field`. Four value shapes, tried in this order:
 /// - `true` — verbatim extract of the identically-named tag: `"surface": true` desugars to
 ///   `{ output: "surface", source: { key: "surface" } }`.
-/// - a JSON string — a named reference into `deriver_lib` (the topic's `derivers.json`),
+/// - a JSON string — a named reference into `producer_lib` (the topic's `producers.json`),
 ///   resolved once here rather than falling back silently on a miss (unlike `SanitizeRef`'s
 ///   builtin fallback) — a typo'd name should fail loudly at load time.
 /// - an object shaped `{ name, in?, from? }` (no `key`/`keys`/`fallback`/`rules`/`cond` — those
@@ -205,7 +205,7 @@ pub struct Field {
 pub fn resolve_output_entry(
     output: &str,
     value: Value,
-    deriver_lib: &HashMap<String, Producer>,
+    producer_lib: &HashMap<String, Producer>,
 ) -> anyhow::Result<Field> {
     let is_sanitizer_shorthand = matches!(&value, Value::Object(m) if m.contains_key("name")
         && !m.contains_key("key") && !m.contains_key("keys")
@@ -243,8 +243,8 @@ pub fn resolve_output_entry(
                 directed: false,
             },
             Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),
-            Value::String(name) => deriver_lib.get(&name).cloned().ok_or_else(|| {
-                anyhow::anyhow!("topic outputs.{output}: deriver '{name}' not found in derivers.json")
+            Value::String(name) => producer_lib.get(&name).cloned().ok_or_else(|| {
+                anyhow::anyhow!("topic outputs.{output}: producer '{name}' not found in producers.json")
             })?,
             other => Producer::deserialize(other).with_context(|| format!("topic outputs.{output}"))?,
         }

@@ -1,7 +1,7 @@
 # tilda config — pipeline limitations
 
 The rules in this config folder (`topic.json`, `way/*.json`, `macros.json`,
-`sanitizers.json`, `derivers.json`, `_shared/*`) are all evaluated by the
+`sanitizers.json`, `producers.json`, `_shared/*`) are all evaluated by the
 classification stage (`src/classify/filter.rs`). That stage sees **tags
 only** — it has no access to geometry. Keep the following limitations in
 mind when writing or reviewing rules here:

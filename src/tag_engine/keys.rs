@@ -1,6 +1,6 @@
-//! Generic tag-key selection primitives, shared by `producer` (extraction), `filter`
-//! (`first_tag`/sided predicates), and `derive` (the Rust derivers) — nothing here is
-//! sanitizer-specific, so it doesn't belong bundled with the sanitizer-chain engine.
+//! Generic tag-key selection primitives, shared by `producer` (extraction) and `filter`
+//! (`first_tag`/sided predicates) — nothing here is sanitizer-specific, so it doesn't belong
+//! bundled with the sanitizer-chain engine.
 
 use crate::osm::types::RawTags;
 

@@ -1,7 +1,7 @@
 //! The `Producer` engine (`Extract`/`Fallback`/`Cond`/`Classify`/`SharedClassify`) that evaluates
-//! one field's value — shared by `osm_fields`, sanitizers, and derivers alike — its load-time
-//! reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result
-//! (`Produced`) types it evaluates over.
+//! one output's value — the one mechanism behind every `outputs` entry (`TopicSpec::outputs`) —
+//! its load-time reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and
+//! result (`Produced`) types it evaluates over.
 
 use std::collections::HashMap;
 
@@ -15,8 +15,8 @@ use crate::tag_engine::transform::side_split::SplitContext;
 use crate::osm::types::RawTags;
 
 /// A produced value plus optional provenance. The `consts` are arbitrary key/value pairs the
-/// winning fallback branch (or a Rust deriver) contributes; each is emitted as `<field>_<k>`
-/// (e.g. `source`/`confidence` → `<field>_source`/`<field>_confidence`).
+/// winning fallback branch contributes; each is emitted as `<field>_<k>` (e.g.
+/// `source`/`confidence` → `<field>_source`/`<field>_confidence`).
 #[derive(Debug, Clone)]
 pub struct Produced {
     pub value: Value,

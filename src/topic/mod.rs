@@ -1,6 +1,6 @@
 //! Loading and running one `topics/<name>/` directory against the generic `tag_engine`. Owns
 //! everything specific to *this project's* topic-directory convention (the `topic.json` schema,
-//! the `{node,way,relation}/`+`macros.json`+`sanitizers.json`+`derivers.json` layout, and the
+//! the `{node,way,relation}/`+`macros.json`+`sanitizers.json`+`producers.json` layout, and the
 //! per-element pipeline that sequences engine calls) — `tag_engine` itself knows nothing about any
 //! of this.
 //!
