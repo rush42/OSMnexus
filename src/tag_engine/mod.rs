@@ -10,13 +10,13 @@
 //! (macro/sanitizer expansion) and its runtime evaluation, rather than splitting those across
 //! separate directories:
 //! - `filter`: the `Filter` predicate AST, `expand` (macro/sanitize resolution), and `eval`.
-//! - `producer`: the `Producer` value engine (`Extract`/`Fallback`/`Cond`/`Classify`/
-//!   `SharedClassify`), its `resolve`, and its context (`ExtractCtx`/`TagSet`) and result
-//!   (`Produced`) types.
+//! - `producer`: the `Producer` value engine — really just `Match`/`Extract` (`fallback` is
+//!   JSON-only sugar for a `Match`; a named shared classifier table is inlined as JSON by
+//!   `topic::load` before `Producer` ever sees it), its `resolve`, and its context
+//!   (`ExtractCtx`/`TagSet`) and result (`Produced`) types.
 //! - `sanitize`: the atomic `&str -> atomic` chain machinery (`SanitizeRef`/`AtomicChain`/`Step`)
 //!   underneath an `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
-//! - `classifier`: the generic first-match-wins rule table underneath `Producer::Match`, plus
-//!   the load-time registry of shared, named classifiers.
+//! - `classifier`: the generic first-match-wins rule table underneath `Producer::Match`.
 //! - `categories`: the category data model, its runtime first-match evaluator, and the load-time
 //!   compiler (`build_order`) of a category set's `excludes` relation into a priority order.
 //! - `decision_tree`: the discrimination net that prunes `categorize`'s first-match walk, plus its

@@ -8,7 +8,10 @@ use crate::tag_engine::filter::Filter;
 use crate::tag_engine::input_transforms::InputTransform;
 use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::transform::side_split::CenterLineTransformation;
-use crate::topic::load::{load_shared_macros, load_topic_categories, load_topic_macros, load_topic_sanitizers, merge};
+use crate::topic::load::{
+    inline_shared_producers, load_shared_macros, load_shared_producers, load_topic_categories,
+    load_topic_macros, load_topic_sanitizers, merge,
+};
 use crate::topic::pipeline::build_topic_rows;
 use crate::topic::spec::{resolve_output_entry, Field, GeometryShape, InputTransformSpec, SplitSidesSpec, TopicSpec};
 use crate::osm::types::{ElementKind, RawTags};
@@ -189,18 +192,27 @@ impl TopicRunner {
         }
 
         // Load the named producer library. Optional: a topic with no named producers (e.g.
-        // barrierLines) may omit the file.
+        // barrierLines) may omit the file. Any `{ "shared": "<name>" }` reference is inlined
+        // against the config-root-level shared table (`<config_root>/producers.json`, e.g. the
+        // `road` classifier) as raw JSON before `Producer` deserialization ever runs — the same
+        // shared→topic-local treatment `load_topic_sanitizers`/`load_shared_macros` give
+        // sanitizers/macros — so `Producer` itself never represents "a shared classifier".
+        let shared_producers = load_shared_producers(&config_root)?;
         let producers_path = base.join("producers.json");
         let producer_lib: HashMap<String, Producer> = if producers_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(&producers_path)?)
+            let raw: Value = serde_json::from_str(&std::fs::read_to_string(&producers_path)?)
+                .with_context(|| format!("parsing topics/{name}/producers.json"))?;
+            let inlined = inline_shared_producers(raw, &shared_producers)
+                .with_context(|| format!("topics/{name}/producers.json: inlining shared producers"))?;
+            serde_json::from_value(inlined)
                 .with_context(|| format!("parsing topics/{name}/producers.json"))?
         } else {
             HashMap::new()
         };
 
-        // Resolve every producer's embedded macros/sanitizers/shared-classifier references now,
-        // before anything downstream (category `outputs` overrides) clones entries out of this
-        // map — every clone then inherits the resolution for free.
+        // Resolve every producer's embedded macros/sanitizers references now, before anything
+        // downstream (category `outputs` overrides) clones entries out of this map — every clone
+        // then inherits the resolution for free.
         let producer_lib: HashMap<String, Producer> = producer_lib.into_iter()
             .map(|(k, v)| {
                 let resolved = v.resolve(&macros, &sanitizers)

@@ -145,3 +145,49 @@ pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<HashM
         Ok(HashMap::new())
     }
 }
+
+/// Load shared, cross-topic named rule tables from `<config_root>/producers.json`
+/// (`{ name: <producer JSON> }`, e.g. the `road` classifier) as raw JSON — kept raw (not
+/// deserialized into `Producer`) since `inline_shared_producers` substitutes them into a topic's
+/// own raw JSON before anything is deserialized.
+pub fn load_shared_producers(config_root: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
+    let path = config_root.join("producers.json");
+    if path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&path)?)
+            .with_context(|| format!("parsing {}", path.display()))
+    } else {
+        Ok(Map::new())
+    }
+}
+
+/// Recursively replace every `{ "shared": "<name>", ... }` object in `value` with `shared[name]`'s
+/// own producer JSON — any sibling keys the referencing site set (`from`/`consts`) override the
+/// same keys in the shared table's JSON. This is the entire "shared classifier" mechanism: it
+/// happens once here, at topic-directory-read time, on raw JSON — the same treatment shared
+/// macros/sanitizers get (see `merge`) — so `Producer`'s own `Deserialize` never has to represent
+/// a shared-table reference at all. Errors loudly on an unknown name, same as a producer-library
+/// name miss (`spec::resolve_output_entry`).
+pub fn inline_shared_producers(value: Value, shared: &Map<String, Value>) -> anyhow::Result<Value> {
+    Ok(match value {
+        Value::Object(mut obj) => match obj.get("shared").cloned() {
+            Some(Value::String(name)) => {
+                obj.remove("shared");
+                let mut inlined = shared.get(&name)
+                    .ok_or_else(|| anyhow::anyhow!("no shared producer named '{name}' in <config_root>/producers.json"))?
+                    .clone();
+                if let Value::Object(inlined_obj) = &mut inlined {
+                    inlined_obj.extend(obj);
+                }
+                inline_shared_producers(inlined, shared)?
+            }
+            Some(other) => anyhow::bail!("`shared` must be a string naming a producer, got {other}"),
+            None => Value::Object(obj.into_iter()
+                .map(|(k, v)| Ok((k, inline_shared_producers(v, shared)?)))
+                .collect::<anyhow::Result<_>>()?),
+        },
+        Value::Array(items) => Value::Array(items.into_iter()
+            .map(|v| inline_shared_producers(v, shared))
+            .collect::<anyhow::Result<_>>()?),
+        other => other,
+    })
+}

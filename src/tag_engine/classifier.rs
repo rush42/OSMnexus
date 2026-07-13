@@ -1,20 +1,19 @@
 //! A generic, data-driven classifier: an ordered list of `{ when, value }` rules, evaluated
 //! against a way's tags with the shared `Filter` engine. The first rule whose condition matches
-//! yields the value (any JSON literal); rules are first-match-wins, with an optional `default`.
+//! *and* produces something yields the value (any JSON literal, or an arbitrary nested `Producer`
+//! — see `ValueSpec`); rules are first-match-wins, with an optional `default`.
 //!
-//! The value is either a literal (string/number/bool) or a `{ "tag": "<key>" }` passthrough that
-//! copies the tag's own value (used e.g. to fall back to the raw `highway` value). All domain
-//! knowledge lives in the JSON; this module is just the evaluator, plus the load-time registry of
-//! shared, named classifiers (`<config_root>/producers.json`, `{name: Classifier}`) a
-//! `Producer::SharedClassify` resolves against.
+//! Named, cross-topic shared rule tables (e.g. the `road` classifier) are a *config-loading*
+//! concept, not one this module or `Producer` knows about: `topic::load::inline_shared_producers`
+//! substitutes a `{ "shared": "<name>" }` reference with the named table's own JSON before any of
+//! it is deserialized, at topic-directory-read time — the same treatment shared macros/sanitizers
+//! get. By the time a `Rule` reaches this module, it's indistinguishable from one that was always
+//! topic-local.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use serde::Deserialize;
-use serde_json::Value;
-
-use serde_json::Map;
+use serde_json::{Map, Value};
 
 use crate::tag_engine::filter::{eval, Filter};
 use crate::tag_engine::producer::{ExtractCtx, Produced, Producer};
@@ -64,16 +63,6 @@ pub struct Rule {
     pub value: ValueSpec,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Classifier {
-    pub rules: Vec<Rule>,
-    /// Value to use when no rule matches — makes this table self-contained (no need for a
-    /// wrapping `fallback`/category-const default) for cases like `minzoom` that always need
-    /// a value.
-    #[serde(default)]
-    pub default: Option<Value>,
-}
-
 /// First rule whose `when` holds *and* whose value actually produces something, in order — a
 /// matching rule that produces nothing doesn't stop the search, it just tries the next rule. This
 /// is what lets `Producer::Match` subsume a plain ordered fallback chain (every rule `when: true`,
@@ -110,27 +99,4 @@ pub fn match_rules(rules: &[Rule], ctx: &ExtractCtx, own_consts: &Map<String, Va
         }
     }
     None
-}
-
-// ── Shared classifier registry ──────────────────────────────────────────────
-
-/// Shared, named classifiers loaded once from `<config_root>/producers.json`
-/// (`{name: Classifier}`). Referenced from data via a `Classify`-style producer's
-/// `{ "shared": "<name>" }`, so a rule table (e.g. the `road` classification) can be reused
-/// across topics without duplication.
-fn shared_classifiers() -> &'static HashMap<String, Classifier> {
-    static CLASSIFIERS: OnceLock<HashMap<String, Classifier>> = OnceLock::new();
-    CLASSIFIERS.get_or_init(|| {
-        let path = crate::paths::config_root().join("producers.json");
-        let raw = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()))
-    })
-}
-
-/// The shared classifier registered under `name`, panicking if undefined (a config error).
-pub fn shared_classifier(name: &str) -> &'static Classifier {
-    shared_classifiers()
-        .get(name)
-        .unwrap_or_else(|| panic!("no shared classifier named '{name}' in <config_root>/producers.json"))
 }

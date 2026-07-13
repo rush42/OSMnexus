@@ -1,13 +1,17 @@
-//! The `Producer` engine — just `Match` and `Extract` at eval time — that evaluates one output's
+//! The `Producer` engine — just `Match` and `Extract`, full stop — that evaluates one output's
 //! value (the one mechanism behind every `outputs` entry, `TopicSpec::outputs`), its load-time
 //! reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result
-//! (`Produced`) types it evaluates over. `Fallback` and `SharedClassify` are parse-time sugar
-//! only: `resolve` always runs before `eval` (see `topic::runner`), and it rewrites both into an
-//! equivalent `Match` — so `eval` never has to know they exist.
+//! (`Produced`) types it evaluates over. `fallback` is JSON-only sugar: `Producer`'s hand-written
+//! `Deserialize` folds it into an equivalent `Match` as part of parsing itself, so it never exists
+//! as a `Producer` value — not pre-`resolve`, not transiently, not ever. A named *shared*
+//! classifier table (`{ "shared": "<name>" }`) isn't even sugar `Producer` knows about: it's
+//! inlined as plain JSON — before anything here ever sees it — by `topic::load::
+//! inline_shared_producers`, at topic-directory-read time, the same way shared macros/sanitizers
+//! are merged in. `Producer` the Rust type really does only have two variants.
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
 use crate::tag_engine::filter::Filter;
@@ -65,29 +69,11 @@ impl TagSet {
     }
 }
 
-/// A value producer. Untagged, tried in this order (more-specific/required-field shapes before
-/// `Extract`, whose fields are all optional and so would otherwise match everything first):
-/// `Fallback` (`fallback` key) and `SharedClassify` (`shared` key) are pure JSON sugar, rewritten
-/// by `resolve` into an equivalent `Match`; `Match` (`rules` key) and `Extract` are the two shapes
-/// `eval` actually implements.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+/// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see the hand-written
+/// `Deserialize` impl below for the `fallback` JSON shape that folds into `Match` at parse time
+/// and so never appears here.
+#[derive(Debug, Clone)]
 pub enum Producer {
-    /// Sugar for an all-`when:true` `Match`: try each branch in order, first one that produces
-    /// anything wins, carrying its own branch-level `consts`. Only exists pre-`resolve`.
-    Fallback { fallback: Vec<Producer> },
-    /// Sugar for a `Match` whose rule table is a named shared classifier loaded from
-    /// `<config_root>/producers.json` — lets topics reuse one table (e.g. the `road`
-    /// classification) without duplicating it in every topic's own JSON. `from`/`consts` behave
-    /// as in `Match`; the shared table's own `default` (if any) applies. Only exists
-    /// pre-`resolve`: inlined into an equivalent `Match` at load time (small tables — a
-    /// handful of rules, referenced from a couple of topics — so cloning them per reference site
-    /// is cheap).
-    SharedClassify {
-        shared: String,
-        #[serde(default)] from: TagSet,
-        #[serde(default)] consts: Map<String, Value>,
-    },
     /// A data-defined first-match-wins rule table (same engine as the `road` classifier). Each
     /// rule's value can be any JSON literal — a string (category/tag classification), a number
     /// (e.g. `minzoom`), a bool (e.g. a filter-driven flag) — or an arbitrary nested `Producer`
@@ -108,6 +94,46 @@ pub enum Producer {
     /// same pass.
     Match {
         rules: Vec<crate::tag_engine::classifier::Rule>,
+        default: Option<Value>,
+        from: TagSet,
+        consts: Map<String, Value>,
+    },
+    Extract {
+        key: Option<String>,
+        keys: Option<Vec<String>>,
+        from: TagSet,
+        side: Option<String>,
+        sanitize: Option<SanitizeRef>,
+        /// Companion key/values this branch contributes when it produces the value; emitted as
+        /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
+        consts: Map<String, Value>,
+        /// Direction-sensitive read (needs `key`, ignores `keys`/`side`): resolves `key`'s
+        /// `:forward`/`:backward` variant from `ctx.obj_side` + the global left/right-hand-traffic
+        /// setting (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no
+        /// direction to resolve). `from: Parent` tries the bare key on the parent's tags, then its
+        /// directed variant; any other `from` tries only the directed variant on the object's own
+        /// tags (e.g. a tag already unnested as `traffic_sign:forward`). Used for `split_sides`'
+        /// `directed_keys`/`self_directed_keys` — the object-cardinality-changing split itself
+        /// stays native, but this per-key projection is an ordinary sided tag read.
+        directed: bool,
+    },
+}
+
+/// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, plus `Fallback`'s `fallback`
+/// sugar — folded into an equivalent `Match` right here in `Deserialize` (see `Producer::from`
+/// below) so a `Producer` value is never observably a fallback chain, only ever `Match`/`Extract`.
+/// Untagged, tried in this order (more-specific/required-field shapes before `Extract`, whose
+/// fields are all optional and so would otherwise match everything first).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum ProducerJson {
+    /// Try each branch in order; the first one that produces anything wins, carrying its own
+    /// branch-level `consts`. Desugars to an all-`when: true` `Match` (see `classifier::match_rules`
+    /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
+    /// equivalence exact).
+    Fallback { fallback: Vec<Producer> },
+    Match {
+        rules: Vec<crate::tag_engine::classifier::Rule>,
         #[serde(default)] default: Option<Value>,
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
@@ -118,33 +144,38 @@ pub enum Producer {
         #[serde(default)] from: TagSet,
         #[serde(default)] side: Option<String>,
         #[serde(default)] sanitize: Option<SanitizeRef>,
-        /// Companion key/values this branch contributes when it produces the value; emitted as
-        /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
         #[serde(default)] consts: Map<String, Value>,
-        /// Direction-sensitive read (needs `key`, ignores `keys`/`side`): resolves `key`'s
-        /// `:forward`/`:backward` variant from `ctx.obj_side` + the global left/right-hand-traffic
-        /// setting (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no
-        /// direction to resolve). `from: Parent` tries the bare key on the parent's tags, then its
-        /// directed variant; any other `from` tries only the directed variant on the object's own
-        /// tags (e.g. a tag already unnested as `traffic_sign:forward`). Used for `split_sides`'
-        /// `directed_keys`/`self_directed_keys` — the object-cardinality-changing split itself
-        /// stays native, but this per-key projection is an ordinary sided tag read.
         #[serde(default)] directed: bool,
     },
+}
+
+impl<'de> Deserialize<'de> for Producer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match ProducerJson::deserialize(deserializer)? {
+            ProducerJson::Fallback { fallback } => Producer::Match {
+                rules: fallback.into_iter()
+                    .map(|p| crate::tag_engine::classifier::Rule {
+                        when: Filter::Bool(true),
+                        value: crate::tag_engine::classifier::ValueSpec::Producer(Box::new(p)),
+                    })
+                    .collect(),
+                default: None,
+                from: TagSet::Obj,
+                consts: Map::new(),
+            },
+            ProducerJson::Match { rules, default, from, consts } => Producer::Match { rules, default, from, consts },
+            ProducerJson::Extract { key, keys, from, side, sanitize, consts, directed } =>
+                Producer::Extract { key, keys, from, side, sanitize, consts, directed },
+        })
+    }
 }
 
 impl Producer {
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
-            // `resolve` (see below) always runs before `eval` — every topic/category's outputs
-            // are resolved once at load time (`topic::runner`) — and rewrites both of these into
-            // an equivalent `Match`, so a live tree should never contain one. Not a recoverable
-            // config error (unlike, say, an unknown macro name, which `resolve` itself reports
-            // gracefully): reaching here means a producer was evaluated without going through
-            // `resolve` first, which is a caller bug.
-            Producer::Fallback { .. } => panic!("unresolved Fallback reached eval — Producer::resolve should have run at load"),
-            Producer::SharedClassify { .. } => panic!("unresolved SharedClassify reached eval — Producer::resolve should have run at load"),
-
             Producer::Match { rules, default, from, consts } => {
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
@@ -188,34 +219,16 @@ impl Producer {
 // ── Load-time resolution ──────────────────────────────────────────────────────
 
 impl Producer {
-    /// Resolve every named reference this producer (transitively) carries, once, at load time,
-    /// and collapse the JSON sugar (`Fallback`, `SharedClassify`) down to a plain `Match` — so
-    /// `eval` only ever sees `Match`/`Extract`: macros embedded in a `Match`'s `rules[].when`
-    /// (`Filter::expand`), `Extract`'s `sanitize:` (`SanitizeRef::resolve`), `SharedClassify`
-    /// (its rules go through the same macro/sanitize resolution as a topic-local `Match`'s), and
-    /// `Fallback` (each branch becomes an unconditional — `when: true` — rule wrapping that
-    /// branch's own resolved producer as its value, so it keeps contributing its own `consts`;
-    /// see `classifier::match_rules`). After this, `eval` never does a registry lookup of any
-    /// kind.
+    /// Resolve every named reference this producer (transitively) carries, once, at load time:
+    /// macros embedded in a `Match`'s `rules[].when` (`Filter::expand`) and `Extract`'s
+    /// `sanitize:` (`SanitizeRef::resolve`). After this, `eval` never does a registry lookup of
+    /// any kind.
     pub fn resolve(
         &self,
         macros: &HashMap<String, Filter>,
         sanitizers: &HashMap<String, AtomicChain>,
     ) -> anyhow::Result<Producer> {
         Ok(match self {
-            Producer::Fallback { fallback } => Producer::Match {
-                rules: fallback.iter()
-                    .map(|p| Ok(crate::tag_engine::classifier::Rule {
-                        when: Filter::Bool(true),
-                        value: crate::tag_engine::classifier::ValueSpec::Producer(
-                            Box::new(p.resolve(macros, sanitizers)?)
-                        ),
-                    }))
-                    .collect::<anyhow::Result<_>>()?,
-                default: None,
-                from: TagSet::Obj,
-                consts: Map::new(),
-            },
             Producer::Match { rules, default, from, consts } => Producer::Match {
                 rules: rules.iter()
                     .map(|r| Ok(crate::tag_engine::classifier::Rule {
@@ -227,21 +240,6 @@ impl Producer {
                 from: *from,
                 consts: consts.clone(),
             },
-            Producer::SharedClassify { shared, from, consts } => {
-                let classifier = crate::tag_engine::classifier::shared_classifier(shared);
-                let rules = classifier.rules.iter()
-                    .map(|r| Ok(crate::tag_engine::classifier::Rule {
-                        when: r.when.expand(macros, sanitizers)?,
-                        value: r.value.resolve(macros, sanitizers)?,
-                    }))
-                    .collect::<anyhow::Result<_>>()?;
-                Producer::Match {
-                    rules,
-                    default: classifier.default.clone(),
-                    from: *from,
-                    consts: consts.clone(),
-                }
-            }
             Producer::Extract { key, keys, from, side, sanitize, consts, directed } => Producer::Extract {
                 key: key.clone(),
                 keys: keys.clone(),

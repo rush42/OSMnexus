@@ -195,13 +195,13 @@ pub struct Field {
 /// - a JSON string — a named reference into `producer_lib` (the topic's `producers.json`),
 ///   resolved once here rather than falling back silently on a miss (unlike `SanitizeRef`'s
 ///   builtin fallback) — a typo'd name should fail loudly at load time.
-/// - an object shaped `{ name, in?, from? }` (no `key`/`keys`/`fallback`/`rules`/`cond` — those
+/// - an object shaped `{ name, in?, from? }` (no `key`/`keys`/`fallback`/`rules` — those
 ///   uniquely identify a full `Producer` instead): sugar for "read the first present of `in`
 ///   (default `[output]`) from `from` (default obj), clean it with the `name` sanitizer." The
 ///   map key supplies the output/default-input name, so unlike the old list-based sanitizer sugar
 ///   there's no redundant `tag` field.
-/// - any other object — a full inline `Producer` (`Extract`/`Fallback`/`Cond`/`Classify`/
-///   `SharedClassify`; `Extract` already supports `sanitize` directly for the general case).
+/// - any other object — a full inline `Producer` (`Extract`/`Match`, or `fallback` sugar for a
+///   `Match`; `Extract` already supports `sanitize` directly for the general case).
 pub fn resolve_output_entry(
     output: &str,
     value: Value,
@@ -209,7 +209,7 @@ pub fn resolve_output_entry(
 ) -> anyhow::Result<Field> {
     let is_sanitizer_shorthand = matches!(&value, Value::Object(m) if m.contains_key("name")
         && !m.contains_key("key") && !m.contains_key("keys")
-        && !m.contains_key("fallback") && !m.contains_key("rules") && !m.contains_key("cond"));
+        && !m.contains_key("fallback") && !m.contains_key("rules"));
 
     let source = if is_sanitizer_shorthand {
         #[derive(Deserialize)]
