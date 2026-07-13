@@ -136,17 +136,14 @@ pub enum Producer {
 impl Producer {
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
-            // Only reachable if `resolve` (which rewrites both into an equivalent `Match`) was
-            // skipped — kept working defensively rather than panicking.
-            Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
-            Producer::SharedClassify { shared, from, consts } => {
-                let classifier = crate::tag_engine::classifier::shared_classifier(shared);
-                let tags = from.resolve(ctx)?;
-                let mut rctx = *ctx;
-                rctx.obj_tags = tags;
-                crate::tag_engine::classifier::match_rules(&classifier.rules, &rctx, consts)
-                    .or_else(|| classifier.default.clone().map(|value| Produced { value, consts: consts.clone() }))
-            }
+            // `resolve` (see below) always runs before `eval` — every topic/category's outputs
+            // are resolved once at load time (`topic::runner`) — and rewrites both of these into
+            // an equivalent `Match`, so a live tree should never contain one. Not a recoverable
+            // config error (unlike, say, an unknown macro name, which `resolve` itself reports
+            // gracefully): reaching here means a producer was evaluated without going through
+            // `resolve` first, which is a caller bug.
+            Producer::Fallback { .. } => panic!("unresolved Fallback reached eval — Producer::resolve should have run at load"),
+            Producer::SharedClassify { .. } => panic!("unresolved SharedClassify reached eval — Producer::resolve should have run at load"),
 
             Producer::Match { rules, default, from, consts } => {
                 let tags = from.resolve(ctx)?;

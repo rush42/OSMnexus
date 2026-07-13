@@ -44,7 +44,7 @@ pub struct TopicRunner {
     /// Per-category effective outputs: the topic's `outputs` map merged with the category's own
     /// `outputs` overrides (category wins, by key — plain JSON-object merge, see `TopicSpec::outputs`),
     /// then resolved into `Producer`s, with the category's effective (topic ⊕ category) `defaults`
-    /// folded in as a trailing `Producer::Fallback` branch on each default's output — so a default
+    /// folded in as a trailing fallback branch on each default's output — so a default
     /// is just the lowest-priority producer for its key, evaluated by the same `eval_fields` pass
     /// as any other output. Present for every category (unlike a plain override map, every
     /// category's effective defaults can still differ from the topic's even with no `outputs`
@@ -93,8 +93,26 @@ fn default_value_producer(v: &Value) -> Producer {
     Producer::Match { rules: Vec::new(), default: Some(value), from: TagSet::Obj, consts }
 }
 
+/// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the
+/// `Fallback`-shaped result `resolve()` would produce from `{ "fallback": [primary, default] }`,
+/// built directly since this runs after `resolve_outputs` already resolved both producers (a
+/// second `resolve` pass isn't needed, and `Producer::Fallback` itself is JSON-parse sugar only —
+/// see `Producer::eval`).
+fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
+    let rule = |p: Producer| crate::tag_engine::classifier::Rule {
+        when: Filter::Bool(true),
+        value: crate::tag_engine::classifier::ValueSpec::Producer(Box::new(p)),
+    };
+    Producer::Match {
+        rules: vec![rule(primary), rule(default_source)],
+        default: None,
+        from: TagSet::Obj,
+        consts: Map::new(),
+    }
+}
+
 /// Fold `defaults`' keys into `fields` as the lowest-priority producer for their output:
-/// appended as a trailing `Fallback` branch onto an existing field targeting that output (so the
+/// appended as a trailing fallback branch onto an existing field targeting that output (so the
 /// default only takes effect when the real producer returns `None`), or pushed as a new
 /// default-only field when nothing else targets it (e.g. a bare literal like `minzoom`).
 fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -> Vec<Field> {
@@ -102,8 +120,7 @@ fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -
         let default_source = default_value_producer(v);
         match fields.iter_mut().find(|f| &f.output == k) {
             Some(existing) => {
-                let primary = std::mem::replace(&mut existing.source, Producer::Fallback { fallback: Vec::new() });
-                existing.source = Producer::Fallback { fallback: vec![primary, default_source] };
+                existing.source = as_fallback_pair(existing.source.clone(), default_source);
             }
             None => fields.push(Field { output: k.clone(), source: default_source }),
         }
