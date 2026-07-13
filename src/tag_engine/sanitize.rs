@@ -1,7 +1,8 @@
 //! The atomic `&str -> atomic value` sanitize-chain machinery underneath an `Extract`'s
 //! `sanitize:` field: `SanitizeRef` (a resolved-or-named chain reference, plus its load-time
-//! `resolve` against the named sanitizer registry), `Sanitizer`/`Step` (the chain and its steps
-//! — mapping/cases/filter/drop/replace/builtin), and the one built-in, `parse_length`.
+//! `resolve` against the named sanitizer registry), `Sanitizer`/`Step` (the chain and its steps —
+//! really just mapping/replace/builtin; `cases`/`filter`/`drop` are JSON sugar for `mapping`, see
+//! `Step`'s own doc), and the one built-in, `parse_length`.
 
 use std::collections::HashMap;
 
@@ -126,39 +127,30 @@ impl StrOrVec {
             StrOrVec::Many(v) => v,
         }
     }
-
-    fn contains(&self, v: &str) -> bool {
-        match self {
-            StrOrVec::One(s) => s == v,
-            StrOrVec::Many(vs) => vs.iter().any(|s| s == v),
-        }
-    }
 }
 
-/// One transform step: a lookup table or an allow-list.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+/// One transform step: a table lookup (`Mapping`), literal rewrites (`Replace`), or a built-in
+/// (`Builtin`) — see the hand-written `Deserialize` impl below (`StepJson`) for the JSON sugar
+/// (`cases`/`filter`/`drop`) that folds into `Mapping` at parse time, so a `Step` value is only
+/// ever one of these three:
+/// - `cases` (`{ "<output>": "<input>" | ["<input>", ...] }`, the inverted-lookup shorthand)
+///   expands to one `mapping` entry per input, all pointing at the same output.
+/// - `filter` (keep iff a member, else drop) becomes an identity `mapping` (each listed value maps
+///   to itself) with no `on_miss` — Mapping's own default (absent `on_miss` drops) does the rest.
+/// - `drop` (drop iff a member, else keep unchanged) becomes a `mapping` where each listed value
+///   maps to JSON `null` — the sentinel meaning "found, but drop anyway" (see `Mapping`'s own doc)
+///   — with `on_miss: "keep"` so anything else passes through.
+#[derive(Debug, Clone)]
 pub enum Step {
-    /// Table lookup. Values may be any atomic JSON (string/bool/number) so a step can produce
-    /// e.g. a boolean (`{ "yes": true }`). On a miss, `on_miss` decides: "keep" (passthrough),
-    /// "drop"/absent (null), or any other string (a constant default).
+    /// Table lookup. A mapped value is any atomic JSON (string/bool/number) so a step can produce
+    /// e.g. a boolean (`{ "yes": true }`) — except JSON `null`, reserved as the "found this key,
+    /// but drop the value anyway" sentinel (distinct from `on_miss`'s own drop-on-absence; see
+    /// `Step`'s own doc for why `drop` needs it). On a miss, `on_miss` decides: "keep"
+    /// (passthrough), "drop"/absent (null), or any other string (a constant default).
     Mapping {
         mapping: HashMap<String, Value>,
-        #[serde(default)]
         on_miss: Option<String>,
     },
-    /// Inverted lookup shorthand: `{ "<output>": "<input>" | ["<input>", ...] }`. Collapses the
-    /// common case of many inputs → one output.
-    Cases {
-        cases: HashMap<String, StrOrVec>,
-        #[serde(default)]
-        on_miss: Option<String>,
-    },
-    /// Keep the value iff it is in the set, else drop (sugar for an identity mapping + drop).
-    Filter { filter: Vec<String> },
-    /// Drop the value iff it is in the set, else keep — the reject-list counterpart to `filter`.
-    /// Dropping short-circuits the chain (e.g. `{ "drop": [""] }` to discard empty input).
-    Drop { drop: Vec<String> },
     /// Literal string rewrites, applied in order (each transforms the running value, then the
     /// next sees the result — sed-like). A general, country-agnostic alternative to a hardcoded
     /// normalizer (e.g. the former `traffic_sign` builtin). Never drops.
@@ -166,6 +158,58 @@ pub enum Step {
     /// A built-in Rust transform as a (terminal) chain step, e.g. `"parse_length"`. Lets a data
     /// chain end in an algorithmic, possibly non-string transform.
     Builtin(String),
+}
+
+/// The JSON shapes `Step` accepts — see `Step`'s own doc for how `Cases`/`Filter`/`Drop` fold into
+/// `Mapping`. Untagged; object shapes are distinguished by their required field name, so order
+/// among them doesn't matter, but the bare-string `Builtin` must be tried where a plain JSON
+/// string naturally falls out (it's the only variant a string can deserialize into).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum StepJson {
+    Mapping {
+        mapping: HashMap<String, Value>,
+        #[serde(default)]
+        on_miss: Option<String>,
+    },
+    Cases {
+        cases: HashMap<String, StrOrVec>,
+        #[serde(default)]
+        on_miss: Option<String>,
+    },
+    Filter { filter: Vec<String> },
+    Drop { drop: Vec<String> },
+    Replace { replace: Vec<ReplaceRule> },
+    Builtin(String),
+}
+
+impl<'de> Deserialize<'de> for Step {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match StepJson::deserialize(deserializer)? {
+            StepJson::Mapping { mapping, on_miss } => Step::Mapping { mapping, on_miss },
+            StepJson::Cases { cases, on_miss } => Step::Mapping {
+                mapping: cases.into_iter()
+                    .flat_map(|(output, inputs)| {
+                        inputs.into_vec().into_iter().map(move |input| (input, Value::String(output.clone())))
+                    })
+                    .collect(),
+                on_miss,
+            },
+            StepJson::Filter { filter } => Step::Mapping {
+                mapping: filter.into_iter().map(|v| (v.clone(), Value::String(v))).collect(),
+                on_miss: None,
+            },
+            StepJson::Drop { drop } => Step::Mapping {
+                mapping: drop.into_iter().map(|v| (v, Value::Null)).collect(),
+                on_miss: Some("keep".to_owned()),
+            },
+            StepJson::Replace { replace } => Step::Replace { replace },
+            StepJson::Builtin(name) => Step::Builtin(name),
+        })
+    }
 }
 
 /// One literal rewrite for a `replace` step.
@@ -203,23 +247,10 @@ impl Step {
     fn apply(&self, v: &str) -> Option<Value> {
         match self {
             Step::Mapping { mapping, on_miss } => match mapping.get(v) {
+                Some(Value::Null) => None, // found, but marked "drop" (see `Step`'s own doc)
                 Some(mapped) => Some(mapped.clone()),
                 None => apply_on_miss(on_miss.as_deref(), v),
             },
-            // Linear scan over the (typically short) case lists — no separate normalize-to-Mapping
-            // pass needed; `cases` is authoring sugar, not a performance-sensitive hot path.
-            Step::Cases { cases, on_miss } => {
-                match cases.iter().find(|(_, inputs)| inputs.contains(v)) {
-                    Some((output, _)) => Some(Value::String(output.clone())),
-                    None => apply_on_miss(on_miss.as_deref(), v),
-                }
-            }
-            Step::Filter { filter } => {
-                filter.iter().any(|a| a == v).then(|| Value::String(v.to_owned()))
-            }
-            Step::Drop { drop } => {
-                (!drop.iter().any(|a| a == v)).then(|| Value::String(v.to_owned()))
-            }
             Step::Replace { replace } => {
                 let out = replace.iter().fold(v.to_owned(), |s, r| r.apply(&s));
                 Some(Value::String(out))
@@ -229,8 +260,8 @@ impl Step {
     }
 }
 
-/// Shared `on_miss` handling for `Mapping`/`Cases`: "keep" (passthrough), "drop"/absent (null),
-/// or any other string (a constant default).
+/// Shared `on_miss` handling for `Mapping`: "keep" (passthrough), "drop"/absent (null), or any
+/// other string (a constant default).
 fn apply_on_miss(on_miss: Option<&str>, v: &str) -> Option<Value> {
     match on_miss {
         Some("keep") => Some(Value::String(v.to_owned())),
