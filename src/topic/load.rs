@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::CategoriesFile;
 use crate::tag_engine::filter::Filter;
-use crate::tag_engine::sanitize::AtomicChain;
+use crate::tag_engine::sanitize::Sanitizer;
 use crate::osm::types::ElementKind;
 
 /// Shallow merge, more-specific-scope-wins: every key in `over` overwrites the same key in
@@ -120,8 +120,8 @@ pub fn load_categories_dir(
 pub fn load_topic_sanitizers(
     topic_dir: &std::path::Path,
     config_root: &std::path::Path,
-) -> anyhow::Result<HashMap<String, AtomicChain>> {
-    let read = |path: &std::path::Path| -> anyhow::Result<HashMap<String, AtomicChain>> {
+) -> anyhow::Result<HashMap<String, Sanitizer>> {
+    let read = |path: &std::path::Path| -> anyhow::Result<HashMap<String, Sanitizer>> {
         if path.exists() {
             Ok(serde_json::from_str(&std::fs::read_to_string(path)?)
                 .with_context(|| format!("parsing {}", path.display()))?)

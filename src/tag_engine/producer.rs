@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::keys;
-use crate::tag_engine::sanitize::{resolve_sanitize, AtomicChain, SanitizeRef};
+use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
 use crate::tag_engine::transform::side_split::SplitContext;
 use crate::osm::types::RawTags;
 
@@ -226,7 +226,7 @@ impl Producer {
     pub fn resolve(
         &self,
         macros: &HashMap<String, Filter>,
-        sanitizers: &HashMap<String, AtomicChain>,
+        sanitizers: &HashMap<String, Sanitizer>,
     ) -> anyhow::Result<Producer> {
         Ok(match self {
             Producer::Match { rules, default, from, consts } => Producer::Match {

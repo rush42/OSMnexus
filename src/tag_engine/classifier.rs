@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::filter::{eval, Filter};
 use crate::tag_engine::producer::{ExtractCtx, Produced, Producer};
-use crate::tag_engine::sanitize::AtomicChain;
+use crate::tag_engine::sanitize::Sanitizer;
 
 /// The value a matching rule produces. `Const` holds any JSON literal (string, number, bool) so
 /// the same rule table can back string classifiers (category ids, `road`), numeric ones (zoom),
@@ -46,7 +46,7 @@ impl ValueSpec {
     pub fn resolve(
         &self,
         macros: &HashMap<String, Filter>,
-        sanitizers: &HashMap<String, AtomicChain>,
+        sanitizers: &HashMap<String, Sanitizer>,
     ) -> anyhow::Result<ValueSpec> {
         Ok(match self {
             ValueSpec::Tag { tag } => ValueSpec::Tag { tag: tag.clone() },

@@ -1,11 +1,11 @@
 //! The atomic `&str -> atomic value` sanitize-chain machinery underneath an `Extract`'s
 //! `sanitize:` field: `SanitizeRef` (a resolved-or-named chain reference, plus its load-time
-//! `resolve` against the named sanitizer registry), `AtomicChain`/`Step` (the chain and its steps
+//! `resolve` against the named sanitizer registry), `Sanitizer`/`Step` (the chain and its steps
 //! — mapping/cases/filter/drop/replace/builtin), and the one built-in, `parse_length`.
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 /// The identity atomic transform: the value a bare tag read produces when no `sanitize` is named.
@@ -23,7 +23,7 @@ fn identity(raw: &str) -> Value {
 #[serde(untagged)]
 pub enum SanitizeRef {
     Name(String),
-    Inline(AtomicChain),
+    Inline(Sanitizer),
 }
 
 impl SanitizeRef {
@@ -43,11 +43,11 @@ impl SanitizeRef {
     /// `apply_builtin` runs (it has no load-time name registry of its own, just one built-in), so
     /// it warns-and-drops per row rather than failing to load — the same looseness the built-in
     /// fallback always had.
-    pub(crate) fn resolve(&self, sanitizers: &HashMap<String, AtomicChain>) -> anyhow::Result<SanitizeRef> {
+    pub(crate) fn resolve(&self, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<SanitizeRef> {
         match self {
             SanitizeRef::Name(name) => Ok(SanitizeRef::Inline(match sanitizers.get(name) {
                 Some(chain) => chain.clone(),
-                None => AtomicChain::One(Step::Builtin(name.clone())),
+                None => Sanitizer(vec![Step::Builtin(name.clone())]),
             })),
             SanitizeRef::Inline(_) => Ok(self.clone()),
         }
@@ -63,32 +63,53 @@ pub fn resolve_sanitize(sanitize: Option<&SanitizeRef>, raw: &str) -> Option<Val
     }
 }
 
-/// An atomic `&str -> atomic` chain: a single `Step`, or a `Vec<Step>` folded left (each step
-/// consumes the previous string; the terminal step may yield any atomic `Value`). A bare string
-/// step (`Step::Builtin`) is a chain-of-one alias to a built-in transform.
+/// An atomic `&str -> atomic` chain: an ordered list of `Step`s folded left (each step consumes
+/// the previous string; the terminal step may yield any atomic `Value`). Always just a
+/// `Vec<Step>` — see the hand-written `Deserialize` impl below for the JSON sugar (a bare single
+/// step, with no wrapping array) that folds into a one-element `Vec` at parse time, so "a chain of
+/// one" is never a distinct concept downstream (same treatment `Producer` gives its `fallback`
+/// sugar).
+#[derive(Debug, Clone)]
+pub struct Sanitizer(Vec<Step>);
+
+/// The JSON shapes a `Sanitizer` accepts: a single step (any of `Step`'s own shapes, including the
+/// bare-string `Builtin` alias), or an explicit array of steps. Untagged, array tried first (a
+/// step is never itself a JSON array).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-pub enum AtomicChain {
+enum SanitizerJson {
     Chain(Vec<Step>),
     One(Step),
 }
 
-impl AtomicChain {
-    fn eval(&self, raw: &str) -> Option<Value> {
-        match self {
-            AtomicChain::One(step) => step.apply(raw),
-            AtomicChain::Chain(steps) => {
-                let mut cur = Value::String(raw.to_owned());
-                for s in steps {
-                    cur = s.apply(cur.as_str()?)?;
-                }
-                Some(cur)
-            }
-        }
+impl<'de> Deserialize<'de> for Sanitizer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match SanitizerJson::deserialize(deserializer)? {
+            SanitizerJson::Chain(steps) => Sanitizer(steps),
+            SanitizerJson::One(step) => Sanitizer(vec![step]),
+        })
     }
 }
 
-// ── Chain steps: the atomic `&str -> atomic value` building blocks of an `AtomicChain` ──────
+impl Sanitizer {
+    /// The chain's steps, in evaluation order — e.g. for diagnostics (`plot_dag`'s DAG rendering).
+    pub fn steps(&self) -> &[Step] {
+        &self.0
+    }
+
+    fn eval(&self, raw: &str) -> Option<Value> {
+        let mut cur = Value::String(raw.to_owned());
+        for s in &self.0 {
+            cur = s.apply(cur.as_str()?)?;
+        }
+        Some(cur)
+    }
+}
+
+// ── Chain steps: the atomic `&str -> atomic value` building blocks of a `Sanitizer` ──────
 
 /// Accepts either `"foo"` or `["foo", "bar"]` in JSON.
 #[derive(Debug, Clone, Deserialize)]

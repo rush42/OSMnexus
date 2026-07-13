@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::tag_engine::keys::first_present;
 use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::sanitize::{resolve_sanitize, AtomicChain, SanitizeRef};
+use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
 use crate::tag_engine::transform::side_split::SplitContext;
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
@@ -108,7 +108,7 @@ impl Filter {
     pub fn expand(
         &self,
         macros: &HashMap<String, Filter>,
-        sanitizers: &HashMap<String, AtomicChain>,
+        sanitizers: &HashMap<String, Sanitizer>,
     ) -> anyhow::Result<Filter> {
         self.expand_inner(macros, sanitizers, &mut Vec::new())
     }
@@ -116,7 +116,7 @@ impl Filter {
     fn expand_inner(
         &self,
         macros: &HashMap<String, Filter>,
-        sanitizers: &HashMap<String, AtomicChain>,
+        sanitizers: &HashMap<String, Sanitizer>,
         stack: &mut Vec<String>,
     ) -> anyhow::Result<Filter> {
         let resolve = |s: &Option<SanitizeRef>| -> anyhow::Result<Option<SanitizeRef>> {

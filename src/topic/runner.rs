@@ -64,7 +64,7 @@ fn resolve_outputs(
     raw: Map<String, Value>,
     producer_lib: &HashMap<String, Producer>,
     macros: &HashMap<String, Filter>,
-    sanitizers: &HashMap<String, crate::tag_engine::sanitize::AtomicChain>,
+    sanitizers: &HashMap<String, crate::tag_engine::sanitize::Sanitizer>,
     context: &str,
 ) -> anyhow::Result<Vec<Field>> {
     raw.into_iter()
@@ -167,7 +167,7 @@ impl TopicRunner {
 
         // Named atomic transforms (`sanitize:` targets), shared+topic-local. A separate
         // registry/namespace from the producer library below — atomic chains and composite
-        // producers are different *types* (`AtomicChain`/`Producer`), so there's no risk of a
+        // producers are different *types* (`Sanitizer`/`Producer`), so there's no risk of a
         // name meaning two things at once. Loaded before macros, since a macro's own condition can
         // carry a `sanitize:` too.
         let sanitizers = load_topic_sanitizers(&base, &config_root)?;
