@@ -1,4 +1,4 @@
-//! The `Producer` engine (`Extract`/`Fallback`/`Cond`/`Classify`/`SharedClassify`) that evaluates
+//! The `Producer` engine (`Extract`/`Fallback`/`Classify`/`SharedClassify`) that evaluates
 //! one output's value — the one mechanism behind every `outputs` entry (`TopicSpec::outputs`) —
 //! its load-time reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and
 //! result (`Produced`) types it evaluates over.
@@ -104,17 +104,6 @@ pub enum Producer {
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
     },
-    /// Conditional producer selection: evaluate `cond` against this object's own `ExtractCtx` (same
-    /// `Filter` machinery a category `condition` uses — tags, side, prefix, infix, macros), and
-    /// produce from `then` if it holds, else from `r#else` (absent `r#else`
-    /// means "produce nothing" when `cond` is false). Must come before `Extract` below, since
-    /// `cond`/`then` are required fields and so unambiguously distinguish it (`Extract`'s fields
-    /// are all optional, so it would otherwise match first).
-    Cond {
-        cond: Filter,
-        then: Box<Producer>,
-        #[serde(default)] r#else: Option<Box<Producer>>,
-    },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
@@ -160,14 +149,6 @@ impl Producer {
                 crate::tag_engine::classifier::shared_classifier(shared)
                     .classify(&rctx)
                     .map(|value| Produced { value, consts: consts.clone() })
-            }
-
-            Producer::Cond { cond, then, r#else } => {
-                if crate::tag_engine::filter::eval(cond, ctx) {
-                    then.eval(ctx)
-                } else {
-                    r#else.as_ref().and_then(|p| p.eval(ctx))
-                }
             }
 
             Producer::Extract { key, keys: _, from, side: _, sanitize, consts, directed: true } => {
@@ -223,7 +204,7 @@ impl Producer {
                 rules: rules.iter()
                     .map(|r| Ok(crate::tag_engine::classifier::Rule {
                         when: r.when.expand(macros, sanitizers)?,
-                        value: r.value.clone(),
+                        value: r.value.resolve(macros, sanitizers)?,
                     }))
                     .collect::<anyhow::Result<_>>()?,
                 default: default.clone(),
@@ -235,7 +216,7 @@ impl Producer {
                 let rules = classifier.rules.iter()
                     .map(|r| Ok(crate::tag_engine::classifier::Rule {
                         when: r.when.expand(macros, sanitizers)?,
-                        value: r.value.clone(),
+                        value: r.value.resolve(macros, sanitizers)?,
                     }))
                     .collect::<anyhow::Result<_>>()?;
                 Producer::Classify {
@@ -245,11 +226,6 @@ impl Producer {
                     consts: consts.clone(),
                 }
             }
-            Producer::Cond { cond, then, r#else } => Producer::Cond {
-                cond: cond.expand(macros, sanitizers)?,
-                then: Box::new(then.resolve(macros, sanitizers)?),
-                r#else: r#else.as_ref().map(|p| p.resolve(macros, sanitizers)).transpose()?.map(Box::new),
-            },
             Producer::Extract { key, keys, from, side, sanitize, consts, directed } => Producer::Extract {
                 key: key.clone(),
                 keys: keys.clone(),

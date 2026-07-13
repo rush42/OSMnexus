@@ -15,11 +15,18 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::tag_engine::filter::{eval, Filter};
-use crate::tag_engine::producer::ExtractCtx;
+use crate::tag_engine::producer::{ExtractCtx, Producer};
+use crate::tag_engine::sanitize::AtomicChain;
 
 /// The value a matching rule produces. `Const` holds any JSON literal (string, number, bool) so
 /// the same rule table can back string classifiers (category ids, `road`), numeric ones (zoom),
 /// and boolean ones (subsuming what used to be separate `FilterZoom`/`FilterMatch` producers).
+/// `Producer` lets a rule's output be an arbitrary nested producer (e.g. an `Extract` with its own
+/// `keys`/`sanitize`/`from`) — this is what lets `rules` subsume `cond`'s `then`/`else`: a
+/// condition becomes a rule whose `when` is that condition and whose `value` is the `then`
+/// producer, followed by an unconditional (`"when": true`) rule holding the `else` producer.
+/// `Producer` must be tried before `Const`, since `Const(Value)` is an untagged catch-all that
+/// would otherwise consume any object literal (including a producer's own JSON shape) first.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum ValueSpec {
@@ -27,8 +34,26 @@ pub enum ValueSpec {
     Tag { tag: String },
     /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
     TagOr { tag_or: String, or: Value },
+    Producer(Box<Producer>),
     /// A literal value.
     Const(Value),
+}
+
+impl ValueSpec {
+    /// Resolve any nested `Producer`'s macros/sanitizers once at load time (`Tag`/`TagOr`/`Const`
+    /// carry no named references, so they pass through unchanged).
+    pub fn resolve(
+        &self,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, AtomicChain>,
+    ) -> anyhow::Result<ValueSpec> {
+        Ok(match self {
+            ValueSpec::Tag { tag } => ValueSpec::Tag { tag: tag.clone() },
+            ValueSpec::TagOr { tag_or, or } => ValueSpec::TagOr { tag_or: tag_or.clone(), or: or.clone() },
+            ValueSpec::Producer(p) => ValueSpec::Producer(Box::new(p.resolve(macros, sanitizers)?)),
+            ValueSpec::Const(v) => ValueSpec::Const(v.clone()),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +94,7 @@ pub fn classify_rules(rules: &[Rule], ctx: &ExtractCtx) -> Option<Value> {
                 ValueSpec::TagOr { tag_or, or } => Some(
                     ctx.obj_tags.get(tag_or).cloned().map(Value::String).unwrap_or_else(|| or.clone()),
                 ),
+                ValueSpec::Producer(p) => p.eval(ctx).map(|produced| produced.value),
             };
         }
     }

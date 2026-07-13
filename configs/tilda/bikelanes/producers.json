@@ -10,56 +10,64 @@
   },
   "road": { "shared": "road", "from": "parent_or_obj" },
   "traffic_mode_left": {
-    "cond": { "or": [
-      { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
-      { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
-    ] },
-    "then": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" }
+    "rules": [
+      { "when": { "or": [
+          { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
+          { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
+        ] },
+        "value": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" } }
+    ]
   },
   "traffic_mode_right": {
-    "cond": { "or": [
-      { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
-      { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
-    ] },
-    "then": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" }
+    "rules": [
+      { "when": { "or": [
+          { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
+          { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
+        ] },
+        "value": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" } }
+    ]
   },
   "traffic_mode_left_from_parking_both": {
-    "cond": { "or": [
-      { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
-      { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
-    ] },
-    "then": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" },
-    "else": { "keys": ["parking:left", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" }
+    "rules": [
+      { "when": { "or": [
+          { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
+          { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
+        ] },
+        "value": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" } },
+      { "when": true, "value": { "keys": ["parking:left", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" } }
+    ]
   },
   "traffic_mode_right_from_parking_both": {
-    "cond": { "or": [
-      { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
-      { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
-    ] },
-    "then": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" },
-    "else": { "keys": ["parking:right", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" }
+    "rules": [
+      { "when": { "or": [
+          { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
+          { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
+        ] },
+        "value": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" } },
+      { "when": true, "value": { "keys": ["parking:right", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" } }
+    ]
   },
   "traffic_mode_left_from_parking_directional": {
-    "cond": { "or": [
-      { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
-      { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
-    ] },
-    "then": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" },
-    "else": {
-      "cond": { "side": "left" },
-      "then": { "keys": ["parking:left", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" }
-    }
+    "rules": [
+      { "when": { "or": [
+          { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
+          { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
+        ] },
+        "value": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" } },
+      { "when": { "side": "left" },
+        "value": { "keys": ["parking:left", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" } }
+    ]
   },
   "traffic_mode_right_from_parking_directional": {
-    "cond": { "or": [
-      { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
-      { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
-    ] },
-    "then": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" },
-    "else": {
-      "cond": { "side": "right" },
-      "then": { "keys": ["parking:right", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" }
-    }
+    "rules": [
+      { "when": { "or": [
+          { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
+          { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
+        ] },
+        "value": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" } },
+      { "when": { "side": "right" },
+        "value": { "keys": ["parking:right", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" } }
+    ]
   },
   "lifecycle": {
     "fallback": [
