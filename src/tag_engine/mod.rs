@@ -17,6 +17,9 @@
 //! - `sanitize`: the atomic `&str -> atomic` chain machinery (`SanitizeRef`/`Sanitizer`/`Step`)
 //!   underneath an `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
 //! - `classifier`: the generic first-match-wins rule table underneath `Producer::Match`.
+//! - `parser`: hand-written `Deserialize` impls folding JSON-only sugar (`Producer`'s `fallback`;
+//!   `Sanitizer`'s bare-single-step shape; `Step`'s `cases`/`filter`/`drop`) into each type's own
+//!   canonical form — kept separate from the runtime types/eval logic it parses into.
 //! - `categories`: the category data model, its runtime first-match evaluator, and the load-time
 //!   compiler (`build_order`) of a category set's `excludes` relation into a priority order.
 //! - `decision_tree`: the discrimination net that prunes `categorize`'s first-match walk, plus its
@@ -33,6 +36,7 @@ pub mod decision_tree;
 pub mod filter;
 pub mod input_transforms;
 pub mod keys;
+mod parser;
 pub mod producer;
 pub mod sanitize;
 pub mod transform;

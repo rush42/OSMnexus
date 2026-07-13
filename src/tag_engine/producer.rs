@@ -1,17 +1,18 @@
 //! The `Producer` engine — just `Match` and `Extract`, full stop — that evaluates one output's
 //! value (the one mechanism behind every `outputs` entry, `TopicSpec::outputs`), its load-time
 //! reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result
-//! (`Produced`) types it evaluates over. `fallback` is JSON-only sugar: `Producer`'s hand-written
-//! `Deserialize` folds it into an equivalent `Match` as part of parsing itself, so it never exists
-//! as a `Producer` value — not pre-`resolve`, not transiently, not ever. A named *shared*
-//! classifier table (`{ "shared": "<name>" }`) isn't even sugar `Producer` knows about: it's
-//! inlined as plain JSON — before anything here ever sees it — by `topic::load::
+//! (`Produced`) types it evaluates over. `fallback` is JSON-only sugar, folded into an equivalent
+//! `Match` by `tag_engine::parser`'s hand-written `Deserialize` impl — so it never exists as a
+//! `Producer` value here, not pre-`resolve`, not transiently, not ever (see `parser`'s own doc for
+//! why that folding lives in its own module rather than inline in this one). A named *shared*
+//! classifier table (`{ "shared": "<name>" }`) isn't even sugar `Producer`/`parser` know about:
+//! it's inlined as plain JSON — before anything here ever sees it — by `topic::load::
 //! inline_shared_producers`, at topic-directory-read time, the same way shared macros/sanitizers
 //! are merged in. `Producer` the Rust type really does only have two variants.
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::tag_engine::filter::Filter;
@@ -69,9 +70,11 @@ impl TagSet {
     }
 }
 
-/// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see the hand-written
-/// `Deserialize` impl below for the `fallback` JSON shape that folds into `Match` at parse time
-/// and so never appears here.
+/// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see `tag_engine::
+/// parser`'s hand-written `Deserialize` impl for the `fallback` JSON shape that folds into `Match`
+/// at parse time and so never appears here. `Deserialize` isn't derived on this type itself —
+/// deliberately, so a stray `#[derive(Deserialize)]` here can't reintroduce a shape `parser`
+/// doesn't know about.
 #[derive(Debug, Clone)]
 pub enum Producer {
     /// A data-defined first-match-wins rule table (same engine as the `road` classifier). Each
@@ -117,60 +120,6 @@ pub enum Producer {
         /// stays native, but this per-key projection is an ordinary sided tag read.
         directed: bool,
     },
-}
-
-/// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, plus `Fallback`'s `fallback`
-/// sugar — folded into an equivalent `Match` right here in `Deserialize` (see `Producer::from`
-/// below) so a `Producer` value is never observably a fallback chain, only ever `Match`/`Extract`.
-/// Untagged, tried in this order (more-specific/required-field shapes before `Extract`, whose
-/// fields are all optional and so would otherwise match everything first).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum ProducerJson {
-    /// Try each branch in order; the first one that produces anything wins, carrying its own
-    /// branch-level `consts`. Desugars to an all-`when: true` `Match` (see `classifier::match_rules`
-    /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
-    /// equivalence exact).
-    Fallback { fallback: Vec<Producer> },
-    Match {
-        rules: Vec<crate::tag_engine::classifier::Rule>,
-        #[serde(default)] default: Option<Value>,
-        #[serde(default)] from: TagSet,
-        #[serde(default)] consts: Map<String, Value>,
-    },
-    Extract {
-        #[serde(default)] key: Option<String>,
-        #[serde(default)] keys: Option<Vec<String>>,
-        #[serde(default)] from: TagSet,
-        #[serde(default)] side: Option<String>,
-        #[serde(default)] sanitize: Option<SanitizeRef>,
-        #[serde(default)] consts: Map<String, Value>,
-        #[serde(default)] directed: bool,
-    },
-}
-
-impl<'de> Deserialize<'de> for Producer {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(match ProducerJson::deserialize(deserializer)? {
-            ProducerJson::Fallback { fallback } => Producer::Match {
-                rules: fallback.into_iter()
-                    .map(|p| crate::tag_engine::classifier::Rule {
-                        when: Filter::Bool(true),
-                        value: crate::tag_engine::classifier::ValueSpec::Producer(Box::new(p)),
-                    })
-                    .collect(),
-                default: None,
-                from: TagSet::Obj,
-                consts: Map::new(),
-            },
-            ProducerJson::Match { rules, default, from, consts } => Producer::Match { rules, default, from, consts },
-            ProducerJson::Extract { key, keys, from, side, sanitize, consts, directed } =>
-                Producer::Extract { key, keys, from, side, sanitize, consts, directed },
-        })
-    }
 }
 
 impl Producer {

@@ -1,12 +1,14 @@
 //! The atomic `&str -> atomic value` sanitize-chain machinery underneath an `Extract`'s
 //! `sanitize:` field: `SanitizeRef` (a resolved-or-named chain reference, plus its load-time
 //! `resolve` against the named sanitizer registry), `Sanitizer`/`Step` (the chain and its steps —
-//! really just mapping/replace/builtin; `cases`/`filter`/`drop` are JSON sugar for `mapping`, see
-//! `Step`'s own doc), and the one built-in, `parse_length`.
+//! really just mapping/replace/builtin), and the one built-in, `parse_length`. Neither `Sanitizer`
+//! nor `Step` derives `Deserialize` here — their JSON sugar (a bare single step instead of an
+//! array; `cases`/`filter`/`drop` as sugar for `mapping`) is folded in by hand-written impls in
+//! `tag_engine::parser`, kept separate from the runtime types/eval logic defined here.
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use serde_json::Value;
 
 /// The identity atomic transform: the value a bare tag read produces when no `sanitize` is named.
@@ -48,7 +50,7 @@ impl SanitizeRef {
         match self {
             SanitizeRef::Name(name) => Ok(SanitizeRef::Inline(match sanitizers.get(name) {
                 Some(chain) => chain.clone(),
-                None => Sanitizer(vec![Step::Builtin(name.clone())]),
+                None => Sanitizer::from_steps(vec![Step::Builtin(name.clone())]),
             })),
             SanitizeRef::Inline(_) => Ok(self.clone()),
         }
@@ -66,36 +68,21 @@ pub fn resolve_sanitize(sanitize: Option<&SanitizeRef>, raw: &str) -> Option<Val
 
 /// An atomic `&str -> atomic` chain: an ordered list of `Step`s folded left (each step consumes
 /// the previous string; the terminal step may yield any atomic `Value`). Always just a
-/// `Vec<Step>` — see the hand-written `Deserialize` impl below for the JSON sugar (a bare single
-/// step, with no wrapping array) that folds into a one-element `Vec` at parse time, so "a chain of
-/// one" is never a distinct concept downstream (same treatment `Producer` gives its `fallback`
-/// sugar).
+/// `Vec<Step>` — `tag_engine::parser`'s hand-written `Deserialize` impl folds the JSON sugar (a
+/// bare single step, with no wrapping array) into a one-element `Vec` at parse time, so "a chain
+/// of one" is never a distinct concept downstream (same treatment `Producer` gives its `fallback`
+/// sugar). The field is private; `parser` builds a `Sanitizer` through `from_steps` rather than
+/// reaching into it directly.
 #[derive(Debug, Clone)]
 pub struct Sanitizer(Vec<Step>);
 
-/// The JSON shapes a `Sanitizer` accepts: a single step (any of `Step`'s own shapes, including the
-/// bare-string `Builtin` alias), or an explicit array of steps. Untagged, array tried first (a
-/// step is never itself a JSON array).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum SanitizerJson {
-    Chain(Vec<Step>),
-    One(Step),
-}
-
-impl<'de> Deserialize<'de> for Sanitizer {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(match SanitizerJson::deserialize(deserializer)? {
-            SanitizerJson::Chain(steps) => Sanitizer(steps),
-            SanitizerJson::One(step) => Sanitizer(vec![step]),
-        })
-    }
-}
-
 impl Sanitizer {
+    /// Construct directly from already-known steps — used by `tag_engine::parser`'s `Deserialize`
+    /// impl (after folding any JSON sugar) and by `SanitizeRef::resolve`'s builtin-name fallback.
+    pub(crate) fn from_steps(steps: Vec<Step>) -> Self {
+        Sanitizer(steps)
+    }
+
     /// The chain's steps, in evaluation order — e.g. for diagnostics (`plot_dag`'s DAG rendering).
     pub fn steps(&self) -> &[Step] {
         &self.0
@@ -130,7 +117,7 @@ impl StrOrVec {
 }
 
 /// One transform step: a table lookup (`Mapping`), literal rewrites (`Replace`), or a built-in
-/// (`Builtin`) — see the hand-written `Deserialize` impl below (`StepJson`) for the JSON sugar
+/// (`Builtin`) — see `tag_engine::parser`'s hand-written `Deserialize` impl for the JSON sugar
 /// (`cases`/`filter`/`drop`) that folds into `Mapping` at parse time, so a `Step` value is only
 /// ever one of these three:
 /// - `cases` (`{ "<output>": "<input>" | ["<input>", ...] }`, the inverted-lookup shorthand)
@@ -158,58 +145,6 @@ pub enum Step {
     /// A built-in Rust transform as a (terminal) chain step, e.g. `"parse_length"`. Lets a data
     /// chain end in an algorithmic, possibly non-string transform.
     Builtin(String),
-}
-
-/// The JSON shapes `Step` accepts — see `Step`'s own doc for how `Cases`/`Filter`/`Drop` fold into
-/// `Mapping`. Untagged; object shapes are distinguished by their required field name, so order
-/// among them doesn't matter, but the bare-string `Builtin` must be tried where a plain JSON
-/// string naturally falls out (it's the only variant a string can deserialize into).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum StepJson {
-    Mapping {
-        mapping: HashMap<String, Value>,
-        #[serde(default)]
-        on_miss: Option<String>,
-    },
-    Cases {
-        cases: HashMap<String, StrOrVec>,
-        #[serde(default)]
-        on_miss: Option<String>,
-    },
-    Filter { filter: Vec<String> },
-    Drop { drop: Vec<String> },
-    Replace { replace: Vec<ReplaceRule> },
-    Builtin(String),
-}
-
-impl<'de> Deserialize<'de> for Step {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(match StepJson::deserialize(deserializer)? {
-            StepJson::Mapping { mapping, on_miss } => Step::Mapping { mapping, on_miss },
-            StepJson::Cases { cases, on_miss } => Step::Mapping {
-                mapping: cases.into_iter()
-                    .flat_map(|(output, inputs)| {
-                        inputs.into_vec().into_iter().map(move |input| (input, Value::String(output.clone())))
-                    })
-                    .collect(),
-                on_miss,
-            },
-            StepJson::Filter { filter } => Step::Mapping {
-                mapping: filter.into_iter().map(|v| (v.clone(), Value::String(v))).collect(),
-                on_miss: None,
-            },
-            StepJson::Drop { drop } => Step::Mapping {
-                mapping: drop.into_iter().map(|v| (v, Value::Null)).collect(),
-                on_miss: Some("keep".to_owned()),
-            },
-            StepJson::Replace { replace } => Step::Replace { replace },
-            StepJson::Builtin(name) => Step::Builtin(name),
-        })
-    }
 }
 
 /// One literal rewrite for a `replace` step.
