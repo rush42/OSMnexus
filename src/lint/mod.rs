@@ -112,14 +112,11 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::FirstTagExists { first_tag, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(first_tag[0].clone()))), // approximation
         Filter::FirstTagExists { first_tag, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(first_tag[0].clone()))),
 
-        Filter::ParentTagEq { parent_tag, eq, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(format!("parent_{}", parent_tag), eq.clone()))),
-        Filter::ParentTagContains { parent_tag, contains } => Expr::Lit(Literal::Pos(Predicate::Contains(format!("parent_{}", parent_tag), contains.clone()))),
-        Filter::ParentTagStartsWith { parent_tag, starts_with } => Expr::Lit(Literal::Pos(Predicate::StartsWith(format!("parent_{}", parent_tag), starts_with.clone()))),
-        Filter::ParentTagEndsWith { parent_tag, ends_with } => Expr::Lit(Literal::Pos(Predicate::EndsWith(format!("parent_{}", parent_tag), ends_with.clone()))),
-        Filter::ParentTagIn { parent_tag, r#in, .. } => {
-            let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(format!("parent_{}", parent_tag), v.clone())))).collect();
-            Expr::Or(exprs)
-        },
+        // Recurse as normal, then prefix every tag key in the result with "parent_" — same
+        // encoding the old one-off `ParentTag*` variants used, so downstream overlap analysis
+        // (which special-cases `parent_`-prefixed keys, e.g. `decision_tree.rs`'s branch-key
+        // filter) doesn't need to know `Parent` exists.
+        Filter::Parent { parent } => prefix_expr_tags(filter_to_expr(parent, macros)),
 
         Filter::Side { side } => Expr::Lit(Literal::Pos(Predicate::Side(side.clone()))),
         Filter::Prefix { prefix } => Expr::Lit(Literal::Pos(Predicate::Prefix(prefix.clone()))),
@@ -131,6 +128,40 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
         Filter::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
         Filter::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),
+    }
+}
+
+/// Prefix every tag-carrying predicate's key with `"parent_"`, for `Filter::Parent` — mirrors
+/// what the old `ParentTag*` variants encoded directly. Non-tag predicates (`Side`/`HasParent`/
+/// `Prefix`/`Infix`) pass through unchanged; they have no parent-scoped counterpart.
+fn prefix_expr_tags(e: Expr) -> Expr {
+    match e {
+        Expr::True => Expr::True,
+        Expr::False => Expr::False,
+        Expr::Lit(Literal::Pos(p)) => Expr::Lit(Literal::Pos(prefix_predicate(p))),
+        Expr::Lit(Literal::Neg(p)) => Expr::Lit(Literal::Neg(prefix_predicate(p))),
+        Expr::Not(x) => Expr::Not(Box::new(prefix_expr_tags(*x))),
+        Expr::And(xs) => Expr::And(xs.into_iter().map(prefix_expr_tags).collect()),
+        Expr::Or(xs) => Expr::Or(xs.into_iter().map(prefix_expr_tags).collect()),
+    }
+}
+
+fn prefix_predicate(p: Predicate) -> Predicate {
+    match p {
+        Predicate::Eq(k, v) => Predicate::Eq(format!("parent_{k}"), v),
+        Predicate::Contains(k, v) => Predicate::Contains(format!("parent_{k}"), v),
+        Predicate::StartsWith(k, v) => Predicate::StartsWith(format!("parent_{k}"), v),
+        Predicate::EndsWith(k, v) => Predicate::EndsWith(format!("parent_{k}"), v),
+        Predicate::Exists(k) => Predicate::Exists(format!("parent_{k}")),
+        Predicate::FirstTagIn(ks, vs) => {
+            Predicate::FirstTagIn(ks.into_iter().map(|k| format!("parent_{k}")).collect(), vs)
+        }
+        Predicate::Num(k, op, bits) => Predicate::Num(format!("parent_{k}"), op, bits),
+        p @ (Predicate::HasKeyPrefix(_)
+        | Predicate::HasParent
+        | Predicate::Prefix(_)
+        | Predicate::Infix(_)
+        | Predicate::Side(_)) => p,
     }
 }
 

@@ -31,7 +31,7 @@
         { "macro": "has_between_lanes_conditions" },
         { "or": [
           { "and": [ { "tag": "lanes", "contains": "|lane|" }, { "not": { "tag": "lanes", "ends_with": "|lane" } } ] },
-          { "and": [ { "parent_tag": "bicycle:lanes", "contains": "|designated|" }, { "not": { "parent_tag": "bicycle:lanes", "ends_with": "|designated" } } ] }
+          { "and": [ { "parent": { "tag": "bicycle:lanes", "contains": "|designated|" } }, { "not": { "parent": { "tag": "bicycle:lanes", "ends_with": "|designated" } } } ] }
         ] }
       ] } }
     ]
@@ -49,8 +49,8 @@
       { "prefix": "cycleway" },
       { "infix": "" },
       { "side": "left" },
-      { "parent_tag": "oneway", "eq": "yes" },
-      { "not": { "parent_tag": "oneway:bicycle", "eq": "no" } }
+      { "parent": { "tag": "oneway", "eq": "yes" } },
+      { "not": { "parent": { "tag": "oneway:bicycle", "eq": "no" } } }
     ]
   },
   "is_crossing_pattern": {
@@ -134,7 +134,7 @@
       {
         "or": [
           { "tag": "lanes", "contains": "|lane|" },
-          { "parent_tag": "bicycle:lanes", "contains": "|designated|" }
+          { "parent": { "tag": "bicycle:lanes", "contains": "|designated|" } }
         ]
       }
     ]

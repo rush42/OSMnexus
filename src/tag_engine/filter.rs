@@ -65,12 +65,12 @@ pub enum Filter {
     /// whether it produced anything.
     FirstTagExists { first_tag: Vec<String>, exists: bool, #[serde(default)] sanitize: Option<SanitizeRef> },
 
-    // Parent tag predicates
-    ParentTagIn        { parent_tag: String, r#in:        Vec<String>, #[serde(default)] sanitize: Option<SanitizeRef> },
-    ParentTagContains  { parent_tag: String, contains:    String      },
-    ParentTagStartsWith{ parent_tag: String, starts_with: String      },
-    ParentTagEndsWith  { parent_tag: String, ends_with:   String      },
-    ParentTagEq        { parent_tag: String, eq:          String,      #[serde(default)] sanitize: Option<SanitizeRef> },
+    /// Evaluate the inner filter's `Tag*`/`FirstTag*` predicates against the parent way's tags
+    /// instead of the object's own — `false` when there is no parent (matching the old
+    /// `ParentTag*` predicates' behaviour). Composes freely (`and`/`or`/`not` of a `Parent`, or a
+    /// `Parent` around any combination of tag predicates), unlike the one-off `ParentTag*` variants
+    /// it replaces.
+    Parent { parent: Box<Filter> },
 
     // Context predicates
     Side      { side:       String },   // "self" | "left" | "right"
@@ -162,16 +162,8 @@ impl Filter {
                 Filter::FirstTagIn { first_tag: first_tag.clone(), r#in: r#in.clone(), sanitize: resolve(sanitize)? },
             Filter::FirstTagExists { first_tag, exists, sanitize } =>
                 Filter::FirstTagExists { first_tag: first_tag.clone(), exists: *exists, sanitize: resolve(sanitize)? },
-            Filter::ParentTagIn { parent_tag, r#in, sanitize } =>
-                Filter::ParentTagIn { parent_tag: parent_tag.clone(), r#in: r#in.clone(), sanitize: resolve(sanitize)? },
-            Filter::ParentTagContains { parent_tag, contains } =>
-                Filter::ParentTagContains { parent_tag: parent_tag.clone(), contains: contains.clone() },
-            Filter::ParentTagStartsWith { parent_tag, starts_with } =>
-                Filter::ParentTagStartsWith { parent_tag: parent_tag.clone(), starts_with: starts_with.clone() },
-            Filter::ParentTagEndsWith { parent_tag, ends_with } =>
-                Filter::ParentTagEndsWith { parent_tag: parent_tag.clone(), ends_with: ends_with.clone() },
-            Filter::ParentTagEq { parent_tag, eq, sanitize } =>
-                Filter::ParentTagEq { parent_tag: parent_tag.clone(), eq: eq.clone(), sanitize: resolve(sanitize)? },
+            Filter::Parent { parent } =>
+                Filter::Parent { parent: Box::new(parent.expand_inner(macros, sanitizers, stack)?) },
             Filter::Side { side } => Filter::Side { side: side.clone() },
             Filter::Prefix { prefix } => Filter::Prefix { prefix: prefix.clone() },
             Filter::Infix { infix } => Filter::Infix { infix: infix.clone() },
@@ -241,24 +233,10 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::FirstTagExists { first_tag, exists, sanitize: Some(r) } =>
             read_str(first_present(ctx.obj_tags, first_tag), Some(r)).is_some() == *exists,
 
-        Filter::ParentTagEq { parent_tag, eq, sanitize } =>
-            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize.as_ref())
-                .is_some_and(|v| v.as_ref() == eq.as_str()),
-        Filter::ParentTagIn { parent_tag, r#in, sanitize } =>
-            read_str(ctx.parent_tags.and_then(|t| t.get(parent_tag)).map(String::as_str), sanitize.as_ref())
-                .is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
-        Filter::ParentTagContains { parent_tag, contains } =>
-            ctx.parent_tags.and_then(|t| t.get(parent_tag))
-                .map(|v| v.contains(contains.as_str()))
-                .unwrap_or(false),
-        Filter::ParentTagStartsWith { parent_tag, starts_with } =>
-            ctx.parent_tags.and_then(|t| t.get(parent_tag))
-                .map(|v| v.starts_with(starts_with.as_str()))
-                .unwrap_or(false),
-        Filter::ParentTagEndsWith { parent_tag, ends_with } =>
-            ctx.parent_tags.and_then(|t| t.get(parent_tag))
-                .map(|v| v.ends_with(ends_with.as_str()))
-                .unwrap_or(false),
+        Filter::Parent { parent } => match ctx.parent_tags {
+            None => false,
+            Some(parent_tags) => eval(parent, &ExtractCtx { obj_tags: parent_tags, ..*ctx }),
+        },
 
         Filter::Side { side } => ctx.split.obj_side == side.as_str(),
         Filter::Prefix    { prefix    } => ctx.split.prefix == Some(prefix.as_str()),

@@ -39,18 +39,15 @@
           {
             "and": [
               {
-                "parent_tag": "traffic_sign",
-                "starts_with": "DE:237"
+                "parent": { "tag": "traffic_sign", "starts_with": "DE:237" }
               },
               {
                 "or": [
                   {
-                    "parent_tag": "traffic_sign",
-                    "contains": "1024-14"
+                    "parent": { "tag": "traffic_sign", "contains": "1024-14" }
                   },
                   {
-                    "parent_tag": "traffic_sign",
-                    "contains": "1026-32"
+                    "parent": { "tag": "traffic_sign", "contains": "1026-32" }
                   }
                 ]
               }
