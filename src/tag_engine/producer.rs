@@ -1,7 +1,9 @@
-//! The `Producer` engine (`Extract`/`Fallback`/`Classify`/`SharedClassify`) that evaluates
-//! one output's value — the one mechanism behind every `outputs` entry (`TopicSpec::outputs`) —
-//! its load-time reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and
-//! result (`Produced`) types it evaluates over.
+//! The `Producer` engine — just `Match` and `Extract` at eval time — that evaluates one output's
+//! value (the one mechanism behind every `outputs` entry, `TopicSpec::outputs`), its load-time
+//! reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result
+//! (`Produced`) types it evaluates over. `Fallback` and `SharedClassify` are parse-time sugar
+//! only: `resolve` always runs before `eval` (see `topic::runner`), and it rewrites both into an
+//! equivalent `Match` — so `eval` never has to know they exist.
 
 use std::collections::HashMap;
 
@@ -63,44 +65,50 @@ impl TagSet {
     }
 }
 
-/// A value producer. Untagged: object with `fallback` → Fallback; otherwise → Extract. (Order
-/// matters — Extract's fields are all optional.)
+/// A value producer. Untagged, tried in this order (more-specific/required-field shapes before
+/// `Extract`, whose fields are all optional and so would otherwise match everything first):
+/// `Fallback` (`fallback` key) and `SharedClassify` (`shared` key) are pure JSON sugar, rewritten
+/// by `resolve` into an equivalent `Match`; `Match` (`rules` key) and `Extract` are the two shapes
+/// `eval` actually implements.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Producer {
+    /// Sugar for an all-`when:true` `Match`: try each branch in order, first one that produces
+    /// anything wins, carrying its own branch-level `consts`. Only exists pre-`resolve`.
     Fallback { fallback: Vec<Producer> },
-    /// A data-defined first-match-wins rule table (same engine as the `road` classifier). The
-    /// value of any matching rule (or `default`, if given) can be any JSON literal — a string
-    /// (category/tag classification), a number (e.g. `minzoom`), or a bool (e.g. a filter-driven
-    /// flag) — so this one variant subsumes what used to be separate `FilterZoom`/`FilterMatch`
-    /// producers. `from` picks the tagset the rules read (obj by default, or the parent), and
-    /// `consts` is the provenance this branch contributes when it produces. With no `default`,
-    /// returns `None` when no rule matches — letting a category const default or a later
-    /// fallback branch supply the value; must be tried before `Extract` below, since `rules` is
-    /// a required field and so unambiguously distinguishes it (`Extract`'s fields are all
-    /// optional, so it would otherwise match — and silently produce nothing — first).
+    /// Sugar for a `Match` whose rule table is a named shared classifier loaded from
+    /// `<config_root>/producers.json` — lets topics reuse one table (e.g. the `road`
+    /// classification) without duplicating it in every topic's own JSON. `from`/`consts` behave
+    /// as in `Match`; the shared table's own `default` (if any) applies. Only exists
+    /// pre-`resolve`: inlined into an equivalent `Match` at load time (small tables — a
+    /// handful of rules, referenced from a couple of topics — so cloning them per reference site
+    /// is cheap).
+    SharedClassify {
+        shared: String,
+        #[serde(default)] from: TagSet,
+        #[serde(default)] consts: Map<String, Value>,
+    },
+    /// A data-defined first-match-wins rule table (same engine as the `road` classifier). Each
+    /// rule's value can be any JSON literal — a string (category/tag classification), a number
+    /// (e.g. `minzoom`), a bool (e.g. a filter-driven flag) — or an arbitrary nested `Producer`
+    /// (`ValueSpec::Producer`), which is what lets this one variant also subsume conditionals and
+    /// ordered fallback chains: a rule matches when its `when` holds, and — if its value is itself
+    /// a producer that produces nothing — matching doesn't stop the search, the next rule is
+    /// tried (see `classifier::match_rules`). `from` picks the tagset rules read (obj by default,
+    /// or the parent); `consts` is the provenance a *literal*-valued rule contributes when it
+    /// produces (a `Producer`-valued rule carries its own). With no `default`, returns `None` when
+    /// no rule matches — letting a category const default or an enclosing fallback branch supply
+    /// the value. Must be tried before `Extract` below, since `rules` is a required field and so
+    /// unambiguously distinguishes it.
     ///
     /// Rules see the same context a category condition does — tags, `side`/`prefix`/`infix`,
     /// parent, and macros (`as_category_context`) — so e.g. `{"prefix": "cycleway"}` or
     /// `{"macro": "..."}` work here exactly like in a category's own `condition`. The one
     /// remaining limitation: rules only see raw obj/parent tags, not fields derived earlier in the
     /// same pass.
-    Classify {
+    Match {
         rules: Vec<crate::tag_engine::classifier::Rule>,
         #[serde(default)] default: Option<Value>,
-        #[serde(default)] from: TagSet,
-        #[serde(default)] consts: Map<String, Value>,
-    },
-    /// Like `Classify`, but the rule table is a named shared classifier loaded from
-    /// `<config_root>/producers.json` — lets topics reuse one table (e.g. the `road`
-    /// classification) without duplicating it in every topic's own JSON. `from`/`consts` behave
-    /// as in `Classify`; the shared table's own `default` (if any) applies. Only exists
-    /// pre-`resolve`: inlined into an equivalent `Classify` at load time (small tables — a
-    /// handful of rules, referenced from a couple of topics — so cloning them per reference site
-    /// is cheap, and it means nothing at eval time distinguishes a shared table from a topic-local
-    /// one).
-    SharedClassify {
-        shared: String,
         #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
     },
@@ -128,27 +136,24 @@ pub enum Producer {
 impl Producer {
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
-            // First non-empty branch wins, carrying its own source/confidence.
+            // Only reachable if `resolve` (which rewrites both into an equivalent `Match`) was
+            // skipped — kept working defensively rather than panicking.
             Producer::Fallback { fallback } => fallback.iter().find_map(|p| p.eval(ctx)),
-
-            Producer::Classify { rules, default, from, consts } => {
+            Producer::SharedClassify { shared, from, consts } => {
+                let classifier = crate::tag_engine::classifier::shared_classifier(shared);
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
                 rctx.obj_tags = tags;
-                crate::tag_engine::classifier::classify_rules(rules, &rctx)
-                    .or_else(|| default.clone())
-                    .map(|value| Produced { value, consts: consts.clone() })
+                crate::tag_engine::classifier::match_rules(&classifier.rules, &rctx, consts)
+                    .or_else(|| classifier.default.clone().map(|value| Produced { value, consts: consts.clone() }))
             }
 
-            // Only reachable if `resolve` (which inlines this into `Classify`) was skipped —
-            // kept working defensively rather than panicking.
-            Producer::SharedClassify { shared, from, consts } => {
+            Producer::Match { rules, default, from, consts } => {
                 let tags = from.resolve(ctx)?;
                 let mut rctx = *ctx;
                 rctx.obj_tags = tags;
-                crate::tag_engine::classifier::shared_classifier(shared)
-                    .classify(&rctx)
-                    .map(|value| Produced { value, consts: consts.clone() })
+                crate::tag_engine::classifier::match_rules(rules, &rctx, consts)
+                    .or_else(|| default.clone().map(|value| Produced { value, consts: consts.clone() }))
             }
 
             Producer::Extract { key, keys: _, from, side: _, sanitize, consts, directed: true } => {
@@ -186,21 +191,35 @@ impl Producer {
 // ── Load-time resolution ──────────────────────────────────────────────────────
 
 impl Producer {
-    /// Resolve every named reference this producer (transitively) carries, once, at load time:
-    /// macros embedded in a `Classify`'s `rules[].when` or a `Cond`'s `cond` (`Filter::expand`),
-    /// `Extract`'s `sanitize:` (`SanitizeRef::resolve`), and `SharedClassify` (inlined into an
-    /// equivalent `Classify` — its rules go through the same macro/sanitize resolution as any
-    /// other `Classify`'s). After this, `eval` never does a registry lookup of any kind.
+    /// Resolve every named reference this producer (transitively) carries, once, at load time,
+    /// and collapse the JSON sugar (`Fallback`, `SharedClassify`) down to a plain `Match` — so
+    /// `eval` only ever sees `Match`/`Extract`: macros embedded in a `Match`'s `rules[].when`
+    /// (`Filter::expand`), `Extract`'s `sanitize:` (`SanitizeRef::resolve`), `SharedClassify`
+    /// (its rules go through the same macro/sanitize resolution as a topic-local `Match`'s), and
+    /// `Fallback` (each branch becomes an unconditional — `when: true` — rule wrapping that
+    /// branch's own resolved producer as its value, so it keeps contributing its own `consts`;
+    /// see `classifier::match_rules`). After this, `eval` never does a registry lookup of any
+    /// kind.
     pub fn resolve(
         &self,
         macros: &HashMap<String, Filter>,
         sanitizers: &HashMap<String, AtomicChain>,
     ) -> anyhow::Result<Producer> {
         Ok(match self {
-            Producer::Fallback { fallback } => Producer::Fallback {
-                fallback: fallback.iter().map(|p| p.resolve(macros, sanitizers)).collect::<anyhow::Result<_>>()?,
+            Producer::Fallback { fallback } => Producer::Match {
+                rules: fallback.iter()
+                    .map(|p| Ok(crate::tag_engine::classifier::Rule {
+                        when: Filter::Bool(true),
+                        value: crate::tag_engine::classifier::ValueSpec::Producer(
+                            Box::new(p.resolve(macros, sanitizers)?)
+                        ),
+                    }))
+                    .collect::<anyhow::Result<_>>()?,
+                default: None,
+                from: TagSet::Obj,
+                consts: Map::new(),
             },
-            Producer::Classify { rules, default, from, consts } => Producer::Classify {
+            Producer::Match { rules, default, from, consts } => Producer::Match {
                 rules: rules.iter()
                     .map(|r| Ok(crate::tag_engine::classifier::Rule {
                         when: r.when.expand(macros, sanitizers)?,
@@ -219,7 +238,7 @@ impl Producer {
                         value: r.value.resolve(macros, sanitizers)?,
                     }))
                     .collect::<anyhow::Result<_>>()?;
-                Producer::Classify {
+                Producer::Match {
                     rules,
                     default: classifier.default.clone(),
                     from: *from,
@@ -271,9 +290,9 @@ mod classify_bool_tests {
         ExtractCtx { obj_tags: obj, parent_tags: parent, split: SplitContext::default(), id: "" }
     }
 
-    /// A `Classify` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
+    /// A `Match` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
     fn bool_producer(filter: Filter, from: TagSet) -> Producer {
-        Producer::Classify {
+        Producer::Match {
             rules: vec![Rule { when: filter, value: ValueSpec::Const(Value::Bool(true)) }],
             default: Some(Value::Bool(false)),
             from,

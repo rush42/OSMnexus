@@ -78,9 +78,11 @@ fn resolve_outputs(
 /// A `defaults` JSON entry as a `Producer`: a bundled `{ "value": ..., "consts": {...} }` object
 /// carries its companions as the producer's own `consts` (so `Producer::eval` emits them exactly
 /// when this branch produces — no separate "did the default survive" bookkeeping needed
-/// elsewhere); any other JSON is a bare literal with no companions. `rules: []` means `Classify`
+/// elsewhere); any other JSON is a bare literal with no companions. `rules: []` means `Match`
 /// always falls through to `default`, so this unconditionally "produces" — the default value is
-/// only ever *reached* via `Fallback` when nothing higher-priority did.
+/// only ever *reached* via `Fallback` when nothing higher-priority did. Built directly as a
+/// `Producer` value (not JSON) after `resolve_outputs` has already run, so it deliberately bypasses
+/// `Producer::resolve` — fine here since it carries no macro/sanitizer references to resolve.
 fn default_value_producer(v: &Value) -> Producer {
     let (value, consts) = match v {
         Value::Object(obj) if obj.contains_key("value") => {
@@ -88,7 +90,7 @@ fn default_value_producer(v: &Value) -> Producer {
         }
         _ => (v.clone(), Map::new()),
     };
-    Producer::Classify { rules: Vec::new(), default: Some(value), from: TagSet::Obj, consts }
+    Producer::Match { rules: Vec::new(), default: Some(value), from: TagSet::Obj, consts }
 }
 
 /// Fold `defaults`' keys into `fields` as the lowest-priority producer for their output:

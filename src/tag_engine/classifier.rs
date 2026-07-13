@@ -14,8 +14,10 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::Value;
 
+use serde_json::Map;
+
 use crate::tag_engine::filter::{eval, Filter};
-use crate::tag_engine::producer::{ExtractCtx, Producer};
+use crate::tag_engine::producer::{ExtractCtx, Produced, Producer};
 use crate::tag_engine::sanitize::AtomicChain;
 
 /// The value a matching rule produces. `Const` holds any JSON literal (string, number, bool) so
@@ -72,30 +74,39 @@ pub struct Classifier {
     pub default: Option<Value>,
 }
 
-impl Classifier {
-    /// First matching rule's value, or the table's `default`, or `None` if neither is set.
-    pub fn classify(&self, ctx: &ExtractCtx) -> Option<Value> {
-        classify_rules(&self.rules, ctx).or_else(|| self.default.clone())
-    }
-}
-
-/// First matching rule's value, or `None` if no rule matches (first-match-wins). Shared by the
-/// standalone `road` classifier and the data-defined `rules` value producer
+/// First rule whose `when` holds *and* whose value actually produces something, in order — a
+/// matching rule that produces nothing doesn't stop the search, it just tries the next rule. This
+/// is what lets `Producer::Match` subsume a plain ordered fallback chain (every rule `when: true`,
+/// first branch that produces anything wins) as well as a conditional (one real `when`, then an
+/// unconditional trailing rule for the "else"), in addition to the classic flat classify table.
+///
+/// A `ValueSpec::Producer` branch carries its own provenance (`Produced::consts`) — e.g. an
+/// `Extract`'s own `consts` field — which is used as-is. A literal branch (`Tag`/`TagOr`/`Const`)
+/// carries none of its own, so `own_consts` (the enclosing `Producer::Match`'s `consts` field)
+/// supplies its provenance instead.
+///
+/// Shared by the standalone `road` classifier and the data-defined `rules` value producer
 /// (`tag_engine::producer`). Evaluated against a full `ExtractCtx` — same predicate evaluator
 /// (`filter::eval`) and same context shape category matching uses, so a rule's `when` can see
 /// side/prefix/infix/parent, not just raw tags. Does not apply a `default` — callers needing one
-/// (e.g. `Classifier::classify`, `Producer::Classify`) apply it themselves.
-pub fn classify_rules(rules: &[Rule], ctx: &ExtractCtx) -> Option<Value> {
+/// (e.g. `Producer::Match`) apply it themselves.
+pub fn match_rules(rules: &[Rule], ctx: &ExtractCtx, own_consts: &Map<String, Value>) -> Option<Produced> {
     for rule in rules {
-        if eval(&rule.when, ctx) {
-            return match &rule.value {
-                ValueSpec::Const(v) => Some(v.clone()),
-                ValueSpec::Tag { tag } => ctx.obj_tags.get(tag).cloned().map(Value::String),
-                ValueSpec::TagOr { tag_or, or } => Some(
-                    ctx.obj_tags.get(tag_or).cloned().map(Value::String).unwrap_or_else(|| or.clone()),
-                ),
-                ValueSpec::Producer(p) => p.eval(ctx).map(|produced| produced.value),
-            };
+        if !eval(&rule.when, ctx) {
+            continue;
+        }
+        let produced = match &rule.value {
+            ValueSpec::Const(v) => Some(Produced { value: v.clone(), consts: own_consts.clone() }),
+            ValueSpec::Tag { tag } => ctx.obj_tags.get(tag).cloned()
+                .map(|value| Produced { value: Value::String(value), consts: own_consts.clone() }),
+            ValueSpec::TagOr { tag_or, or } => Some(Produced {
+                value: ctx.obj_tags.get(tag_or).cloned().map(Value::String).unwrap_or_else(|| or.clone()),
+                consts: own_consts.clone(),
+            }),
+            ValueSpec::Producer(p) => p.eval(ctx),
+        };
+        if produced.is_some() {
+            return produced;
         }
     }
     None
