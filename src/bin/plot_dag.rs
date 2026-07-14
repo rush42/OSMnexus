@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
+use osmnexus::tag_engine::extract::Extract;
 use osmnexus::tag_engine::producer::Producer;
 use osmnexus::tag_engine::sanitize::{Sanitizer, SanitizeRef, Step};
 use osmnexus::topic::runner::TopicRunner;
@@ -141,22 +142,17 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             }
             g.node(&label, "note", "#e2f0d9")
         }
-        Producer::Extract { extract, consts } => {
+        Producer::Extract { extract, sanitize, consts } => {
             let mut label = String::from("extract");
-            if let Some(k) = &extract.key {
-                let _ = write!(label, "\nkey: {k}");
-            }
-            if let Some(ks) = &extract.keys {
-                let _ = write!(label, "\nkeys: {ks:?}");
-            }
-            if let Some(s) = &extract.side {
-                let _ = write!(label, "\nside: {s}");
+            match extract {
+                Extract::Value { key } => { let _ = write!(label, "\nkey: {key}"); }
+                Extract::Candidates { keys } => { let _ = write!(label, "\nkeys: {keys:?}"); }
             }
             if !consts.is_empty() {
                 let _ = write!(label, "\nconsts: {}", truncate(&format!("{consts:?}"), 40));
             }
             let node = g.node(&label, "box", "#d9e8fb");
-            if let Some(sref) = &extract.sanitize {
+            if let Some(sref) = sanitize {
                 let chain_root = render_sanitize_ref(g, sref);
                 g.edge(&node, &chain_root, "sanitize");
             }

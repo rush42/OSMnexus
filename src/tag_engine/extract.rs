@@ -1,83 +1,66 @@
-//! `Extract`: "read a raw tag value, optionally through a `sanitize` chain" — the one piece of read
-//! logic `Filter`'s `Tag*` predicates and `Producer::Extract` both need, factored out so it's
-//! written (and tested) once. A candidate-key spec (`key`, `keys`, or a `side`-expanded sided key)
-//! resolved against a tagset via `keys::first_present`/`keys::sided_keys`, then run through an
-//! optional `sanitize` chain (identity if unset — see `sanitize::resolve_sanitize`).
+//! `Extract`: "resolve a raw tag value from a candidate key spec" — the one piece of read logic
+//! `Filter`'s `Tag*` predicates and `Producer::Extract` both need, factored out so it's written
+//! (and tested) once. Two shapes, nothing else: a single key, or an ordered candidate list
+//! (first-present wins). Resolved against a tagset via `keys::first_present`.
 //!
-//! Deliberately carries no `consts`/provenance — that's a `Producer`-only concept (what a winning
-//! branch contributes), meaningless for a boolean predicate. `Producer::Extract` wraps one
-//! alongside its own `consts`; `Filter`'s `Tag*` variants flatten one into themselves alongside
-//! their comparison field (`eq`/`in`/`contains`/…).
+//! Deliberately carries no `sanitize` — that's a sibling field wherever `Extract` is embedded
+//! (`Filter::Tag*`, `Producer::Extract`), not part of the read primitive itself, so it can be
+//! resolved (`SanitizeRef::resolve`) and applied uniformly by the embedding type instead of being
+//! duplicated inside `Extract`'s own `resolve`/`read`. `read`/`read_str` below take it as a
+//! parameter for that reason. Also carries no `consts`/provenance — that's a `Producer`-only
+//! concept (what a winning branch contributes), meaningless for a boolean predicate.
+//! `Producer::Extract` wraps one alongside its own `sanitize`/`consts`; `Filter`'s `Tag*` variants
+//! flatten one into themselves alongside their own `sanitize` and comparison field (`eq`/`in`/…).
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::tag_engine::keys;
-use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
+use crate::tag_engine::sanitize::{resolve_sanitize, SanitizeRef};
 use crate::osm::types::RawTags;
 
-/// A candidate-key read spec plus its `sanitize` chain. `key`/`first_tag`/`side` accept `Producer`'s
-/// historical field names as canonical (`key`/`keys`) with `Filter`'s historical names (`tag`/
-/// `first_tag`) as JSON aliases, so neither call site's existing configs needed to change.
+/// A candidate-key read spec. `key`/`keys` accept `Producer`'s historical field names as canonical
+/// with `Filter`'s historical names (`tag`/`first_tag`) as JSON aliases, so neither call site's
+/// existing configs needed to change. Untagged variants are disambiguated by their own (distinct,
+/// required) field name, so declaration order doesn't matter here.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Extract {
-    #[serde(alias = "tag", default)]
-    pub key: Option<String>,
-    #[serde(alias = "first_tag", default)]
-    pub keys: Option<Vec<String>>,
-    /// Sided key expansion (`key:{side}` → `:both` → bare-left) — `Producer::Extract` only;
-    /// `Filter`'s `Tag*` predicates never set this (they have their own, unrelated `Side` context
-    /// predicate for `ctx.split.obj_side`).
-    #[serde(default)]
-    pub side: Option<String>,
-    #[serde(default)]
-    pub sanitize: Option<SanitizeRef>,
+#[serde(untagged)]
+pub enum Extract {
+    /// First-present fallback over an ordered candidate list.
+    Candidates {
+        #[serde(alias = "first_tag")]
+        keys: Vec<String>,
+    },
+    /// A single, specific key.
+    Value {
+        #[serde(alias = "tag")]
+        key: String,
+    },
 }
 
 impl Extract {
-    /// Resolve `sanitize:`'s named reference once, at load time (alongside `Filter::expand`/
-    /// `Producer::resolve`) — `key`/`keys`/`side` carry no reference to resolve.
-    pub fn resolve(&self, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Extract> {
-        Ok(Extract {
-            key: self.key.clone(),
-            keys: self.keys.clone(),
-            side: self.side.clone(),
-            sanitize: self.sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
-        })
-    }
-
-    /// Resolve the raw string, ignoring `sanitize` — all three key forms are a first-present
-    /// fallback over a candidate key list: a sided expansion, a single `key`, or the explicit
-    /// `keys` list.
+    /// Resolve the raw string — a first-present fallback over the candidate list, or a single key.
     pub fn read_raw<'a>(&self, tags: &'a RawTags) -> Option<&'a str> {
-        if let Some(side) = &self.side {
-            let candidates = keys::sided_keys(self.key.as_deref().expect("sided extract needs `key`"), side, true);
-            return keys::first_present(tags, candidates);
+        match self {
+            Extract::Value { key } => keys::first_present(tags, std::iter::once(key.as_str())),
+            Extract::Candidates { keys } => keys::first_present(tags, keys.iter().map(String::as_str)),
         }
-        if let Some(key) = &self.key {
-            return keys::first_present(tags, std::iter::once(key.as_str()));
-        }
-        if let Some(keys) = &self.keys {
-            return keys::first_present(tags, keys.iter().map(String::as_str));
-        }
-        None
     }
 
     /// Read and run through `sanitize` (identity if unset) — what `Producer::Extract` produces.
-    pub fn read(&self, tags: &RawTags) -> Option<Value> {
-        resolve_sanitize(self.sanitize.as_ref(), self.read_raw(tags)?)
+    pub fn read(&self, sanitize: Option<&SanitizeRef>, tags: &RawTags) -> Option<Value> {
+        resolve_sanitize(sanitize, self.read_raw(tags)?)
     }
 
     /// Like `read`, coerced to a string — what every `Filter` `Tag*` comparison reads. A dropped
     /// sanitize output (or one that isn't string-shaped) compares as absent, not equal to "".
-    pub fn read_str<'a>(&self, tags: &'a RawTags) -> Option<Cow<'a, str>> {
+    pub fn read_str<'a>(&self, sanitize: Option<&SanitizeRef>, tags: &'a RawTags) -> Option<Cow<'a, str>> {
         let raw = self.read_raw(tags)?;
-        match &self.sanitize {
+        match sanitize {
             None => Some(Cow::Borrowed(raw)),
-            Some(_) => match resolve_sanitize(self.sanitize.as_ref(), raw)? {
+            Some(_) => match resolve_sanitize(sanitize, raw)? {
                 Value::String(s) => Some(Cow::Owned(s)),
                 other => other.as_str().map(|s| Cow::Owned(s.to_owned())),
             },

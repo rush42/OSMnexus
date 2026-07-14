@@ -39,27 +39,27 @@ pub enum Filter {
     Macro { r#macro: String },
 
     // Tag predicates — secondary field disambiguates (TagEq is the catch-all). Each flattens an
-    // `Extract` (`tag`/`first_tag`/`sanitize`, `Extract`'s JSON aliases for `key`/`keys`/
-    // `sanitize` — see its own doc), so "first matching tag from a list" (what used to be a
-    // separate `FirstTag*` variant per comparison) is just `Extract.keys` set instead of `.key`;
-    // there's nothing else that needs to differ. `sanitize`, when set, normalizes the raw tag
-    // value before comparison (a dropped value behaves as absent → false), mirroring the `num`
-    // predicate's `sanitize`.
+    // `Extract` (`tag`/`first_tag`, `Extract`'s JSON aliases for `key`/`keys` — see its own doc),
+    // so "first matching tag from a list" (what used to be a separate `FirstTag*` variant per
+    // comparison) is just `Extract::Candidates` instead of `Extract::Value`; there's nothing else
+    // that needs to differ. `sanitize` is a sibling field (not part of `Extract` itself — see its
+    // doc), and when set normalizes the raw tag value before comparison (a dropped value behaves
+    // as absent → false), mirroring the `num` predicate's `sanitize`.
     /// Membership in a named set from `<config_root>/value_sets.json` (keeps long value lists in data).
-    TagInSet     { #[serde(flatten)] extract: Extract, in_set:      String      },
-    TagIn        { #[serde(flatten)] extract: Extract, r#in:        Vec<String> },
+    TagInSet     { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<SanitizeRef>, in_set:      String      },
+    TagIn        { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<SanitizeRef>, r#in:        Vec<String> },
     /// `case_insensitive` lower-cases both the tag value and `contains` before comparing — use it
     /// for free-text fields (notes/descriptions) where casing isn't meaningful. `contains` should
     /// already be written lowercase in JSON when this is set (only the tag value is lower-cased
     /// at eval time, to avoid re-lowering a literal on every call).
-    TagContains  { #[serde(flatten)] extract: Extract, contains: String, #[serde(default)] case_insensitive: bool },
-    TagStartsWith{ #[serde(flatten)] extract: Extract, starts_with: String      },
-    TagEndsWith  { #[serde(flatten)] extract: Extract, ends_with:   String      },
+    TagContains  { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<SanitizeRef>, contains: String, #[serde(default)] case_insensitive: bool },
+    TagStartsWith{ #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<SanitizeRef>, starts_with: String      },
+    TagEndsWith  { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<SanitizeRef>, ends_with:   String      },
     /// With `sanitize` set, "exists" means "the value survives that sanitizer" (e.g. an
     /// unrecognized/garbage tag value counts as absent), not mere raw key presence — matching how
     /// a sided producer read (`first_present` + `sanitize`) decides whether it produced anything.
-    TagExists    { #[serde(flatten)] extract: Extract, exists:      bool        },
-    TagEq        { #[serde(flatten)] extract: Extract, eq:          String      },
+    TagExists    { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<SanitizeRef>, exists:      bool        },
+    TagEq        { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<SanitizeRef>, eq:          String      },
 
     /// Evaluate the inner filter's `Tag*`/`FirstTag*` predicates against the parent way's tags
     /// instead of the object's own — `false` when there is no parent (matching the old
@@ -138,20 +138,20 @@ impl Filter {
                 expanded
             }
             Filter::Bool(b) => Filter::Bool(*b),
-            Filter::TagInSet { extract, in_set } =>
-                Filter::TagInSet { extract: extract.resolve(sanitizers)?, in_set: in_set.clone() },
-            Filter::TagIn { extract, r#in } =>
-                Filter::TagIn { extract: extract.resolve(sanitizers)?, r#in: r#in.clone() },
-            Filter::TagContains { extract, contains, case_insensitive } =>
-                Filter::TagContains { extract: extract.resolve(sanitizers)?, contains: contains.clone(), case_insensitive: *case_insensitive },
-            Filter::TagStartsWith { extract, starts_with } =>
-                Filter::TagStartsWith { extract: extract.resolve(sanitizers)?, starts_with: starts_with.clone() },
-            Filter::TagEndsWith { extract, ends_with } =>
-                Filter::TagEndsWith { extract: extract.resolve(sanitizers)?, ends_with: ends_with.clone() },
-            Filter::TagExists { extract, exists } =>
-                Filter::TagExists { extract: extract.resolve(sanitizers)?, exists: *exists },
-            Filter::TagEq { extract, eq } =>
-                Filter::TagEq { extract: extract.resolve(sanitizers)?, eq: eq.clone() },
+            Filter::TagInSet { extract, sanitize, in_set } =>
+                Filter::TagInSet { extract: extract.clone(), sanitize: resolve(sanitize)?, in_set: in_set.clone() },
+            Filter::TagIn { extract, sanitize, r#in } =>
+                Filter::TagIn { extract: extract.clone(), sanitize: resolve(sanitize)?, r#in: r#in.clone() },
+            Filter::TagContains { extract, sanitize, contains, case_insensitive } =>
+                Filter::TagContains { extract: extract.clone(), sanitize: resolve(sanitize)?, contains: contains.clone(), case_insensitive: *case_insensitive },
+            Filter::TagStartsWith { extract, sanitize, starts_with } =>
+                Filter::TagStartsWith { extract: extract.clone(), sanitize: resolve(sanitize)?, starts_with: starts_with.clone() },
+            Filter::TagEndsWith { extract, sanitize, ends_with } =>
+                Filter::TagEndsWith { extract: extract.clone(), sanitize: resolve(sanitize)?, ends_with: ends_with.clone() },
+            Filter::TagExists { extract, sanitize, exists } =>
+                Filter::TagExists { extract: extract.clone(), sanitize: resolve(sanitize)?, exists: *exists },
+            Filter::TagEq { extract, sanitize, eq } =>
+                Filter::TagEq { extract: extract.clone(), sanitize: resolve(sanitize)?, eq: eq.clone() },
             Filter::Parent { parent } =>
                 Filter::Parent { parent: Box::new(parent.expand_inner(macros, sanitizers, stack)?) },
             Filter::Side { side } => Filter::Side { side: side.clone() },
@@ -189,26 +189,26 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
             false
         }
 
-        Filter::TagEq { extract, eq } =>
-            extract.read_str(ctx.obj_tags).is_some_and(|v| v.as_ref() == eq.as_str()),
-        Filter::TagInSet { extract, in_set } =>
-            extract.read_str(ctx.obj_tags).is_some_and(|v| value_set(in_set).contains(v.as_ref())),
-        Filter::TagIn { extract, r#in } =>
-            extract.read_str(ctx.obj_tags).is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
-        Filter::TagContains { extract, contains, case_insensitive } =>
-            extract.read_str(ctx.obj_tags).is_some_and(|v| {
+        Filter::TagEq { extract, sanitize, eq } =>
+            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| v.as_ref() == eq.as_str()),
+        Filter::TagInSet { extract, sanitize, in_set } =>
+            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| value_set(in_set).contains(v.as_ref())),
+        Filter::TagIn { extract, sanitize, r#in } =>
+            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
+        Filter::TagContains { extract, sanitize, contains, case_insensitive } =>
+            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| {
                 if *case_insensitive {
                     v.to_lowercase().contains(contains.as_str())
                 } else {
                     v.contains(contains.as_str())
                 }
             }),
-        Filter::TagStartsWith { extract, starts_with } =>
-            extract.read_str(ctx.obj_tags).is_some_and(|v| v.starts_with(starts_with.as_str())),
-        Filter::TagEndsWith { extract, ends_with } =>
-            extract.read_str(ctx.obj_tags).is_some_and(|v| v.ends_with(ends_with.as_str())),
-        Filter::TagExists { extract, exists } =>
-            extract.read_str(ctx.obj_tags).is_some() == *exists,
+        Filter::TagStartsWith { extract, sanitize, starts_with } =>
+            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| v.starts_with(starts_with.as_str())),
+        Filter::TagEndsWith { extract, sanitize, ends_with } =>
+            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| v.ends_with(ends_with.as_str())),
+        Filter::TagExists { extract, sanitize, exists } =>
+            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some() == *exists,
 
         Filter::Parent { parent } => match ctx.parent_tags {
             None => false,

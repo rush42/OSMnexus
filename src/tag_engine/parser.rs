@@ -57,7 +57,6 @@ enum ProducerJson {
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
-        #[serde(default)] side: Option<String>,
         #[serde(default)] sanitize: Option<SanitizeRef>,
         #[serde(default)] consts: Map<String, Value>,
     },
@@ -79,8 +78,15 @@ impl<'de> Deserialize<'de> for Producer {
                 consts: Map::new(),
             },
             ProducerJson::Match { rules, default, consts } => Producer::Match { rules, default, consts },
-            ProducerJson::Extract { key, keys, side, sanitize, consts } =>
-                Producer::Extract { extract: Extract { key, keys, side, sanitize }, consts },
+            ProducerJson::Extract { key, keys, sanitize, consts } => {
+                let extract = match (key, keys) {
+                    (Some(key), None) => Extract::Value { key },
+                    (None, Some(keys)) => Extract::Candidates { keys },
+                    (None, None) => return Err(serde::de::Error::custom("Extract needs `key` or `keys`")),
+                    (Some(_), Some(_)) => return Err(serde::de::Error::custom("Extract: set only one of `key`/`keys`, not both")),
+                };
+                Producer::Extract { extract, sanitize, consts }
+            }
         })
     }
 }

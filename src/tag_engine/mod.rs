@@ -29,7 +29,7 @@
 //! - `input_transforms`: `InputTransform`, the runtime in-place tag-mutation step.
 //! - `transform`: object-cardinality-changing steps (center-line side-split) and `strip_prefix` —
 //!   the operations needing dynamic key iteration a single `Producer` output can't express.
-//! - `keys`: generic tag-key selection helpers (`first_present`/`sided_keys`) shared by `producer`
+//! - `keys`: generic tag-key selection helpers (`first_present`) shared by `producer`
 //!   and `filter`.
 
 pub mod categories;

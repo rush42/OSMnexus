@@ -224,12 +224,10 @@ pub fn resolve_output_entry(
         let r: SanitizerRepr = serde_json::from_value(value)
             .with_context(|| format!("topic outputs.{output}"))?;
         let extract = Producer::Extract {
-            extract: Extract {
-                key: None,
-                keys: Some(r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()])),
-                side: None,
-                sanitize: Some(SanitizeRef::Name(r.name)),
+            extract: Extract::Candidates {
+                keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
             },
+            sanitize: Some(SanitizeRef::Name(r.name)),
             consts: Map::new(),
         };
         match r.from {
@@ -240,7 +238,8 @@ pub fn resolve_output_entry(
     } else {
         match value {
             Value::Bool(true) => Producer::Extract {
-                extract: Extract { key: Some(output.to_owned()), keys: None, side: None, sanitize: None },
+                extract: Extract::Value { key: output.to_owned() },
+                sanitize: None,
                 consts: Map::new(),
             },
             Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),

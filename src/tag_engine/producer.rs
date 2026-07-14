@@ -96,9 +96,11 @@ pub enum Producer {
         consts: Map<String, Value>,
     },
     /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`/`parent_or_obj` for the
-    /// parent's tags).
+    /// parent's tags). `sanitize` is a sibling of `extract`, not part of it — see `Extract`'s own
+    /// doc for why.
     Extract {
         extract: Extract,
+        sanitize: Option<SanitizeRef>,
         /// Companion key/values this branch contributes when it produces the value; emitted as
         /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
         consts: Map<String, Value>,
@@ -143,8 +145,8 @@ impl Producer {
                     .or_else(|| default.clone().map(|value| Produced { value, consts: consts.clone() }))
             }
 
-            Producer::Extract { extract, consts } => {
-                let value = extract.read(ctx.obj_tags)?;
+            Producer::Extract { extract, sanitize, consts } => {
+                let value = extract.read(sanitize.as_ref(), ctx.obj_tags)?;
                 Some(Produced { value, consts: consts.clone() })
             }
 
@@ -200,8 +202,9 @@ impl Producer {
                 default: default.clone(),
                 consts: consts.clone(),
             },
-            Producer::Extract { extract, consts } => Producer::Extract {
-                extract: extract.resolve(sanitizers)?,
+            Producer::Extract { extract, sanitize, consts } => Producer::Extract {
+                extract: extract.clone(),
+                sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
                 consts: consts.clone(),
             },
             Producer::DirectedExtract { key, from, sanitize, consts } => Producer::DirectedExtract {
@@ -266,7 +269,7 @@ mod classify_bool_tests {
     fn matching_filter_produces_true() {
         let obj: RawTags = [("oneway".to_owned(), "yes".to_owned())].into_iter().collect();
         let producer = bool_producer(
-            Filter::TagEq { extract: Extract { key: Some("oneway".to_owned()), keys: None, side: None, sanitize: None }, eq: "yes".to_owned() },
+            Filter::TagEq { extract: Extract::Value { key: "oneway".to_owned() }, sanitize: None, eq: "yes".to_owned() },
             TagSet::Obj,
         );
         let produced = producer.eval(&ctx(&obj, None)).unwrap();
@@ -277,7 +280,7 @@ mod classify_bool_tests {
     fn non_matching_filter_produces_false() {
         let obj: RawTags = [("oneway".to_owned(), "no".to_owned())].into_iter().collect();
         let producer = bool_producer(
-            Filter::TagEq { extract: Extract { key: Some("oneway".to_owned()), keys: None, side: None, sanitize: None }, eq: "yes".to_owned() },
+            Filter::TagEq { extract: Extract::Value { key: "oneway".to_owned() }, sanitize: None, eq: "yes".to_owned() },
             TagSet::Obj,
         );
         let produced = producer.eval(&ctx(&obj, None)).unwrap();

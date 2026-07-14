@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::topic::load::{load_shared_macros, load_topic_categories};
 use crate::tag_engine::categories::CategoriesFile;
+use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
 use crate::osm::types::ElementKind;
 
@@ -64,14 +65,16 @@ pub enum Expr {
     Or(Vec<Expr>),
 }
 
-/// `extract.key` if set, else the first candidate of `extract.keys` — the representative key used
-/// for `Predicate` atoms that can only name one plain key (see `filter_to_expr`'s doc on why that's
-/// an approximation for the `keys`/`first_tag` case).
+/// `extract`'s key if `Value`, else the first candidate of `Candidates` — the representative key
+/// used for `Predicate` atoms that can only name one plain key (see `filter_to_expr`'s doc on why
+/// that's an approximation for the `Candidates`/`first_tag` case).
 fn extract_key(extract: &crate::tag_engine::extract::Extract) -> String {
-    extract.key.clone().unwrap_or_else(|| {
-        extract.keys.as_ref().and_then(|ks| ks.first()).cloned()
-            .expect("Extract needs `key`/`tag` or a non-empty `keys`/`first_tag`")
-    })
+    use crate::tag_engine::extract::Extract;
+    match extract {
+        Extract::Value { key } => key.clone(),
+        Extract::Candidates { keys } => keys.first().cloned()
+            .expect("Extract::Candidates needs a non-empty `keys`/`first_tag`"),
+    }
 }
 
 pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr {
@@ -99,34 +102,32 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         // one plain key — approximated onto the first candidate, same as the old `FirstTagExists`
         // did (`// approximation` below). `Eq`/`In`/`InSet` keep the exact `FirstTagIn` atom the old
         // `FirstTag*` variants used, since "first-present value is in this set" *is* representable.
-        Filter::TagEq { extract, eq } => match &extract.keys {
-            None => Expr::Lit(Literal::Pos(Predicate::Eq(extract.key.clone().expect("TagEq needs `key`/`tag`"), eq.clone()))),
-            Some(keys) => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
+        Filter::TagEq { extract, eq, .. } => match extract {
+            Extract::Value { key } => Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), eq.clone()))),
+            Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
         },
-        Filter::TagExists { extract, exists: true } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))), // approximation when `keys` is set
-        Filter::TagExists { extract, exists: false } => Expr::Lit(Literal::Neg(Predicate::Exists(extract_key(extract)))),
+        Filter::TagExists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))), // approximation when `keys` is set
+        Filter::TagExists { extract, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(extract_key(extract)))),
         Filter::TagContains { extract, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(extract_key(extract), contains.clone()))), // approximation when `keys` is set
-        Filter::TagStartsWith { extract, starts_with } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract_key(extract), starts_with.clone()))), // approximation when `keys` is set
-        Filter::TagEndsWith { extract, ends_with } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract_key(extract), ends_with.clone()))), // approximation when `keys` is set
-        Filter::TagIn { extract, r#in } => match &extract.keys {
-            None => {
-                let key = extract.key.clone().expect("TagIn needs `key`/`tag`");
+        Filter::TagStartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract_key(extract), starts_with.clone()))), // approximation when `keys` is set
+        Filter::TagEndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract_key(extract), ends_with.clone()))), // approximation when `keys` is set
+        Filter::TagIn { extract, r#in, .. } => match extract {
+            Extract::Value { key } => {
                 let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone())))).collect();
                 Expr::Or(exprs)
             }
-            Some(keys) => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
+            Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
         },
-        Filter::TagInSet { extract, in_set } => match &extract.keys {
-            None => {
+        Filter::TagInSet { extract, in_set, .. } => match extract {
+            Extract::Value { key } => {
                 // Expand the named set to an OR of equalities, mirroring TagIn.
-                let key = extract.key.clone().expect("TagInSet needs `key`/`tag`");
                 let exprs: Vec<_> = crate::value_sets::value_set(in_set)
                     .iter()
                     .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone()))))
                     .collect();
                 Expr::Or(exprs)
             }
-            Some(keys) => {
+            Extract::Candidates { keys } => {
                 let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
                 vals.sort();
                 Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vals)))

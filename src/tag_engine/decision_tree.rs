@@ -545,8 +545,8 @@ fn collect_sanitized_tags(f: &Filter, macros: &HashMap<String, Filter>, out: &mu
                 collect_sanitized_tags(m, macros, out);
             }
         }
-        Filter::TagEq { extract, .. } | Filter::TagIn { extract, .. } if extract.sanitize.is_some() => {
-            if let Some(key) = &extract.key {
+        Filter::TagEq { extract, sanitize: Some(_), .. } | Filter::TagIn { extract, sanitize: Some(_), .. } => {
+            if let crate::tag_engine::extract::Extract::Value { key } = extract {
                 out.insert(key.clone());
             }
         }
