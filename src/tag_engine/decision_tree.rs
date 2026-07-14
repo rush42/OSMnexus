@@ -32,6 +32,7 @@
 use std::collections::HashMap;
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use serde_json::Value;
 
 use crate::tag_engine::categories::{CategoriesFile, OrderedNode};
 use crate::tag_engine::filter::Filter;
@@ -171,10 +172,12 @@ fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
 /// context. `None` means "no matching enumerated child" → fall through to the wildcard.
 fn branch_key<'a>(ctx: &'a ExtractCtx, tag: &str) -> Option<&'a str> {
     match tag {
-        SIDE_KEY => Some(ctx.split.obj_side),
+        // `_side` is always stamped by `generate_sides` (self included); default to "self" for
+        // parity with `Filter::Side`'s own eval fallback.
+        SIDE_KEY => Some(ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self")),
         HAS_PARENT_KEY => Some(if ctx.parent_tags.is_some() { "true" } else { "false" }),
-        PREFIX_KEY => ctx.split.prefix,
-        INFIX_KEY => ctx.split.infix,
+        PREFIX_KEY => ctx.annotations.get("_prefix").and_then(Value::as_str),
+        INFIX_KEY => ctx.annotations.get("_infix").and_then(Value::as_str),
         _ => ctx.obj_tags.get(tag).map(String::as_str),
     }
 }
@@ -621,8 +624,8 @@ mod tests {
     use crate::tag_engine::categories::{categorize, categorize_linear, CategoriesFile, OrderedNode};
     use crate::tag_engine::filter::Filter;
     use crate::tag_engine::producer::ExtractCtx;
-    use crate::tag_engine::transform::side_split::SplitContext;
     use crate::tag_engine::linter::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
+    use serde_json::{Map, Value};
     use crate::osm::types::RawTags;
 
     /// Positive Eq (plain-tag) atoms across every order-node condition → tag → observed values.
@@ -710,12 +713,16 @@ mod tests {
                             "self" => (None, None),
                             _ => (Some("cycleway"), Some(&parent_tags)),
                         };
+                        let mut annotations = Map::new();
+                        annotations.insert("_side".to_owned(), Value::String(side.to_owned()));
+                        if let Some(p) = prefix {
+                            annotations.insert("_prefix".to_owned(), Value::String(p.to_owned()));
+                        }
                         let ctx = ExtractCtx {
                             obj_tags: &tags,
                             parent_tags: side_parent_tags,
-                            split: SplitContext { obj_side: side, prefix, infix: None },
                             id: "",
-                            annotations: crate::tag_engine::producer::empty_annotations(),
+                            annotations: &annotations,
                         };
                         let a = categorize(&ctx, &cats).map(|c| c.id.clone());
                         let b = categorize_linear(&ctx, &cats).map(|c| c.id.clone());

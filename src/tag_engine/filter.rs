@@ -10,11 +10,11 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::producer::ExtractCtx;
 use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
-use crate::tag_engine::transform::side_split::SplitContext;
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
 
@@ -75,10 +75,12 @@ pub enum Filter {
     HasKeyPrefix { has_key_prefix: String },
     /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
     HasParent { has_parent: bool },
-    /// Membership in `ctx.annotations` (see `ExtractCtx::annotations`/`output::rows::TopicRow::
-    /// annotations`) — engine-attached bookkeeping (e.g. `InputTransform::UnnestTags`'s `mark`),
-    /// not a tag. The `Filter`-side sibling of `TagExists`, over the other map.
-    AnnotationExists { key: String, exists: bool },
+    /// True iff the object's own tags are (non-)empty — total, unlike `TagExists`, which needs a
+    /// specific key. The generic replacement for a one-off "did this clone end up with nothing"
+    /// check: a freshly-cloned object starts genuinely empty, so `{ "tags_empty": true }` right
+    /// after its unnest steps and before any literal-value injection (e.g. `highway`) is exactly
+    /// "nothing was ever unnested into it" — see `transform::side_split::generate_sides`.
+    TagsEmpty { tags_empty: bool },
 
     // Numeric comparisons. `num` names the tag to read, optionally run through a `sanitize` chain
     // first (which may yield a JSON number, e.g. `parse_length`) before parsing to f64. Absent or
@@ -163,7 +165,7 @@ impl Filter {
             Filter::Infix { infix } => Filter::Infix { infix: infix.clone() },
             Filter::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix: has_key_prefix.clone() },
             Filter::HasParent { has_parent } => Filter::HasParent { has_parent: *has_parent },
-            Filter::AnnotationExists { key, exists } => Filter::AnnotationExists { key: key.clone(), exists: *exists },
+            Filter::TagsEmpty { tags_empty } => Filter::TagsEmpty { tags_empty: *tags_empty },
             Filter::NumLt { num, sanitize, lt } =>
                 Filter::NumLt { num: num.clone(), sanitize: resolve(sanitize)?, lt: *lt },
             Filter::NumLte { num, sanitize, lte } =>
@@ -220,15 +222,18 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
             Some(parent_tags) => eval(parent, &ExtractCtx { obj_tags: parent_tags, ..*ctx }),
         },
 
-        Filter::Side { side } => ctx.split.obj_side == side.as_str(),
-        Filter::Prefix    { prefix    } => ctx.split.prefix == Some(prefix.as_str()),
-        Filter::Infix     { infix     } => ctx.split.infix  == Some(infix.as_str()),
+        // `_side` is always present in practice (`generate_sides` stamps it on every object,
+        // self included) — defaulting to "self" here is a safety net, not the normal path.
+        Filter::Side { side } =>
+            ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self") == side.as_str(),
+        Filter::Prefix { prefix } => ctx.annotations.get("_prefix").and_then(Value::as_str) == Some(prefix.as_str()),
+        Filter::Infix  { infix  } => ctx.annotations.get("_infix").and_then(Value::as_str)  == Some(infix.as_str()),
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
         // `parent_tags` is only ever `Some` for those (see `generate_sides`).
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
-        Filter::AnnotationExists { key, exists } => ctx.annotations.contains_key(key) == *exists,
+        Filter::TagsEmpty { tags_empty } => ctx.obj_tags.is_empty() == *tags_empty,
 
         Filter::NumLt  { num, sanitize, lt  } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n <  *lt),
         Filter::NumLte { num, sanitize, lte } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n <= *lte),
@@ -265,7 +270,6 @@ pub fn eval_filter(filter: &Filter, tags: &RawTags) -> bool {
     let ctx = ExtractCtx {
         obj_tags: tags,
         parent_tags: None,
-        split: SplitContext::default(),
         id: "",
         annotations: crate::tag_engine::producer::empty_annotations(),
     };

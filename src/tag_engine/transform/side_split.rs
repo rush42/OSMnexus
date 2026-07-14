@@ -4,46 +4,8 @@ use crate::osm::types::RawTags;
 use crate::output::types::Side;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::input_transforms::InputTransform;
-use crate::tag_engine::producer::{empty_annotations, ExtractCtx};
+use crate::tag_engine::producer::ExtractCtx;
 use crate::value_sets::value_set;
-
-/// The annotation key `generate_sides` stamps (via `InputTransform::UnnestTags`'s `mark`) whenever
-/// a side object's unnest pass actually wrote something — what `Drop` reads to tell "nothing was
-/// ever unnested into this side object" apart from "it legitimately has no other tags". Transient
-/// bookkeeping local to this module's own `Drop` decision; it never reaches a row's public
-/// `annotations` (see `topic::pipeline::build_topic_rows`, which builds that map from scratch).
-const UNNESTED_MARK: &str = "_unnested";
-
-/// The side-split-specific slice of an `ExtractCtx`: which side/prefix/infix this object is.
-/// `parent_tags` is *not* here — it's a plain `ExtractCtx` field, since it's meaningful (or not)
-/// independent of side-splitting (e.g. a directed-key `InputTransform` sets it without any
-/// prefix/infix). The one thing that ever varies this across a way is `generate_sides` deciding
-/// cardinality — tag-only `InputTransform`s never touch it. `generate_sides` is the sole
-/// non-trivial constructor of a full `ExtractCtx`; elsewhere (the pre-split pass, `eval_filter`)
-/// uses `SplitContext::default()`.
-#[derive(Clone, Copy)]
-pub struct SplitContext {
-    pub obj_side: &'static str,
-    pub prefix: Option<&'static str>,
-    pub infix: Option<&'static str>,
-}
-
-impl Default for SplitContext {
-    fn default() -> Self {
-        SplitContext { obj_side: "self", prefix: None, infix: None }
-    }
-}
-
-impl SplitContext {
-    /// `(key, value)` pairs describing this context, for a caller that wants to write it into a
-    /// row's `annotations` map generically (e.g. `_{key}`) rather than naming each field by hand.
-    /// `obj_side` is always present; `prefix`/`infix` only for a side object.
-    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
-        [("side", Some(self.obj_side)), ("prefix", self.prefix), ("infix", self.infix)]
-            .into_iter()
-            .filter_map(|(k, v)| v.map(|v| (k, v)))
-    }
-}
 
 /// Describes how a prefix (e.g. "cycleway") is split into side objects.
 pub struct CenterLineTransformation {
@@ -59,6 +21,24 @@ pub struct CenterLineTransformation {
 }
 
 pub(crate) const META_PREFIXES: &[&str] = &["source:", "note:"];
+
+/// Build a fresh annotations map stamped with `_side` (always) and `_prefix`/`_infix` (side
+/// objects only) — the one place these three keys get written. There is no dedicated side-split
+/// context type: `_side`/`_prefix`/`_infix` are ordinary `annotations` entries a `Filter`
+/// (`Side`/`Prefix`/`Infix`) or the decision tree's sentinel-keyed branching reads just like any
+/// tag, and they ride along into a row's public output unchanged (see `topic::pipeline::
+/// build_topic_rows`, which seeds a row's `annotations` from `ExtractCtx::annotations`).
+fn side_annotations(obj_side: &str, prefix: Option<&str>, infix: Option<&str>) -> Map<String, Value> {
+    let mut m = Map::new();
+    m.insert("_side".to_owned(), Value::String(obj_side.to_owned()));
+    if let Some(p) = prefix {
+        m.insert("_prefix".to_owned(), Value::String(p.to_owned()));
+    }
+    if let Some(i) = infix {
+        m.insert("_infix".to_owned(), Value::String(i.to_owned()));
+    }
+    m
+}
 
 /// Port of `GetTransformedObjects` from transformations.lua (renamed `generate_sides`).
 ///
@@ -81,25 +61,21 @@ pub fn generate_sides(
     // Sidepath-class ways (see `InputTransform::UnnestTags`'s `guard_value_set`) are never split into sides — any side
     // tagging they carry describes their own alignment, already folded onto this way's own tags.
     if value_set("sidepath_highway").contains(highway.as_str()) {
+        let self_annotations = side_annotations("self", None, None);
         f(ExtractCtx {
             obj_tags: &tags,
             parent_tags: None,
-            split: SplitContext::default(),
             id: default_id,
-            annotations: empty_annotations(),
+            annotations: &self_annotations,
         });
         return;
     }
 
     /// A side object's data before it becomes an `ExtractCtx` — held only long enough to run its
     /// `directed_steps` (which need the self object's tags, still owned by `generate_sides`) and
-    /// then, once `tags` is next to it in scope, immediately be turned into one. `annotations`
-    /// carries forward whatever `UNNESTED_MARK`-style bookkeeping the unnest pass stamped, so
-    /// `directed_steps` (ordinary `InputTransform`s, including any `Drop`) can still see it.
+    /// then, once `tags` is next to it in scope, immediately be turned into one.
     struct SideObj {
-        side: Side,
         prefix: &'static str,
-        infix: &'static str,
         tags: RawTags,
         annotations: Map<String, Value>,
         id: String,
@@ -124,10 +100,8 @@ pub fn generate_sides(
 
             // Priority (lowest to highest): bare < both < side-specific. Apply in that order,
             // tracking the highest-priority infix that contributed any data. Each pass is the
-            // same `InputTransform::UnnestTags` any topic.json step uses, stamping `UNNESTED_MARK`
-            // in `annotations` whenever it actually writes something — `Drop` below reads that
-            // mark, instead of a hand-rolled emptiness check, to decide whether to keep this
-            // object. Mirrors Lua: unnestPrefixedTags called with '', ':both', ':side' in order.
+            // same `InputTransform::UnnestTags` any topic.json step uses. Mirrors Lua:
+            // unnestPrefixedTags called with '', ':both', ':side' in order.
             let mut matched_infix: &'static str = "";
             for infix in ["", "both", side_str] {
                 let step = InputTransform::UnnestTags {
@@ -135,20 +109,20 @@ pub fn generate_sides(
                     infix,
                     meta_prefixes: META_PREFIXES,
                     guard_value_set: None,
-                    mark: Some(UNNESTED_MARK),
                 };
                 let before = obj.len();
-                step.apply(&mut obj, &mut annotations, Some(&tags), side_str, Some(transformation.prefix), Some(infix));
+                step.apply(&mut obj, &mut annotations, Some(&tags));
                 if obj.len() > before {
                     matched_infix = infix;
                 }
             }
 
-            // Only keep an object if something was actually projected into it.
-            let drop = InputTransform::Drop {
-                when: Filter::AnnotationExists { key: UNNESTED_MARK.to_owned(), exists: false },
-            };
-            let keep = drop.apply(&mut obj, &mut annotations, Some(&tags), side_str, Some(transformation.prefix), Some(matched_infix));
+            // Only keep an object if something was actually projected into it — a freshly-built
+            // object starts empty, so "still empty" here means every unnest attempt above found
+            // nothing, run before `highway` gets injected below (which would otherwise make every
+            // side object non-empty regardless of whether anything real was ever unnested).
+            let drop = InputTransform::Drop { when: Filter::TagsEmpty { tags_empty: true } };
+            let keep = drop.apply(&mut obj, &mut annotations, Some(&tags));
             if !keep {
                 continue;
             }
@@ -158,22 +132,20 @@ pub fn generate_sides(
             obj.insert("highway".into(), transformation.highway.to_owned());
 
             side_objects.push(SideObj {
-                side,
                 prefix: transformation.prefix,
-                infix: matched_infix,
                 tags: obj,
-                annotations,
+                annotations: side_annotations(side_str, Some(transformation.prefix), Some(matched_infix)),
                 id: format!("{default_id}/{}/{side_str}", transformation.prefix),
             });
         }
     }
 
+    let self_annotations = side_annotations("self", None, None);
     f(ExtractCtx {
         obj_tags: &tags,
         parent_tags: None,
-        split: SplitContext::default(),
         id: default_id,
-        annotations: empty_annotations(),
+        annotations: &self_annotations,
     });
 
     // Per-object post-split steps (`directed_keys`/`self_directed_keys`, ported from
@@ -183,21 +155,15 @@ pub fn generate_sides(
     // needs each object's resolved `side` to pick `:forward`/`:backward`. Folded in here (rather
     // than left to the caller) so no side-specific logic needs to live outside this module.
     for mut obj in side_objects {
-        let obj_side = match obj.side {
-            Side::Left => "left",
-            Side::Right => "right",
-            Side::Self_ => unreachable!("side objects are never Self_"),
-        };
         if let Some(transformation) = transformations.iter().find(|t| t.prefix == obj.prefix) {
             for step in transformation.directed_steps {
-                step.apply(&mut obj.tags, &mut obj.annotations, Some(&tags), obj_side, Some(obj.prefix), Some(obj.infix));
+                step.apply(&mut obj.tags, &mut obj.annotations, Some(&tags));
             }
         }
 
         f(ExtractCtx {
             obj_tags: &obj.tags,
             parent_tags: Some(&tags),
-            split: SplitContext { obj_side, prefix: Some(obj.prefix), infix: Some(obj.infix) },
             id: &obj.id,
             annotations: &obj.annotations,
         });
@@ -337,6 +303,10 @@ mod generate_sides_tests {
         CenterLineTransformation { highway: "cycleway", prefix: "cycleway", directed_steps: &[] }
     }
 
+    fn annotation_str<'a>(ctx: &'a ExtractCtx, key: &str) -> Option<&'a str> {
+        ctx.annotations.get(key).and_then(Value::as_str)
+    }
+
     #[test]
     fn side_with_no_matching_tags_is_dropped() {
         // No `cycleway:*` tags at all — neither side should produce an object; only "self" is kept.
@@ -351,13 +321,17 @@ mod generate_sides_tests {
     fn side_with_matching_tags_is_kept_with_correct_infix() {
         let way_tags = tags(&[("highway", "primary"), ("cycleway:right", "lane")]);
         let transformations = vec![cycleway_transformation()];
-        let mut seen: Vec<(String, &'static str, Option<&'static str>)> = Vec::new();
+        let mut seen: Vec<(String, String, Option<String>)> = Vec::new();
         generate_sides(way_tags, &transformations, "way/1", |ctx| {
-            seen.push((ctx.id.to_owned(), ctx.split.obj_side, ctx.split.infix));
+            seen.push((
+                ctx.id.to_owned(),
+                annotation_str(&ctx, "_side").unwrap_or("self").to_owned(),
+                annotation_str(&ctx, "_infix").map(str::to_owned),
+            ));
         });
         assert_eq!(seen, vec![
-            ("way/1".to_owned(), "self", None),
-            ("way/1/cycleway/right".to_owned(), "right", Some("right")),
+            ("way/1".to_owned(), "self".to_owned(), None),
+            ("way/1/cycleway/right".to_owned(), "right".to_owned(), Some("right".to_owned())),
         ]);
     }
 
@@ -373,10 +347,10 @@ mod generate_sides_tests {
         let transformations = vec![cycleway_transformation()];
         let mut right_infix = None;
         generate_sides(way_tags, &transformations, "way/1", |ctx| {
-            if ctx.split.obj_side == "right" {
-                right_infix = ctx.split.infix;
+            if annotation_str(&ctx, "_side") == Some("right") {
+                right_infix = annotation_str(&ctx, "_infix").map(str::to_owned);
             }
         });
-        assert_eq!(right_infix, Some("right"));
+        assert_eq!(right_infix, Some("right".to_owned()));
     }
 }

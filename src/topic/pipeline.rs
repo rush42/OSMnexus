@@ -57,12 +57,12 @@ pub fn build_topic_rows(
     // checks (which only ever saw the pre-unnest tags in the original pipeline).
     //
     // `pre_split_annotations` is a scratch map for this stage's steps (mostly relevant for a
-    // `Drop`'s `AnnotationExists` condition, which nothing here constructs yet — no `input_transforms`
-    // JSON shape reaches `Drop` pre-split); it's discarded once side-splitting takes over its own.
+    // `Drop`'s condition, which nothing here constructs yet — no `input_transforms` JSON shape
+    // reaches `Drop` pre-split); it's discarded once side-splitting takes over its own.
     let mut pre_split_annotations = Map::new();
     if kind == ElementKind::Way {
         for step in &runner.input_transforms[..runner.exclude_check_at] {
-            step.apply(&mut tags, &mut pre_split_annotations, None, "self", None, None);
+            step.apply(&mut tags, &mut pre_split_annotations, None);
         }
     }
 
@@ -74,7 +74,7 @@ pub fn build_topic_rows(
 
     if kind == ElementKind::Way {
         for step in &runner.input_transforms[runner.exclude_check_at..] {
-            step.apply(&mut tags, &mut pre_split_annotations, None, "self", None, None);
+            step.apply(&mut tags, &mut pre_split_annotations, None);
         }
     }
 
@@ -100,16 +100,14 @@ pub fn build_topic_rows(
             .category_outputs
             .get(&category.id)
             .unwrap_or(&runner.default_outputs);
+        // `ectx.annotations` already carries `_side`, plus `_prefix`/`_infix` for a side object
+        // (stamped by `generate_sides`); clone it as this row's base annotations map, then let
+        // `eval_fields` add each output's own `consts` provenance on top. `_parent_highway` is
+        // gone (redundant with the parent's own `highway` tag, already reachable through
+        // `ectx.parent_tags`).
         let mut produced = Map::new();
-        let mut annotations = Map::new();
+        let mut annotations = ectx.annotations.clone();
         eval_fields(outputs, &ectx, &mut produced, &mut annotations);
-
-        // Side-split context, written generically via `SplitContext::iter` (`_side`, plus
-        // `_prefix`/`_infix` for a side object); `_parent_highway` is gone (redundant with the
-        // parent's own `highway` tag, already reachable through `ectx.parent_tags`).
-        for (k, v) in ectx.split.iter() {
-            annotations.insert(format!("_{k}"), Value::String(v.to_owned()));
-        }
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time. `ectx.id`

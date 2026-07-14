@@ -20,7 +20,6 @@ use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::keys;
 use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
-use crate::tag_engine::transform::side_split::SplitContext;
 use crate::osm::types::RawTags;
 
 /// A produced value plus optional provenance. The `consts` are arbitrary key/value pairs the
@@ -32,22 +31,22 @@ pub struct Produced {
     pub consts: Map<String, Value>,
 }
 
-/// Which tags (`obj_tags`, `parent_tags`), plus side-split addressing (`split` — see
-/// `transform::side_split::SplitContext`, whose only non-trivial constructor is
-/// `side_split::generate_sides`), `id` — the row id for this object, defaulted to the element's
-/// own id and overwritten by `generate_sides` for a side object (e.g. `"way/123/cycleway/left"`)
-/// — and `annotations`, a read-only view of whatever engine bookkeeping (see
-/// `output::rows::TopicRow::annotations`) has been attached to this object so far, so a `Filter`
-/// (e.g. `AnnotationExists`) can branch on it just like it can on `obj_tags`. `Copy` so a producer
-/// can cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself
-/// against a different tagset — `annotations` stays a shared reference for that reason, never
-/// `&mut`; whatever step is actively writing to it (see `InputTransform::apply`) holds its own
-/// `&mut` separately and only ever hands `eval`/`Producer::eval` a reborrowed `&Map`.
+/// Which tags (`obj_tags`, `parent_tags`), `id` — the row id for this object, defaulted to the
+/// element's own id and overwritten by `generate_sides` for a side object (e.g.
+/// `"way/123/cycleway/left"`) — and `annotations`, a read-only view of whatever engine bookkeeping
+/// (see `output::rows::TopicRow::annotations`) has been attached to this object so far, so a
+/// `Filter` (`Side`/`Prefix`/`Infix`/`TagsEmpty`/…) can branch on it just like it can on
+/// `obj_tags`. There is no dedicated side-split-context field: `_side`/`_prefix`/`_infix` are
+/// ordinary `annotations` entries, stamped by `generate_sides` (see its own doc) — `Filter::Side`
+/// reads `annotations["_side"]` the same way `Filter::TagEq` reads a tag. `Copy` so a producer can
+/// cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself against
+/// a different tagset — `annotations` stays a shared reference for that reason, never `&mut`;
+/// whatever step is actively writing to it (see `InputTransform::apply`) holds its own `&mut`
+/// separately and only ever hands `eval`/`Producer::eval` a reborrowed `&Map`.
 #[derive(Clone, Copy)]
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags,
     pub parent_tags: Option<&'a RawTags>,
-    pub split: SplitContext,
     pub id: &'a str,
     pub annotations: &'a Map<String, Value>,
 }
@@ -77,6 +76,9 @@ pub enum TagSet {
     /// parent exists — distinct from a `fallback:[{parent},{obj}]`, which would also fall
     /// through when the parent merely lacks the key.
     ParentOrObj,
+    /// `ctx.annotations` instead of a tagset — lets a directed read (or the sanitizer-shorthand
+    /// output sugar) pull an engine-attached value (e.g. `_side`) into a real output field.
+    Annotations,
 }
 
 /// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see `tag_engine::
@@ -120,7 +122,7 @@ pub enum Producer {
         consts: Map<String, Value>,
     },
     /// Direction-sensitive read of `key`: resolves its `:forward`/`:backward` variant from
-    /// `ctx.split.obj_side` + the global left/right-hand-traffic setting
+    /// `ctx.annotations["_side"]` + the global left/right-hand-traffic setting
     /// (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no direction to
     /// resolve). Not expressible as a plain `Extract` wrapped in `Parent`: it needs both tagsets at
     /// once — the object's own (to guard against overriding an already-set key) and, when
@@ -168,7 +170,8 @@ impl Producer {
                 if ctx.obj_tags.contains_key(key.as_str()) {
                     return None; // already set (e.g. by an earlier unnest) — don't override it
                 }
-                let suffix = match (ctx.split.obj_side, crate::traffic::is_left_hand_traffic()) {
+                let obj_side = ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self");
+                let suffix = match (obj_side, crate::traffic::is_left_hand_traffic()) {
                     ("left", false) | ("right", true) => ":backward",
                     ("right", false) | ("left", true) => ":forward",
                     _ => return None, // "self": no direction to resolve
@@ -179,6 +182,9 @@ impl Producer {
                         let tags = ctx.parent_tags?;
                         keys::first_present(tags, [key.as_str(), directed_key.as_str()])
                     }
+                    TagSet::Annotations => ctx.annotations.get(directed_key.as_str())
+                        .or_else(|| ctx.annotations.get(key.as_str()))
+                        .and_then(Value::as_str),
                     _ => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
                 }?;
                 let value = resolve_sanitize(sanitize.as_ref(), raw)?;
@@ -261,7 +267,7 @@ mod classify_bool_tests {
     use crate::tag_engine::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
-        ExtractCtx { obj_tags: obj, parent_tags: parent, split: SplitContext::default(), id: "", annotations: empty_annotations() }
+        ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations() }
     }
 
     /// A `Match` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
@@ -276,6 +282,7 @@ mod classify_bool_tests {
             TagSet::Obj => base,
             TagSet::Parent => Producer::Parent(Box::new(base)),
             TagSet::ParentOrObj => Producer::parent_or_obj(base),
+            TagSet::Annotations => unreachable!("not exercised by these tests"),
         }
     }
 
@@ -317,14 +324,14 @@ mod directed_extract_tests {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
     }
 
-    fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, obj_side: &'static str) -> ExtractCtx<'a> {
-        ExtractCtx {
-            obj_tags: obj,
-            parent_tags: parent,
-            split: SplitContext { obj_side, prefix: None, infix: None },
-            id: "",
-            annotations: empty_annotations(),
-        }
+    fn side_annotations(side: &str) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("_side".to_owned(), Value::String(side.to_owned()));
+        m
+    }
+
+    fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>, annotations: &'a Map<String, Value>) -> ExtractCtx<'a> {
+        ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations }
     }
 
     fn directed(key: &str, from: TagSet) -> Producer {
@@ -336,7 +343,8 @@ mod directed_extract_tests {
         let obj = tags(&[("cycleway:lanes", "existing")]);
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right")).is_none());
+        let annotations = side_annotations("right");
+        assert!(producer.eval(&ctx(&obj, Some(&parent), &annotations)).is_none());
     }
 
     #[test]
@@ -344,19 +352,21 @@ mod directed_extract_tests {
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        let produced = producer.eval(&ctx(&obj, Some(&parent), "right")).unwrap();
+        let annotations = side_annotations("right");
+        let produced = producer.eval(&ctx(&obj, Some(&parent), &annotations)).unwrap();
         assert_eq!(produced.value, Value::String("lane".to_owned()));
 
         let obj = RawTags::default();
         let parent = RawTags::default();
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right")).is_none());
+        assert!(producer.eval(&ctx(&obj, Some(&parent), &annotations)).is_none());
     }
 
     #[test]
     fn self_source_reads_from_obj_own_directed_key() {
         let obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
         let producer = directed("traffic_sign", TagSet::Obj);
-        let produced = producer.eval(&ctx(&obj, None, "right")).unwrap();
+        let annotations = side_annotations("right");
+        let produced = producer.eval(&ctx(&obj, None, &annotations)).unwrap();
         assert_eq!(produced.value, Value::String("DE:1022-10".to_owned()));
     }
 
@@ -365,7 +375,8 @@ mod directed_extract_tests {
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let producer = directed("cycleway:lanes", TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "self")).is_none());
+        let annotations = side_annotations("self");
+        assert!(producer.eval(&ctx(&obj, Some(&parent), &annotations)).is_none());
     }
 
     #[test]
@@ -375,8 +386,10 @@ mod directed_extract_tests {
         let producer = directed("cycleway:lanes", TagSet::Parent);
         // Right-hand traffic (global default in tests): Side::Right reads `:forward`, not
         // `:backward` — so this should NOT match.
-        assert!(producer.eval(&ctx(&obj, Some(&parent), "right")).is_none());
-        let produced = producer.eval(&ctx(&obj, Some(&parent), "left")).unwrap();
+        let right = side_annotations("right");
+        assert!(producer.eval(&ctx(&obj, Some(&parent), &right)).is_none());
+        let left = side_annotations("left");
+        let produced = producer.eval(&ctx(&obj, Some(&parent), &left)).unwrap();
         assert_eq!(produced.value, Value::String("lane".to_owned()));
     }
 }

@@ -25,9 +25,10 @@ pub enum Predicate {
     Prefix(String),
     Infix(String),
     Side(String),
-    /// `Filter::AnnotationExists` — engine bookkeeping, not a tag; namespaced like `HasKeyPrefix`
-    /// so it can never collide with a real tag key in `tags_involved`/overlap analysis.
-    AnnotationExists(String),
+    /// `Filter::TagsEmpty` — whether the object's own tags are (non-)empty. Practically never
+    /// appears in a real category condition (it's `InputTransform::Drop`'s own mechanism), but
+    /// `Filter` is one type shared by both, so `filter_to_expr` needs a total mapping regardless.
+    TagsEmpty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -48,7 +49,7 @@ impl Predicate {
             Predicate::Prefix(_) => vec!["[prefix]".to_string()],
             Predicate::Infix(_) => vec!["[infix]".to_string()],
             Predicate::Side(_) => vec!["[side]".to_string()],
-            Predicate::AnnotationExists(k) => vec![format!("annotation({k})")],
+            Predicate::TagsEmpty => vec!["[tags_empty]".to_string()],
         }
     }
 }
@@ -154,8 +155,8 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
         Filter::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
         Filter::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),
-        Filter::AnnotationExists { key, exists: true } => Expr::Lit(Literal::Pos(Predicate::AnnotationExists(key.clone()))),
-        Filter::AnnotationExists { key, exists: false } => Expr::Lit(Literal::Neg(Predicate::AnnotationExists(key.clone()))),
+        Filter::TagsEmpty { tags_empty: true } => Expr::Lit(Literal::Pos(Predicate::TagsEmpty)),
+        Filter::TagsEmpty { tags_empty: false } => Expr::Lit(Literal::Neg(Predicate::TagsEmpty)),
     }
 }
 
@@ -190,7 +191,7 @@ fn prefix_predicate(p: Predicate) -> Predicate {
         | Predicate::Prefix(_)
         | Predicate::Infix(_)
         | Predicate::Side(_)
-        | Predicate::AnnotationExists(_)) => p,
+        | Predicate::TagsEmpty) => p,
     }
 }
 

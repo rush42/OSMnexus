@@ -35,9 +35,9 @@ pub struct TopicRow {
     /// JSON shorthands for declaring one entry in one `outputs` map; see `TopicSpec::outputs`).
     pub produced: Map<String, Value>,
     /// Engine-attached bookkeeping about `produced`, not itself a topic-authored output: side-split
-    /// context (`_side`/`_prefix`/`_infix`, from `SplitContext::iter`) and each output's companion
-    /// `consts` provenance (`<output>_source`/`<output>_confidence`, from `Produced::consts`) — see
-    /// `topic::pipeline::eval_fields`.
+    /// context (`_side`/`_prefix`/`_infix`, stamped by `transform::side_split::generate_sides`)
+    /// and each output's companion `consts` provenance (`<output>_source`/`<output>_confidence`,
+    /// from `Produced::consts`) — see `topic::pipeline::eval_fields`.
     pub annotations: Map<String, Value>,
     pub meta: OsmMeta,
 }
