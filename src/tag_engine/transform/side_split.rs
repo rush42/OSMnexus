@@ -49,24 +49,6 @@ pub struct CenterLineTransformation {
 
 pub(crate) const META_PREFIXES: &[&str] = &["source:", "note:"];
 
-/// For ways whose own `highway` is a sidepath class (the `sidepath_highway` value set), unnest
-/// bare `prefix`-prefixed tags (and `source:`/`note:` meta variants) onto the way itself. Models
-/// the OSM convention of tagging a way's own cycling function directly on it (e.g. `highway=path`
-/// + `cycleway=track`), as opposed to `split_sides` projecting side tags onto separate child
-/// objects. Must run after `exclude_condition` and before `generate_sides`, mirroring
-/// where this used to run inline (see topic.json's `unnest_sidepath_self` transform).
-pub fn apply_sidepath_self(tags: &mut RawTags, prefixes: &[&str]) {
-    let highway = tags.get("highway").cloned().unwrap_or_default();
-    if !value_set("sidepath_highway").contains(highway.as_str()) {
-        return;
-    }
-
-    for prefix in prefixes {
-        let source = tags.clone();
-        unnest_prefixed_tags(&source, prefix, "", META_PREFIXES, tags);
-    }
-}
-
 /// Port of `GetTransformedObjects` from transformations.lua (renamed `generate_sides`).
 ///
 /// `default_id` is the element's own row id (e.g. `"way/123"`); the self object keeps it
@@ -85,7 +67,7 @@ pub fn generate_sides(
 ) {
     let highway = tags.get("highway").cloned().unwrap_or_default();
 
-    // Sidepath-class ways (see `apply_sidepath_self`) are never split into sides — any side
+    // Sidepath-class ways (see `InputTransform::UnnestTags`'s `guard_value_set`) are never split into sides — any side
     // tagging they carry describes their own alignment, already folded onto this way's own tags.
     if value_set("sidepath_highway").contains(highway.as_str()) {
         f(ExtractCtx {

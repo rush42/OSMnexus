@@ -30,7 +30,7 @@ pub struct TopicRunner {
     /// influence which category a way matches (or whether `exclude_condition` excludes it at all).
     pub input_transforms: Vec<InputTransform>,
     /// Index into `input_transforms` where `exclude_condition` is evaluated: `input_transforms[..n]` run
-    /// first, then `exclude_condition`, then `input_transforms[n..]`. Set to the first `SidepathSelf`
+    /// first, then `exclude_condition`, then `input_transforms[n..]`. Set to the first `UnnestTags`
     /// step's index (or `input_transforms.len()` if there is none) — mirrors the original two-stage
     /// pipeline, where tag rewrites ran before `exclude_condition` but unnesting (which can promote
     /// a `cycleway:access=no`-style tag onto a bare `access` that `exclude_condition` checks
@@ -269,7 +269,12 @@ impl TopicRunner {
             match t {
                 InputTransformSpec::UnnestSidepathSelf { prefix } => {
                     let prefix = Box::leak(prefix.clone().into_boxed_str()) as &'static str;
-                    input_transforms.push(InputTransform::SidepathSelf { prefix });
+                    input_transforms.push(InputTransform::UnnestTags {
+                        prefix,
+                        infix: "",
+                        meta_prefixes: crate::tag_engine::transform::side_split::META_PREFIXES,
+                        guard_value_set: Some("sidepath_highway"),
+                    });
                 }
                 InputTransformSpec::TagRules { output, source } => {
                     input_transforms.push(InputTransform::TagRule {
@@ -290,9 +295,12 @@ impl TopicRunner {
                 }
             }
         }
+        // Only `UnnestSidepathSelf` config entries ever produce an `UnnestTags` step today (no
+        // topic.json shape exposes a bare in-place unnest yet), so matching the variant is
+        // equivalent to matching the old dedicated `SidepathSelf` one.
         let exclude_check_at = input_transforms
             .iter()
-            .position(|s| matches!(s, InputTransform::SidepathSelf { .. }))
+            .position(|s| matches!(s, InputTransform::UnnestTags { .. }))
             .unwrap_or(input_transforms.len());
 
         // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
