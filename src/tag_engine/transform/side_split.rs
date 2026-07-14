@@ -63,10 +63,7 @@ pub fn apply_sidepath_self(tags: &mut RawTags, prefixes: &[&str]) {
 
     for prefix in prefixes {
         let source = tags.clone();
-        unnest_prefixed_tags(&source, prefix, "", None, tags);
-        for meta in META_PREFIXES {
-            unnest_prefixed_tags(&source, prefix, "", Some(meta), tags);
-        }
+        unnest_prefixed_tags(&source, prefix, "", META_PREFIXES, tags);
     }
 }
 
@@ -133,16 +130,9 @@ pub fn generate_sides(
             let mut matched_infix: &'static str = "";
             for infix in ["", "both", side_str] {
                 let before = obj.len();
-                unnest_prefixed_tags(&tags, transformation.prefix, infix, None, &mut obj);
+                unnest_prefixed_tags(&tags, transformation.prefix, infix, META_PREFIXES, &mut obj);
                 if obj.len() > before {
                     matched_infix = infix;
-                }
-            }
-
-            // Meta-prefixed tags (source:, note:) — processed after, overwrite.
-            for meta in META_PREFIXES {
-                for infix in ["", "both", side_str] {
-                    unnest_prefixed_tags(&tags, transformation.prefix, infix, Some(meta), &mut obj);
                 }
             }
 
@@ -199,58 +189,123 @@ pub fn generate_sides(
     }
 }
 
-/// Unnest tags matching `{meta}{prefix}[:{infix}]` onto `dest`.
+/// Unnest tags matching `{prefix}[:{infix}]` onto `dest`, plus — for each `meta_prefixes` entry
+/// (e.g. `"source:"`, `"note:"`) — the meta-tag documenting the same matched key, if present.
 ///
-/// `meta` is an optional meta-prefix (e.g. `"source:"`, `"note:"`); pass `None` for the plain
-/// tag. The destination key is the meta key (`"source"`) when a meta-prefix is given, else the
-/// bare `prefix`.
+/// A meta tag's key is always exactly `{meta}{the raw key that just matched}` (`source:` +
+/// `cycleway:left:width` = `source:cycleway:left:width`), so each meta companion is a single
+/// `O(1)` point lookup keyed off the match already in hand, not a separate `O(|tags|)` rescan of
+/// `tags` per meta prefix — `tags` is scanned exactly once regardless of how many meta prefixes
+/// are given. The one behavioral consequence: a meta tag with no corresponding real tag present
+/// (e.g. a stray `source:cycleway:left:width` with no `cycleway:left:width`) is not projected —
+/// there's nothing real for it to document.
 ///
-/// Example (no meta, prefix="cycleway", infix="left"), full prefix "cycleway:left":
-///   key == "cycleway:left"        → dest["cycleway"] = val
-///   key == "cycleway:left:width"  → dest["width"]    = val
-/// Example (meta="source:", same prefix/infix), full prefix "source:cycleway:left":
-///   key == "source:cycleway:left"        → dest["source"]       = val
-///   key == "source:cycleway:left:width"  → dest["source:width"] = val
+/// The destination key for a meta companion is the meta name alone (`"source"`) for an exact
+/// match, or `"{meta name}:{suffix}"` (`"source:width"`) for a sub-key match — it stays attached
+/// to the same object as the real value, not renested under it.
+///
+/// Example (prefix="cycleway", infix="left"), full prefix "cycleway:left":
+///   key == "cycleway:left"        → dest["cycleway"] = val, + dest["source"] if source: sibling exists
+///   key == "cycleway:left:width"  → dest["width"]    = val, + dest["source:width"] if source: sibling exists
 pub(crate) fn unnest_prefixed_tags(
     tags: &RawTags,
     prefix: &str,
     infix: &str,
-    meta: Option<&str>,
+    meta_prefixes: &[&str],
     dest: &mut RawTags,
 ) {
-    let meta_prefix = meta.unwrap_or("");
     let full_prefix = if infix.is_empty() {
-        format!("{meta_prefix}{prefix}")
+        prefix.to_owned()
     } else {
-        format!("{meta_prefix}{prefix}:{infix}")
+        format!("{prefix}:{infix}")
     };
-    let meta_key = meta.map(|m| m.trim_end_matches(':'));
 
     for (key, val) in tags {
         if !key.starts_with(&full_prefix) {
             continue;
         }
 
-        if key == &full_prefix {
-            // Case 1: exact match → dest[meta_key or prefix] = val
-            dest.insert(meta_key.unwrap_or(prefix).to_owned(), val.clone());
+        // `suffix: None` = exact match (`key == full_prefix`); `Some(s)` = a `:`-separated
+        // sub-key — drives both the plain dest key and each meta companion's dest key below.
+        let suffix: Option<&str> = if key == &full_prefix {
+            None
         } else if key.len() > full_prefix.len() && key.as_bytes()[full_prefix.len()] == b':' {
-            // Case 2: sub-key → dest[(meta:)suffix] = val
-            let suffix = &key[full_prefix.len() + 1..];
-
+            let s = &key[full_prefix.len() + 1..];
             // Validate: when infix is empty, the first component of suffix must not itself be a side.
             if infix.is_empty() {
-                let first = suffix.split(':').next().unwrap_or("");
+                let first = s.split(':').next().unwrap_or("");
                 if matches!(first, "left" | "right" | "both") {
                     continue;
                 }
             }
+            Some(s)
+        } else {
+            continue;
+        };
 
-            let dest_key = match meta_key {
-                Some(mk) => format!("{mk}:{suffix}"),
-                None => suffix.to_owned(),
+        dest.insert(suffix.unwrap_or(prefix).to_owned(), val.clone());
+
+        for meta in meta_prefixes {
+            let Some(meta_val) = tags.get(&format!("{meta}{key}")) else { continue };
+            let meta_key = meta.trim_end_matches(':');
+            let dest_key = match suffix {
+                Some(s) => format!("{meta_key}:{s}"),
+                None => meta_key.to_owned(),
             };
-            dest.insert(dest_key, val.clone());
+            dest.insert(dest_key, meta_val.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod unnest_prefixed_tags_tests {
+    use super::*;
+
+    fn tags(pairs: &[(&str, &str)]) -> RawTags {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn exact_and_subkey_match_without_meta() {
+        let src = tags(&[("cycleway:left", "lane"), ("cycleway:left:width", "1.5")]);
+        let mut dest = RawTags::default();
+        unnest_prefixed_tags(&src, "cycleway", "left", &[], &mut dest);
+        assert_eq!(dest.get("cycleway").map(String::as_str), Some("lane"));
+        assert_eq!(dest.get("width").map(String::as_str), Some("1.5"));
+    }
+
+    #[test]
+    fn meta_companion_projected_alongside_real_value() {
+        let src = tags(&[
+            ("cycleway:left", "lane"),
+            ("source:cycleway:left", "survey"),
+            ("cycleway:left:width", "1.5"),
+            ("source:cycleway:left:width", "survey"),
+        ]);
+        let mut dest = RawTags::default();
+        unnest_prefixed_tags(&src, "cycleway", "left", &["source:", "note:"], &mut dest);
+        assert_eq!(dest.get("cycleway").map(String::as_str), Some("lane"));
+        assert_eq!(dest.get("source").map(String::as_str), Some("survey"));
+        assert_eq!(dest.get("width").map(String::as_str), Some("1.5"));
+        assert_eq!(dest.get("source:width").map(String::as_str), Some("survey"));
+        assert!(!dest.contains_key("note"));
+    }
+
+    #[test]
+    fn orphaned_meta_tag_is_not_projected() {
+        // No `cycleway:left` present — its `source:` companion has nothing real to document.
+        let src = tags(&[("source:cycleway:left", "survey")]);
+        let mut dest = RawTags::default();
+        unnest_prefixed_tags(&src, "cycleway", "left", &["source:"], &mut dest);
+        assert!(dest.is_empty());
+    }
+
+    #[test]
+    fn bare_side_component_after_empty_infix_is_rejected() {
+        // `cycleway:left` under a bare (infix="") scan must not be mistaken for a sub-key of `cycleway`.
+        let src = tags(&[("cycleway:left", "lane")]);
+        let mut dest = RawTags::default();
+        unnest_prefixed_tags(&src, "cycleway", "", &[], &mut dest);
+        assert!(dest.is_empty());
     }
 }
