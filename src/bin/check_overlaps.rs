@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use osmnexus::lint::find_all_topic_overlaps;
+use osmnexus::tag_engine::linter::find_all_topic_overlaps;
 
 /// Lint: report category pairs that can match the same object without excluding each other
 /// (first-match order would then silently pick the winner). Runs across every topic. The same

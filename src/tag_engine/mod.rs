@@ -31,6 +31,8 @@
 //!   the operations needing dynamic key iteration a single `Producer` output can't express.
 //! - `keys`: generic tag-key selection helpers (`first_present`) shared by `producer`
 //!   and `filter`.
+//! - `linter`: the category-overlap lint — compiles a `Filter` to a boolean `Expr`
+//!   (`filter_to_expr`/`to_nnf`) and checks same-priority categories for satisfiable overlap.
 
 pub mod categories;
 pub mod classifier;
@@ -39,6 +41,7 @@ pub mod extract;
 pub mod filter;
 pub mod input_transforms;
 pub mod keys;
+pub mod linter;
 mod parser;
 pub mod producer;
 pub mod sanitize;

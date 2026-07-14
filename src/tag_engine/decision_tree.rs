@@ -36,7 +36,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::tag_engine::categories::{CategoriesFile, OrderedNode};
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::producer::ExtractCtx;
-use crate::lint::{filter_to_expr, to_nnf, Expr, Literal, NumOp, Predicate};
+use crate::tag_engine::linter::{filter_to_expr, to_nnf, Expr, Literal, NumOp, Predicate};
 
 /// Sentinel branch key for `Predicate::Side`. Domain is exactly `{"self","left","right"}` — always
 /// fully known for a given object, so this branch never needs a wildcard fallback in practice.
@@ -622,7 +622,7 @@ mod tests {
     use crate::tag_engine::filter::Filter;
     use crate::tag_engine::producer::ExtractCtx;
     use crate::tag_engine::transform::side_split::SplitContext;
-    use crate::lint::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
+    use crate::tag_engine::linter::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use crate::osm::types::RawTags;
 
     /// Positive Eq (plain-tag) atoms across every order-node condition → tag → observed values.

@@ -1,6 +1,5 @@
 pub mod config;
 pub mod db;
-pub mod lint;
 pub mod osm;
 pub mod output;
 pub mod paths;
