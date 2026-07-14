@@ -180,12 +180,6 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             g.edge(&node, &child, "");
             node
         }
-        Producer::ParentOrObj(inner) => {
-            let node = g.node("parent_or_obj", "diamond", "#fff2cc");
-            let child = render_producer(g, inner);
-            g.edge(&node, &child, "");
-            node
-        }
     }
 }
 

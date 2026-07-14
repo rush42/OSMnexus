@@ -45,11 +45,12 @@ pub struct ExtractCtx<'a> {
     pub id: &'a str,
 }
 
-/// Which tagset `Producer::DirectedExtract` reads — the *only* producer left with a `from` field;
-/// every other tagset-scoping need goes through `Producer::Parent`/`ParentOrObj` instead (see their
-/// docs), since a directed read needs both `parent_tags` and the object's own `obj_tags`
-/// simultaneously (to guard against overriding an already-set key) and so can't be expressed as a
-/// plain "swap `obj_tags`, recurse" wrapper.
+/// Which tagset `Producer::DirectedExtract` reads (and, via `topic::spec`'s sanitizer-shorthand,
+/// which tagset a bare `{name, from}` output entry reads) — `DirectedExtract` is the only producer
+/// left with a `from` field; every other tagset-scoping need goes through `Producer::Parent`/
+/// `parent_or_obj` instead (see their docs), since a directed read needs both `parent_tags` and the
+/// object's own `obj_tags` simultaneously (to guard against overriding an already-set key) and so
+/// can't be expressed as a plain "swap `obj_tags`, recurse" wrapper.
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TagSet {
@@ -82,7 +83,7 @@ pub enum Producer {
     /// returns `None` when no rule matches — letting a category const default or an enclosing
     /// fallback branch supply the value. Must be tried before `Extract` below, since `rules` is a
     /// required field and so unambiguously distinguishes it. Always reads `ctx.obj_tags` — wrap in
-    /// `Parent`/`ParentOrObj` to read the parent way's tags instead.
+    /// `Parent`/`parent_or_obj` to read the parent way's tags instead.
     ///
     /// Rules see the same context a category condition does — tags, `side`/`prefix`/`infix`,
     /// parent, and macros (`as_category_context`) — so e.g. `{"prefix": "cycleway"}` or
@@ -94,7 +95,7 @@ pub enum Producer {
         default: Option<Value>,
         consts: Map<String, Value>,
     },
-    /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`/`ParentOrObj` for the
+    /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`/`parent_or_obj` for the
     /// parent's tags).
     Extract {
         extract: Extract,
@@ -122,13 +123,16 @@ pub enum Producer {
     /// Re-evaluate the inner producer against the parent way's tags instead of the object's own —
     /// `None` when there is no parent. The `Filter`-side sibling of this (`Filter::Parent`)
     /// documents the same shape in more detail.
+    ///
+    /// `ParentOrObj` (matching the old `TagSet::ParentOrObj`/yes_flag `source: parent`) isn't a
+    /// variant here — it's JSON-parse sugar (`tag_engine::parser`) for `Match{rules: [{when:
+    /// HasParent(true), value: Parent(p)}, {when: HasParent(false), value: p}]}`. That's not the
+    /// same as `{"fallback": [Parent(p), p]}`: `Match`'s rule search re-evaluates each `when`
+    /// independently (a matching-but-empty rule doesn't make the next rule's `when` any truer), so
+    /// the second rule is only ever eligible when there's no parent — it commits to the parent
+    /// tagset whenever one exists, even if `p` then finds nothing there, where the naive fallback
+    /// would also retry against the object's own tags in that case.
     Parent(Box<Producer>),
-    /// Like `Parent`, but falls back to the object's own tags when there is no parent (matches the
-    /// old `TagSet::ParentOrObj`/yes_flag `source: parent`) — commits to the parent tagset whenever
-    /// a parent exists, even if the inner producer then fails to find anything there; distinct from
-    /// `{"fallback": [Parent(p), p]}`, which would also fall through to the object's tags when the
-    /// parent merely lacks the key.
-    ParentOrObj(Box<Producer>),
 }
 
 impl Producer {
@@ -169,11 +173,6 @@ impl Producer {
                 None => None,
                 Some(parent_tags) => inner.eval(&ExtractCtx { obj_tags: parent_tags, ..*ctx }),
             },
-
-            Producer::ParentOrObj(inner) => {
-                let tags = ctx.parent_tags.unwrap_or(ctx.obj_tags);
-                inner.eval(&ExtractCtx { obj_tags: tags, ..*ctx })
-            }
         }
     }
 }
@@ -212,8 +211,29 @@ impl Producer {
                 consts: consts.clone(),
             },
             Producer::Parent(inner) => Producer::Parent(Box::new(inner.resolve(macros, sanitizers)?)),
-            Producer::ParentOrObj(inner) => Producer::ParentOrObj(Box::new(inner.resolve(macros, sanitizers)?)),
         })
+    }
+
+    /// The `ParentOrObj` equivalent for `p` — see `Parent`'s doc for why this is built here rather
+    /// than existing as its own variant. Shared by `tag_engine::parser`'s `parent_or_obj` JSON
+    /// sugar and `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`. Takes an already-built
+    /// `Producer` (not raw JSON), so it composes with either call site's own construction.
+    pub fn parent_or_obj(p: Producer) -> Producer {
+        use crate::tag_engine::classifier::{Rule, ValueSpec};
+        Producer::Match {
+            rules: vec![
+                Rule {
+                    when: Filter::HasParent { has_parent: true },
+                    value: ValueSpec::Producer(Box::new(Producer::Parent(Box::new(p.clone())))),
+                },
+                Rule {
+                    when: Filter::HasParent { has_parent: false },
+                    value: ValueSpec::Producer(Box::new(p)),
+                },
+            ],
+            default: None,
+            consts: Map::new(),
+        }
     }
 }
 
@@ -228,7 +248,7 @@ mod classify_bool_tests {
     }
 
     /// A `Match` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
-    /// `from` wraps it in `Parent`/`ParentOrObj` when not `TagSet::Obj`.
+    /// `from` wraps it in `Parent`/`parent_or_obj` when not `TagSet::Obj`.
     fn bool_producer(filter: Filter, from: TagSet) -> Producer {
         let base = Producer::Match {
             rules: vec![Rule { when: filter, value: ValueSpec::Const(Value::Bool(true)) }],
@@ -238,7 +258,7 @@ mod classify_bool_tests {
         match from {
             TagSet::Obj => base,
             TagSet::Parent => Producer::Parent(Box::new(base)),
-            TagSet::ParentOrObj => Producer::ParentOrObj(Box::new(base)),
+            TagSet::ParentOrObj => Producer::parent_or_obj(base),
         }
     }
 

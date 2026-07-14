@@ -235,7 +235,7 @@ pub fn resolve_output_entry(
         match r.from {
             TagSet::Obj => extract,
             TagSet::Parent => Producer::Parent(Box::new(extract)),
-            TagSet::ParentOrObj => Producer::ParentOrObj(Box::new(extract)),
+            TagSet::ParentOrObj => Producer::parent_or_obj(extract),
         }
     } else {
         match value {
