@@ -76,7 +76,60 @@ impl Default for DecisionTree {
     }
 }
 
+/// Aggregate shape stats for a built tree, for gauging how much a `--tree-max-depth` change (or a
+/// rule-set edit) is actually pruning vs. bloating the tree.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TreeStats {
+    pub leaf_count: usize,
+    pub branch_count: usize,
+    /// Sum of `Leaf` candidate-slice lengths, for `total_leaf_candidates / leaf_count` = avg leaf size.
+    pub total_leaf_candidates: usize,
+    pub max_depth: usize,
+    /// Sum of leaf depths, for `total_leaf_depth / leaf_count` = avg leaf depth.
+    pub total_leaf_depth: usize,
+}
+
+impl TreeStats {
+    pub fn avg_leaf_depth(&self) -> f64 {
+        if self.leaf_count == 0 { 0.0 } else { self.total_leaf_depth as f64 / self.leaf_count as f64 }
+    }
+
+    pub fn avg_leaf_size(&self) -> f64 {
+        if self.leaf_count == 0 { 0.0 } else { self.total_leaf_candidates as f64 / self.leaf_count as f64 }
+    }
+}
+
 impl DecisionTree {
+    /// Walk the tree and tally shape stats (leaf/branch counts, depth, leaf size).
+    pub fn stats(&self) -> TreeStats {
+        let mut s = TreeStats::default();
+        self.stats_rec(0, &mut s);
+        s
+    }
+
+    fn stats_rec(&self, depth: usize, s: &mut TreeStats) {
+        s.max_depth = s.max_depth.max(depth);
+        match self {
+            DecisionTree::Leaf(idxs) => {
+                s.leaf_count += 1;
+                s.total_leaf_candidates += idxs.len();
+                s.total_leaf_depth += depth;
+            }
+            DecisionTree::Branch { children, wildcard, .. } => {
+                s.branch_count += 1;
+                for child in children.values() {
+                    child.stats_rec(depth + 1, s);
+                }
+                wildcard.stats_rec(depth + 1, s);
+            }
+            DecisionTree::AtomBranch { on_true, on_false, .. } => {
+                s.branch_count += 1;
+                on_true.stats_rec(depth + 1, s);
+                on_false.stats_rec(depth + 1, s);
+            }
+        }
+    }
+
     /// Descend to the leaf's candidate node-index slice for this object.
     pub fn candidates<'a>(&'a self, ctx: &ExtractCtx) -> &'a [usize] {
         let mut node = self;

@@ -10,3 +10,4 @@
 *.log
 *.DS_Store
 editor/node_modules
+dag_out/

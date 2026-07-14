@@ -107,6 +107,13 @@ async fn main() -> anyhow::Result<()> {
             r.categories.values().map(|c| c.categories.len()).sum::<usize>(),
             r.spec.outputs.len(),
         );
+        for (kind, cats) in &r.categories {
+            let s = cats.tree.stats();
+            info!(
+                "  {:?} tree: {} leaves, {} branches, max depth {}, avg leaf depth {:.1}, avg leaf size {:.1}",
+                kind, s.leaf_count, s.branch_count, s.max_depth, s.avg_leaf_depth(), s.avg_leaf_size(),
+            );
+        }
     }
 
     // Which passes are active: gated by whether any topic declares node/relation categories (a
