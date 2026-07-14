@@ -93,7 +93,7 @@ fn default_value_producer(v: &Value) -> Producer {
         }
         _ => (v.clone(), Map::new()),
     };
-    Producer::Match { rules: Vec::new(), default: Some(value), from: TagSet::Obj, consts }
+    Producer::Match { rules: Vec::new(), default: Some(value), consts }
 }
 
 /// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the
@@ -109,7 +109,6 @@ fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
     Producer::Match {
         rules: vec![rule(primary), rule(default_source)],
         default: None,
-        from: TagSet::Obj,
         consts: Map::new(),
     }
 }
@@ -251,10 +250,7 @@ impl TopicRunner {
             // these; it only unnests.
             let directed_step = |key: &String, from: TagSet| InputTransform::TagRule {
                 output: key.clone(),
-                source: Producer::Extract {
-                    key: Some(key.clone()), keys: None, from, side: None, sanitize: None,
-                    consts: Map::new(), directed: true,
-                },
+                source: Producer::DirectedExtract { key: key.clone(), from, sanitize: None, consts: Map::new() },
             };
             let steps: Vec<InputTransform> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
                 .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))

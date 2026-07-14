@@ -8,7 +8,7 @@
       { "when": { "tag": "highway", "in": ["service", "track"] }, "value": "assumed_no" }
     ]
   },
-  "road": { "shared": "road", "from": "parent_or_obj" },
+  "road": { "parent_or_obj": { "shared": "road" } },
   "traffic_mode_left": {
     "rules": [
       { "when": { "or": [
@@ -34,7 +34,7 @@
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
         ] },
         "value": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" } },
-      { "when": true, "value": { "keys": ["parking:left", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" } }
+      { "when": true, "value": { "parent_or_obj": { "keys": ["parking:left", "parking:both"], "sanitize": "parking" } } }
     ]
   },
   "traffic_mode_right_from_parking_both": {
@@ -44,7 +44,7 @@
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
         ] },
         "value": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" } },
-      { "when": true, "value": { "keys": ["parking:right", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" } }
+      { "when": true, "value": { "parent_or_obj": { "keys": ["parking:right", "parking:both"], "sanitize": "parking" } } }
     ]
   },
   "traffic_mode_left_from_parking_directional": {
@@ -55,7 +55,7 @@
         ] },
         "value": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" } },
       { "when": { "side": "left" },
-        "value": { "keys": ["parking:left", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" } }
+        "value": { "parent_or_obj": { "keys": ["parking:left", "parking:both"], "sanitize": "parking" } } }
     ]
   },
   "traffic_mode_right_from_parking_directional": {
@@ -66,14 +66,14 @@
         ] },
         "value": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" } },
       { "when": { "side": "right" },
-        "value": { "keys": ["parking:right", "parking:both"], "sanitize": "parking", "from": "parent_or_obj" } }
+        "value": { "parent_or_obj": { "keys": ["parking:right", "parking:both"], "sanitize": "parking" } } }
     ]
   },
   "lifecycle": {
     "fallback": [
       { "key": "temporary", "sanitize": "temporary" },
       { "key": "lifecycle" },
-      { "key": "lifecycle", "from": "parent" }
+      { "parent": { "key": "lifecycle" } }
     ]
   },
   "surface": {
@@ -94,12 +94,12 @@
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
         ], "consts": { "source": "tag", "confidence": "high" } },
       { "key": "surface", "sanitize": "surface_normalize", "consts": { "source": "tag", "confidence": "high" } },
-      { "rules": [
+      { "parent": { "rules": [
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
-        ], "from": "parent", "consts": { "source": "parent_highway_tag", "confidence": "high" } },
-      { "key": "surface", "sanitize": "surface_normalize", "from": "parent", "consts": { "source": "parent_highway_tag", "confidence": "high" } }
+        ], "consts": { "source": "parent_highway_tag", "confidence": "high" } } },
+      { "parent": { "key": "surface", "sanitize": "surface_normalize", "consts": { "source": "parent_highway_tag", "confidence": "high" } } }
     ]
   },
   "smoothness": {

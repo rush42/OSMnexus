@@ -3,10 +3,10 @@
     "fallback": [
       { "key": "temporary", "sanitize": "temporary" },
       { "key": "lifecycle" },
-      { "key": "lifecycle", "from": "parent" }
+      { "parent": { "key": "lifecycle" } }
     ]
   },
-  "road": { "shared": "road", "from": "parent_or_obj" },
+  "road": { "parent_or_obj": { "shared": "road" } },
   "track_minzoom": {
     "default": 0,
     "rules": [

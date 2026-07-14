@@ -44,6 +44,11 @@ pub struct ExtractCtx<'a> {
     pub id: &'a str,
 }
 
+/// Which tagset `Producer::DirectedExtract` reads — the *only* producer left with a `from` field;
+/// every other tagset-scoping need goes through `Producer::Parent`/`ParentOrObj` instead (see their
+/// docs), since a directed read needs both `parent_tags` and the object's own `obj_tags`
+/// simultaneously (to guard against overriding an already-set key) and so can't be expressed as a
+/// plain "swap `obj_tags`, recurse" wrapper.
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TagSet {
@@ -56,18 +61,6 @@ pub enum TagSet {
     /// parent exists — distinct from a `fallback:[{parent},{obj}]`, which would also fall
     /// through when the parent merely lacks the key.
     ParentOrObj,
-}
-
-impl TagSet {
-    /// Which tagset a producer reads. `Parent` is strict (None when the object has no parent);
-    /// `ParentOrObj` falls back to the object's own tags.
-    fn resolve<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<&'a RawTags> {
-        match self {
-            TagSet::Obj => Some(ctx.obj_tags),
-            TagSet::Parent => ctx.parent_tags,
-            TagSet::ParentOrObj => Some(ctx.parent_tags.unwrap_or(ctx.obj_tags)),
-        }
-    }
 }
 
 /// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see `tag_engine::
@@ -83,12 +76,12 @@ pub enum Producer {
     /// (`ValueSpec::Producer`), which is what lets this one variant also subsume conditionals and
     /// ordered fallback chains: a rule matches when its `when` holds, and — if its value is itself
     /// a producer that produces nothing — matching doesn't stop the search, the next rule is
-    /// tried (see `classifier::match_rules`). `from` picks the tagset rules read (obj by default,
-    /// or the parent); `consts` is the provenance a *literal*-valued rule contributes when it
-    /// produces (a `Producer`-valued rule carries its own). With no `default`, returns `None` when
-    /// no rule matches — letting a category const default or an enclosing fallback branch supply
-    /// the value. Must be tried before `Extract` below, since `rules` is a required field and so
-    /// unambiguously distinguishes it.
+    /// tried (see `classifier::match_rules`). `consts` is the provenance a *literal*-valued rule
+    /// contributes when it produces (a `Producer`-valued rule carries its own). With no `default`,
+    /// returns `None` when no rule matches — letting a category const default or an enclosing
+    /// fallback branch supply the value. Must be tried before `Extract` below, since `rules` is a
+    /// required field and so unambiguously distinguishes it. Always reads `ctx.obj_tags` — wrap in
+    /// `Parent`/`ParentOrObj` to read the parent way's tags instead.
     ///
     /// Rules see the same context a category condition does — tags, `side`/`prefix`/`infix`,
     /// parent, and macros (`as_category_context`) — so e.g. `{"prefix": "cycleway"}` or
@@ -98,44 +91,64 @@ pub enum Producer {
     Match {
         rules: Vec<crate::tag_engine::classifier::Rule>,
         default: Option<Value>,
-        from: TagSet,
         consts: Map<String, Value>,
     },
+    /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`/`ParentOrObj` for the
+    /// parent's tags).
     Extract {
         key: Option<String>,
         keys: Option<Vec<String>>,
-        from: TagSet,
         side: Option<String>,
         sanitize: Option<SanitizeRef>,
         /// Companion key/values this branch contributes when it produces the value; emitted as
         /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
         consts: Map<String, Value>,
-        /// Direction-sensitive read (needs `key`, ignores `keys`/`side`): resolves `key`'s
-        /// `:forward`/`:backward` variant from `ctx.obj_side` + the global left/right-hand-traffic
-        /// setting (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no
-        /// direction to resolve). `from: Parent` tries the bare key on the parent's tags, then its
-        /// directed variant; any other `from` tries only the directed variant on the object's own
-        /// tags (e.g. a tag already unnested as `traffic_sign:forward`). Used for `split_sides`'
-        /// `directed_keys`/`self_directed_keys` — the object-cardinality-changing split itself
-        /// stays native, but this per-key projection is an ordinary sided tag read.
-        directed: bool,
     },
+    /// Direction-sensitive read of `key`: resolves its `:forward`/`:backward` variant from
+    /// `ctx.split.obj_side` + the global left/right-hand-traffic setting
+    /// (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no direction to
+    /// resolve). Not expressible as a plain `Extract` wrapped in `Parent`: it needs both tagsets at
+    /// once — the object's own (to guard against overriding an already-set key) and, when
+    /// `from: Parent`, the parent's (tried bare-key-then-directed-key). Any other `from` tries only
+    /// the directed variant on the object's own tags (e.g. a tag already unnested as
+    /// `traffic_sign:forward`). Used for `split_sides`' `directed_keys`/`self_directed_keys` — the
+    /// object-cardinality-changing split itself stays native, but this per-key projection is an
+    /// ordinary sided tag read. Only ever constructed directly by `topic::runner`, never parsed
+    /// from JSON.
+    DirectedExtract {
+        key: String,
+        from: TagSet,
+        sanitize: Option<SanitizeRef>,
+        consts: Map<String, Value>,
+    },
+    /// Re-evaluate the inner producer against the parent way's tags instead of the object's own —
+    /// `None` when there is no parent. The `Filter`-side sibling of this (`Filter::Parent`)
+    /// documents the same shape in more detail.
+    Parent(Box<Producer>),
+    /// Like `Parent`, but falls back to the object's own tags when there is no parent (matches the
+    /// old `TagSet::ParentOrObj`/yes_flag `source: parent`) — commits to the parent tagset whenever
+    /// a parent exists, even if the inner producer then fails to find anything there; distinct from
+    /// `{"fallback": [Parent(p), p]}`, which would also fall through to the object's tags when the
+    /// parent merely lacks the key.
+    ParentOrObj(Box<Producer>),
 }
 
 impl Producer {
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
-            Producer::Match { rules, default, from, consts } => {
-                let tags = from.resolve(ctx)?;
-                let mut rctx = *ctx;
-                rctx.obj_tags = tags;
-                crate::tag_engine::classifier::match_rules(rules, &rctx, consts)
+            Producer::Match { rules, default, consts } => {
+                crate::tag_engine::classifier::match_rules(rules, ctx, consts)
                     .or_else(|| default.clone().map(|value| Produced { value, consts: consts.clone() }))
             }
 
-            Producer::Extract { key, keys: _, from, side: _, sanitize, consts, directed: true } => {
-                let key = key.as_deref().expect("directed extract needs `key`");
-                if ctx.obj_tags.contains_key(key) {
+            Producer::Extract { key, keys, side, sanitize, consts } => {
+                let raw = read_raw(ctx.obj_tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
+                let value = resolve_sanitize(sanitize.as_ref(), raw)?;
+                Some(Produced { value, consts: consts.clone() })
+            }
+
+            Producer::DirectedExtract { key, from, sanitize, consts } => {
+                if ctx.obj_tags.contains_key(key.as_str()) {
                     return None; // already set (e.g. by an earlier unnest) — don't override it
                 }
                 let suffix = match (ctx.split.obj_side, crate::traffic::is_left_hand_traffic()) {
@@ -147,7 +160,7 @@ impl Producer {
                 let raw = match from {
                     TagSet::Parent => {
                         let tags = ctx.parent_tags?;
-                        keys::first_present(tags, [key, directed_key.as_str()])
+                        keys::first_present(tags, [key.as_str(), directed_key.as_str()])
                     }
                     _ => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
                 }?;
@@ -155,11 +168,14 @@ impl Producer {
                 Some(Produced { value, consts: consts.clone() })
             }
 
-            Producer::Extract { key, keys, from, side, sanitize, consts, directed: false } => {
-                let tags = from.resolve(ctx)?;
-                let raw = read_raw(tags, key.as_deref(), keys.as_deref(), side.as_deref())?;
-                let value = resolve_sanitize(sanitize.as_ref(), raw)?;
-                Some(Produced { value, consts: consts.clone() })
+            Producer::Parent(inner) => match ctx.parent_tags {
+                None => None,
+                Some(parent_tags) => inner.eval(&ExtractCtx { obj_tags: parent_tags, ..*ctx }),
+            },
+
+            Producer::ParentOrObj(inner) => {
+                let tags = ctx.parent_tags.unwrap_or(ctx.obj_tags);
+                inner.eval(&ExtractCtx { obj_tags: tags, ..*ctx })
             }
         }
     }
@@ -178,7 +194,7 @@ impl Producer {
         sanitizers: &HashMap<String, Sanitizer>,
     ) -> anyhow::Result<Producer> {
         Ok(match self {
-            Producer::Match { rules, default, from, consts } => Producer::Match {
+            Producer::Match { rules, default, consts } => Producer::Match {
                 rules: rules.iter()
                     .map(|r| Ok(crate::tag_engine::classifier::Rule {
                         when: r.when.expand(macros, sanitizers)?,
@@ -186,18 +202,23 @@ impl Producer {
                     }))
                     .collect::<anyhow::Result<_>>()?,
                 default: default.clone(),
-                from: *from,
                 consts: consts.clone(),
             },
-            Producer::Extract { key, keys, from, side, sanitize, consts, directed } => Producer::Extract {
+            Producer::Extract { key, keys, side, sanitize, consts } => Producer::Extract {
                 key: key.clone(),
                 keys: keys.clone(),
-                from: *from,
                 side: side.clone(),
                 sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
                 consts: consts.clone(),
-                directed: *directed,
             },
+            Producer::DirectedExtract { key, from, sanitize, consts } => Producer::DirectedExtract {
+                key: key.clone(),
+                from: *from,
+                sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
+                consts: consts.clone(),
+            },
+            Producer::Parent(inner) => Producer::Parent(Box::new(inner.resolve(macros, sanitizers)?)),
+            Producer::ParentOrObj(inner) => Producer::ParentOrObj(Box::new(inner.resolve(macros, sanitizers)?)),
         })
     }
 }
@@ -235,12 +256,17 @@ mod classify_bool_tests {
     }
 
     /// A `Match` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
+    /// `from` wraps it in `Parent`/`ParentOrObj` when not `TagSet::Obj`.
     fn bool_producer(filter: Filter, from: TagSet) -> Producer {
-        Producer::Match {
+        let base = Producer::Match {
             rules: vec![Rule { when: filter, value: ValueSpec::Const(Value::Bool(true)) }],
             default: Some(Value::Bool(false)),
-            from,
             consts: Map::new(),
+        };
+        match from {
+            TagSet::Obj => base,
+            TagSet::Parent => Producer::Parent(Box::new(base)),
+            TagSet::ParentOrObj => Producer::ParentOrObj(Box::new(base)),
         }
     }
 
@@ -292,10 +318,7 @@ mod directed_extract_tests {
     }
 
     fn directed(key: &str, from: TagSet) -> Producer {
-        Producer::Extract {
-            key: Some(key.to_owned()), keys: None, from, side: None, sanitize: None,
-            consts: Map::new(), directed: true,
-        }
+        Producer::DirectedExtract { key: key.to_owned(), from, sanitize: None, consts: Map::new() }
     }
 
     #[test]

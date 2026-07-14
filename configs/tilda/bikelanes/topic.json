@@ -7,8 +7,9 @@
           "key": "name"
         },
         {
-          "key": "name",
-          "from": "parent"
+          "parent": {
+            "key": "name"
+          }
         }
       ]
     },
@@ -33,8 +34,9 @@
           "key": "oneway:bicycle"
         },
         {
-          "key": "oneway:bicycle",
-          "from": "parent"
+          "parent": {
+            "key": "oneway:bicycle"
+          }
         }
       ]
     },
@@ -57,20 +59,24 @@
       "default": false
     },
     "informal": {
-      "key": "informal",
-      "from": "parent"
+      "parent": {
+        "key": "informal"
+      }
     },
     "covered": {
-      "key": "covered",
-      "from": "parent"
+      "parent": {
+        "key": "covered"
+      }
     },
     "operator_type": {
-      "key": "operator_type",
-      "from": "parent"
+      "parent": {
+        "key": "operator_type"
+      }
     },
     "mapillary": {
-      "key": "mapillary",
-      "from": "parent"
+      "parent": {
+        "key": "mapillary"
+      }
     },
     "segregated": true,
     "bicycle": true,

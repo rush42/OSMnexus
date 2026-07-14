@@ -22,19 +22,25 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::classifier::{Rule, ValueSpec};
 use crate::tag_engine::filter::Filter;
-use crate::tag_engine::producer::{Producer, TagSet};
+use crate::tag_engine::producer::Producer;
 use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
 
-/// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, plus `Fallback`'s `fallback`
-/// sugar — folded into an equivalent `Match` in `Deserialize` below, so a `Producer` value is
-/// never observably a fallback chain, only ever `Match`/`Extract`. Untagged, tried in this order
+/// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, `Parent`/`ParentOrObj` wrapping
+/// any nested `Producer` shape to scope it to the parent way's tags, plus `Fallback`'s `fallback`
+/// sugar — folded into an equivalent `Match` in `Deserialize` below, so a `Producer` value is never
+/// observably a fallback chain, only ever `Match`/`Extract`/`DirectedExtract`/`Parent`/`ParentOrObj`.
+/// (`DirectedExtract` has no JSON shape here at all — it's only ever built directly by
+/// `topic::runner` for `split_sides`' directed keys, never parsed.) Untagged, tried in this order
 /// (more-specific/required-field shapes before `Extract`, whose fields are all optional and so
 /// would otherwise match everything first).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum ProducerJson {
+    /// Scope the wrapped producer to the parent way's tags — see `Producer::Parent`/`ParentOrObj`.
+    Parent { parent: Box<Producer> },
+    ParentOrObj { parent_or_obj: Box<Producer> },
     /// Try each branch in order; the first one that produces anything wins, carrying its own
     /// branch-level `consts`. Desugars to an all-`when: true` `Match` (see `classifier::match_rules`
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
@@ -43,17 +49,14 @@ enum ProducerJson {
     Match {
         rules: Vec<Rule>,
         #[serde(default)] default: Option<Value>,
-        #[serde(default)] from: TagSet,
         #[serde(default)] consts: Map<String, Value>,
     },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
-        #[serde(default)] from: TagSet,
         #[serde(default)] side: Option<String>,
         #[serde(default)] sanitize: Option<SanitizeRef>,
         #[serde(default)] consts: Map<String, Value>,
-        #[serde(default)] directed: bool,
     },
 }
 
@@ -63,17 +66,18 @@ impl<'de> Deserialize<'de> for Producer {
         D: Deserializer<'de>,
     {
         Ok(match ProducerJson::deserialize(deserializer)? {
+            ProducerJson::Parent { parent } => Producer::Parent(parent),
+            ProducerJson::ParentOrObj { parent_or_obj } => Producer::ParentOrObj(parent_or_obj),
             ProducerJson::Fallback { fallback } => Producer::Match {
                 rules: fallback.into_iter()
                     .map(|p| Rule { when: Filter::Bool(true), value: ValueSpec::Producer(Box::new(p)) })
                     .collect(),
                 default: None,
-                from: TagSet::Obj,
                 consts: Map::new(),
             },
-            ProducerJson::Match { rules, default, from, consts } => Producer::Match { rules, default, from, consts },
-            ProducerJson::Extract { key, keys, from, side, sanitize, consts, directed } =>
-                Producer::Extract { key, keys, from, side, sanitize, consts, directed },
+            ProducerJson::Match { rules, default, consts } => Producer::Match { rules, default, consts },
+            ProducerJson::Extract { key, keys, side, sanitize, consts } =>
+                Producer::Extract { key, keys, side, sanitize, consts },
         })
     }
 }

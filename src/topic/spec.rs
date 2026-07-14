@@ -222,25 +222,26 @@ pub fn resolve_output_entry(
         }
         let r: SanitizerRepr = serde_json::from_value(value)
             .with_context(|| format!("topic outputs.{output}"))?;
-        Producer::Extract {
+        let extract = Producer::Extract {
             key: None,
             keys: Some(r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()])),
-            from: r.from,
             side: None,
             sanitize: Some(SanitizeRef::Name(r.name)),
             consts: Map::new(),
-            directed: false,
+        };
+        match r.from {
+            TagSet::Obj => extract,
+            TagSet::Parent => Producer::Parent(Box::new(extract)),
+            TagSet::ParentOrObj => Producer::ParentOrObj(Box::new(extract)),
         }
     } else {
         match value {
             Value::Bool(true) => Producer::Extract {
                 key: Some(output.to_owned()),
                 keys: None,
-                from: TagSet::Obj,
                 side: None,
                 sanitize: None,
                 consts: Map::new(),
-                directed: false,
             },
             Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),
             Value::String(name) => producer_lib.get(&name).cloned().ok_or_else(|| {
