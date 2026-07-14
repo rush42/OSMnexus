@@ -21,6 +21,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
 use crate::tag_engine::classifier::{Rule, ValueSpec};
+use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::producer::Producer;
 use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
@@ -77,7 +78,7 @@ impl<'de> Deserialize<'de> for Producer {
             },
             ProducerJson::Match { rules, default, consts } => Producer::Match { rules, default, consts },
             ProducerJson::Extract { key, keys, side, sanitize, consts } =>
-                Producer::Extract { key, keys, side, sanitize, consts },
+                Producer::Extract { extract: Extract { key, keys, side, sanitize }, consts },
         })
     }
 }

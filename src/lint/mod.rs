@@ -64,6 +64,16 @@ pub enum Expr {
     Or(Vec<Expr>),
 }
 
+/// `extract.key` if set, else the first candidate of `extract.keys` — the representative key used
+/// for `Predicate` atoms that can only name one plain key (see `filter_to_expr`'s doc on why that's
+/// an approximation for the `keys`/`first_tag` case).
+fn extract_key(extract: &crate::tag_engine::extract::Extract) -> String {
+    extract.key.clone().unwrap_or_else(|| {
+        extract.keys.as_ref().and_then(|ks| ks.first()).cloned()
+            .expect("Extract needs `key`/`tag` or a non-empty `keys`/`first_tag`")
+    })
+}
+
 pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr {
     match filter {
         Filter::Bool(true) => Expr::True,
@@ -84,33 +94,44 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
 
         // `sanitize` is ignored here: the overlap lint is a conservative heuristic and treats a
         // sanitized comparison like a raw one (atoms are independent, which keeps it sound enough).
-        Filter::TagEq { tag, eq, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), eq.clone()))),
-        Filter::TagExists { tag, exists: true } => Expr::Lit(Literal::Pos(Predicate::Exists(tag.clone()))),
-        Filter::TagExists { tag, exists: false } => Expr::Lit(Literal::Neg(Predicate::Exists(tag.clone()))),
-        Filter::TagContains { tag, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(tag.clone(), contains.clone()))),
-        Filter::TagStartsWith { tag, starts_with } => Expr::Lit(Literal::Pos(Predicate::StartsWith(tag.clone(), starts_with.clone()))),
-        Filter::TagEndsWith { tag, ends_with } => Expr::Lit(Literal::Pos(Predicate::EndsWith(tag.clone(), ends_with.clone()))),
-        Filter::TagIn { tag, r#in, .. } => {
-            let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), v.clone())))).collect();
-            Expr::Or(exprs)
+        // `extract.keys` (JSON alias `first_tag`, "first-present of these") has no exact
+        // representation for Contains/StartsWith/EndsWith/Exists, since a `Predicate` atom names
+        // one plain key — approximated onto the first candidate, same as the old `FirstTagExists`
+        // did (`// approximation` below). `Eq`/`In`/`InSet` keep the exact `FirstTagIn` atom the old
+        // `FirstTag*` variants used, since "first-present value is in this set" *is* representable.
+        Filter::TagEq { extract, eq } => match &extract.keys {
+            None => Expr::Lit(Literal::Pos(Predicate::Eq(extract.key.clone().expect("TagEq needs `key`/`tag`"), eq.clone()))),
+            Some(keys) => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
         },
-        Filter::TagInSet { tag, in_set } => {
-            // Expand the named set to an OR of equalities, mirroring TagIn.
-            let exprs: Vec<_> = crate::value_sets::value_set(in_set)
-                .iter()
-                .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(tag.clone(), v.clone()))))
-                .collect();
-            Expr::Or(exprs)
+        Filter::TagExists { extract, exists: true } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))), // approximation when `keys` is set
+        Filter::TagExists { extract, exists: false } => Expr::Lit(Literal::Neg(Predicate::Exists(extract_key(extract)))),
+        Filter::TagContains { extract, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(extract_key(extract), contains.clone()))), // approximation when `keys` is set
+        Filter::TagStartsWith { extract, starts_with } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract_key(extract), starts_with.clone()))), // approximation when `keys` is set
+        Filter::TagEndsWith { extract, ends_with } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract_key(extract), ends_with.clone()))), // approximation when `keys` is set
+        Filter::TagIn { extract, r#in } => match &extract.keys {
+            None => {
+                let key = extract.key.clone().expect("TagIn needs `key`/`tag`");
+                let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone())))).collect();
+                Expr::Or(exprs)
+            }
+            Some(keys) => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
         },
-
-        Filter::FirstTagIn { first_tag, r#in, .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(first_tag.clone(), r#in.clone()))),
-        Filter::FirstTagInSet { first_tag, in_set, .. } => {
-            let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
-            vals.sort();
-            Expr::Lit(Literal::Pos(Predicate::FirstTagIn(first_tag.clone(), vals)))
+        Filter::TagInSet { extract, in_set } => match &extract.keys {
+            None => {
+                // Expand the named set to an OR of equalities, mirroring TagIn.
+                let key = extract.key.clone().expect("TagInSet needs `key`/`tag`");
+                let exprs: Vec<_> = crate::value_sets::value_set(in_set)
+                    .iter()
+                    .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone()))))
+                    .collect();
+                Expr::Or(exprs)
+            }
+            Some(keys) => {
+                let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
+                vals.sort();
+                Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vals)))
+            }
         },
-        Filter::FirstTagExists { first_tag, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(first_tag[0].clone()))), // approximation
-        Filter::FirstTagExists { first_tag, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(first_tag[0].clone()))),
 
         // Recurse as normal, then prefix every tag key in the result with "parent_" — same
         // encoding the old one-off `ParentTag*` variants used, so downstream overlap analysis

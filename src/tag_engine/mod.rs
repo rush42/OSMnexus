@@ -14,6 +14,8 @@
 //!   JSON-only sugar for a `Match`; a named shared classifier table is inlined as JSON by
 //!   `topic::load` before `Producer` ever sees it), its `resolve`, and its context
 //!   (`ExtractCtx`/`TagSet`) and result (`Produced`) types.
+//! - `extract`: `Extract`, the "read a raw tag value, optionally sanitized" logic shared by every
+//!   `Filter::Tag*` predicate and `Producer::Extract` — factored out so it's written once.
 //! - `sanitize`: the atomic `&str -> atomic` chain machinery (`SanitizeRef`/`Sanitizer`/`Step`)
 //!   underneath an `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
 //! - `classifier`: the generic first-match-wins rule table underneath `Producer::Match`.
@@ -33,6 +35,7 @@
 pub mod categories;
 pub mod classifier;
 pub mod decision_tree;
+pub mod extract;
 pub mod filter;
 pub mod input_transforms;
 pub mod keys;

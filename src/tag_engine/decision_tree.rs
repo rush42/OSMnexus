@@ -545,11 +545,10 @@ fn collect_sanitized_tags(f: &Filter, macros: &HashMap<String, Filter>, out: &mu
                 collect_sanitized_tags(m, macros, out);
             }
         }
-        Filter::TagEq { tag, sanitize: Some(_), .. } => {
-            out.insert(tag.clone());
-        }
-        Filter::TagIn { tag, sanitize: Some(_), .. } => {
-            out.insert(tag.clone());
+        Filter::TagEq { extract, .. } | Filter::TagIn { extract, .. } if extract.sanitize.is_some() => {
+            if let Some(key) = &extract.key {
+                out.insert(key.clone());
+            }
         }
         Filter::NumLt { num, sanitize: Some(_), .. }
         | Filter::NumLte { num, sanitize: Some(_), .. }

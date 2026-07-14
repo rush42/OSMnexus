@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::sanitize::{SanitizeRef, StrOrVec};
@@ -223,10 +224,12 @@ pub fn resolve_output_entry(
         let r: SanitizerRepr = serde_json::from_value(value)
             .with_context(|| format!("topic outputs.{output}"))?;
         let extract = Producer::Extract {
-            key: None,
-            keys: Some(r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()])),
-            side: None,
-            sanitize: Some(SanitizeRef::Name(r.name)),
+            extract: Extract {
+                key: None,
+                keys: Some(r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()])),
+                side: None,
+                sanitize: Some(SanitizeRef::Name(r.name)),
+            },
             consts: Map::new(),
         };
         match r.from {
@@ -237,10 +240,7 @@ pub fn resolve_output_entry(
     } else {
         match value {
             Value::Bool(true) => Producer::Extract {
-                key: Some(output.to_owned()),
-                keys: None,
-                side: None,
-                sanitize: None,
+                extract: Extract { key: Some(output.to_owned()), keys: None, side: None, sanitize: None },
                 consts: Map::new(),
             },
             Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),
