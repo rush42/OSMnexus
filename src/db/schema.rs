@@ -60,9 +60,9 @@ CREATE TABLE IF NOT EXISTS {table} (
   osm_type  text,
   id        text NOT NULL,
   category  text NOT NULL,
-  produced  jsonb,
-  private   jsonb,
-  meta      jsonb
+  produced    jsonb,
+  annotations jsonb,
+  meta        jsonb
 )"#)
 }
 

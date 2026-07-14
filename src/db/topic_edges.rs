@@ -18,7 +18,7 @@ use super::schema::EDGE_TABLE;
 fn create_topic_edge_table_sql(table: &str, mode: TopicEdgeMode) -> String {
     let extra_columns = match mode {
         TopicEdgeMode::Pgrouting => "",
-        TopicEdgeMode::All => ", t.osm_type, t.id, t.category, t.produced, t.private, t.meta",
+        TopicEdgeMode::All => ", t.osm_type, t.id, t.category, t.produced, t.annotations, t.meta",
     };
     format!(
         r#"

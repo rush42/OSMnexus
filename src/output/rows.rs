@@ -7,7 +7,7 @@ use crate::output::types::OsmMeta;
 
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `csv_fields` implementation below.
-pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,category,produced,private,meta";
+pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,category,produced,annotations,meta";
 pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m,cost,reverse_cost";
 pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
 pub const WAY_GEOM_COLUMNS: &str = "osm_id,geom,length_m";
@@ -34,7 +34,11 @@ pub struct TopicRow {
     /// columns — all three were always the same `Producer`-evaluation mechanism, just different
     /// JSON shorthands for declaring one entry in one `outputs` map; see `TopicSpec::outputs`).
     pub produced: Map<String, Value>,
-    pub private: Map<String, Value>,
+    /// Engine-attached bookkeeping about `produced`, not itself a topic-authored output: side-split
+    /// context (`_side`/`_prefix`/`_infix`, from `SplitContext::iter`) and each output's companion
+    /// `consts` provenance (`<output>_source`/`<output>_confidence`, from `Produced::consts`) — see
+    /// `topic::pipeline::eval_fields`.
+    pub annotations: Map<String, Value>,
     pub meta: OsmMeta,
 }
 
@@ -47,7 +51,7 @@ impl CsvRow for TopicRow {
             self.id.clone(),
             self.category.clone(),
             serde_json::to_string(&self.produced)?,
-            serde_json::to_string(&self.private)?,
+            serde_json::to_string(&self.annotations)?,
             serde_json::to_string(&self.meta)?,
         ])
     }

@@ -11,20 +11,22 @@ use crate::output::{rows::TopicRow, types::OsmMeta};
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 
-/// Evaluate each `Field`'s producer against `ctx`, inserting non-empty results into `map`.
-/// When a value carries provenance, also emit `<output>_source` / `<output>_confidence`. Every
-/// field's `output` is unique within `fields` (guaranteed by construction — see
-/// `runner::resolve_outputs`, built from a JSON map keyed by output), so later fields never race
-/// earlier ones for the same key: a const default reaches `map` only via a field whose own
-/// producer is a `Fallback` ending in that const (see `runner::merge_const_fields`), which is why
-/// no separate "did the const survive" tracking is needed here.
-fn eval_fields(fields: &[Field], ctx: &ExtractCtx, map: &mut Map<String, Value>) {
+/// Evaluate each `Field`'s producer against `ctx`, inserting non-empty results into `produced`.
+/// When a value carries provenance, also emit `<output>_source` / `<output>_confidence` into
+/// `annotations` — engine bookkeeping about how `produced`'s values came about, not itself a
+/// topic-authored output (see `TopicRow::annotations`). Every field's `output` is unique within
+/// `fields` (guaranteed by construction — see `runner::resolve_outputs`, built from a JSON map
+/// keyed by output), so later fields never race earlier ones for the same key: a const default
+/// reaches `produced` only via a field whose own producer is a `Fallback` ending in that const
+/// (see `runner::merge_const_fields`), which is why no separate "did the const survive" tracking
+/// is needed here.
+fn eval_fields(fields: &[Field], ctx: &ExtractCtx, produced: &mut Map<String, Value>, annotations: &mut Map<String, Value>) {
     for field in fields {
         if let Some(p) = field.source.eval(ctx) {
-            map.insert(field.output.clone(), p.value);
+            produced.insert(field.output.clone(), p.value);
             // Companion consts → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
             for (k, v) in p.consts {
-                map.insert(format!("{}_{}", field.output, k), v);
+                annotations.insert(format!("{}_{}", field.output, k), v);
             }
         }
     }
@@ -94,15 +96,14 @@ pub fn build_topic_rows(
             .get(&category.id)
             .unwrap_or(&runner.default_outputs);
         let mut produced = Map::new();
-        eval_fields(outputs, &ectx, &mut produced);
-
-        let mut private = Map::new();
+        let mut annotations = Map::new();
+        eval_fields(outputs, &ectx, &mut produced, &mut annotations);
 
         // Side-split context, written generically via `SplitContext::iter` (`_side`, plus
         // `_prefix`/`_infix` for a side object); `_parent_highway` is gone (redundant with the
         // parent's own `highway` tag, already reachable through `ectx.parent_tags`).
         for (k, v) in ectx.split.iter() {
-            private.insert(format!("_{k}"), Value::String(v.to_owned()));
+            annotations.insert(format!("_{k}"), Value::String(v.to_owned()));
         }
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
@@ -116,7 +117,7 @@ pub fn build_topic_rows(
             id: ectx.id.to_owned(),
             category: category.id.clone(),
             produced,
-            private,
+            annotations,
             meta: meta.clone(),
         });
     });
