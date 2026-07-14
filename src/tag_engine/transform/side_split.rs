@@ -1,7 +1,18 @@
+use serde_json::{Map, Value};
+
 use crate::osm::types::RawTags;
 use crate::output::types::Side;
-use crate::tag_engine::producer::ExtractCtx;
+use crate::tag_engine::filter::Filter;
+use crate::tag_engine::input_transforms::InputTransform;
+use crate::tag_engine::producer::{empty_annotations, ExtractCtx};
 use crate::value_sets::value_set;
+
+/// The annotation key `generate_sides` stamps (via `InputTransform::UnnestTags`'s `mark`) whenever
+/// a side object's unnest pass actually wrote something — what `Drop` reads to tell "nothing was
+/// ever unnested into this side object" apart from "it legitimately has no other tags". Transient
+/// bookkeeping local to this module's own `Drop` decision; it never reaches a row's public
+/// `annotations` (see `topic::pipeline::build_topic_rows`, which builds that map from scratch).
+const UNNESTED_MARK: &str = "_unnested";
 
 /// The side-split-specific slice of an `ExtractCtx`: which side/prefix/infix this object is.
 /// `parent_tags` is *not* here — it's a plain `ExtractCtx` field, since it's meaningful (or not)
@@ -25,7 +36,7 @@ impl Default for SplitContext {
 
 impl SplitContext {
     /// `(key, value)` pairs describing this context, for a caller that wants to write it into a
-    /// row's `private` map generically (e.g. `_{key}`) rather than naming each field by hand.
+    /// row's `annotations` map generically (e.g. `_{key}`) rather than naming each field by hand.
     /// `obj_side` is always present; `prefix`/`infix` only for a side object.
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
         [("side", Some(self.obj_side)), ("prefix", self.prefix), ("infix", self.infix)]
@@ -75,18 +86,22 @@ pub fn generate_sides(
             parent_tags: None,
             split: SplitContext::default(),
             id: default_id,
+            annotations: empty_annotations(),
         });
         return;
     }
 
     /// A side object's data before it becomes an `ExtractCtx` — held only long enough to run its
     /// `directed_steps` (which need the self object's tags, still owned by `generate_sides`) and
-    /// then, once `tags` is next to it in scope, immediately be turned into one.
+    /// then, once `tags` is next to it in scope, immediately be turned into one. `annotations`
+    /// carries forward whatever `UNNESTED_MARK`-style bookkeeping the unnest pass stamped, so
+    /// `directed_steps` (ordinary `InputTransform`s, including any `Drop`) can still see it.
     struct SideObj {
         side: Side,
         prefix: &'static str,
         infix: &'static str,
         tags: RawTags,
+        annotations: Map<String, Value>,
         id: String,
     }
 
@@ -105,21 +120,36 @@ pub fn generate_sides(
             };
 
             let mut obj: RawTags = RawTags::default();
+            let mut annotations = Map::new();
 
             // Priority (lowest to highest): bare < both < side-specific. Apply in that order,
-            // tracking the highest-priority infix that contributed any data.
-            // Mirrors Lua: unnestPrefixedTags called with '', ':both', ':side' in order.
+            // tracking the highest-priority infix that contributed any data. Each pass is the
+            // same `InputTransform::UnnestTags` any topic.json step uses, stamping `UNNESTED_MARK`
+            // in `annotations` whenever it actually writes something — `Drop` below reads that
+            // mark, instead of a hand-rolled emptiness check, to decide whether to keep this
+            // object. Mirrors Lua: unnestPrefixedTags called with '', ':both', ':side' in order.
             let mut matched_infix: &'static str = "";
             for infix in ["", "both", side_str] {
+                let step = InputTransform::UnnestTags {
+                    prefix: transformation.prefix,
+                    infix,
+                    meta_prefixes: META_PREFIXES,
+                    guard_value_set: None,
+                    mark: Some(UNNESTED_MARK),
+                };
                 let before = obj.len();
-                unnest_prefixed_tags(&tags, transformation.prefix, infix, META_PREFIXES, &mut obj);
+                step.apply(&mut obj, &mut annotations, Some(&tags), side_str, Some(transformation.prefix), Some(infix));
                 if obj.len() > before {
                     matched_infix = infix;
                 }
             }
 
-            // Only emit an object if something was actually projected.
-            if obj.is_empty() {
+            // Only keep an object if something was actually projected into it.
+            let drop = InputTransform::Drop {
+                when: Filter::AnnotationExists { key: UNNESTED_MARK.to_owned(), exists: false },
+            };
+            let keep = drop.apply(&mut obj, &mut annotations, Some(&tags), side_str, Some(transformation.prefix), Some(matched_infix));
+            if !keep {
                 continue;
             }
 
@@ -132,6 +162,7 @@ pub fn generate_sides(
                 prefix: transformation.prefix,
                 infix: matched_infix,
                 tags: obj,
+                annotations,
                 id: format!("{default_id}/{}/{side_str}", transformation.prefix),
             });
         }
@@ -142,6 +173,7 @@ pub fn generate_sides(
         parent_tags: None,
         split: SplitContext::default(),
         id: default_id,
+        annotations: empty_annotations(),
     });
 
     // Per-object post-split steps (`directed_keys`/`self_directed_keys`, ported from
@@ -158,7 +190,7 @@ pub fn generate_sides(
         };
         if let Some(transformation) = transformations.iter().find(|t| t.prefix == obj.prefix) {
             for step in transformation.directed_steps {
-                step.apply(&mut obj.tags, Some(&tags), obj_side, Some(obj.prefix), Some(obj.infix));
+                step.apply(&mut obj.tags, &mut obj.annotations, Some(&tags), obj_side, Some(obj.prefix), Some(obj.infix));
             }
         }
 
@@ -167,6 +199,7 @@ pub fn generate_sides(
             parent_tags: Some(&tags),
             split: SplitContext { obj_side, prefix: Some(obj.prefix), infix: Some(obj.infix) },
             id: &obj.id,
+            annotations: &obj.annotations,
         });
     }
 }
@@ -289,5 +322,61 @@ mod unnest_prefixed_tags_tests {
         let mut dest = RawTags::default();
         unnest_prefixed_tags(&src, "cycleway", "", &[], &mut dest);
         assert!(dest.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod generate_sides_tests {
+    use super::*;
+
+    fn tags(pairs: &[(&str, &str)]) -> RawTags {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    fn cycleway_transformation() -> CenterLineTransformation {
+        CenterLineTransformation { highway: "cycleway", prefix: "cycleway", directed_steps: &[] }
+    }
+
+    #[test]
+    fn side_with_no_matching_tags_is_dropped() {
+        // No `cycleway:*` tags at all — neither side should produce an object; only "self" is kept.
+        let way_tags = tags(&[("highway", "primary")]);
+        let transformations = vec![cycleway_transformation()];
+        let mut ids = Vec::new();
+        generate_sides(way_tags, &transformations, "way/1", |ctx| ids.push(ctx.id.to_owned()));
+        assert_eq!(ids, vec!["way/1"]);
+    }
+
+    #[test]
+    fn side_with_matching_tags_is_kept_with_correct_infix() {
+        let way_tags = tags(&[("highway", "primary"), ("cycleway:right", "lane")]);
+        let transformations = vec![cycleway_transformation()];
+        let mut seen: Vec<(String, &'static str, Option<&'static str>)> = Vec::new();
+        generate_sides(way_tags, &transformations, "way/1", |ctx| {
+            seen.push((ctx.id.to_owned(), ctx.split.obj_side, ctx.split.infix));
+        });
+        assert_eq!(seen, vec![
+            ("way/1".to_owned(), "self", None),
+            ("way/1/cycleway/right".to_owned(), "right", Some("right")),
+        ]);
+    }
+
+    #[test]
+    fn both_infix_is_overridden_by_side_specific() {
+        // Priority bare < both < side-specific: `cycleway:both` alone should win as "both", but a
+        // more specific `cycleway:right` on top of it should win instead.
+        let way_tags = tags(&[
+            ("highway", "primary"),
+            ("cycleway:both", "lane"),
+            ("cycleway:right:width", "2"),
+        ]);
+        let transformations = vec![cycleway_transformation()];
+        let mut right_infix = None;
+        generate_sides(way_tags, &transformations, "way/1", |ctx| {
+            if ctx.split.obj_side == "right" {
+                right_infix = ctx.split.infix;
+            }
+        });
+        assert_eq!(right_infix, Some("right"));
     }
 }

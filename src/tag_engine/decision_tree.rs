@@ -715,6 +715,7 @@ mod tests {
                             parent_tags: side_parent_tags,
                             split: SplitContext { obj_side: side, prefix, infix: None },
                             id: "",
+                            annotations: crate::tag_engine::producer::empty_annotations(),
                         };
                         let a = categorize(&ctx, &cats).map(|c| c.id.clone());
                         let b = categorize_linear(&ctx, &cats).map(|c| c.id.clone());

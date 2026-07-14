@@ -25,6 +25,9 @@ pub enum Predicate {
     Prefix(String),
     Infix(String),
     Side(String),
+    /// `Filter::AnnotationExists` — engine bookkeeping, not a tag; namespaced like `HasKeyPrefix`
+    /// so it can never collide with a real tag key in `tags_involved`/overlap analysis.
+    AnnotationExists(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -45,6 +48,7 @@ impl Predicate {
             Predicate::Prefix(_) => vec!["[prefix]".to_string()],
             Predicate::Infix(_) => vec!["[infix]".to_string()],
             Predicate::Side(_) => vec!["[side]".to_string()],
+            Predicate::AnnotationExists(k) => vec![format!("annotation({k})")],
         }
     }
 }
@@ -150,6 +154,8 @@ pub fn filter_to_expr(filter: &Filter, macros: &HashMap<String, Filter>) -> Expr
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
         Filter::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
         Filter::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),
+        Filter::AnnotationExists { key, exists: true } => Expr::Lit(Literal::Pos(Predicate::AnnotationExists(key.clone()))),
+        Filter::AnnotationExists { key, exists: false } => Expr::Lit(Literal::Neg(Predicate::AnnotationExists(key.clone()))),
     }
 }
 
@@ -183,7 +189,8 @@ fn prefix_predicate(p: Predicate) -> Predicate {
         | Predicate::HasParent
         | Predicate::Prefix(_)
         | Predicate::Infix(_)
-        | Predicate::Side(_)) => p,
+        | Predicate::Side(_)
+        | Predicate::AnnotationExists(_)) => p,
     }
 }
 

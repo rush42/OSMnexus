@@ -55,9 +55,14 @@ pub fn build_topic_rows(
     // `exclude_condition`, since promoting a `cycleway:access=no`-style tag onto bare `access`
     // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
     // checks (which only ever saw the pre-unnest tags in the original pipeline).
+    //
+    // `pre_split_annotations` is a scratch map for this stage's steps (mostly relevant for a
+    // `Drop`'s `AnnotationExists` condition, which nothing here constructs yet — no `input_transforms`
+    // JSON shape reaches `Drop` pre-split); it's discarded once side-splitting takes over its own.
+    let mut pre_split_annotations = Map::new();
     if kind == ElementKind::Way {
         for step in &runner.input_transforms[..runner.exclude_check_at] {
-            step.apply(&mut tags, None, "self", None, None);
+            step.apply(&mut tags, &mut pre_split_annotations, None, "self", None, None);
         }
     }
 
@@ -69,7 +74,7 @@ pub fn build_topic_rows(
 
     if kind == ElementKind::Way {
         for step in &runner.input_transforms[runner.exclude_check_at..] {
-            step.apply(&mut tags, None, "self", None, None);
+            step.apply(&mut tags, &mut pre_split_annotations, None, "self", None, None);
         }
     }
 

@@ -75,6 +75,10 @@ pub enum Filter {
     HasKeyPrefix { has_key_prefix: String },
     /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
     HasParent { has_parent: bool },
+    /// Membership in `ctx.annotations` (see `ExtractCtx::annotations`/`output::rows::TopicRow::
+    /// annotations`) — engine-attached bookkeeping (e.g. `InputTransform::UnnestTags`'s `mark`),
+    /// not a tag. The `Filter`-side sibling of `TagExists`, over the other map.
+    AnnotationExists { key: String, exists: bool },
 
     // Numeric comparisons. `num` names the tag to read, optionally run through a `sanitize` chain
     // first (which may yield a JSON number, e.g. `parse_length`) before parsing to f64. Absent or
@@ -159,6 +163,7 @@ impl Filter {
             Filter::Infix { infix } => Filter::Infix { infix: infix.clone() },
             Filter::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix: has_key_prefix.clone() },
             Filter::HasParent { has_parent } => Filter::HasParent { has_parent: *has_parent },
+            Filter::AnnotationExists { key, exists } => Filter::AnnotationExists { key: key.clone(), exists: *exists },
             Filter::NumLt { num, sanitize, lt } =>
                 Filter::NumLt { num: num.clone(), sanitize: resolve(sanitize)?, lt: *lt },
             Filter::NumLte { num, sanitize, lte } =>
@@ -223,6 +228,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
         // `parent_tags` is only ever `Some` for those (see `generate_sides`).
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
+        Filter::AnnotationExists { key, exists } => ctx.annotations.contains_key(key) == *exists,
 
         Filter::NumLt  { num, sanitize, lt  } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n <  *lt),
         Filter::NumLte { num, sanitize, lte } => read_num(ctx, num, sanitize.as_ref()).is_some_and(|n| n <= *lte),
@@ -256,6 +262,12 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
 /// Evaluate a Filter against raw tags with a neutral context (side=self, no parent).
 /// Used by the topic engine for way-level exclude_condition checks.
 pub fn eval_filter(filter: &Filter, tags: &RawTags) -> bool {
-    let ctx = ExtractCtx { obj_tags: tags, parent_tags: None, split: SplitContext::default(), id: "" };
+    let ctx = ExtractCtx {
+        obj_tags: tags,
+        parent_tags: None,
+        split: SplitContext::default(),
+        id: "",
+        annotations: crate::tag_engine::producer::empty_annotations(),
+    };
     eval(filter, &ctx)
 }

@@ -11,6 +11,7 @@
 //! are merged in. `Producer` the Rust type really does only have two variants.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -33,16 +34,29 @@ pub struct Produced {
 
 /// Which tags (`obj_tags`, `parent_tags`), plus side-split addressing (`split` — see
 /// `transform::side_split::SplitContext`, whose only non-trivial constructor is
-/// `side_split::generate_sides`) and `id` — the row id for this object, defaulted to the
-/// element's own id and overwritten by `generate_sides` for a side object (e.g.
-/// `"way/123/cycleway/left"`). `Copy` so a producer can cheaply build a variant (e.g. swapping
-/// `obj_tags` to the parent) when re-running itself against a different tagset.
+/// `side_split::generate_sides`), `id` — the row id for this object, defaulted to the element's
+/// own id and overwritten by `generate_sides` for a side object (e.g. `"way/123/cycleway/left"`)
+/// — and `annotations`, a read-only view of whatever engine bookkeeping (see
+/// `output::rows::TopicRow::annotations`) has been attached to this object so far, so a `Filter`
+/// (e.g. `AnnotationExists`) can branch on it just like it can on `obj_tags`. `Copy` so a producer
+/// can cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself
+/// against a different tagset — `annotations` stays a shared reference for that reason, never
+/// `&mut`; whatever step is actively writing to it (see `InputTransform::apply`) holds its own
+/// `&mut` separately and only ever hands `eval`/`Producer::eval` a reborrowed `&Map`.
 #[derive(Clone, Copy)]
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags,
     pub parent_tags: Option<&'a RawTags>,
     pub split: SplitContext,
     pub id: &'a str,
+    pub annotations: &'a Map<String, Value>,
+}
+
+/// A shared, empty annotations map — for a context that has none to offer (a neutral
+/// `eval_filter` check, or a test helper) but still needs a `&Map` to satisfy `ExtractCtx`.
+pub(crate) fn empty_annotations() -> &'static Map<String, Value> {
+    static EMPTY: OnceLock<Map<String, Value>> = OnceLock::new();
+    EMPTY.get_or_init(Map::new)
 }
 
 /// Which tagset `Producer::DirectedExtract` reads (and, via `topic::spec`'s sanitizer-shorthand,
@@ -247,7 +261,7 @@ mod classify_bool_tests {
     use crate::tag_engine::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
-        ExtractCtx { obj_tags: obj, parent_tags: parent, split: SplitContext::default(), id: "" }
+        ExtractCtx { obj_tags: obj, parent_tags: parent, split: SplitContext::default(), id: "", annotations: empty_annotations() }
     }
 
     /// A `Match` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
@@ -309,6 +323,7 @@ mod directed_extract_tests {
             parent_tags: parent,
             split: SplitContext { obj_side, prefix: None, infix: None },
             id: "",
+            annotations: empty_annotations(),
         }
     }
 

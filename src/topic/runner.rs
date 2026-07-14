@@ -274,6 +274,7 @@ impl TopicRunner {
                         infix: "",
                         meta_prefixes: crate::tag_engine::transform::side_split::META_PREFIXES,
                         guard_value_set: Some("sidepath_highway"),
+                        mark: None,
                     });
                 }
                 InputTransformSpec::TagRules { output, source } => {
