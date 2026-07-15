@@ -25,32 +25,30 @@ use crate::tag_engine::sanitize::Sanitizer;
 /// `Producer` lets a rule's output be an arbitrary nested producer (e.g. an `Extract` with its own
 /// `keys`/`sanitize`/`from`) — this is what lets `rules` subsume `cond`'s `then`/`else`: a
 /// condition becomes a rule whose `when` is that condition and whose `value` is the `then`
-/// producer, followed by an unconditional (`"when": true`) rule holding the `else` producer.
-/// `Producer` must be tried before `Const`, since `Const(Value)` is an untagged catch-all that
-/// would otherwise consume any object literal (including a producer's own JSON shape) first.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+/// producer, followed by an unconditional (`"when": true`) rule holding the `else` producer. The
+/// old `{"tag": ...}`/`{"tag_or": ..., "or": ...}` shorthands are JSON-only sugar now, folded into
+/// `Producer` (a plain `Extract`, or a `Match` using its own `default`) by `tag_engine::parser`'s
+/// hand-written `Deserialize` — see that module's doc for why. `Deserialize` isn't derived here for
+/// the same reason it isn't on `Producer` itself: a stray derive could reintroduce a shape `parser`
+/// doesn't know about. `Producer` must be tried before `Const` there, since `Const(Value)` is an
+/// untagged catch-all that would otherwise consume any object literal (including a producer's own
+/// JSON shape) first.
+#[derive(Debug, Clone)]
 pub enum ValueSpec {
-    /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
-    Tag { tag: String },
-    /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
-    TagOr { tag_or: String, or: Value },
     Producer(Box<Producer>),
     /// A literal value.
     Const(Value),
 }
 
 impl ValueSpec {
-    /// Resolve any nested `Producer`'s macros/sanitizers once at load time (`Tag`/`TagOr`/`Const`
-    /// carry no named references, so they pass through unchanged).
+    /// Resolve any nested `Producer`'s macros/sanitizers once at load time (`Const` carries no
+    /// named references, so it passes through unchanged).
     pub fn resolve(
         &self,
         macros: &HashMap<String, Filter>,
         sanitizers: &HashMap<String, Sanitizer>,
     ) -> anyhow::Result<ValueSpec> {
         Ok(match self {
-            ValueSpec::Tag { tag } => ValueSpec::Tag { tag: tag.clone() },
-            ValueSpec::TagOr { tag_or, or } => ValueSpec::TagOr { tag_or: tag_or.clone(), or: or.clone() },
             ValueSpec::Producer(p) => ValueSpec::Producer(Box::new(p.resolve(macros, sanitizers)?)),
             ValueSpec::Const(v) => ValueSpec::Const(v.clone()),
         })
@@ -86,12 +84,6 @@ pub fn match_rules(rules: &[Rule], ctx: &ExtractCtx, own_consts: &Map<String, Va
         }
         let produced = match &rule.value {
             ValueSpec::Const(v) => Some(Produced { value: v.clone(), annotate: own_consts.clone() }),
-            ValueSpec::Tag { tag } => ctx.obj_tags.get(tag).cloned()
-                .map(|value| Produced { value: Value::String(value), annotate: own_consts.clone() }),
-            ValueSpec::TagOr { tag_or, or } => Some(Produced {
-                value: ctx.obj_tags.get(tag_or).cloned().map(Value::String).unwrap_or_else(|| or.clone()),
-                annotate: own_consts.clone(),
-            }),
             ValueSpec::Producer(p) => p.eval(ctx),
         };
         if produced.is_some() {

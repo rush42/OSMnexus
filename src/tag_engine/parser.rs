@@ -26,6 +26,54 @@ use crate::tag_engine::filter::Filter;
 use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
 
+// ── ValueSpec ────────────────────────────────────────────────────────────────
+
+/// The JSON shapes a `Rule`'s `value` accepts: `{"tag": ...}` and `{"tag_or": ..., "or": ...}` are
+/// sugar, folded into an equivalent `Producer` below (a plain `Extract`, or a `Match` using its own
+/// `default` for the "or" branch) — so `ValueSpec::Producer` is what actually carries them, not a
+/// dedicated runtime variant (see `classifier::ValueSpec`'s own doc for why). Untagged; `Producer`
+/// must be tried before the bare-JSON `Const` catch-all.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum ValueSpecJson {
+    /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
+    Tag { tag: String },
+    /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
+    TagOr { tag_or: String, or: Value },
+    Producer(Producer),
+    /// A literal value.
+    Const(Value),
+}
+
+impl<'de> Deserialize<'de> for ValueSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match ValueSpecJson::deserialize(deserializer)? {
+            ValueSpecJson::Tag { tag } => ValueSpec::Producer(Box::new(Producer::Extract {
+                extract: Extract::Value { key: tag },
+                sanitize: None,
+                annotate: Map::new(),
+            })),
+            ValueSpecJson::TagOr { tag_or, or } => ValueSpec::Producer(Box::new(Producer::Match {
+                rules: vec![Rule {
+                    when: Filter::Bool(true),
+                    value: ValueSpec::Producer(Box::new(Producer::Extract {
+                        extract: Extract::Value { key: tag_or },
+                        sanitize: None,
+                        annotate: Map::new(),
+                    })),
+                }],
+                default: Some(or),
+                annotate: Map::new(),
+            })),
+            ValueSpecJson::Producer(p) => ValueSpec::Producer(Box::new(p)),
+            ValueSpecJson::Const(v) => ValueSpec::Const(v),
+        })
+    }
+}
+
 // ── Producer ─────────────────────────────────────────────────────────────────
 
 /// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, `Parent` wrapping any nested

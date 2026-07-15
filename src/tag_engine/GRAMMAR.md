@@ -148,8 +148,8 @@ by matching.
 Rule = { "when": Filter, "value": ValueSpec }
 
 ValueSpec =
-  { "tag": String }                          // shorthand: read+return this tag
-  | { "tag_or": String, "or": JSON }         // shorthand: read this tag, else literal
+  { "tag": String }                          // sugar for Producer Extract{key}
+  | { "tag_or": String, "or": JSON }         // sugar for a 1-rule Match with "default": or
   | Producer                                  // nested producer
   | JSON                                      // literal constant (catch-all)
 ```
