@@ -6,18 +6,20 @@
 //! `crate::categorize`. See the `[[unbiased-engine-principle]]`: no tag-value/category/country
 //! literals live here either — everything domain-specific is data, not Rust.
 //!
-//! Each module owns one concept end-to-end, both its load-time reference resolution
-//! (macro/sanitizer expansion) and its runtime evaluation, rather than splitting those across
-//! separate directories:
-//! - `filter`: the `Filter` predicate AST, `expand` (macro/sanitize resolution), and `eval`.
+//! Each module owns one concept end-to-end, both its runtime evaluation and (where it needs one)
+//! its own JSON sugar, rather than splitting those across separate directories. A named reference
+//! — a macro, a `sanitize: "<name>"`, a shared classifier table — is never a concept any of these
+//! types carries at all: `topic::load`'s `inline_macro_refs`/`inline_sanitize_refs`/
+//! `inline_shared_producers` resolve all three as a `serde_json::Value`-tree rewrite before any of
+//! this module's `Deserialize` impls ever run, so there's only one (resolved) tier of each type.
+//! - `filter`: the `Filter` predicate AST and `eval`.
 //! - `producer`: the `Producer` value engine — really just `Match`/`Extract` (`fallback` is
-//!   JSON-only sugar for a `Match`; a named shared classifier table is inlined as JSON by
-//!   `topic::load` before `Producer` ever sees it), its `resolve`, and its context
-//!   (`ExtractCtx`/`TagSet`) and result (`Produced`) types.
+//!   JSON-only sugar for a `Match`), its `eval`, and its context (`ExtractCtx`/`TagSet`) and
+//!   result (`Produced`) types.
 //! - `extract`: `Extract`, the "read a raw tag value, optionally sanitized" logic shared by every
-//!   `Filter::Tag*` predicate and `Producer::Extract` — factored out so it's written once.
-//! - `sanitize`: the atomic `&str -> atomic` chain machinery (`SanitizeRef`/`Sanitizer`/`Step`)
-//!   underneath an `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
+//!   `Filter`'s tag/num predicates and `Producer::Extract` — factored out so it's written once.
+//! - `sanitize`: the atomic `&str -> atomic` chain machinery (`Sanitizer`/`Step`) underneath an
+//!   `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
 //! - `classifier`: the generic first-match-wins rule table underneath `Producer::Match`.
 //! - `keys`: generic tag-key selection helpers (`first_present`) shared by `producer`
 //!   and `filter`.

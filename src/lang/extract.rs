@@ -4,10 +4,10 @@
 //! (first-present wins). Resolved against a tagset via `keys::first_present`.
 //!
 //! Deliberately carries no `sanitize` — that's a sibling field wherever `Extract` is embedded
-//! (`Filter::Tag*`, `Producer::Extract`), not part of the read primitive itself, so it can be
-//! resolved (`SanitizeRef::resolve`) and applied uniformly by the embedding type instead of being
-//! duplicated inside `Extract`'s own `resolve`/`read`. `read`/`read_str` below take it as a
-//! parameter for that reason. Also carries no `annotate`/provenance — that's a `Producer`-only
+//! (`Filter`'s tag/num predicates, `Producer::Extract`), not part of the read primitive itself, so it's applied
+//! uniformly by the embedding type instead of being duplicated inside `Extract`'s own `read`.
+//! `read`/`read_str` below take it as a parameter for that reason. Also carries no
+//! `annotate`/provenance — that's a `Producer`-only
 //! concept (what a winning branch contributes), meaningless for a boolean predicate.
 //! `Producer::Extract` wraps one alongside its own `sanitize`/`annotate`; `Filter`'s `Tag*` variants
 //! flatten one into themselves alongside their own `sanitize` and comparison field (`eq`/`in`/…).
@@ -22,9 +22,10 @@ use crate::lang::sanitize::{resolve_sanitize, Sanitizer};
 use crate::osm::types::RawTags;
 
 /// A candidate-key read spec. `key`/`keys` accept `Producer`'s historical field names as canonical
-/// with `Filter`'s historical names (`tag`/`first_tag`) as JSON aliases, so neither call site's
-/// existing configs needed to change. Untagged variants are disambiguated by their own (distinct,
-/// required) field name, so declaration order doesn't matter here.
+/// with `Filter`'s historical names (`tag`/`first_tag`, and `num` for its numeric predicates) as
+/// JSON aliases, so neither call site's existing configs needed to change. Untagged variants are
+/// disambiguated by their own (distinct, required) field name, so declaration order doesn't matter
+/// here.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Extract {
@@ -35,7 +36,7 @@ pub enum Extract {
     },
     /// A single, specific key.
     Value {
-        #[serde(alias = "tag")]
+        #[serde(alias = "tag", alias = "num")]
         key: String,
     },
 }

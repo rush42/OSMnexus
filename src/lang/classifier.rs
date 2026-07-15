@@ -11,40 +11,16 @@
 //! get. By the time a `Rule` reaches this module, it's indistinguishable from one that was always
 //! topic-local.
 
-use std::collections::HashMap;
-
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::lang::filter::{eval, Filter, FilterSpec};
-use crate::lang::producer::{ExtractCtx, Produced, Producer, ProducerSpec};
-use crate::lang::sanitize::Sanitizer;
+use crate::lang::filter::{eval, Filter};
+use crate::lang::producer::{ExtractCtx, Produced, Producer};
 
-/// One classifier rule, **as parsed** — `when`/`value` are the as-parsed `*Spec` tiers (may carry
-/// macros/named sanitizers). Resolved into `Rule` by `resolve`.
+/// One classifier rule — `when`/`value` are already-resolved `Filter`/`Producer` (no macro or
+/// named-sanitizer reference can reach here; see their own docs), so a plain derive suffices, no
+/// hand-written `parser` impl needed. What `match_rules` evaluates.
 #[derive(Debug, Clone, Deserialize)]
-pub struct RuleSpec {
-    pub when: FilterSpec,
-    pub value: ProducerSpec,
-}
-
-impl RuleSpec {
-    /// Resolve this rule's `when` (macro/sanitizer expansion) and `value` (nested producer
-    /// resolution) into a runtime `Rule`.
-    pub fn resolve(
-        &self,
-        macros: &HashMap<String, FilterSpec>,
-        sanitizers: &HashMap<String, Sanitizer>,
-    ) -> anyhow::Result<Rule> {
-        Ok(Rule {
-            when: self.when.expand(macros, sanitizers)?,
-            value: self.value.resolve(macros, sanitizers)?,
-        })
-    }
-}
-
-/// One classifier rule, **resolved** — what `match_rules` evaluates.
-#[derive(Debug, Clone)]
 pub struct Rule {
     pub when: Filter,
     pub value: Producer,

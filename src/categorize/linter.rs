@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::topic::load::{load_shared_macros, load_topic_categories};
-use crate::categorize::categories::CategoriesFileSpec;
+use crate::topic::load::{
+    load_shared_macros, load_topic_categories, load_topic_macros, load_topic_sanitizers, resolve_macros,
+};
+use crate::categorize::categories::CategoriesFile;
 use crate::lang::extract::Extract;
-use crate::lang::filter::{Filter, FilterSpec};
+use crate::lang::filter::Filter;
 use crate::osm::types::ElementKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -82,16 +84,13 @@ fn extract_key(extract: &crate::lang::extract::Extract) -> String {
     }
 }
 
-/// Convert a resolved `Filter` (no `Macro` nodes left — see `Filter`'s own doc) to an
-/// overlap-analysis `Expr`. Used by `decision_tree::build`, which always hands it an
-/// already-resolved `CategoriesFile` (resolution happened earlier in `topic::runner::TopicRunner::
-/// load` for unrelated reasons — `decision_tree` isn't why that resolve exists). Distinct from
-/// `spec_filter_to_expr` below, which the *standalone* overlap lint (`find_all_topic_overlaps`)
-/// uses instead specifically so it never needs a full resolve pass of its own — see that function's
-/// doc for why. The two are near-identical mappings over structurally different types (this one has
-/// no `Macro` arm and ignores `sanitize: Option<Sanitizer>` instead of `Option<SanitizeRef>`); kept
-/// as two plain functions rather than unified via a generic, since one recurses with a `macros`
-/// table and the other doesn't.
+/// Convert a resolved `Filter` (no macro/named-sanitizer reference left — see `Filter`'s own doc)
+/// to an overlap-analysis `Expr`. Used by both `decision_tree::build` (an already-resolved
+/// `CategoriesFile`, built earlier in `topic::runner::TopicRunner::load` for unrelated reasons) and
+/// the standalone overlap lint (`find_all_topic_overlaps`, which builds its own resolved
+/// `CategoriesFile` via the same `topic::load` pipeline `TopicRunner` uses). `sanitize` is ignored
+/// either way: the overlap lint is a conservative heuristic and treats a sanitized comparison like
+/// a raw one (atoms are independent, which keeps it sound enough).
 pub fn filter_to_expr(filter: &Filter) -> Expr {
     match filter {
         Filter::Bool(true) => Expr::True,
@@ -100,23 +99,23 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::Or { or } => Expr::Or(or.iter().map(filter_to_expr).collect()),
         Filter::Not { not } => Expr::Not(Box::new(filter_to_expr(not))),
 
-        Filter::TagEq { extract, eq, .. } => match extract {
+        Filter::Eq { extract, eq, .. } => match extract {
             Extract::Value { key } => Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), eq.clone()))),
             Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
         },
-        Filter::TagExists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))),
-        Filter::TagExists { extract, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(extract_key(extract)))),
-        Filter::TagContains { extract, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(extract_key(extract), contains.clone()))),
-        Filter::TagStartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract_key(extract), starts_with.clone()))),
-        Filter::TagEndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract_key(extract), ends_with.clone()))),
-        Filter::TagIn { extract, r#in, .. } => match extract {
+        Filter::Exists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))),
+        Filter::Exists { extract, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(extract_key(extract)))),
+        Filter::Contains { extract, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(extract_key(extract), contains.clone()))),
+        Filter::StartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract_key(extract), starts_with.clone()))),
+        Filter::EndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract_key(extract), ends_with.clone()))),
+        Filter::In { extract, r#in, .. } => match extract {
             Extract::Value { key } => {
                 let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone())))).collect();
                 Expr::Or(exprs)
             }
             Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
         },
-        Filter::TagInSet { extract, in_set, .. } => match extract {
+        Filter::InSet { extract, in_set, .. } => match extract {
             Extract::Value { key } => {
                 let exprs: Vec<_> = crate::value_sets::value_set(in_set)
                     .iter()
@@ -136,100 +135,15 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::Side { side } => Expr::Lit(Literal::Pos(Predicate::Side(side.clone()))),
         Filter::Prefix { prefix } => Expr::Lit(Literal::Pos(Predicate::Prefix(prefix.clone()))),
         Filter::Infix { infix } => Expr::Lit(Literal::Pos(Predicate::Infix(infix.clone()))),
-        Filter::NumLt  { num, lt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Lt,  lt.to_bits()))),
-        Filter::NumLte { num, lte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Lte, lte.to_bits()))),
-        Filter::NumGt  { num, gt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Gt,  gt.to_bits()))),
-        Filter::NumGte { num, gte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Gte, gte.to_bits()))),
+        Filter::NumLt  { extract, lt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Lt,  lt.to_bits()))),
+        Filter::NumLte { extract, lte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Lte, lte.to_bits()))),
+        Filter::NumGt  { extract, gt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Gt,  gt.to_bits()))),
+        Filter::NumGte { extract, gte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Gte, gte.to_bits()))),
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
         Filter::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
         Filter::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),
         Filter::TagsEmpty { tags_empty: true } => Expr::Lit(Literal::Pos(Predicate::TagsEmpty)),
         Filter::TagsEmpty { tags_empty: false } => Expr::Lit(Literal::Neg(Predicate::TagsEmpty)),
-    }
-}
-
-/// Convert a **`FilterSpec`** (as parsed, may still carry `Macro` nodes) to an overlap-analysis
-/// `Expr`, inlining macros on the fly against `macros`. Deliberately doesn't call
-/// `FilterSpec::expand` first: the overlap lint only cares about a condition's logical structure,
-/// never about `sanitize` resolution (ignored below regardless — see the comment further down), so
-/// it has no reason to require a valid `sanitizers.json` or go through the full resolve pipeline
-/// the way `topic::runner`/`decision_tree` do. `find_all_topic_overlaps` deliberately loads only
-/// `load_topic_categories`/`load_shared_macros` for exactly this reason.
-pub fn spec_filter_to_expr(filter: &FilterSpec, macros: &HashMap<String, FilterSpec>) -> Expr {
-    match filter {
-        FilterSpec::Bool(true) => Expr::True,
-        FilterSpec::Bool(false) => Expr::False,
-        FilterSpec::And { and } => Expr::And(and.iter().map(|f| spec_filter_to_expr(f, macros)).collect()),
-        FilterSpec::Or { or } => Expr::Or(or.iter().map(|f| spec_filter_to_expr(f, macros)).collect()),
-        FilterSpec::Not { not } => Expr::Not(Box::new(spec_filter_to_expr(not, macros))),
-
-        // Every macro resolves to a JSON `FilterSpec` (per-topic `categories/macros.json` + the
-        // shared config-root `macros.json`, merged in by `find_all_topic_overlaps`). An unknown
-        // name is a config bug — `build_order` already hard-errors on it — so panic rather than
-        // model it as an opaque atom.
-        FilterSpec::Macro { r#macro } => {
-            let mac = macros.get(r#macro)
-                .unwrap_or_else(|| panic!("unknown macro '{}' in overlap analysis", r#macro));
-            spec_filter_to_expr(mac, macros)
-        },
-
-        // `sanitize` is ignored here: the overlap lint is a conservative heuristic and treats a
-        // sanitized comparison like a raw one (atoms are independent, which keeps it sound enough).
-        // `extract.keys` (JSON alias `first_tag`, "first-present of these") has no exact
-        // representation for Contains/StartsWith/EndsWith/Exists, since a `Predicate` atom names
-        // one plain key — approximated onto the first candidate, same as the old `FirstTagExists`
-        // did (`// approximation` below). `Eq`/`In`/`InSet` keep the exact `FirstTagIn` atom the old
-        // `FirstTag*` variants used, since "first-present value is in this set" *is* representable.
-        FilterSpec::TagEq { extract, eq, .. } => match extract {
-            Extract::Value { key } => Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), eq.clone()))),
-            Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
-        },
-        FilterSpec::TagExists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))), // approximation when `keys` is set
-        FilterSpec::TagExists { extract, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(extract_key(extract)))),
-        FilterSpec::TagContains { extract, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(extract_key(extract), contains.clone()))), // approximation when `keys` is set
-        FilterSpec::TagStartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract_key(extract), starts_with.clone()))), // approximation when `keys` is set
-        FilterSpec::TagEndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract_key(extract), ends_with.clone()))), // approximation when `keys` is set
-        FilterSpec::TagIn { extract, r#in, .. } => match extract {
-            Extract::Value { key } => {
-                let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone())))).collect();
-                Expr::Or(exprs)
-            }
-            Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
-        },
-        FilterSpec::TagInSet { extract, in_set, .. } => match extract {
-            Extract::Value { key } => {
-                // Expand the named set to an OR of equalities, mirroring TagIn.
-                let exprs: Vec<_> = crate::value_sets::value_set(in_set)
-                    .iter()
-                    .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone()))))
-                    .collect();
-                Expr::Or(exprs)
-            }
-            Extract::Candidates { keys } => {
-                let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
-                vals.sort();
-                Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vals)))
-            }
-        },
-
-        // Recurse as normal, then prefix every tag key in the result with "parent_" — same
-        // encoding the old one-off `ParentTag*` variants used, so downstream overlap analysis
-        // (which special-cases `parent_`-prefixed keys, e.g. `decision_tree.rs`'s branch-key
-        // filter) doesn't need to know `Parent` exists.
-        FilterSpec::Parent { parent } => prefix_expr_tags(spec_filter_to_expr(parent, macros)),
-
-        FilterSpec::Side { side } => Expr::Lit(Literal::Pos(Predicate::Side(side.clone()))),
-        FilterSpec::Prefix { prefix } => Expr::Lit(Literal::Pos(Predicate::Prefix(prefix.clone()))),
-        FilterSpec::Infix { infix } => Expr::Lit(Literal::Pos(Predicate::Infix(infix.clone()))),
-        FilterSpec::NumLt  { num, lt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Lt,  lt.to_bits()))),
-        FilterSpec::NumLte { num, lte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Lte, lte.to_bits()))),
-        FilterSpec::NumGt  { num, gt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Gt,  gt.to_bits()))),
-        FilterSpec::NumGte { num, gte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(num.clone(), NumOp::Gte, gte.to_bits()))),
-        FilterSpec::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
-        FilterSpec::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
-        FilterSpec::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),
-        FilterSpec::TagsEmpty { tags_empty: true } => Expr::Lit(Literal::Pos(Predicate::TagsEmpty)),
-        FilterSpec::TagsEmpty { tags_empty: false } => Expr::Lit(Literal::Neg(Predicate::TagsEmpty)),
     }
 }
 
@@ -424,13 +338,11 @@ fn check_term_consistency(term: &[Literal]) -> (bool, Vec<String>) {
 }
 
 /// Find all overlapping category pairs within one loaded topic's categories.
-pub fn find_overlaps(cats: &CategoriesFileSpec) -> Vec<Overlap> {
-    let macros = &cats.macros;
-
+pub fn find_overlaps(cats: &CategoriesFile) -> Vec<Overlap> {
     // Precompute each category's DNF, keeping only internally consistent terms.
     let mut category_dnfs: HashMap<String, Vec<Vec<Literal>>> = HashMap::new();
     for cat in &cats.categories {
-        let dnf = to_dnf(to_nnf(spec_filter_to_expr(&cat.condition, macros)));
+        let dnf = to_dnf(to_nnf(filter_to_expr(&cat.condition)));
         let consistent: Vec<_> = dnf.into_iter().filter(|t| check_term_consistency(t).0).collect();
         category_dnfs.insert(cat.id.clone(), consistent);
     }
@@ -493,20 +405,31 @@ pub fn topic_category_dirs() -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Load every topic's per-kind categories and collect overlaps per (topic, kind). Shared entry point.
+/// Load every topic's per-kind categories, fully macro/sanitizer-resolved (the same
+/// `topic::load` pipeline `TopicRunner::load` uses, minus the `outputs`/`transforms.json`/
+/// `producers.json` machinery this lint has no use for), and collect overlaps per (topic, kind).
+/// Shared entry point.
 pub fn find_all_topic_overlaps() -> anyhow::Result<Vec<(String, Vec<Overlap>)>> {
     let mut out = Vec::new();
     for (topic, dir) in topic_category_dirs() {
-        let per_kind = load_topic_categories(&dir)
-            .map_err(|e| anyhow::anyhow!("loading {topic} categories: {e}"))?;
-        // Merge shared cross-topic macros so `filter_to_expr` can inline every `Macro` reference,
-        // mirroring the runtime merge in `topic_runner`. `dir` is `topics/<name>`.
-        let shared = load_shared_macros(dir.parent().expect("topics/<name> has parent"))
+        let config_root = dir.parent().expect("topics/<name> has parent");
+        let sanitizers = load_topic_sanitizers(&dir, config_root)
+            .map_err(|e| anyhow::anyhow!("loading {topic} sanitizers: {e}"))?;
+        let shared_macros = load_shared_macros(config_root)
             .map_err(|e| anyhow::anyhow!("loading shared macros.json: {e}"))?;
-        for (kind, mut cats) in per_kind {
-            for (k, v) in &shared {
-                cats.macros.entry(k.clone()).or_insert_with(|| v.clone());
-            }
+        let topic_macros = load_topic_macros(&dir)
+            .map_err(|e| anyhow::anyhow!("loading {topic} macros: {e}"))?;
+        let raw_macros = crate::topic::load::merge(&shared_macros, &topic_macros);
+        let resolved_macros = resolve_macros(&raw_macros, &sanitizers)
+            .map_err(|e| anyhow::anyhow!("resolving {topic} macros: {e}"))?;
+        let macros: HashMap<String, Filter> = resolved_macros.iter()
+            .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
+            .collect::<anyhow::Result<_>>()
+            .map_err(|e: anyhow::Error| anyhow::anyhow!("parsing {topic} resolved macros: {e}"))?;
+
+        let per_kind = load_topic_categories(&dir, &resolved_macros, &macros, &sanitizers)
+            .map_err(|e| anyhow::anyhow!("loading {topic} categories: {e}"))?;
+        for (kind, cats) in per_kind {
             let label = format!("{topic}/{}", kind.subdir());
             out.push((label, find_overlaps(&cats)));
         }

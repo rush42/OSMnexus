@@ -1,27 +1,27 @@
 //! The `Producer` engine — a small tree of variants that evaluates one output's value (the one
-//! mechanism behind every `outputs` entry, `TopicSpec::outputs`), its load-time reference
-//! resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result (`Produced`) types it
-//! evaluates over. Two branch shapes (`Match`, `Parent`) and three leaf/read shapes (`Extract`,
-//! `DirectedExtract`, `Const`) — everything else is JSON-only sugar, folded into one of these by
-//! `parser`'s hand-written `Deserialize` impl (`fallback`, `parent_or_obj`, the
-//! `{"tag": ...}`/`{"tag_or", "or"}` shorthands) so it never exists as a `Producer` value here, not
-//! pre-`resolve`, not transiently, not ever (see `parser`'s own doc for why that folding lives in
-//! its own module rather than inline in this one). A named *shared* classifier table (`{ "shared":
-//! "<name>" }`) isn't even sugar `Producer`/`parser` know about: it's inlined as plain JSON —
-//! before anything here ever sees it — by `topic::load::inline_shared_producers`, at
-//! topic-directory-read time, the same way shared macros/sanitizers are merged in.
+//! mechanism behind every `outputs` entry, `TopicSpec::outputs`) plus the context (`ExtractCtx`/
+//! `TagSet`) and result (`Produced`) types it evaluates over. Two branch shapes (`Match`, `Parent`)
+//! and three leaf/read shapes (`Extract`, `DirectedExtract`, `Const`) — everything else is
+//! JSON-only sugar, folded into one of these by `parser`'s hand-written `Deserialize` impl
+//! (`fallback`, `parent_or_obj`, the `{"tag": ...}`/`{"tag_or", "or"}` shorthands) so it never
+//! exists as a `Producer` value here, not even transiently (see `parser`'s own doc for why that
+//! folding lives in its own module rather than inline in this one). A named reference — a macro,
+//! a `sanitize: "<name>"`, a *shared* classifier table (`{ "shared": "<name>" }`) — is never a
+//! `Producer` concept either: all three are resolved away as a `serde_json::Value`-tree rewrite
+//! (`topic::load::inline_macro_refs`/`inline_sanitize_refs`/`inline_shared_producers`) before any
+//! `Producer` JSON is deserialized, so `sanitize:` fields below deserialize straight into
+//! `Option<Sanitizer>` and `eval` never does a registry lookup of any kind.
 
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::lang::classifier::{Rule, RuleSpec};
+use crate::lang::classifier::Rule;
 use crate::lang::extract::Extract;
-use crate::lang::filter::{Filter, FilterSpec};
+use crate::lang::filter::Filter;
 use crate::lang::keys;
-use crate::lang::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
+use crate::lang::sanitize::{resolve_sanitize, Sanitizer};
 use crate::osm::types::RawTags;
 
 /// A produced value plus optional provenance. The `annotate` are arbitrary key/value pairs the
@@ -40,7 +40,7 @@ pub struct Produced {
 /// `Filter` (`Side`/`Prefix`/`Infix`/`TagsEmpty`/…) can branch on it just like it can on
 /// `obj_tags`. There is no dedicated side-split-context field: `_side`/`_prefix`/`_infix` are
 /// ordinary `annotations` entries, stamped by whatever built this context (see `categorize::transform::run_transform_steps`) — `Filter::Side`
-/// reads `annotations["_side"]` the same way `Filter::TagEq` reads a tag. `Copy` so a producer can
+/// reads `annotations["_side"]` the same way `Filter::Eq` reads a tag. `Copy` so a producer can
 /// cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself against
 /// a different tagset — `annotations` stays a shared reference for that reason, never `&mut`;
 /// whatever step is actively writing to it (see `InputTransform::apply`) holds its own `&mut`
@@ -124,43 +124,13 @@ pub enum MatchOrigin {
     Default,
 }
 
-/// A value producer, **as parsed from JSON** — its `Match` rules are `RuleSpec`s and its
-/// `Extract`/`DirectedExtract` `sanitize` are named `SanitizeRef`s, both resolved by `resolve` into
-/// the runtime `Producer` below. `Deserialize` isn't derived on this type itself — deliberately, so
-/// a stray `#[derive(Deserialize)]` here can't reintroduce a shape `parser` doesn't know about;
-/// `parser`'s hand-written impl targets this `ProducerSpec` (folding `fallback` etc.
-/// sugar into it).
-#[derive(Debug, Clone)]
-pub enum ProducerSpec {
-    Match {
-        rules: Vec<RuleSpec>,
-        default: Option<Value>,
-        annotate: Map<String, Value>,
-        origin: MatchOrigin,
-    },
-    Extract {
-        extract: Extract,
-        sanitize: Option<SanitizeRef>,
-        annotate: Map<String, Value>,
-    },
-    Const {
-        value: Value,
-        annotate: Map<String, Value>,
-    },
-    DirectedExtract {
-        key: String,
-        from: DirectedFrom,
-        sanitize: Option<SanitizeRef>,
-        annotate: Map<String, Value>,
-    },
-    Parent(Box<ProducerSpec>),
-}
-
-/// A value producer, **resolved**: `Match` (a rule table) or `Extract` (a leaf tag read) — see
-/// `parser`'s hand-written `Deserialize` impl (targeting `ProducerSpec`) for the
-/// `fallback` JSON shape that folds into `Match` at parse time and so never appears here. Every
-/// named reference (`Match` rules' macros, `Extract`'s `sanitize`) is already resolved (see
-/// `ProducerSpec::resolve`), so `eval` never does a registry lookup.
+/// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see `parser`'s
+/// hand-written `Deserialize` impl (targeting this type directly) for the `fallback` JSON shape
+/// that folds into `Match` at parse time and so never appears here. `Deserialize` isn't derived
+/// directly — deliberately, so a stray `#[derive(Deserialize)]` here can't reintroduce a shape
+/// `parser` doesn't know about. Every named reference (`Match` rules' macros, `Extract`'s
+/// `sanitize`) is resolved away before this type is ever deserialized (see this module's own doc),
+/// so `eval` never does a registry lookup.
 #[derive(Debug, Clone)]
 pub enum Producer {
     /// A data-defined first-match-wins rule table (same engine as the `road` classifier). Each
@@ -287,67 +257,12 @@ impl Producer {
     }
 }
 
-// ── Load-time resolution ──────────────────────────────────────────────────────
-
-impl ProducerSpec {
-    /// Resolve every named reference this producer (transitively) carries, once, at load time:
-    /// macros embedded in a `Match`'s `rules[].when` (`FilterSpec::expand`) and `Extract`'s
-    /// `sanitize:` (`SanitizeRef::resolve`), producing a runtime `Producer`. After this, `eval`
-    /// never does a registry lookup of any kind.
-    pub fn resolve(
-        &self,
-        macros: &HashMap<String, FilterSpec>,
-        sanitizers: &HashMap<String, Sanitizer>,
-    ) -> anyhow::Result<Producer> {
-        Ok(match self {
-            ProducerSpec::Match { rules, default, annotate, origin } => Producer::Match {
-                rules: rules.iter()
-                    .map(|r| r.resolve(macros, sanitizers))
-                    .collect::<anyhow::Result<_>>()?,
-                default: default.clone(),
-                annotate: annotate.clone(),
-                origin: *origin,
-            },
-            ProducerSpec::Extract { extract, sanitize, annotate } => Producer::Extract {
-                extract: extract.clone(),
-                sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
-                annotate: annotate.clone(),
-            },
-            ProducerSpec::Const { value, annotate } => Producer::Const { value: value.clone(), annotate: annotate.clone() },
-            ProducerSpec::DirectedExtract { key, from, sanitize, annotate } => Producer::DirectedExtract {
-                key: key.clone(),
-                from: *from,
-                sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
-                annotate: annotate.clone(),
-            },
-            ProducerSpec::Parent(inner) => Producer::Parent(Box::new(inner.resolve(macros, sanitizers)?)),
-        })
-    }
-
-    /// The `ParentOrObj` equivalent for a *pre-resolve* `p` — see `Producer::parent_or_obj` for the
-    /// `Match`+`Parent` shape. Used by `parser`'s `parent_or_obj` JSON sugar and
-    /// `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`, both of which build an unresolved
-    /// `ProducerSpec` (it carries a `SanitizeRef`) that's resolved later.
-    pub fn parent_or_obj(p: ProducerSpec) -> ProducerSpec {
-        ProducerSpec::Match {
-            rules: vec![
-                RuleSpec {
-                    when: FilterSpec::HasParent { has_parent: true },
-                    value: ProducerSpec::Parent(Box::new(p.clone())),
-                },
-                RuleSpec { when: FilterSpec::HasParent { has_parent: false }, value: p },
-            ],
-            default: None,
-            annotate: Map::new(),
-            origin: MatchOrigin::ParentOrObj,
-        }
-    }
-}
-
 impl Producer {
-    /// The `ParentOrObj` equivalent for an already-resolved `p` — see `Parent`'s doc for why this
-    /// is built here rather than existing as its own variant. Used by Rust-side synthesis
-    /// (`topic::runner`) that composes already-resolved producers.
+    /// The `ParentOrObj` equivalent for `p` — see `Parent`'s doc for why this is built here rather
+    /// than existing as its own variant. Used by `parser`'s `parent_or_obj` JSON sugar,
+    /// `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`, and Rust-side synthesis
+    /// (`topic::runner`) that composes already-resolved producers — all three build/compose plain
+    /// `Producer` values now, no separate as-parsed tier.
     pub fn parent_or_obj(p: Producer) -> Producer {
         Producer::Match {
             rules: vec![
@@ -398,7 +313,7 @@ mod classify_bool_tests {
     fn matching_filter_produces_true() {
         let obj: RawTags = [("oneway".to_owned(), "yes".to_owned())].into_iter().collect();
         let producer = bool_producer(
-            Filter::TagEq { extract: Extract::Value { key: "oneway".to_owned() }, sanitize: None, eq: "yes".to_owned() },
+            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned() }, sanitize: None, eq: "yes".to_owned() },
             TagSet::Obj,
         );
         let produced = producer.eval(&ctx(&obj, None)).unwrap();
@@ -409,7 +324,7 @@ mod classify_bool_tests {
     fn non_matching_filter_produces_false() {
         let obj: RawTags = [("oneway".to_owned(), "no".to_owned())].into_iter().collect();
         let producer = bool_producer(
-            Filter::TagEq { extract: Extract::Value { key: "oneway".to_owned() }, sanitize: None, eq: "yes".to_owned() },
+            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned() }, sanitize: None, eq: "yes".to_owned() },
             TagSet::Obj,
         );
         let produced = producer.eval(&ctx(&obj, None)).unwrap();

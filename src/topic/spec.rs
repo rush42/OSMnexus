@@ -9,9 +9,9 @@ use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use crate::lang::extract::Extract;
-use crate::lang::filter::FilterSpec;
-use crate::lang::producer::{Producer, ProducerSpec, TagSet};
-use crate::lang::sanitize::{SanitizeRef, Sanitizer, StrOrVec};
+use crate::lang::filter::Filter;
+use crate::lang::producer::{Producer, TagSet};
+use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer, StrOrVec};
 use crate::categorize::transform::{CloneStep, InputTransform, TransformStep};
 
 #[derive(Debug, Deserialize)]
@@ -28,7 +28,7 @@ pub struct TopicSpec {
     /// If the condition matches, the way is skipped entirely for this topic.
     /// Uses the same Filter JSON syntax as category conditions.
     #[serde(default)]
-    pub exclude_condition: Option<FilterSpec>,
+    pub exclude_condition: Option<Filter>,
     /// Topic-level default values seeded into `produced` (lowest priority — any output producing
     /// the same key overrides them). Categories override per-key via their own `defaults`.
     #[serde(default)]
@@ -82,23 +82,26 @@ pub struct Field {
 /// - `true` — verbatim extract of the identically-named tag: `"surface": true` desugars to
 ///   `{ output: "surface", source: { key: "surface" } }`.
 /// - a JSON string — a named reference into `producer_lib` (the topic's `producers.json`),
-///   resolved once here rather than falling back silently on a miss (unlike `SanitizeRef`'s
-///   builtin fallback) — a typo'd name should fail loudly at load time.
+///   resolved once here rather than falling back silently on a miss (unlike
+///   `resolve_named_sanitizer`'s builtin fallback) — a typo'd name should fail loudly at load time.
 /// - an object shaped `{ name, in?, from? }` (no `key`/`keys`/`fallback`/`rules` — those
 ///   uniquely identify a full `Producer` instead): sugar for "read the first present of `in`
 ///   (default `[output]`) from `from` (default obj), clean it with the `name` sanitizer." The
 ///   map key supplies the output/default-input name, so unlike the old list-based sanitizer sugar
-///   there's no redundant `tag` field.
+///   there's no redundant `tag` field. This is the one shape whose sanitizer name is never spelled
+///   as a `sanitize:` field, so it's the one place here that still resolves a name directly
+///   (`resolve_named_sanitizer`) rather than relying on `topic::load`'s JSON-level inlining.
 /// - any other object — a full inline `Producer` (`Extract`/`Match`, or `fallback` sugar for a
-///   `Match`; `Extract` already supports `sanitize` directly for the general case).
-///
-/// Returns the **as-parsed** `ProducerSpec` (still carrying macro/sanitizer references); the caller
-/// (`runner::resolve_outputs`) resolves it into a `Field`'s `Producer` in one following pass.
+///   `Match`; `Extract` already supports `sanitize` directly for the general case). Any macro/named
+///   sanitizer reference inside is already resolved by the time `value` reaches here — it was
+///   extracted from a raw `outputs` map that went through `topic::load::resolve_refs` before this
+///   function's caller ever saw it — so `Producer::deserialize` needs no further resolution pass.
 pub fn resolve_output_entry(
     output: &str,
     value: Value,
-    producer_lib: &HashMap<String, ProducerSpec>,
-) -> anyhow::Result<ProducerSpec> {
+    producer_lib: &HashMap<String, Producer>,
+    sanitizers: &HashMap<String, Sanitizer>,
+) -> anyhow::Result<Producer> {
     let is_sanitizer_shorthand = matches!(&value, Value::Object(m) if m.contains_key("name")
         && !m.contains_key("key") && !m.contains_key("keys")
         && !m.contains_key("fallback") && !m.contains_key("rules"));
@@ -114,24 +117,24 @@ pub fn resolve_output_entry(
         }
         let r: SanitizerRepr = serde_json::from_value(value)
             .with_context(|| format!("topic outputs.{output}"))?;
-        let extract = ProducerSpec::Extract {
+        let extract = Producer::Extract {
             extract: Extract::Candidates {
                 keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
             },
-            sanitize: Some(SanitizeRef::Name(r.name)),
+            sanitize: Some(resolve_named_sanitizer(&r.name, sanitizers)),
             annotate: Map::new(),
         };
         match r.from {
             TagSet::Obj => extract,
-            TagSet::Parent => ProducerSpec::Parent(Box::new(extract)),
-            TagSet::ParentOrObj => ProducerSpec::parent_or_obj(extract),
+            TagSet::Parent => Producer::Parent(Box::new(extract)),
+            TagSet::ParentOrObj => Producer::parent_or_obj(extract),
             TagSet::Annotations => anyhow::bail!(
                 "topic outputs.{output}: `from: annotations` is only supported for directed reads, not the sanitizer shorthand"
             ),
         }
     } else {
         match value {
-            Value::Bool(true) => ProducerSpec::Extract {
+            Value::Bool(true) => Producer::Extract {
                 extract: Extract::Value { key: output.to_owned() },
                 sanitize: None,
                 annotate: Map::new(),
@@ -140,7 +143,7 @@ pub fn resolve_output_entry(
             Value::String(name) => producer_lib.get(&name).cloned().ok_or_else(|| {
                 anyhow::anyhow!("topic outputs.{output}: producer '{name}' not found in producers.json")
             })?,
-            other => ProducerSpec::deserialize(other).with_context(|| format!("topic outputs.{output}"))?,
+            other => Producer::deserialize(other).with_context(|| format!("topic outputs.{output}"))?,
         }
     };
     Ok(source)
@@ -162,23 +165,17 @@ pub struct TransformsSpec {
 }
 
 impl TransformsSpec {
-    /// Resolve every step's macro/sanitizer references and return the ready-to-run pipeline plus
-    /// `exclude_check_at` (always `before_exclude.len()`, by construction).
-    pub fn resolve(
-        &self,
-        macros: &HashMap<String, FilterSpec>,
-        sanitizers: &HashMap<String, Sanitizer>,
-    ) -> anyhow::Result<(Vec<TransformStep>, usize)> {
-        let mut pipeline: Vec<TransformStep> = self.before_exclude.iter()
-            .map(|s| s.resolve(macros, sanitizers))
-            .collect::<anyhow::Result<_>>()?;
+    /// Build the ready-to-run pipeline plus `exclude_check_at` (always `before_exclude.len()`, by
+    /// construction). Every step's `Filter`/`Producer` field is already resolved — the whole
+    /// `transforms.json` document went through `topic::load::resolve_refs` before it was
+    /// deserialized into `Self` — so this is pure reshaping into `InputTransform`/`TransformStep`,
+    /// no macro/sanitizer lookup left to do.
+    pub fn into_pipeline(self) -> (Vec<TransformStep>, usize) {
+        let mut pipeline: Vec<TransformStep> =
+            self.before_exclude.into_iter().map(PipelineStepSpec::into_transform_step).collect();
         let exclude_check_at = pipeline.len();
-        pipeline.extend(
-            self.after_exclude.iter()
-                .map(|s| s.resolve(macros, sanitizers))
-                .collect::<anyhow::Result<Vec<_>>>()?,
-        );
-        Ok((pipeline, exclude_check_at))
+        pipeline.extend(self.after_exclude.into_iter().map(PipelineStepSpec::into_transform_step));
+        (pipeline, exclude_check_at)
     }
 }
 
@@ -188,7 +185,7 @@ impl TransformsSpec {
 #[derive(Debug)]
 pub enum TransformSpec {
     /// `{ "output": ..., <producer fields> }`.
-    TagRule { output: String, source: ProducerSpec },
+    TagRule { output: String, source: Producer },
     /// `{ "prefix": ..., "stamp_key": ..., "stamp_value": ..., "stamp_nested_under"?: [...] }` —
     /// identified by its required `stamp_key` field.
     StripPrefix {
@@ -204,12 +201,12 @@ pub enum TransformSpec {
         prefix: String,
         infix: String,
         meta: Vec<String>,
-        guard: Option<FilterSpec>,
+        guard: Option<Filter>,
         record_infix_as: Option<String>,
     },
     /// `{ "drop": <Filter> }` — identified by its required `drop` field. See
     /// `categorize::transform::InputTransform::Drop`.
-    Drop { when: FilterSpec },
+    Drop { when: Filter },
 }
 
 impl<'de> Deserialize<'de> for TransformSpec {
@@ -244,7 +241,7 @@ impl<'de> Deserialize<'de> for TransformSpec {
                 #[serde(default)]
                 meta: Vec<String>,
                 #[serde(default)]
-                guard: Option<FilterSpec>,
+                guard: Option<Filter>,
                 #[serde(default)]
                 record_infix_as: Option<String>,
             }
@@ -252,7 +249,7 @@ impl<'de> Deserialize<'de> for TransformSpec {
             Ok(TransformSpec::Unnest { prefix: r.unnest, infix: r.infix, meta: r.meta, guard: r.guard, record_infix_as: r.record_infix_as })
         } else if v.contains_key("drop") {
             #[derive(Deserialize)]
-            struct Repr { drop: FilterSpec }
+            struct Repr { drop: Filter }
             let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
             Ok(TransformSpec::Drop { when: r.drop })
         } else {
@@ -263,40 +260,29 @@ impl<'de> Deserialize<'de> for TransformSpec {
                 .to_owned();
             let mut rest = v;
             rest.remove("output");
-            let source = ProducerSpec::deserialize(Value::Object(rest)).map_err(D::Error::custom)?;
+            let source = Producer::deserialize(Value::Object(rest)).map_err(D::Error::custom)?;
             Ok(TransformSpec::TagRule { output, source })
         }
     }
 }
 
 impl TransformSpec {
-    fn resolve(
-        &self,
-        macros: &HashMap<String, FilterSpec>,
-        sanitizers: &HashMap<String, Sanitizer>,
-    ) -> anyhow::Result<InputTransform> {
-        Ok(match self {
-            TransformSpec::TagRule { output, source } => InputTransform::TagRule {
-                output: output.clone(),
-                source: source.resolve(macros, sanitizers)?,
-            },
-            TransformSpec::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } => InputTransform::StripPrefix {
-                prefix: prefix.clone(),
-                stamp_key: stamp_key.clone(),
-                stamp_value: stamp_value.clone(),
-                stamp_nested_under: stamp_nested_under.clone(),
-            },
+    fn into_input_transform(self) -> InputTransform {
+        match self {
+            TransformSpec::TagRule { output, source } => InputTransform::TagRule { output, source },
+            TransformSpec::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } =>
+                InputTransform::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under },
             TransformSpec::Unnest { prefix, infix, meta, guard, record_infix_as } => InputTransform::UnnestTags {
-                prefix: Box::leak(prefix.clone().into_boxed_str()),
-                infix: Box::leak(infix.clone().into_boxed_str()),
+                prefix: Box::leak(prefix.into_boxed_str()),
+                infix: Box::leak(infix.into_boxed_str()),
                 meta_prefixes: Box::leak(
-                    meta.iter().map(|s| Box::leak(s.clone().into_boxed_str()) as &str).collect::<Vec<_>>().into_boxed_slice(),
+                    meta.into_iter().map(|s| Box::leak(s.into_boxed_str()) as &str).collect::<Vec<_>>().into_boxed_slice(),
                 ),
-                guard: guard.as_ref().map(|f| f.expand(macros, sanitizers)).transpose()?,
-                record_infix_as: record_infix_as.as_ref().map(|s| Box::leak(s.clone().into_boxed_str()) as &str),
+                guard,
+                record_infix_as: record_infix_as.map(|s| Box::leak(s.into_boxed_str()) as &str),
             },
-            TransformSpec::Drop { when } => InputTransform::Drop { when: when.expand(macros, sanitizers)? },
-        })
+            TransformSpec::Drop { when } => InputTransform::Drop { when },
+        }
     }
 }
 
@@ -307,7 +293,7 @@ impl TransformSpec {
 pub enum PipelineStepSpec {
     Transform(TransformSpec),
     Clone {
-        when: Option<FilterSpec>,
+        when: Option<Filter>,
         annotate: Vec<(String, String)>,
         id_suffix: String,
         steps: Vec<TransformSpec>,
@@ -325,7 +311,7 @@ impl<'de> Deserialize<'de> for PipelineStepSpec {
             #[derive(Deserialize)]
             struct Repr {
                 #[serde(default)]
-                when: Option<FilterSpec>,
+                when: Option<Filter>,
                 #[serde(default)]
                 annotate: std::collections::BTreeMap<String, String>,
                 id_suffix: String,
@@ -346,20 +332,16 @@ impl<'de> Deserialize<'de> for PipelineStepSpec {
 }
 
 impl PipelineStepSpec {
-    fn resolve(
-        &self,
-        macros: &HashMap<String, FilterSpec>,
-        sanitizers: &HashMap<String, Sanitizer>,
-    ) -> anyhow::Result<TransformStep> {
-        Ok(match self {
-            PipelineStepSpec::Transform(t) => TransformStep::Transform(t.resolve(macros, sanitizers)?),
+    fn into_transform_step(self) -> TransformStep {
+        match self {
+            PipelineStepSpec::Transform(t) => TransformStep::Transform(t.into_input_transform()),
             PipelineStepSpec::Clone { when, annotate, id_suffix, steps } => TransformStep::Clone(CloneStep {
-                when: when.as_ref().map(|f| f.expand(macros, sanitizers)).transpose()?,
-                annotate: annotate.clone(),
-                id_suffix: id_suffix.clone(),
-                steps: steps.iter().map(|s| s.resolve(macros, sanitizers)).collect::<anyhow::Result<_>>()?,
+                when,
+                annotate,
+                id_suffix,
+                steps: steps.into_iter().map(TransformSpec::into_input_transform).collect(),
             }),
-        })
+        }
     }
 }
 
@@ -401,9 +383,7 @@ mod transforms_spec_tests {
         let spec: TransformsSpec = serde_json::from_str(json).expect("parse transforms.json");
         assert_eq!(spec.after_exclude.len(), 1);
 
-        let macros = HashMap::new();
-        let sanitizers = HashMap::new();
-        let (pipeline, exclude_check_at) = spec.resolve(&macros, &sanitizers).expect("resolve transforms.json");
+        let (pipeline, exclude_check_at) = spec.into_pipeline();
         assert_eq!(exclude_check_at, 0);
         assert_eq!(pipeline.len(), 1);
 

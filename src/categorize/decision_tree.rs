@@ -594,16 +594,15 @@ fn collect_sanitized_tags(f: &Filter, out: &mut FxHashSet<String>) {
         Filter::And { and } => and.iter().for_each(|c| collect_sanitized_tags(c, out)),
         Filter::Or { or } => or.iter().for_each(|c| collect_sanitized_tags(c, out)),
         Filter::Not { not } => collect_sanitized_tags(not, out),
-        Filter::TagEq { extract, sanitize: Some(_), .. } | Filter::TagIn { extract, sanitize: Some(_), .. } => {
+        Filter::Eq { extract, sanitize: Some(_), .. }
+        | Filter::In { extract, sanitize: Some(_), .. }
+        | Filter::NumLt { extract, sanitize: Some(_), .. }
+        | Filter::NumLte { extract, sanitize: Some(_), .. }
+        | Filter::NumGt { extract, sanitize: Some(_), .. }
+        | Filter::NumGte { extract, sanitize: Some(_), .. } => {
             if let crate::lang::extract::Extract::Value { key } = extract {
                 out.insert(key.clone());
             }
-        }
-        Filter::NumLt { num, sanitize: Some(_), .. }
-        | Filter::NumLte { num, sanitize: Some(_), .. }
-        | Filter::NumGt { num, sanitize: Some(_), .. }
-        | Filter::NumGte { num, sanitize: Some(_), .. } => {
-            out.insert(num.clone());
         }
         _ => {}
     }
@@ -613,9 +612,11 @@ fn collect_sanitized_tags(f: &Filter, out: &mut FxHashSet<String>) {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-    use crate::topic::load::{load_shared_macros, load_topic_categories, load_topic_sanitizers};
+    use crate::topic::load::{
+        load_shared_macros, load_topic_categories, load_topic_macros, load_topic_sanitizers, merge, resolve_macros,
+    };
     use crate::categorize::categories::{categorize, categorize_linear, CategoriesFile, OrderedNode};
-    use crate::lang::filter::{Filter, FilterSpec};
+    use crate::lang::filter::Filter;
     use crate::lang::producer::ExtractCtx;
     use crate::categorize::linter::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use serde_json::{Map, Value};
@@ -654,18 +655,15 @@ mod tests {
           let config_root = dir.parent().unwrap();
           let shared_macros = load_shared_macros(config_root).expect("shared macros");
           let sanitizers = load_topic_sanitizers(&dir, config_root).expect("load sanitizers");
-          for (kind, cats_spec) in load_topic_categories(&dir).expect("load categories") {
+          let topic_macros = load_topic_macros(&dir).expect("topic macros");
+          let raw_macros = merge(&shared_macros, &topic_macros);
+          let resolved_macros = resolve_macros(&raw_macros, &sanitizers).expect("resolve macros");
+          let macros: HashMap<String, Filter> = resolved_macros.iter()
+              .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
+              .collect::<anyhow::Result<_>>()
+              .expect("parse resolved macros");
+          for (kind, mut cats) in load_topic_categories(&dir, &resolved_macros, &macros, &sanitizers).expect("load categories") {
             let topic = format!("{topic}/{}", kind.subdir());
-            let mut raw_macros: HashMap<String, FilterSpec> = shared_macros.clone();
-            for (k, v) in &cats_spec.macros {
-                raw_macros.insert(k.clone(), v.clone()); // topic-local overrides shared
-            }
-            let expanded: HashMap<String, Filter> = raw_macros.iter()
-                .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros, &sanitizers)?)))
-                .collect::<anyhow::Result<_>>()
-                .expect("expand macros");
-            let mut cats = cats_spec.resolve(&raw_macros, &expanded, &sanitizers)
-                .expect("resolve categories");
             cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
 
             let refs = referenced_eq(&cats);

@@ -4,12 +4,12 @@ use anyhow::Context;
 use serde_json::{Map, Value};
 
 use crate::categorize::categories::CategoriesFile;
-use crate::lang::filter::{Filter, FilterSpec};
-use crate::lang::producer::{Producer, ProducerSpec};
+use crate::lang::filter::Filter;
+use crate::lang::producer::Producer;
 use crate::categorize::transform::TransformStep;
 use crate::topic::load::{
     inline_shared_producers, load_shared_macros, load_shared_producers, load_topic_categories,
-    load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge,
+    load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge, resolve_macros, resolve_refs,
 };
 use crate::topic::pipeline::build_topic_rows;
 use crate::topic::spec::{resolve_output_entry, Field, GeometryShape, TopicSpec};
@@ -39,9 +39,9 @@ pub struct TopicRunner {
     /// directly) always ran after it. Every `Clone` step (side-splitting) is synthesized after
     /// every plain `InputTransform`, so it always falls in `pipeline[exclude_check_at..]`.
     pub exclude_check_at: usize,
-    /// The topic's `exclude_condition` (`topic.json`), macro/sanitizer-resolved at load time. Held
-    /// here (rather than on `TopicSpec`, which is the as-parsed `Option<FilterSpec>`) so the runtime
-    /// pipeline (`topic::pipeline::build_topic_rows`) reads an already-resolved `Filter`.
+    /// The topic's `exclude_condition` (`topic.json`), already macro/sanitizer-resolved by the time
+    /// `TopicSpec` deserializes it (see `TopicRunner::load`). Held here (taken out of `spec`, not
+    /// duplicated) so the runtime pipeline (`topic::pipeline::build_topic_rows`) reads it directly.
     pub exclude_condition: Option<Filter>,
     /// Topic-default fields (`spec.outputs`, resolved, with topic-level `defaults` folded in as
     /// each default's lowest-priority `Fallback` branch — see `merge_default_fields`) — the
@@ -66,17 +66,14 @@ pub struct TopicRunner {
 /// uniqueness check is needed either.
 fn resolve_outputs(
     raw: Map<String, Value>,
-    producer_lib: &HashMap<String, ProducerSpec>,
-    macros: &HashMap<String, FilterSpec>,
+    producer_lib: &HashMap<String, Producer>,
     sanitizers: &HashMap<String, crate::lang::sanitize::Sanitizer>,
     context: &str,
 ) -> anyhow::Result<Vec<Field>> {
     raw.into_iter()
         .map(|(output, value)| {
-            let source_spec = resolve_output_entry(&output, value, producer_lib)
+            let source = resolve_output_entry(&output, value, producer_lib, sanitizers)
                 .with_context(|| context.to_owned())?;
-            let source = source_spec.resolve(macros, sanitizers)
-                .with_context(|| format!("{context}.{output}"))?;
             Ok(Field { output, source })
         })
         .collect()
@@ -160,12 +157,6 @@ impl TopicRunner {
         let base = crate::paths::config_root().join(name);
         let config_root = base.parent().expect("topics/<name> has a parent").to_path_buf();
 
-        let mut spec: TopicSpec = serde_json::from_str(
-            &std::fs::read_to_string(base.join("topic.json"))
-                .with_context(|| format!("reading topics/{name}/topic.json"))?,
-        )
-        .with_context(|| format!("parsing topics/{name}/topic.json"))?;
-
         // Named atomic transforms (`sanitize:` targets), shared+topic-local. A separate
         // registry/namespace from the producer library below — atomic chains and composite
         // producers are different *types* (`Sanitizer`/`Producer`), so there's no risk of a
@@ -174,73 +165,78 @@ impl TopicRunner {
         let sanitizers = load_topic_sanitizers(&base, &config_root)?;
 
         // Every macro this topic can reference: shared (config root's macros.json) plus the
-        // topic's own macros.json, topic-local winning on name conflict. Expanded once, here,
-        // against itself (so a macro referencing another macro resolves too) — every
-        // `Filter`/`Producer` this topic owns is then expanded against the *expanded* result
-        // below, so `eval` never does a live macro lookup and an unknown/cyclic macro is a
-        // load-time error, not a per-object runtime no-op (see `Filter::expand`).
+        // topic's own macros.json, topic-local winning on name conflict — raw JSON, still possibly
+        // macro-in-macro. `resolve_macros` expands each entry against itself (recursively,
+        // cycle-checked) and inlines any `sanitize:` reference too, producing a fully macro-free
+        // JSON per name — what `inline_macro_refs`/`topic::load::resolve_refs` need to substitute
+        // `{"macro": "<name>"}` sites everywhere else in this topic's JSON.
         let shared_macros = load_shared_macros(&config_root).with_context(|| "loading shared macros.json")?;
         let topic_macros = load_topic_macros(&base)?;
-        // The raw (unresolved) macro table: what `FilterSpec::expand`/`ProducerSpec::resolve` take,
-        // so a macro body referencing another macro is expanded recursively on demand. Every
-        // `.expand()`/`.resolve()` call below passes `&raw_macros`.
         let raw_macros = merge(&shared_macros, &topic_macros);
-        // The same table eagerly expanded — used only to seed each `CategoriesFile`'s `macros`
-        // (whose `build_order` `Skip`-sink conditions need resolved `Filter`s).
-        let macros: HashMap<String, Filter> = raw_macros.iter()
-            .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros, &sanitizers)?)))
+        let resolved_macros = resolve_macros(&raw_macros, &sanitizers)
+            .with_context(|| format!("resolving macros for topics/{name}"))?;
+        // The same table, deserialized to `Filter` — used only to seed each `CategoriesFile`'s
+        // `macros` (whose `build_order` `Skip`-sink `excludes` entries name a macro directly, not
+        // through a condition, so they're never touched by JSON-level macro inlining).
+        let macros: HashMap<String, Filter> = resolved_macros.iter()
+            .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
             .collect::<anyhow::Result<_>>()
-            .with_context(|| format!("expanding macros for topics/{name}"))?;
+            .with_context(|| format!("parsing resolved macros for topics/{name}"))?;
 
-        // `exclude_condition` is the as-parsed `Option<FilterSpec>` on `TopicSpec`; resolve it once
-        // here and hold the resolved `Filter` on the runner (see `TopicRunner::exclude_condition`).
-        let exclude_condition: Option<Filter> = spec.exclude_condition.take()
-            .map(|cond| cond.expand(&raw_macros, &sanitizers))
-            .transpose()
-            .with_context(|| format!("topics/{name}/topic.json: exclude_condition"))?;
+        // `topic.json`, fully macro/sanitizer-resolved before it's ever deserialized into
+        // `TopicSpec` — so `exclude_condition` lands as a plain `Option<Filter>` and `outputs`'/
+        // `defaults`' values (still untyped `Value`s at this level) already carry no unresolved
+        // reference either, letting `resolve_outputs` below skip a further resolve pass.
+        let raw_topic: Value = serde_json::from_str(
+            &std::fs::read_to_string(base.join("topic.json"))
+                .with_context(|| format!("reading topics/{name}/topic.json"))?,
+        )
+        .with_context(|| format!("parsing topics/{name}/topic.json"))?;
+        let mut spec: TopicSpec = serde_json::from_value(
+            resolve_refs(raw_topic, &resolved_macros, &sanitizers)
+                .with_context(|| format!("resolving topics/{name}/topic.json"))?,
+        )
+        .with_context(|| format!("parsing topics/{name}/topic.json"))?;
+        let exclude_condition = spec.exclude_condition.take();
 
         // Load the named producer library. Optional: a topic with no named producers (e.g.
         // barrierLines) may omit the file. Any `{ "shared": "<name>" }` reference is inlined
         // against the config-root-level shared table (`<config_root>/producers.json`, e.g. the
-        // `road` classifier) as raw JSON before `Producer` deserialization ever runs — the same
-        // shared→topic-local treatment `load_topic_sanitizers`/`load_shared_macros` give
-        // sanitizers/macros — so `Producer` itself never represents "a shared classifier".
+        // `road` classifier) as raw JSON first, then macro/sanitizer-resolved the same way
+        // `topic.json` is, before `Producer` deserialization ever runs — so `Producer` itself never
+        // represents any of the three kinds of named reference.
         let shared_producers = load_shared_producers(&config_root)?;
         let producers_path = base.join("producers.json");
-        // The producer library is kept **unresolved** (`ProducerSpec`); each use resolves it via
-        // `resolve_outputs` (`ProducerSpec::resolve`). Category `outputs` overrides clone entries
-        // out of this map before resolution, and each resolves independently.
-        let producer_lib: HashMap<String, ProducerSpec> = if producers_path.exists() {
+        let producer_lib: HashMap<String, Producer> = if producers_path.exists() {
             let raw: Value = serde_json::from_str(&std::fs::read_to_string(&producers_path)?)
                 .with_context(|| format!("parsing topics/{name}/producers.json"))?;
             let inlined = inline_shared_producers(raw, &shared_producers)
                 .with_context(|| format!("topics/{name}/producers.json: inlining shared producers"))?;
-            serde_json::from_value(inlined)
+            let resolved = resolve_refs(inlined, &resolved_macros, &sanitizers)
+                .with_context(|| format!("resolving topics/{name}/producers.json"))?;
+            serde_json::from_value(resolved)
                 .with_context(|| format!("parsing topics/{name}/producers.json"))?
         } else {
             HashMap::new()
         };
 
-        // Load per-kind category sets (as parsed) from topics/<name>/{node,way,relation}/, then
-        // resolve each into a runtime `CategoriesFile`: its `macros` seeded with the topic's
-        // resolved macro map, every category condition expanded against `raw_macros`, and the
-        // exclude relation compiled into a priority order + discrimination tree via `build_order`.
-        let categories_spec = load_topic_categories(&base)
+        // Load per-kind category sets from topics/<name>/{node,way,relation}/, each already fully
+        // macro/sanitizer-resolved by `load_topic_categories`, then compile the exclude relation
+        // into a priority order + discrimination tree via `build_order`.
+        let categories_loaded = load_topic_categories(&base, &resolved_macros, &macros, &sanitizers)
             .with_context(|| format!("loading topics/{name}/ categories"))?;
         let mut categories: HashMap<ElementKind, CategoriesFile> = HashMap::new();
-        for (kind, cats_spec) in categories_spec {
-            let mut cats = cats_spec.resolve(&raw_macros, &macros, &sanitizers)
-                .with_context(|| format!("topics/{name}: resolving {} categories", kind.subdir()))?;
+        for (kind, mut cats) in categories_loaded {
             cats.build_order(tree_max_depth)
                 .with_context(|| format!("building category order for topics/{name}"))?;
             categories.insert(kind, cats);
         }
 
-        // `transforms.json`, if the topic has one, is the whole pipeline; a topic with none simply
-        // has an empty pipeline (see `TransformsSpec`'s own doc).
-        let (pipeline, exclude_check_at) = match load_topic_transforms(&base)? {
-            Some(transforms) => transforms.resolve(&raw_macros, &sanitizers)
-                .with_context(|| format!("topics/{name}/transforms.json"))?,
+        // `transforms.json`, if the topic has one, is the whole pipeline (already resolved by
+        // `load_topic_transforms`); a topic with none simply has an empty pipeline (see
+        // `TransformsSpec`'s own doc).
+        let (pipeline, exclude_check_at) = match load_topic_transforms(&base, &resolved_macros, &sanitizers)? {
+            Some(transforms) => transforms.into_pipeline(),
             None => (Vec::new(), 0),
         };
 
@@ -248,7 +244,7 @@ impl TopicRunner {
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
         let default_outputs = merge_default_fields(
             resolve_outputs(
-                spec.outputs.clone(), &producer_lib, &raw_macros, &sanitizers,
+                spec.outputs.clone(), &producer_lib, &sanitizers,
                 &format!("topics/{name}/topic.json: outputs"),
             )?,
             &spec.defaults,
@@ -265,7 +261,7 @@ impl TopicRunner {
             for cat in &cats.categories {
                 let raw = merge(&spec.outputs, &cat.outputs);
                 let fields = resolve_outputs(
-                    raw, &producer_lib, &raw_macros, &sanitizers,
+                    raw, &producer_lib, &sanitizers,
                     &format!("topics/{name}: category '{}' outputs", cat.id),
                 )?;
                 let defaults = merge(&spec.defaults, &cat.defaults);

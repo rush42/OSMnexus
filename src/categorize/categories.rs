@@ -8,68 +8,16 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::categorize::decision_tree::{self, DecisionTree};
-use crate::lang::filter::{eval, Filter, FilterSpec};
+use crate::lang::filter::{eval, Filter};
 use crate::lang::producer::ExtractCtx;
-use crate::lang::sanitize::Sanitizer;
 
-// ── Data types (as parsed) ────────────────────────────────────────────────────
+// ── Data types ───────────────────────────────────────────────────────────────
 
-/// A category definition **as parsed from JSON** — `condition` is a `FilterSpec` (may carry
-/// macros/named sanitizers), resolved into `CategoryDef` by `CategoriesFileSpec::resolve`.
+/// A category definition. `condition` deserializes straight into a resolved `Filter` — any
+/// macro/named-sanitizer reference it carried in JSON is already gone by the time this type sees
+/// it (`topic::load::inline_macro_refs`/`inline_sanitize_refs`, run once over the raw category
+/// JSON before `serde_json::from_value` — see `load_categories_dir`).
 #[derive(Debug, Clone, Deserialize)]
-pub struct CategoryDefSpec {
-    pub id: String,
-    pub condition: FilterSpec,
-    pub excludes: Option<Vec<String>>,
-    #[serde(default)]
-    pub outputs: serde_json::Map<String, serde_json::Value>,
-    #[serde(default)]
-    pub defaults: serde_json::Map<String, serde_json::Value>,
-}
-
-/// One kind's category set **as parsed** — its `macros`/`categories` still carry unresolved
-/// `FilterSpec`s. `resolve` turns it into the runtime `CategoriesFile` (below). The compiled
-/// `order`/`tree` are not part of this type — they only exist after resolution + `build_order`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CategoriesFileSpec {
-    pub macros: HashMap<String, FilterSpec>,
-    pub categories: Vec<CategoryDefSpec>,
-}
-
-impl CategoriesFileSpec {
-    /// Resolve every category `condition` against the topic's macros/sanitizers, producing the
-    /// runtime `CategoriesFile`. `raw_macros` is the topic's unresolved macro table (what
-    /// `FilterSpec::expand` needs for recursive macro-in-macro lookups); `macros` is the same table
-    /// already expanded, stored on the result so `build_order`'s `Skip`-sink conditions pick up
-    /// resolved `Filter`s. The caller runs `build_order` afterwards to compile `order`/`tree`.
-    pub fn resolve(
-        &self,
-        raw_macros: &HashMap<String, FilterSpec>,
-        macros: &HashMap<String, Filter>,
-        sanitizers: &HashMap<String, Sanitizer>,
-    ) -> anyhow::Result<CategoriesFile> {
-        let categories = self.categories.iter()
-            .map(|c| Ok(CategoryDef {
-                id: c.id.clone(),
-                condition: c.condition.expand(raw_macros, sanitizers)
-                    .map_err(|e| anyhow::anyhow!("category '{}': {e}", c.id))?,
-                excludes: c.excludes.clone(),
-                outputs: c.outputs.clone(),
-                defaults: c.defaults.clone(),
-            }))
-            .collect::<anyhow::Result<_>>()?;
-        Ok(CategoriesFile {
-            macros: macros.clone(),
-            categories,
-            order: Vec::new(),
-            tree: DecisionTree::default(),
-        })
-    }
-}
-
-// ── Data types (resolved) ─────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
 pub struct CategoryDef {
     pub id: String,
     pub condition: Filter,
@@ -77,9 +25,11 @@ pub struct CategoryDef {
     /// Per-category output overrides: merged over the topic's `outputs` map by key (category
     /// wins), before resolving into `Producer`s — e.g. re-sourcing `surface`/`smoothness` from
     /// the parent highway. Same value shapes as `TopicSpec::outputs` (see `resolve_output_entry`).
+    #[serde(default)]
     pub outputs: serde_json::Map<String, serde_json::Value>,
     /// Per-category default values (override the topic-level `defaults` per key). Seeded into
     /// `produced` as the lowest-priority layer; any output producing the same key overrides them.
+    #[serde(default)]
     pub defaults: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -94,6 +44,22 @@ pub struct CategoriesFile {
     /// Discrimination net over `order`, compiled by `build_order` after the priority order is
     /// known. Prunes `categorize`'s first-match walk to a small candidate set; identical results.
     pub tree: DecisionTree,
+}
+
+impl CategoriesFile {
+    /// Build from one kind's already-inlined category JSON (`{"categories": [...]}` — every
+    /// `condition` already macro/sanitizer-resolved, see `CategoryDef`'s own doc) plus the topic's
+    /// resolved macro table (needed separately: `build_order`'s `Skip`-sink `excludes` entries name
+    /// a macro directly, not through a condition, so they're never touched by JSON-level macro
+    /// inlining). `order`/`tree` start empty — the caller runs `build_order` to compile them.
+    pub fn from_categories_json(value: serde_json::Value, macros: HashMap<String, Filter>) -> anyhow::Result<Self> {
+        #[derive(Deserialize)]
+        struct CategoriesJson {
+            categories: Vec<CategoryDef>,
+        }
+        let parsed: CategoriesJson = serde_json::from_value(value)?;
+        Ok(CategoriesFile { macros, categories: parsed.categories, order: Vec::new(), tree: DecisionTree::default() })
+    }
 }
 
 /// One entry in the compiled priority order: try `condition`; on match, either select the

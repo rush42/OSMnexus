@@ -1,14 +1,19 @@
 //! The atomic `&str -> atomic value` sanitize-chain machinery underneath an `Extract`'s
-//! `sanitize:` field: `SanitizeRef` (a resolved-or-named chain reference, plus its load-time
-//! `resolve` against the named sanitizer registry), `Sanitizer`/`Step` (the chain and its steps —
-//! really just mapping/replace/builtin), and the one built-in, `parse_length`. Neither `Sanitizer`
-//! nor `Step` derives `Deserialize` here — their JSON sugar (a bare single step instead of an
-//! array; `cases`/`filter`/`drop` as sugar for `mapping`) is folded in by hand-written impls in
-//! `parser`, kept separate from the runtime types/eval logic defined here.
+//! `sanitize:` field: `Sanitizer`/`Step` (the chain and its steps — really just
+//! mapping/replace/builtin) and the one built-in, `parse_length`. A named `sanitize: "<name>"`
+//! reference is never a distinct type here — `topic::load::inline_sanitize_refs` splices the
+//! resolved chain's own JSON (via `Sanitizer`/`Step`'s `Serialize` impls below) into place at
+//! load time, before any `Filter`/`Producer` JSON is deserialized, so `sanitize:` always
+//! deserializes straight into `Option<Sanitizer>` (see `resolve_named_sanitizer`, the one piece of
+//! by-name lookup logic, shared by that inlining pass and `topic::spec::resolve_output_entry`'s
+//! own by-name shorthand). Neither `Sanitizer` nor `Step` derives `Deserialize`/`Serialize` here —
+//! their JSON sugar (a bare single step instead of an array; `cases`/`filter`/`drop` as sugar for
+//! `mapping`, only on the way in) is folded in by hand-written impls in `parser`, kept separate
+//! from the runtime types/eval logic defined here.
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The identity atomic transform: the value a bare tag read produces when no `sanitize` is named.
@@ -18,42 +23,25 @@ fn identity(raw: &str) -> Value {
     Value::String(raw.to_owned())
 }
 
-/// An `Extract`/`Filter` `sanitize` reference. `Name` is what raw JSON always deserializes into
-/// (tried first, so a plain string never lands in `Inline`); `resolve` (called once at load time,
-/// alongside `Filter::expand`/`Producer::resolve`) replaces it with the actual chain, so `eval`
-/// never does a registry lookup — same "resolve names once at load" treatment macros get.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum SanitizeRef {
-    Name(String),
-    Inline(Sanitizer),
-}
-
-impl SanitizeRef {
-    /// `name` not found in `sanitizers` falls back to a built-in alias (`Step::Builtin`, e.g.
-    /// `"parse_length"`) rather than erroring — mirrors the pre-inlining fallback
-    /// (`None => apply_builtin(name, raw)`). A truly unrecognized name still isn't caught until
-    /// `apply_builtin` runs (it has no load-time name registry of its own, just one built-in), so
-    /// it warns-and-drops per row rather than failing to load — the same looseness the built-in
-    /// fallback always had.
-    ///
-    /// Resolves down to the concrete `Sanitizer` chain — the resolved `Filter`/`Producer` types
-    /// carry `Option<Sanitizer>` directly (never a `SanitizeRef`), so their `*Spec::expand`/
-    /// `*Spec::resolve` passes call this at load time.
-    pub(crate) fn resolve(&self, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Sanitizer> {
-        Ok(match self {
-            SanitizeRef::Name(name) => match sanitizers.get(name) {
-                Some(chain) => chain.clone(),
-                None => Sanitizer::from_steps(vec![Step::Builtin(name.clone())]),
-            },
-            SanitizeRef::Inline(chain) => chain.clone(),
-        })
+/// `name` not found in `sanitizers` falls back to a built-in alias (`Step::Builtin`, e.g.
+/// `"parse_length"`) rather than erroring — mirrors the pre-inlining fallback
+/// (`None => apply_builtin(name, raw)`). A truly unrecognized name still isn't caught until
+/// `apply_builtin` runs (it has no load-time name registry of its own, just one built-in), so it
+/// warns-and-drops per row rather than failing to load — the same looseness the built-in fallback
+/// always had. The one piece of by-name sanitizer resolution logic, shared by
+/// `topic::load::inline_sanitize_refs` (JSON-level `sanitize: "name"`) and
+/// `topic::spec::resolve_output_entry` (the sanitizer-shorthand `{ "name": ... }` output entry,
+/// which never goes through JSON inlining since it isn't spelled as a `sanitize:` field).
+pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Sanitizer>) -> Sanitizer {
+    match sanitizers.get(name) {
+        Some(chain) => chain.clone(),
+        None => Sanitizer::from_steps(vec![Step::Builtin(name.to_owned())]),
     }
 }
 
 /// Evaluate a resolved `sanitize` chain against `raw`. `None` is the identity transform
-/// (always succeeds) — every resolved `sanitize:` field is `Option<Sanitizer>`, already resolved
-/// at load time (see `SanitizeRef::resolve`).
+/// (always succeeds) — every `sanitize:` field is `Option<Sanitizer>`, already resolved by the
+/// time `Filter`/`Producer` deserialize it (see `resolve_named_sanitizer`'s own doc).
 pub fn resolve_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value> {
     match sanitize {
         None => Some(identity(raw)),
@@ -71,9 +59,20 @@ pub fn resolve_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value
 #[derive(Debug, Clone)]
 pub struct Sanitizer(Vec<Step>);
 
+/// Serializes as the canonical array-of-steps shape — `parser`'s `Deserialize` impl accepts that
+/// shape back (`SanitizerJson::Chain`) regardless of chain length, so this round-trips even a
+/// one-step chain. The one consumer: `topic::load::inline_sanitize_refs`, splicing a resolved
+/// `sanitize: "<name>"` reference back into the raw JSON `Value` tree before `Filter`/`Producer`
+/// ever deserialize it.
+impl serde::Serialize for Sanitizer {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
 impl Sanitizer {
     /// Construct directly from already-known steps — used by `parser`'s `Deserialize`
-    /// impl (after folding any JSON sugar) and by `SanitizeRef::resolve`'s builtin-name fallback.
+    /// impl (after folding any JSON sugar) and by `resolve_named_sanitizer`'s builtin-name fallback.
     pub(crate) fn from_steps(steps: Vec<Step>) -> Self {
         Sanitizer(steps)
     }
@@ -142,8 +141,34 @@ pub enum Step {
     Builtin(String),
 }
 
+/// The `Serialize` counterpart to `parser`'s hand-written `Step` `Deserialize` — canonical shapes
+/// only (`Mapping`/`Replace` as their own object, `Builtin` as a bare string), never the folded
+/// `cases`/`filter`/`drop` sugar (that sugar only ever exists transiently on the way in). Same one
+/// consumer as `Sanitizer`'s own `Serialize`.
+impl serde::Serialize for Step {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            Step::Mapping { mapping, on_miss } => {
+                let mut m = serializer.serialize_map(Some(if on_miss.is_some() { 2 } else { 1 }))?;
+                m.serialize_entry("mapping", mapping)?;
+                if let Some(on_miss) = on_miss {
+                    m.serialize_entry("on_miss", on_miss)?;
+                }
+                m.end()
+            }
+            Step::Replace { replace } => {
+                let mut m = serializer.serialize_map(Some(1))?;
+                m.serialize_entry("replace", replace)?;
+                m.end()
+            }
+            Step::Builtin(name) => serializer.serialize_str(name),
+        }
+    }
+}
+
 /// One literal rewrite for a `replace` step.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReplaceRule {
     from: String,
     to: String,
@@ -153,7 +178,7 @@ pub struct ReplaceRule {
 
 /// Where a `ReplaceRule` matches: anywhere (replace every occurrence) or only as a prefix
 /// (rewrite the leading `from`, keep the suffix; no-op when absent).
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplaceAt {
     #[default]

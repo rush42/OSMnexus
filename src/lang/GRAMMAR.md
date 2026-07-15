@@ -83,15 +83,17 @@ Filter =
   | { "has_key_prefix": String }
   | { "has_parent": Boolean }
   | { "tags_empty": Boolean }
-  | { "num": String, "sanitize"?: SanitizeRef, "lt":  Number }
-  | { "num": String, "sanitize"?: SanitizeRef, "lte": Number }
-  | { "num": String, "sanitize"?: SanitizeRef, "gt":  Number }
-  | { "num": String, "sanitize"?: SanitizeRef, "gte": Number }
+  | { <Extract fields>, "sanitize"?: SanitizeRef, "lt":  Number }
+  | { <Extract fields>, "sanitize"?: SanitizeRef, "lte": Number }
+  | { <Extract fields>, "sanitize"?: SanitizeRef, "gt":  Number }
+  | { <Extract fields>, "sanitize"?: SanitizeRef, "gte": Number }
 ```
 
-Note: `<Extract fields>` means either `"key": String` (or its alias `"tag"`)
+Note: `<Extract fields>` means either `"key": String` (aliases `"tag"`, `"num"`)
 or `"keys": [String,...]` (alias `"first_tag"`) supplied inline in the same
-object.
+object. `"num"` is accepted only as a `"key"` alias for backward compatibility
+with existing configs (`bikelanes/producers.json`) — new numeric predicates
+should prefer `"key"`/`"keys"` like every other predicate.
 
 There is no `Cond`/`if-then-else` node. A conditional value is expressed as a
 `Match` producer: a rule with a real `when:` filter for the "then" branch,
@@ -257,7 +259,9 @@ TagRule. `PipelineStep` is `clone` vs. everything else (delegated to
 
 - `Extract` — `src/lang/extract.rs`
 - `Filter` — `src/lang/filter.rs`
-- `Sanitizer` / `Step` / `SanitizeRef` — `src/lang/sanitize.rs`
+- `Sanitizer` / `Step` — `src/lang/sanitize.rs` (the `SanitizeRef` grammar production above isn't a
+  distinct Rust type — a named `sanitize: "<name>"` reference is resolved as a JSON-tree rewrite,
+  `topic::load::inline_sanitize_refs`, before any Rust type ever sees it)
 - `Producer` / `Rule` — `src/lang/producer.rs`, `src/lang/classifier.rs`
 - Sugar-folding `Deserialize` impls — `src/lang/parser.rs`
 - `topic.json` / `transforms.json` schema — `src/topic/spec.rs`

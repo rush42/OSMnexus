@@ -7,15 +7,26 @@
 //! Layout: a topic organizes its categories into per-kind subfolders directly under the topic dir
 //! — `topics/<t>/{node,way,relation}/*.json` (one category per file, id = file stem). Topic-wide
 //! macros live in `topics/<t>/macros.json`. Each present kind subfolder becomes one `CategoriesFile`.
+//!
+//! Also home to the two generic `serde_json::Value`-tree rewrites every raw topic JSON document
+//! (`topic.json`, `transforms.json`, `producers.json`, each category file) is run through before
+//! any of it is deserialized into a `Filter`/`Producer`/`Rule`/`CategoryDef`: `inline_macro_refs`
+//! (substitutes `{"macro": "<name>"}` with the macro's own, recursively-inlined JSON) and
+//! `inline_sanitize_refs` (substitutes a bare `"sanitize": "<name>"` string with the resolved
+//! chain's own JSON, via `Sanitizer`/`Step`'s `Serialize` impls). Both are purely structural Value
+//! rewrites — they don't know or care which `Filter`/`Producer` variant a match sits inside, the
+//! same treatment `inline_shared_producers` below already gives `{"shared": "<name>"}`. After both
+//! passes, a `Filter`/`Producer`/`Rule`/`CategoryDef`'s own `Deserialize` never has to represent an
+//! unresolved reference at all — there's only ever the one (resolved) tier of each type.
 
 use std::collections::HashMap;
 
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use crate::categorize::categories::CategoriesFileSpec;
-use crate::lang::filter::FilterSpec;
-use crate::lang::sanitize::Sanitizer;
+use crate::categorize::categories::CategoriesFile;
+use crate::lang::filter::Filter;
+use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer};
 use crate::osm::types::ElementKind;
 use crate::topic::spec::TransformsSpec;
 
@@ -39,28 +50,82 @@ where
     merged
 }
 
-/// Load a topic's per-kind category sets from its directory. Reads the optional topic-wide
-/// `macros.json`, then for each of `node`/`way`/`relation` that exists as a subfolder, loads its
-/// `*.json` category files into a `CategoriesFile` (seeded with the topic macros). Only present
-/// kinds appear in the returned map — a topic with just a `way/` folder yields a single entry.
-pub fn load_topic_categories(
-    topic_dir: &std::path::Path,
-) -> anyhow::Result<HashMap<ElementKind, CategoriesFileSpec>> {
-    let macros = read_macros(&topic_dir.join("macros.json"))?;
+// ── Macro/sanitizer JSON-tree inlining ──────────────────────────────────────────
 
-    let mut out = HashMap::new();
-    for kind in ElementKind::ALL {
-        let dir = topic_dir.join(kind.subdir());
-        if dir.is_dir() {
-            let cats = load_categories_dir(&dir, &macros)
-                .with_context(|| format!("loading {}", dir.display()))?;
-            out.insert(kind, cats);
+/// Recursively replace every `{"macro": "<name>"}` object in `value` with `macros[name]`'s own
+/// (recursively inlined) JSON — the load-time pass that makes an unexpanded macro structurally
+/// impossible by the time `Filter`/`Producer` deserialize. `stack` cycle-checks: entering the same
+/// macro name twice while still inside its own expansion is a contradictory (infinite) definition,
+/// a hard load-time error, same as an unknown name.
+pub fn inline_macro_refs(value: Value, macros: &Map<String, Value>, stack: &mut Vec<String>) -> anyhow::Result<Value> {
+    Ok(match value {
+        Value::Object(mut obj) if obj.len() == 1 && obj.contains_key("macro") => {
+            let name = match obj.remove("macro") {
+                Some(Value::String(name)) => name,
+                _ => anyhow::bail!("`macro` must be a string"),
+            };
+            if stack.iter().any(|n| n == &name) {
+                stack.push(name);
+                anyhow::bail!("cyclic macro definition: {}", stack.join(" -> "));
+            }
+            let def = macros.get(&name).cloned()
+                .ok_or_else(|| anyhow::anyhow!("unknown macro: '{name}'"))?;
+            stack.push(name);
+            let expanded = inline_macro_refs(def, macros, stack)?;
+            stack.pop();
+            expanded
         }
-    }
-    Ok(out)
+        Value::Object(obj) => Value::Object(obj.into_iter()
+            .map(|(k, v)| Ok((k, inline_macro_refs(v, macros, stack)?)))
+            .collect::<anyhow::Result<_>>()?),
+        Value::Array(items) => Value::Array(items.into_iter()
+            .map(|v| inline_macro_refs(v, macros, stack))
+            .collect::<anyhow::Result<_>>()?),
+        other => other,
+    })
 }
 
-/// Read a macros JSON file (`{ name: Filter }`) if it exists, else an empty map.
+/// Recursively replace every bare `"sanitize": "<name>"` string in `value` with the resolved
+/// chain's own JSON (`Sanitizer`'s `Serialize` impl) — the load-time pass that makes an unresolved
+/// named sanitizer structurally impossible by the time `Filter`/`Producer` deserialize `sanitize:`
+/// straight into `Option<Sanitizer>`. An inline chain (already an array/object, not a bare string)
+/// is left alone. Purely structural — doesn't know which `Filter`/`Producer` variant `sanitize` is
+/// a field of, so it also happily leaves alone anything named `sanitize` that isn't a bare string
+/// (there is no such case in practice, since `sanitize:` never appears with a non-chain value).
+pub fn inline_sanitize_refs(value: Value, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Value> {
+    Ok(match value {
+        Value::Object(obj) => Value::Object(obj.into_iter()
+            .map(|(k, v)| {
+                let v = if k == "sanitize" {
+                    match v {
+                        Value::String(name) => serde_json::to_value(resolve_named_sanitizer(&name, sanitizers))?,
+                        other => inline_sanitize_refs(other, sanitizers)?,
+                    }
+                } else {
+                    inline_sanitize_refs(v, sanitizers)?
+                };
+                Ok((k, v))
+            })
+            .collect::<anyhow::Result<_>>()?),
+        Value::Array(items) => Value::Array(items.into_iter()
+            .map(|v| inline_sanitize_refs(v, sanitizers))
+            .collect::<anyhow::Result<_>>()?),
+        other => other,
+    })
+}
+
+/// Run both inlining passes, in order (a macro body can itself carry a `sanitize:` reference, so
+/// macros must be inlined first). The one entry point every raw topic JSON document goes through
+/// before its first typed `Deserialize` call.
+pub fn resolve_refs(value: Value, macros: &Map<String, Value>, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Value> {
+    let value = inline_macro_refs(value, macros, &mut Vec::new())?;
+    inline_sanitize_refs(value, sanitizers)
+}
+
+// ── Macros ───────────────────────────────────────────────────────────────────
+
+/// Read a macros JSON file (`{ name: <Filter JSON> }`) if it exists, else an empty map. Raw —
+/// macro bodies may still reference other macros (folded in by `inline_macro_refs`).
 fn read_macros(path: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
     if path.exists() {
         serde_json::from_str(&std::fs::read_to_string(path)?)
@@ -70,42 +135,86 @@ fn read_macros(path: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
     }
 }
 
-/// Read a topic's own `macros.json` (`{ name: Filter }`) as `Filter` values directly, else an
-/// empty map. Distinct from `load_shared_macros` (cross-topic, `<config_root>/macros.json`) —
-/// this is one file, holding every topic-local macro. Used to build the raw (pre-`Filter::expand`)
-/// macro map a topic's conditions/producers are expanded against.
-pub fn load_topic_macros(topic_dir: &std::path::Path) -> anyhow::Result<HashMap<String, FilterSpec>> {
-    let path = topic_dir.join("macros.json");
-    if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&path)?)
-            .with_context(|| format!("parsing {}", path.display()))
-    } else {
-        Ok(HashMap::new())
-    }
+/// Read a topic's own `macros.json`, raw. Distinct from `load_shared_macros` (cross-topic,
+/// `<config_root>/macros.json`) — this is one file, holding every topic-local macro.
+pub fn load_topic_macros(topic_dir: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
+    read_macros(&topic_dir.join("macros.json"))
+}
+
+/// Read shared, cross-topic macros from `<config_root>/macros.json`, raw. Referenced by name from
+/// any topic's conditions, e.g. `{ "macro": "standard_exclude" }`.
+pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
+    read_macros(&config_root.join("macros.json"))
+}
+
+/// Recursively macro-inline (and sanitizer-inline) every entry in `raw_macros` against itself, so
+/// a macro body referencing another macro is expanded too. The result is what `inline_macro_refs`
+/// needs elsewhere (a fully macro-free JSON per name) — see `topic::runner::TopicRunner::load`.
+pub fn resolve_macros(raw_macros: &Map<String, Value>, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Map<String, Value>> {
+    raw_macros.iter()
+        .map(|(name, def)| {
+            let expanded = inline_macro_refs(def.clone(), raw_macros, &mut vec![name.clone()])?;
+            Ok((name.clone(), inline_sanitize_refs(expanded, sanitizers)?))
+        })
+        .collect()
 }
 
 /// Read a topic's own `transforms.json` — its whole transform pipeline, explicit about where
-/// `exclude_condition` is evaluated (see `TransformsSpec`) — if present. `None` when the topic
-/// still uses the legacy `input_transforms`/`split_sides` `topic.json` keys instead; `TopicRunner
-/// ::load` falls back to synthesizing an equivalent pipeline from those in that case. Topic-local
-/// only, no shared config-root variant (unlike `macros.json`/`sanitizers.json`) — nothing shares a
-/// transform pipeline across topics today.
-pub fn load_topic_transforms(topic_dir: &std::path::Path) -> anyhow::Result<Option<TransformsSpec>> {
+/// `exclude_condition` is evaluated (see `TransformsSpec`) — if present, fully macro/sanitizer
+/// resolved. `None` when the topic still uses the legacy `input_transforms`/`split_sides`
+/// `topic.json` keys instead; `TopicRunner::load` falls back to synthesizing an equivalent
+/// pipeline from those in that case. Topic-local only, no shared config-root variant (unlike
+/// `macros.json`/`sanitizers.json`) — nothing shares a transform pipeline across topics today.
+pub fn load_topic_transforms(
+    topic_dir: &std::path::Path,
+    resolved_macros: &Map<String, Value>,
+    sanitizers: &HashMap<String, Sanitizer>,
+) -> anyhow::Result<Option<TransformsSpec>> {
     let path = topic_dir.join("transforms.json");
     if !path.exists() {
         return Ok(None);
     }
-    let spec = serde_json::from_str(&std::fs::read_to_string(&path)?)
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)
         .with_context(|| format!("parsing {}", path.display()))?;
-    Ok(Some(spec))
+    let resolved = resolve_refs(raw, resolved_macros, sanitizers)
+        .with_context(|| format!("resolving {}", path.display()))?;
+    Ok(Some(serde_json::from_value(resolved).with_context(|| format!("parsing {}", path.display()))?))
 }
 
-/// Load all `*.json` category files (sorted) in one kind subfolder into a `CategoriesFile`, seeding
-/// its macro namespace with `macros` (the topic-wide macros). The category `id` is the file stem.
+// ── Categories ───────────────────────────────────────────────────────────────
+
+/// Load a topic's per-kind category sets from its directory, fully macro/sanitizer-resolved.
+/// `resolved_macros` is the topic's macro table with every reference already inlined (see
+/// `resolve_macros`); `macros_filter` is the same table deserialized to `Filter` (needed
+/// separately by `CategoriesFile`/`build_order` — an `excludes` entry names a macro directly, not
+/// through a condition, so it's never touched by `inline_macro_refs`). Only present kinds appear
+/// in the returned map — a topic with just a `way/` folder yields a single entry.
+pub fn load_topic_categories(
+    topic_dir: &std::path::Path,
+    resolved_macros: &Map<String, Value>,
+    macros_filter: &HashMap<String, Filter>,
+    sanitizers: &HashMap<String, Sanitizer>,
+) -> anyhow::Result<HashMap<ElementKind, CategoriesFile>> {
+    let mut out = HashMap::new();
+    for kind in ElementKind::ALL {
+        let dir = topic_dir.join(kind.subdir());
+        if dir.is_dir() {
+            let cats = load_categories_dir(&dir, resolved_macros, macros_filter, sanitizers)
+                .with_context(|| format!("loading {}", dir.display()))?;
+            out.insert(kind, cats);
+        }
+    }
+    Ok(out)
+}
+
+/// Load all `*.json` category files (sorted) in one kind subfolder into a `CategoriesFile`. The
+/// category `id` is the file stem.
 pub fn load_categories_dir(
     dir: &std::path::Path,
-    macros: &Map<String, Value>,
-) -> anyhow::Result<CategoriesFileSpec> {
+    resolved_macros: &Map<String, Value>,
+    macros_filter: &HashMap<String, Filter>,
+    sanitizers: &HashMap<String, Sanitizer>,
+) -> anyhow::Result<CategoriesFile> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
@@ -123,12 +232,13 @@ pub fn load_categories_dir(
         categories.push(obj);
     }
 
-    let combined = Value::Object(Map::from_iter([
-        ("macros".to_owned(), Value::Object(macros.clone())),
-        ("categories".to_owned(), Value::Array(categories)),
-    ]));
-    Ok(serde_json::from_value(combined)?)
+    let combined = Value::Object(Map::from_iter([("categories".to_owned(), Value::Array(categories))]));
+    let resolved = resolve_refs(combined, resolved_macros, sanitizers)
+        .with_context(|| format!("resolving {}", dir.display()))?;
+    CategoriesFile::from_categories_json(resolved, macros_filter.clone())
 }
+
+// ── Sanitizers ───────────────────────────────────────────────────────────────
 
 /// Load a topic's atomic sanitizer registry: shared (`<config_root>/sanitizers.json`) merged with
 /// the topic's own (`<topic>/sanitizers.json`), topic-local winning on name conflict.
@@ -151,17 +261,7 @@ pub fn load_topic_sanitizers(
     Ok(merge(&shared, &local))
 }
 
-/// Load shared, cross-topic macros from `<config_root>/macros.json` (`{ name: Filter }`).
-/// Referenced by name from any topic's conditions, e.g. `{ "macro": "standard_exclude" }`.
-pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<HashMap<String, FilterSpec>> {
-    let path = config_root.join("macros.json");
-    if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&path)?)
-            .with_context(|| format!("parsing {}", path.display()))
-    } else {
-        Ok(HashMap::new())
-    }
-}
+// ── Shared producers ─────────────────────────────────────────────────────────
 
 /// Load shared, cross-topic named rule tables from `<config_root>/producers.json`
 /// (`{ name: <producer JSON> }`, e.g. the `road` classifier) as raw JSON — kept raw (not

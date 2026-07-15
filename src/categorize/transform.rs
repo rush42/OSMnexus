@@ -351,7 +351,7 @@ mod unnest_tags_tests {
         let mut annotations = Map::new();
         let step = InputTransform::UnnestTags {
             prefix: "cycleway", infix: "", meta_prefixes: &[],
-            guard: Some(Filter::TagInSet {
+            guard: Some(Filter::InSet {
                 extract: crate::lang::extract::Extract::Value { key: "highway".to_owned() },
                 sanitize: None,
                 in_set: "sidepath_highway".to_owned(),
@@ -484,7 +484,7 @@ mod run_transform_steps_tests {
                 },
             ]).collect();
             TransformStep::Clone(CloneStep {
-                when: Some(Filter::Not { not: Box::new(Filter::TagEq {
+                when: Some(Filter::Not { not: Box::new(Filter::Eq {
                     extract: Extract::Value { key: "highway".to_owned() },
                     sanitize: None,
                     eq: "cycleway".to_owned(),
