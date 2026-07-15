@@ -17,8 +17,9 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::tag_engine::classifier::{Rule, RuleSpec};
 use crate::tag_engine::extract::Extract;
-use crate::tag_engine::filter::Filter;
+use crate::tag_engine::filter::{Filter, FilterSpec};
 use crate::tag_engine::keys;
 use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
 use crate::osm::types::RawTags;
@@ -123,11 +124,43 @@ pub enum MatchOrigin {
     Default,
 }
 
-/// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see `tag_engine::
-/// parser`'s hand-written `Deserialize` impl for the `fallback` JSON shape that folds into `Match`
-/// at parse time and so never appears here. `Deserialize` isn't derived on this type itself —
-/// deliberately, so a stray `#[derive(Deserialize)]` here can't reintroduce a shape `parser`
-/// doesn't know about.
+/// A value producer, **as parsed from JSON** — its `Match` rules are `RuleSpec`s and its
+/// `Extract`/`DirectedExtract` `sanitize` are named `SanitizeRef`s, both resolved by `resolve` into
+/// the runtime `Producer` below. `Deserialize` isn't derived on this type itself — deliberately, so
+/// a stray `#[derive(Deserialize)]` here can't reintroduce a shape `parser` doesn't know about;
+/// `tag_engine::parser`'s hand-written impl targets this `ProducerSpec` (folding `fallback` etc.
+/// sugar into it).
+#[derive(Debug, Clone)]
+pub enum ProducerSpec {
+    Match {
+        rules: Vec<RuleSpec>,
+        default: Option<Value>,
+        annotate: Map<String, Value>,
+        origin: MatchOrigin,
+    },
+    Extract {
+        extract: Extract,
+        sanitize: Option<SanitizeRef>,
+        annotate: Map<String, Value>,
+    },
+    Const {
+        value: Value,
+        annotate: Map<String, Value>,
+    },
+    DirectedExtract {
+        key: String,
+        from: DirectedFrom,
+        sanitize: Option<SanitizeRef>,
+        annotate: Map<String, Value>,
+    },
+    Parent(Box<ProducerSpec>),
+}
+
+/// A value producer, **resolved**: `Match` (a rule table) or `Extract` (a leaf tag read) — see
+/// `tag_engine::parser`'s hand-written `Deserialize` impl (targeting `ProducerSpec`) for the
+/// `fallback` JSON shape that folds into `Match` at parse time and so never appears here. Every
+/// named reference (`Match` rules' macros, `Extract`'s `sanitize`) is already resolved (see
+/// `ProducerSpec::resolve`), so `eval` never does a registry lookup.
 #[derive(Debug, Clone)]
 pub enum Producer {
     /// A data-defined first-match-wins rule table (same engine as the `road` classifier). Each
@@ -149,7 +182,7 @@ pub enum Producer {
     /// remaining limitation: rules only see raw obj/parent tags, not fields derived earlier in the
     /// same pass.
     Match {
-        rules: Vec<crate::tag_engine::classifier::Rule>,
+        rules: Vec<Rule>,
         default: Option<Value>,
         annotate: Map<String, Value>,
         /// Display-only provenance — see `MatchOrigin`'s own doc.
@@ -160,7 +193,7 @@ pub enum Producer {
     /// doc for why.
     Extract {
         extract: Extract,
-        sanitize: Option<SanitizeRef>,
+        sanitize: Option<Sanitizer>,
         /// Companion key/values this branch contributes when it produces the value; emitted as
         /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
         annotate: Map<String, Value>,
@@ -188,7 +221,7 @@ pub enum Producer {
     DirectedExtract {
         key: String,
         from: DirectedFrom,
-        sanitize: Option<SanitizeRef>,
+        sanitize: Option<Sanitizer>,
         annotate: Map<String, Value>,
     },
     /// Re-evaluate the inner producer against the parent way's tags instead of the object's own —
@@ -256,50 +289,66 @@ impl Producer {
 
 // ── Load-time resolution ──────────────────────────────────────────────────────
 
-impl Producer {
+impl ProducerSpec {
     /// Resolve every named reference this producer (transitively) carries, once, at load time:
-    /// macros embedded in a `Match`'s `rules[].when` (`Filter::expand`) and `Extract`'s
-    /// `sanitize:` (`SanitizeRef::resolve`). After this, `eval` never does a registry lookup of
-    /// any kind.
+    /// macros embedded in a `Match`'s `rules[].when` (`FilterSpec::expand`) and `Extract`'s
+    /// `sanitize:` (`SanitizeRef::resolve`), producing a runtime `Producer`. After this, `eval`
+    /// never does a registry lookup of any kind.
     pub fn resolve(
         &self,
-        macros: &HashMap<String, Filter>,
+        macros: &HashMap<String, FilterSpec>,
         sanitizers: &HashMap<String, Sanitizer>,
     ) -> anyhow::Result<Producer> {
         Ok(match self {
-            Producer::Match { rules, default, annotate, origin } => Producer::Match {
+            ProducerSpec::Match { rules, default, annotate, origin } => Producer::Match {
                 rules: rules.iter()
-                    .map(|r| Ok(crate::tag_engine::classifier::Rule {
-                        when: r.when.expand(macros, sanitizers)?,
-                        value: r.value.resolve(macros, sanitizers)?,
-                    }))
+                    .map(|r| r.resolve(macros, sanitizers))
                     .collect::<anyhow::Result<_>>()?,
                 default: default.clone(),
                 annotate: annotate.clone(),
                 origin: *origin,
             },
-            Producer::Extract { extract, sanitize, annotate } => Producer::Extract {
+            ProducerSpec::Extract { extract, sanitize, annotate } => Producer::Extract {
                 extract: extract.clone(),
                 sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
                 annotate: annotate.clone(),
             },
-            Producer::Const { value, annotate } => Producer::Const { value: value.clone(), annotate: annotate.clone() },
-            Producer::DirectedExtract { key, from, sanitize, annotate } => Producer::DirectedExtract {
+            ProducerSpec::Const { value, annotate } => Producer::Const { value: value.clone(), annotate: annotate.clone() },
+            ProducerSpec::DirectedExtract { key, from, sanitize, annotate } => Producer::DirectedExtract {
                 key: key.clone(),
                 from: *from,
                 sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
                 annotate: annotate.clone(),
             },
-            Producer::Parent(inner) => Producer::Parent(Box::new(inner.resolve(macros, sanitizers)?)),
+            ProducerSpec::Parent(inner) => Producer::Parent(Box::new(inner.resolve(macros, sanitizers)?)),
         })
     }
 
-    /// The `ParentOrObj` equivalent for `p` — see `Parent`'s doc for why this is built here rather
-    /// than existing as its own variant. Shared by `tag_engine::parser`'s `parent_or_obj` JSON
-    /// sugar and `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`. Takes an already-built
-    /// `Producer` (not raw JSON), so it composes with either call site's own construction.
+    /// The `ParentOrObj` equivalent for a *pre-resolve* `p` — see `Producer::parent_or_obj` for the
+    /// `Match`+`Parent` shape. Used by `tag_engine::parser`'s `parent_or_obj` JSON sugar and
+    /// `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`, both of which build an unresolved
+    /// `ProducerSpec` (it carries a `SanitizeRef`) that's resolved later.
+    pub fn parent_or_obj(p: ProducerSpec) -> ProducerSpec {
+        ProducerSpec::Match {
+            rules: vec![
+                RuleSpec {
+                    when: FilterSpec::HasParent { has_parent: true },
+                    value: ProducerSpec::Parent(Box::new(p.clone())),
+                },
+                RuleSpec { when: FilterSpec::HasParent { has_parent: false }, value: p },
+            ],
+            default: None,
+            annotate: Map::new(),
+            origin: MatchOrigin::ParentOrObj,
+        }
+    }
+}
+
+impl Producer {
+    /// The `ParentOrObj` equivalent for an already-resolved `p` — see `Parent`'s doc for why this
+    /// is built here rather than existing as its own variant. Used by Rust-side synthesis
+    /// (`topic::runner`) that composes already-resolved producers.
     pub fn parent_or_obj(p: Producer) -> Producer {
-        use crate::tag_engine::classifier::Rule;
         Producer::Match {
             rules: vec![
                 Rule {

@@ -8,12 +8,68 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::tag_engine::decision_tree::{self, DecisionTree};
-use crate::tag_engine::filter::{eval, Filter};
+use crate::tag_engine::filter::{eval, Filter, FilterSpec};
 use crate::tag_engine::producer::ExtractCtx;
+use crate::tag_engine::sanitize::Sanitizer;
 
-// ── Data types ────────────────────────────────────────────────────────────────
+// ── Data types (as parsed) ────────────────────────────────────────────────────
 
+/// A category definition **as parsed from JSON** — `condition` is a `FilterSpec` (may carry
+/// macros/named sanitizers), resolved into `CategoryDef` by `CategoriesFileSpec::resolve`.
 #[derive(Debug, Clone, Deserialize)]
+pub struct CategoryDefSpec {
+    pub id: String,
+    pub condition: FilterSpec,
+    pub excludes: Option<Vec<String>>,
+    #[serde(default)]
+    pub outputs: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub defaults: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One kind's category set **as parsed** — its `macros`/`categories` still carry unresolved
+/// `FilterSpec`s. `resolve` turns it into the runtime `CategoriesFile` (below). The compiled
+/// `order`/`tree` are not part of this type — they only exist after resolution + `build_order`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CategoriesFileSpec {
+    pub macros: HashMap<String, FilterSpec>,
+    pub categories: Vec<CategoryDefSpec>,
+}
+
+impl CategoriesFileSpec {
+    /// Resolve every category `condition` against the topic's macros/sanitizers, producing the
+    /// runtime `CategoriesFile`. `raw_macros` is the topic's unresolved macro table (what
+    /// `FilterSpec::expand` needs for recursive macro-in-macro lookups); `macros` is the same table
+    /// already expanded, stored on the result so `build_order`'s `Skip`-sink conditions pick up
+    /// resolved `Filter`s. The caller runs `build_order` afterwards to compile `order`/`tree`.
+    pub fn resolve(
+        &self,
+        raw_macros: &HashMap<String, FilterSpec>,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, Sanitizer>,
+    ) -> anyhow::Result<CategoriesFile> {
+        let categories = self.categories.iter()
+            .map(|c| Ok(CategoryDef {
+                id: c.id.clone(),
+                condition: c.condition.expand(raw_macros, sanitizers)
+                    .map_err(|e| anyhow::anyhow!("category '{}': {e}", c.id))?,
+                excludes: c.excludes.clone(),
+                outputs: c.outputs.clone(),
+                defaults: c.defaults.clone(),
+            }))
+            .collect::<anyhow::Result<_>>()?;
+        Ok(CategoriesFile {
+            macros: macros.clone(),
+            categories,
+            order: Vec::new(),
+            tree: DecisionTree::default(),
+        })
+    }
+}
+
+// ── Data types (resolved) ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
 pub struct CategoryDef {
     pub id: String,
     pub condition: Filter,
@@ -21,26 +77,22 @@ pub struct CategoryDef {
     /// Per-category output overrides: merged over the topic's `outputs` map by key (category
     /// wins), before resolving into `Producer`s — e.g. re-sourcing `surface`/`smoothness` from
     /// the parent highway. Same value shapes as `TopicSpec::outputs` (see `resolve_output_entry`).
-    #[serde(default)]
     pub outputs: serde_json::Map<String, serde_json::Value>,
     /// Per-category default values (override the topic-level `defaults` per key). Seeded into
     /// `produced` as the lowest-priority layer; any output producing the same key overrides them.
-    #[serde(default)]
     pub defaults: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CategoriesFile {
     pub macros: HashMap<String, Filter>,
     pub categories: Vec<CategoryDef>,
     /// Priority-ordered evaluation list compiled from the `excludes` relation (see `build_order`).
     /// First-match over this reproduces the exclude semantics *without* evaluating excludes —
-    /// each node's condition is tried in order; the first match wins. Not part of the JSON.
-    #[serde(skip)]
+    /// each node's condition is tried in order; the first match wins.
     pub order: Vec<OrderedNode>,
     /// Discrimination net over `order`, compiled by `build_order` after the priority order is
     /// known. Prunes `categorize`'s first-match walk to a small candidate set; identical results.
-    #[serde(skip)]
     pub tree: DecisionTree,
 }
 

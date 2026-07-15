@@ -41,7 +41,6 @@ pub fn build_topic_rows(
     mut tags: RawTags,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
-    let topic = &runner.spec;
     // The category set for this element kind. Absent → the topic has no categories for this kind.
     let categories = match runner.categories.get(&kind) {
         Some(c) => c,
@@ -67,7 +66,7 @@ pub fn build_topic_rows(
         return Vec::new();
     }
 
-    if let Some(cond) = &topic.exclude_condition {
+    if let Some(cond) = &runner.exclude_condition {
         if eval_filter(cond, &tags) {
             return Vec::new();
         }

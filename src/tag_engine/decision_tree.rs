@@ -29,8 +29,6 @@
 //! so a single literal atom (e.g. `traffic_sign contains "237"`) can be used as its own two-way
 //! branch with no wildcard/unknown case, decided by evaluating that one atom against the object.
 
-use std::collections::HashMap;
-
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
@@ -213,13 +211,13 @@ pub fn build(cats: &CategoriesFile, max_depth: usize) -> DecisionTree {
     let exprs: Vec<Expr> = cats
         .order
         .iter()
-        .map(|n| to_nnf(filter_to_expr(node_condition(cats, n), &cats.macros)))
+        .map(|n| to_nnf(filter_to_expr(node_condition(cats, n))))
         .collect();
 
     // Tags used anywhere with a `sanitize` chain are ineligible as branch keys.
     let mut banned: FxHashSet<String> = FxHashSet::default();
     for n in &cats.order {
-        collect_sanitized_tags(node_condition(cats, n), &cats.macros, &mut banned);
+        collect_sanitized_tags(node_condition(cats, n), &mut banned);
     }
 
     let all: Vec<Candidate> = exprs.into_iter().enumerate().collect();
@@ -591,16 +589,11 @@ fn collect_eq_values(e: &Expr, tag: &str, f: &mut impl FnMut(&str)) {
 
 /// Collect plain tag names compared through a `sanitize` chain (recursing into macros). Such tags
 /// are ineligible as branch keys — the comparison tests a derived value, not the raw tag.
-fn collect_sanitized_tags(f: &Filter, macros: &HashMap<String, Filter>, out: &mut FxHashSet<String>) {
+fn collect_sanitized_tags(f: &Filter, out: &mut FxHashSet<String>) {
     match f {
-        Filter::And { and } => and.iter().for_each(|c| collect_sanitized_tags(c, macros, out)),
-        Filter::Or { or } => or.iter().for_each(|c| collect_sanitized_tags(c, macros, out)),
-        Filter::Not { not } => collect_sanitized_tags(not, macros, out),
-        Filter::Macro { r#macro } => {
-            if let Some(m) = macros.get(r#macro) {
-                collect_sanitized_tags(m, macros, out);
-            }
-        }
+        Filter::And { and } => and.iter().for_each(|c| collect_sanitized_tags(c, out)),
+        Filter::Or { or } => or.iter().for_each(|c| collect_sanitized_tags(c, out)),
+        Filter::Not { not } => collect_sanitized_tags(not, out),
         Filter::TagEq { extract, sanitize: Some(_), .. } | Filter::TagIn { extract, sanitize: Some(_), .. } => {
             if let crate::tag_engine::extract::Extract::Value { key } = extract {
                 out.insert(key.clone());
@@ -622,7 +615,7 @@ mod tests {
 
     use crate::topic::load::{load_shared_macros, load_topic_categories, load_topic_sanitizers};
     use crate::tag_engine::categories::{categorize, categorize_linear, CategoriesFile, OrderedNode};
-    use crate::tag_engine::filter::Filter;
+    use crate::tag_engine::filter::{Filter, FilterSpec};
     use crate::tag_engine::producer::ExtractCtx;
     use crate::tag_engine::linter::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use serde_json::{Map, Value};
@@ -636,7 +629,7 @@ mod tests {
                 OrderedNode::Category { idx } => &cats.categories[*idx].condition,
                 OrderedNode::Skip { condition } => condition,
             };
-            let e = to_nnf(filter_to_expr(cond, &cats.macros));
+            let e = to_nnf(filter_to_expr(cond));
             collect_pairs(&e, &mut out);
         }
         out
@@ -661,20 +654,18 @@ mod tests {
           let config_root = dir.parent().unwrap();
           let shared_macros = load_shared_macros(config_root).expect("shared macros");
           let sanitizers = load_topic_sanitizers(&dir, config_root).expect("load sanitizers");
-          for (kind, mut cats) in load_topic_categories(&dir).expect("load categories") {
+          for (kind, cats_spec) in load_topic_categories(&dir).expect("load categories") {
             let topic = format!("{topic}/{}", kind.subdir());
-            let mut raw_macros = shared_macros.clone();
-            for (k, v) in &cats.macros {
+            let mut raw_macros: HashMap<String, FilterSpec> = shared_macros.clone();
+            for (k, v) in &cats_spec.macros {
                 raw_macros.insert(k.clone(), v.clone()); // topic-local overrides shared
             }
             let expanded: HashMap<String, Filter> = raw_macros.iter()
                 .map(|(k, v)| Ok((k.clone(), v.expand(&raw_macros, &sanitizers)?)))
                 .collect::<anyhow::Result<_>>()
                 .expect("expand macros");
-            cats.macros = expanded.clone();
-            for cat in &mut cats.categories {
-                cat.condition = cat.condition.expand(&expanded, &sanitizers).expect("expand category condition");
-            }
+            let mut cats = cats_spec.resolve(&raw_macros, &expanded, &sanitizers)
+                .expect("resolve categories");
             cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
 
             let refs = referenced_eq(&cats);

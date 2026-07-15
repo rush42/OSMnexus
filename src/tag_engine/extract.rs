@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::tag_engine::keys;
-use crate::tag_engine::sanitize::{resolve_sanitize, SanitizeRef};
+use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer};
 use crate::osm::types::RawTags;
 
 /// A candidate-key read spec. `key`/`keys` accept `Producer`'s historical field names as canonical
@@ -50,13 +50,13 @@ impl Extract {
     }
 
     /// Read and run through `sanitize` (identity if unset) — what `Producer::Extract` produces.
-    pub fn read(&self, sanitize: Option<&SanitizeRef>, tags: &RawTags) -> Option<Value> {
+    pub fn read(&self, sanitize: Option<&Sanitizer>, tags: &RawTags) -> Option<Value> {
         resolve_sanitize(sanitize, self.read_raw(tags)?)
     }
 
     /// Like `read`, coerced to a string — what every `Filter` `Tag*` comparison reads. A dropped
     /// sanitize output (or one that isn't string-shaped) compares as absent, not equal to "".
-    pub fn read_str<'a>(&self, sanitize: Option<&SanitizeRef>, tags: &'a RawTags) -> Option<Cow<'a, str>> {
+    pub fn read_str<'a>(&self, sanitize: Option<&Sanitizer>, tags: &'a RawTags) -> Option<Cow<'a, str>> {
         let raw = self.read_raw(tags)?;
         match sanitize {
             None => Some(Cow::Borrowed(raw)),

@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 
 use osmnexus::tag_engine::extract::Extract;
 use osmnexus::tag_engine::producer::Producer;
-use osmnexus::tag_engine::sanitize::{Sanitizer, SanitizeRef, Step};
+use osmnexus::tag_engine::sanitize::{Sanitizer, Step};
 use osmnexus::topic::runner::TopicRunner;
 
 fn main() -> Result<()> {
@@ -152,8 +152,8 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(&label, "box", "#d9e8fb");
-            if let Some(sref) = sanitize {
-                let chain_root = render_sanitize_ref(g, sref);
+            if let Some(chain) = sanitize {
+                let chain_root = render_chain(g, chain);
                 g.edge(&node, &chain_root, "sanitize");
             }
             node
@@ -164,8 +164,8 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(&label, "box", "#d9e8fb");
-            if let Some(sref) = sanitize {
-                let chain_root = render_sanitize_ref(g, sref);
+            if let Some(chain) = sanitize {
+                let chain_root = render_chain(g, chain);
                 g.edge(&node, &chain_root, "sanitize");
             }
             node
@@ -183,13 +183,6 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             g.edge(&node, &child, "");
             node
         }
-    }
-}
-
-fn render_sanitize_ref(g: &mut Graph, sref: &SanitizeRef) -> String {
-    match sref {
-        SanitizeRef::Name(name) => g.node(&format!("sanitizer: {name}\n(unresolved)"), "note", "#f4cccc"),
-        SanitizeRef::Inline(chain) => render_chain(g, chain),
     }
 }
 

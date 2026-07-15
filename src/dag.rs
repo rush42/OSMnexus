@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::producer::{MatchOrigin, Producer};
-use crate::tag_engine::sanitize::{SanitizeRef, Sanitizer, Step};
+use crate::tag_engine::sanitize::{Sanitizer, Step};
 
 #[derive(Serialize)]
 pub struct DagNode {
@@ -135,8 +135,8 @@ fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) ->
             }
             let node = g.node(label, "extract");
             annotate_node(g, annotate_to.unwrap_or(&node), annotate);
-            if let Some(sref) = sanitize {
-                let chain_root = render_sanitize_ref(g, sref);
+            if let Some(chain) = sanitize {
+                let chain_root = render_chain(g, chain);
                 g.edge(&node, &chain_root, "sanitize");
             }
             node
@@ -145,8 +145,8 @@ fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) ->
             let label = format!("directed extract\nkey: {key}\nfrom: {from:?}");
             let node = g.node(label, "directed_extract");
             annotate_node(g, annotate_to.unwrap_or(&node), annotate);
-            if let Some(sref) = sanitize {
-                let chain_root = render_sanitize_ref(g, sref);
+            if let Some(chain) = sanitize {
+                let chain_root = render_chain(g, chain);
                 g.edge(&node, &chain_root, "sanitize");
             }
             node
@@ -166,13 +166,6 @@ fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) ->
             g.edge(&node, &child, "");
             node
         }
-    }
-}
-
-fn render_sanitize_ref(g: &mut DagGraph, sref: &SanitizeRef) -> String {
-    match sref {
-        SanitizeRef::Name(name) => g.node(format!("sanitizer: {name}\n(unresolved)"), "sanitizer"),
-        SanitizeRef::Inline(chain) => render_chain(g, chain),
     }
 }
 

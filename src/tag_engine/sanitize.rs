@@ -30,39 +30,34 @@ pub enum SanitizeRef {
 }
 
 impl SanitizeRef {
-    fn eval(&self, raw: &str) -> Option<Value> {
-        match self {
-            SanitizeRef::Inline(chain) => chain.eval(raw),
-            SanitizeRef::Name(name) => {
-                tracing::error!("unresolved sanitizer '{name}' reached eval — resolve should have run at load");
-                None
-            }
-        }
-    }
-
     /// `name` not found in `sanitizers` falls back to a built-in alias (`Step::Builtin`, e.g.
     /// `"parse_length"`) rather than erroring — mirrors the pre-inlining fallback
     /// (`None => apply_builtin(name, raw)`). A truly unrecognized name still isn't caught until
     /// `apply_builtin` runs (it has no load-time name registry of its own, just one built-in), so
     /// it warns-and-drops per row rather than failing to load — the same looseness the built-in
     /// fallback always had.
-    pub(crate) fn resolve(&self, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<SanitizeRef> {
-        match self {
-            SanitizeRef::Name(name) => Ok(SanitizeRef::Inline(match sanitizers.get(name) {
+    ///
+    /// Resolves down to the concrete `Sanitizer` chain — the resolved `Filter`/`Producer` types
+    /// carry `Option<Sanitizer>` directly (never a `SanitizeRef`), so their `*Spec::expand`/
+    /// `*Spec::resolve` passes call this at load time.
+    pub(crate) fn resolve(&self, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Sanitizer> {
+        Ok(match self {
+            SanitizeRef::Name(name) => match sanitizers.get(name) {
                 Some(chain) => chain.clone(),
                 None => Sanitizer::from_steps(vec![Step::Builtin(name.clone())]),
-            })),
-            SanitizeRef::Inline(_) => Ok(self.clone()),
-        }
+            },
+            SanitizeRef::Inline(chain) => chain.clone(),
+        })
     }
 }
 
-/// Evaluate a resolved `sanitize` reference against `raw`. `None` is the identity transform
-/// (always succeeds) — see `SanitizeRef`.
-pub fn resolve_sanitize(sanitize: Option<&SanitizeRef>, raw: &str) -> Option<Value> {
+/// Evaluate a resolved `sanitize` chain against `raw`. `None` is the identity transform
+/// (always succeeds) — every resolved `sanitize:` field is `Option<Sanitizer>`, already resolved
+/// at load time (see `SanitizeRef::resolve`).
+pub fn resolve_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value> {
     match sanitize {
         None => Some(identity(raw)),
-        Some(r) => r.eval(raw),
+        Some(chain) => chain.eval(raw),
     }
 }
 

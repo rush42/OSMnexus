@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use crate::tag_engine::categories::CategoriesFile;
-use crate::tag_engine::filter::Filter;
+use crate::tag_engine::categories::CategoriesFileSpec;
+use crate::tag_engine::filter::FilterSpec;
 use crate::tag_engine::sanitize::Sanitizer;
 use crate::osm::types::ElementKind;
 use crate::topic::spec::TransformsSpec;
@@ -45,7 +45,7 @@ where
 /// kinds appear in the returned map — a topic with just a `way/` folder yields a single entry.
 pub fn load_topic_categories(
     topic_dir: &std::path::Path,
-) -> anyhow::Result<HashMap<ElementKind, CategoriesFile>> {
+) -> anyhow::Result<HashMap<ElementKind, CategoriesFileSpec>> {
     let macros = read_macros(&topic_dir.join("macros.json"))?;
 
     let mut out = HashMap::new();
@@ -74,7 +74,7 @@ fn read_macros(path: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
 /// empty map. Distinct from `load_shared_macros` (cross-topic, `<config_root>/macros.json`) —
 /// this is one file, holding every topic-local macro. Used to build the raw (pre-`Filter::expand`)
 /// macro map a topic's conditions/producers are expanded against.
-pub fn load_topic_macros(topic_dir: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
+pub fn load_topic_macros(topic_dir: &std::path::Path) -> anyhow::Result<HashMap<String, FilterSpec>> {
     let path = topic_dir.join("macros.json");
     if path.exists() {
         serde_json::from_str(&std::fs::read_to_string(&path)?)
@@ -105,7 +105,7 @@ pub fn load_topic_transforms(topic_dir: &std::path::Path) -> anyhow::Result<Opti
 pub fn load_categories_dir(
     dir: &std::path::Path,
     macros: &Map<String, Value>,
-) -> anyhow::Result<CategoriesFile> {
+) -> anyhow::Result<CategoriesFileSpec> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
@@ -153,7 +153,7 @@ pub fn load_topic_sanitizers(
 
 /// Load shared, cross-topic macros from `<config_root>/macros.json` (`{ name: Filter }`).
 /// Referenced by name from any topic's conditions, e.g. `{ "macro": "standard_exclude" }`.
-pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<HashMap<String, Filter>> {
+pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<HashMap<String, FilterSpec>> {
     let path = config_root.join("macros.json");
     if path.exists() {
         serde_json::from_str(&std::fs::read_to_string(&path)?)

@@ -20,10 +20,10 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
-use crate::tag_engine::classifier::Rule;
+use crate::tag_engine::classifier::RuleSpec;
 use crate::tag_engine::extract::Extract;
-use crate::tag_engine::filter::Filter;
-use crate::tag_engine::producer::{DirectedFrom, MatchOrigin, Producer};
+use crate::tag_engine::filter::FilterSpec;
+use crate::tag_engine::producer::{DirectedFrom, MatchOrigin, ProducerSpec};
 use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
@@ -45,15 +45,15 @@ use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, Str
 #[serde(untagged)]
 enum ProducerJson {
     /// Scope the wrapped producer to the parent way's tags — see `Producer::Parent`.
-    Parent { parent: Box<Producer> },
+    Parent { parent: Box<ProducerSpec> },
     /// Scope to the parent's tags, falling back to the object's own when there's no parent — see
     /// `Producer::parent_or_obj` for the `Match`+`Parent` equivalence this desugars to.
-    ParentOrObj { parent_or_obj: Box<Producer> },
+    ParentOrObj { parent_or_obj: Box<ProducerSpec> },
     /// Try each branch in order; the first one that produces anything wins, carrying its own
     /// branch-level `annotate`. Desugars to an all-`when: true` `Match` (see `classifier::match_rules`
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
     /// equivalence exact).
-    Fallback { fallback: Vec<Producer> },
+    Fallback { fallback: Vec<ProducerSpec> },
     /// Direction-sensitive read of `key` — see `Producer::DirectedExtract`.
     Directed { directed: DirectedRepr },
     /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
@@ -61,7 +61,7 @@ enum ProducerJson {
     /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
     TagOr { tag_or: String, or: Value },
     Match {
-        rules: Vec<Rule>,
+        rules: Vec<RuleSpec>,
         #[serde(default)] default: Option<Value>,
         #[serde(default)] annotate: Map<String, Value>,
     },
@@ -86,40 +86,40 @@ struct DirectedRepr {
     annotate: Map<String, Value>,
 }
 
-impl<'de> Deserialize<'de> for Producer {
+impl<'de> Deserialize<'de> for ProducerSpec {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         Ok(match ProducerJson::deserialize(deserializer)? {
-            ProducerJson::Parent { parent } => Producer::Parent(parent),
-            ProducerJson::ParentOrObj { parent_or_obj } => Producer::parent_or_obj(*parent_or_obj),
-            ProducerJson::Fallback { fallback } => Producer::Match {
-                rules: fallback.into_iter().map(|value| Rule { when: Filter::Bool(true), value }).collect(),
+            ProducerJson::Parent { parent } => ProducerSpec::Parent(parent),
+            ProducerJson::ParentOrObj { parent_or_obj } => ProducerSpec::parent_or_obj(*parent_or_obj),
+            ProducerJson::Fallback { fallback } => ProducerSpec::Match {
+                rules: fallback.into_iter().map(|value| RuleSpec { when: FilterSpec::Bool(true), value }).collect(),
                 default: None,
                 annotate: Map::new(),
                 origin: MatchOrigin::Fallback,
             },
-            ProducerJson::Directed { directed } => Producer::DirectedExtract {
+            ProducerJson::Directed { directed } => ProducerSpec::DirectedExtract {
                 key: directed.key,
                 from: directed.from,
                 sanitize: directed.sanitize,
                 annotate: directed.annotate,
             },
             ProducerJson::Tag { tag } => {
-                Producer::Extract { extract: Extract::Value { key: tag }, sanitize: None, annotate: Map::new() }
+                ProducerSpec::Extract { extract: Extract::Value { key: tag }, sanitize: None, annotate: Map::new() }
             }
-            ProducerJson::TagOr { tag_or, or } => Producer::Match {
-                rules: vec![Rule {
-                    when: Filter::Bool(true),
-                    value: Producer::Extract { extract: Extract::Value { key: tag_or }, sanitize: None, annotate: Map::new() },
+            ProducerJson::TagOr { tag_or, or } => ProducerSpec::Match {
+                rules: vec![RuleSpec {
+                    when: FilterSpec::Bool(true),
+                    value: ProducerSpec::Extract { extract: Extract::Value { key: tag_or }, sanitize: None, annotate: Map::new() },
                 }],
                 default: Some(or),
                 annotate: Map::new(),
                 origin: MatchOrigin::TagOr,
             },
             ProducerJson::Match { rules, default, annotate } => {
-                Producer::Match { rules, default, annotate, origin: MatchOrigin::Rules }
+                ProducerSpec::Match { rules, default, annotate, origin: MatchOrigin::Rules }
             }
             ProducerJson::Extract { key, keys, sanitize, annotate } => {
                 let extract = match (key, keys) {
@@ -128,9 +128,9 @@ impl<'de> Deserialize<'de> for Producer {
                     (None, None) => return Err(serde::de::Error::custom("Extract needs `key` or `keys`")),
                     (Some(_), Some(_)) => return Err(serde::de::Error::custom("Extract: set only one of `key`/`keys`, not both")),
                 };
-                Producer::Extract { extract, sanitize, annotate }
+                ProducerSpec::Extract { extract, sanitize, annotate }
             }
-            ProducerJson::Const(value) => Producer::Const { value, annotate: Map::new() },
+            ProducerJson::Const(value) => ProducerSpec::Const { value, annotate: Map::new() },
         })
     }
 }
