@@ -58,7 +58,7 @@ pub fn generate_sides(
 ) {
     let highway = tags.get("highway").cloned().unwrap_or_default();
 
-    // Sidepath-class ways (see `InputTransform::UnnestTags`'s `guard_value_set`) are never split into sides — any side
+    // Sidepath-class ways (see `InputTransform::UnnestTags`'s `guard`) are never split into sides — any side
     // tagging they carry describes their own alignment, already folded onto this way's own tags.
     if value_set("sidepath_highway").contains(highway.as_str()) {
         let self_annotations = side_annotations("self", None, None);
@@ -108,7 +108,7 @@ pub fn generate_sides(
                     prefix: transformation.prefix,
                     infix,
                     meta_prefixes: META_PREFIXES,
-                    guard_value_set: None,
+                    guard: None,
                 };
                 let before = obj.len();
                 step.apply(&mut obj, &mut annotations, Some(&tags));

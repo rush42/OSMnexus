@@ -4,6 +4,7 @@ use anyhow::Context;
 use serde_json::{Map, Value};
 
 use crate::tag_engine::categories::CategoriesFile;
+use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::input_transforms::InputTransform;
 use crate::tag_engine::producer::{Producer, TagSet};
@@ -273,7 +274,11 @@ impl TopicRunner {
                         prefix,
                         infix: "",
                         meta_prefixes: crate::tag_engine::transform::side_split::META_PREFIXES,
-                        guard_value_set: Some("sidepath_highway"),
+                        guard: Some(Filter::TagInSet {
+                            extract: Extract::Value { key: "highway".to_owned() },
+                            sanitize: None,
+                            in_set: "sidepath_highway".to_owned(),
+                        }),
                     });
                 }
                 InputTransformSpec::TagRules { output, source } => {

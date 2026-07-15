@@ -10,7 +10,6 @@ use serde_json::{Map, Value};
 use crate::tag_engine::filter::{eval, Filter};
 use crate::tag_engine::producer::{ExtractCtx, Producer};
 use crate::osm::types::RawTags;
-use crate::value_sets::value_set;
 
 /// One in-place tag mutation, applied to an object's tags before categorization — either at the
 /// whole-way, pre-split stage (no `parent_tags`), or, for `directed`-style steps, per already-split
@@ -27,15 +26,16 @@ pub enum InputTransform {
     /// both the source to scan and the destination — for a whole-way self-unnest that's the same
     /// object; for building a side object's tags from scratch, `tags` is that (initially empty)
     /// object, scanned against its own pre-populated content each call).
-    /// `guard_value_set`, when set, only applies the unnest when the object's own `highway` value
-    /// is a member of that named value set — this is what used to be the dedicated `SidepathSelf`
-    /// variant (`guard_value_set: Some("sidepath_highway")`); a plain in-place unnest with no such
-    /// convention just leaves it `None`.
+    /// `guard`, when set, only applies the unnest when it holds — this is what used to be the
+    /// dedicated `SidepathSelf` variant (`guard: Some(TagInSet{tag: "highway", in_set:
+    /// "sidepath_highway"})`); a plain in-place unnest with no such condition just leaves it
+    /// `None`. Evaluated against the same context `Drop`'s own condition sees (`tags` as they
+    /// stand before this call, `parent_tags`, `annotations`).
     UnnestTags {
         prefix: &'static str,
         infix: &'static str,
         meta_prefixes: &'static [&'static str],
-        guard_value_set: Option<&'static str>,
+        guard: Option<Filter>,
     },
     /// Strip `prefix` from matching keys — see `transform::strip_prefix`. The one step
     /// needing dynamic key iteration, so it isn't a `Producer`.
@@ -78,10 +78,10 @@ impl InputTransform {
                 }
                 true
             }
-            InputTransform::UnnestTags { prefix, infix, meta_prefixes, guard_value_set } => {
-                if let Some(vs) = guard_value_set {
-                    let highway = tags.get("highway").cloned().unwrap_or_default();
-                    if !value_set(vs).contains(highway.as_str()) {
+            InputTransform::UnnestTags { prefix, infix, meta_prefixes, guard } => {
+                if let Some(guard) = guard {
+                    let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                    if !eval(guard, &ctx) {
                         return true;
                     }
                 }
@@ -124,7 +124,7 @@ mod unnest_tags_tests {
         let mut obj = tags(&[("highway", "path"), ("cycleway", "track"), ("cycleway:width", "1.5")]);
         let mut annotations = Map::new();
         let step = InputTransform::UnnestTags {
-            prefix: "cycleway", infix: "", meta_prefixes: &[], guard_value_set: None,
+            prefix: "cycleway", infix: "", meta_prefixes: &[], guard: None,
         };
         let kept = step.apply(&mut obj, &mut annotations, None);
         assert!(kept);
@@ -137,18 +137,23 @@ mod unnest_tags_tests {
         let mut obj = RawTags::default();
         let mut annotations = Map::new();
         let step = InputTransform::UnnestTags {
-            prefix: "cycleway", infix: "right", meta_prefixes: &[], guard_value_set: None,
+            prefix: "cycleway", infix: "right", meta_prefixes: &[], guard: None,
         };
         step.apply(&mut obj, &mut annotations, Some(&way_tags));
         assert_eq!(obj.get("cycleway").map(String::as_str), Some("lane"));
     }
 
     #[test]
-    fn guard_value_set_blocks_unrelated_highway() {
+    fn guard_blocks_unrelated_highway() {
         let mut obj = tags(&[("highway", "primary"), ("cycleway", "track")]);
         let mut annotations = Map::new();
         let step = InputTransform::UnnestTags {
-            prefix: "cycleway", infix: "", meta_prefixes: &[], guard_value_set: Some("sidepath_highway"),
+            prefix: "cycleway", infix: "", meta_prefixes: &[],
+            guard: Some(Filter::TagInSet {
+                extract: crate::tag_engine::extract::Extract::Value { key: "highway".to_owned() },
+                sanitize: None,
+                in_set: "sidepath_highway".to_owned(),
+            }),
         };
         // "primary" is never a sidepath_highway value in any topic's value_sets.json.
         step.apply(&mut obj, &mut annotations, None);
