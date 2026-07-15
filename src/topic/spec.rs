@@ -17,20 +17,6 @@ use crate::tag_engine::transform::{CloneStep, InputTransform, TransformStep};
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
     pub table: String,
-    /// Center-line splits — the engine's one built-in cardinality-changing transform (unnests a
-    /// side's tags onto its own object; see `SplitSidesSpec`). Always applied last, after every
-    /// `input_transforms` entry, regardless of where it'd fall in declaration order — so it lives
-    /// in its own top-level list rather than interleaved into `input_transforms`.
-    #[serde(default)]
-    pub split_sides: Vec<SplitSidesSpec>,
-    /// Ordered pipeline of in-place tag rewrites, applied before categorization (see
-    /// `tag_engine::transform::InputTransform`). Each entry is data-driven — no `transform`
-    /// discriminator: a bare `{ "output": ..., <producer fields> }` (the common case) writes
-    /// `output` from any full `Producer`; `strip_prefix`/`unnest_sidepath_self`-shaped entries (see
-    /// `InputTransformSpec`) are the few operations needing dynamic key iteration a single
-    /// `Producer` output can't express.
-    #[serde(default)]
-    pub input_transforms: Vec<InputTransformSpec>,
     /// One entry per output field, keyed by output name — replaces the former separate
     /// `osm_fields`/`sanitizers`/`derivers` lists, all of which produced the same
     /// `Field{output, source: Producer}` shape and are now just different value shapes of one
@@ -80,106 +66,6 @@ pub enum GeometryShape {
     /// relation (its member ways' geometries collected + line-merged) — see
     /// `db::topic_geometries`.
     Linestring,
-}
-
-/// One center-line split: unnest tags with `prefix` onto a side object whose effective highway
-/// becomes `highway`. List the entry once per projection, e.g.
-/// `{ "highway": "cycleway", "prefix": "cycleway", "directed_keys": ["cycleway:lanes", "bicycle:lanes"] }`.
-/// `directed_keys` lists parent-way tags that are direction-sensitive (have `:forward`/`:backward`
-/// variants); each is projected onto the side object, preferring the directed variant matching
-/// that side, read from the *parent* way's tags. `self_directed_keys` is the same idea but read
-/// from the side object's *own* tags instead — for tags that arrive on the object already suffixed
-/// (e.g. a `cycleway:both:traffic_sign:forward` tag unnests to the object's own
-/// `traffic_sign:forward` key, not the parent's).
-#[derive(Debug, Deserialize)]
-pub struct SplitSidesSpec {
-    pub highway: String,
-    pub prefix: String,
-    #[serde(default)]
-    pub directed_keys: Vec<String>,
-    #[serde(default)]
-    pub self_directed_keys: Vec<String>,
-}
-
-/// An `input_transforms` entry. Shape alone picks the variant (see `Deserialize` below) — no
-/// `transform` discriminator to write.
-#[derive(Debug)]
-pub enum InputTransformSpec {
-    /// Strip `prefix` from matching keys, re-key onto the base tag, and stamp a lifecycle-style
-    /// marker (`<base>:<stamp_key>` when nested under one of `stamp_nested_under`, else `stamp_key`).
-    /// The one step needing dynamic key iteration, so it isn't expressible as a bare `Producer`.
-    /// Identified by its required `stamp_key` field.
-    StripPrefix {
-        prefix: String,
-        stamp_key: String,
-        stamp_value: String,
-        stamp_nested_under: Vec<String>,
-    },
-    /// For ways whose own `highway` is a sidepath class (see the `sidepath_highway` value set),
-    /// unnest bare `prefix`-prefixed tags (and their `source:`/`note:` meta variants) onto the way
-    /// itself, plus derive `traffic_sign` from `traffic_sign:forward` for oneway cycleways. Models
-    /// the OSM convention of tagging a way's own cycling function directly on it (e.g.
-    /// `highway=path` + `cycleway=track`), as opposed to `split_sides` projecting side tags onto
-    /// separate child objects. Also needs dynamic key iteration. Identified by being *only*
-    /// `{ "prefix": ... }` — nothing else has that exact single-key shape.
-    UnnestSidepathSelf { prefix: String },
-    /// Write `output` from any full `Producer` (`rules`/`fallback`/`key`/`cond` — the same shape
-    /// used for `outputs`), evaluated against the way's own tags (no parent, no category/side
-    /// context yet) and applied as a raw-tag mutation *before* categorization — so, unlike an
-    /// `outputs` entry, this can influence which category a way matches.
-    /// A produced `null` deletes `output`; a produced non-null value must be a string and
-    /// overwrites it; no match (`None`) leaves `output` untouched. The default (and by far most
-    /// common) shape — identified by its required `output` field. e.g. deriving `traffic_sign`
-    /// from `traffic_sign:forward` for oneway sidepaths:
-    /// `{ "output": "traffic_sign", "rules": [
-    ///      { "when": { "and": [ { "tag": "highway", "in_set": "sidepath_highway" },
-    ///          { "tag": "traffic_sign", "exists": false }, { "tag": "oneway", "eq": "yes" },
-    ///          { "not": { "tag": "oneway:bicycle", "eq": "no" } } ] },
-    ///        "value": { "tag_or": "traffic_sign:forward", "or": "" } } ] }`.
-    TagRules {
-        output: String,
-        source: Producer,
-    },
-}
-
-impl<'de> serde::Deserialize<'de> for InputTransformSpec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::Error;
-        let v = serde_json::Map::deserialize(deserializer)?;
-        if v.contains_key("stamp_key") {
-            #[derive(Deserialize)]
-            struct Repr {
-                prefix: String,
-                stamp_key: String,
-                stamp_value: String,
-                #[serde(default)]
-                stamp_nested_under: Vec<String>,
-            }
-            let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
-            Ok(InputTransformSpec::StripPrefix {
-                prefix: r.prefix,
-                stamp_key: r.stamp_key,
-                stamp_value: r.stamp_value,
-                stamp_nested_under: r.stamp_nested_under,
-            })
-        } else if v.len() == 1 && v.contains_key("prefix") {
-            let prefix = v["prefix"].as_str().ok_or_else(|| D::Error::custom("`prefix` must be a string"))?;
-            Ok(InputTransformSpec::UnnestSidepathSelf { prefix: prefix.to_owned() })
-        } else {
-            let output = v
-                .get("output")
-                .and_then(Value::as_str)
-                .ok_or_else(|| D::Error::custom("input_transforms entry needs an `output` field"))?
-                .to_owned();
-            let mut rest = v;
-            rest.remove("output");
-            let source = Producer::deserialize(Value::Object(rest)).map_err(D::Error::custom)?;
-            Ok(InputTransformSpec::TagRules { output, source })
-        }
-    }
 }
 
 /// One produced field: `{ output, source: Producer }`. The resolved form every `outputs` map
@@ -261,10 +147,9 @@ pub fn resolve_output_entry(
 
 /// A topic's whole transform pipeline, read from its own `transforms.json` — explicit about where
 /// `exclude_condition` is evaluated (`before_exclude` runs first, then `exclude_condition`, then
-/// `after_exclude`) rather than inferring a cut point from step shapes the way the legacy
-/// `input_transforms`/`split_sides` topic.json keys do. Optional per topic (see
-/// `topic::load::load_topic_transforms`) — when absent, `TopicRunner::load` falls back to
-/// synthesizing an equivalent pipeline from those legacy keys instead.
+/// `after_exclude`) rather than inferring a cut point from step shapes. Optional per topic (see
+/// `topic::load::load_topic_transforms`) — a topic with no `transforms.json` simply has an empty
+/// pipeline (`TopicRunner::load` defaults to `(Vec::new(), 0)`).
 #[derive(Debug, Deserialize, Default)]
 pub struct TransformsSpec {
     #[serde(default)]
@@ -296,14 +181,13 @@ impl TransformsSpec {
 
 /// A leaf transform step — reused both for a top-level `before_exclude`/`after_exclude` phase and
 /// for a `Clone`'s own `steps` (clones don't nest, so this is deliberately a narrower type than
-/// `PipelineStepSpec`). Shape alone picks the variant, no `transform` discriminator — same
-/// convention `InputTransformSpec` uses.
+/// `PipelineStepSpec`). Shape alone picks the variant, no `transform` discriminator to write.
 #[derive(Debug)]
 pub enum TransformSpec {
-    /// `{ "output": ..., <producer fields> }` — same shape as `InputTransformSpec::TagRules`.
+    /// `{ "output": ..., <producer fields> }`.
     TagRule { output: String, source: Producer },
     /// `{ "prefix": ..., "stamp_key": ..., "stamp_value": ..., "stamp_nested_under"?: [...] }` —
-    /// identified by its required `stamp_key` field, same as `InputTransformSpec::StripPrefix`.
+    /// identified by its required `stamp_key` field.
     StripPrefix {
         prefix: String,
         stamp_key: String,

@@ -129,8 +129,6 @@ impl InputTransform {
 
 // ── TransformStep / CloneStep ───────────────────────────────────────────────────
 
-pub(crate) const META_PREFIXES: &[&str] = &["source:", "note:"];
-
 /// One step in a topic's transform pipeline: either an ordinary in-place `InputTransform`, or a
 /// `Clone` that spawns an additional object alongside the current one. This is the generic
 /// mechanism cardinality-changing transforms (side-splitting today, anything else needing it
@@ -469,7 +467,7 @@ mod run_transform_steps_tests {
                 InputTransform::UnnestTags {
                     prefix: "cycleway",
                     infix,
-                    meta_prefixes: META_PREFIXES,
+                    meta_prefixes: &["source:", "note:"],
                     guard: None,
                     record_infix_as: Some("_infix"),
                 }
