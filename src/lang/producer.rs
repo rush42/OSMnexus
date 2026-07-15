@@ -225,26 +225,7 @@ impl Producer {
             Producer::Const { value, annotate } => Some(Produced { value: value.clone(), annotate: annotate.clone() }),
 
             Producer::DirectedExtract { key, from, sanitize, annotate } => {
-                if ctx.obj_tags.contains_key(key.as_str()) {
-                    return None; // already set (e.g. by an earlier unnest) — don't override it
-                }
-                let obj_side = ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self");
-                let suffix = match (obj_side, crate::traffic::is_left_hand_traffic()) {
-                    ("left", false) | ("right", true) => ":backward",
-                    ("right", false) | ("left", true) => ":forward",
-                    _ => return None, // "self": no direction to resolve
-                };
-                let directed_key = format!("{key}{suffix}");
-                let raw = match from {
-                    DirectedFrom::Parent => {
-                        let tags = ctx.parent_tags?;
-                        keys::first_present(tags, [key.as_str(), directed_key.as_str()])
-                    }
-                    DirectedFrom::Annotations => ctx.annotations.get(directed_key.as_str())
-                        .or_else(|| ctx.annotations.get(key.as_str()))
-                        .and_then(Value::as_str),
-                    DirectedFrom::Obj => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
-                }?;
+                let raw = read_directed(key, *from, ctx)?;
                 let value = resolve_sanitize(sanitize.as_ref(), raw)?;
                 Some(Produced { value, annotate: annotate.clone() })
             }
@@ -254,6 +235,35 @@ impl Producer {
                 Some(parent_tags) => inner.eval(&ExtractCtx { obj_tags: parent_tags, ..*ctx }),
             },
         }
+    }
+}
+
+/// The read strategy behind `Producer::DirectedExtract`: resolve `key`'s `:forward`/`:backward`
+/// variant from `ctx.annotations["_side"]` + the global left/right-hand-traffic setting, then read
+/// it from whichever tagset `from` names. Not expressed as an `Extract` shape (unlike every other
+/// `Producer` leaf) because it needs more than one tagset's worth of context at once — `ctx.obj_tags`
+/// (to guard against overriding an already-set key) and, for `from: Parent`, `ctx.parent_tags` too
+/// (tried bare-key-then-directed-key) — where `Extract::read` only ever sees a single `&RawTags`.
+fn read_directed<'a>(key: &str, from: DirectedFrom, ctx: &ExtractCtx<'a>) -> Option<&'a str> {
+    if ctx.obj_tags.contains_key(key) {
+        return None; // already set (e.g. by an earlier unnest) — don't override it
+    }
+    let obj_side = ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self");
+    let suffix = match (obj_side, crate::traffic::is_left_hand_traffic()) {
+        ("left", false) | ("right", true) => ":backward",
+        ("right", false) | ("left", true) => ":forward",
+        _ => return None, // "self": no direction to resolve
+    };
+    let directed_key = format!("{key}{suffix}");
+    match from {
+        DirectedFrom::Parent => {
+            let tags = ctx.parent_tags?;
+            keys::first_present(tags, [key, directed_key.as_str()])
+        }
+        DirectedFrom::Annotations => ctx.annotations.get(directed_key.as_str())
+            .or_else(|| ctx.annotations.get(key))
+            .and_then(Value::as_str),
+        DirectedFrom::Obj => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
     }
 }
 
