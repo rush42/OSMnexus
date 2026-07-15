@@ -12,6 +12,7 @@ type DagResponse = { topic: string; fields: Record<string, Variant[]> };
 const KIND_COLOR: Record<string, string> = {
   root: "#dbe9f6",
   match: "#e2f0d9",
+  rule: "#fdf3d9",
   extract: "#d9e8fb",
   directed_extract: "#d9e8fb",
   const: "#d9e8fb",

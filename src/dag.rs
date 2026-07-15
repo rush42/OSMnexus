@@ -16,8 +16,8 @@ use crate::tag_engine::sanitize::{SanitizeRef, Sanitizer, Step};
 pub struct DagNode {
     pub id: String,
     pub label: String,
-    /// One of "root"/"match"/"extract"/"directed_extract"/"const"/"parent"/"sanitizer"/"step" —
-    /// lets the frontend style nodes by kind without parsing `label`.
+    /// One of "root"/"match"/"rule"/"extract"/"directed_extract"/"const"/"parent"/"sanitizer"/
+    /// "step" — lets the frontend style nodes by kind without parsing `label`.
     pub kind: &'static str,
 }
 
@@ -65,19 +65,24 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
     match p {
         Producer::Match { rules, default, annotate } => {
             let mut label = format!("match\n{} rule(s)", rules.len());
-            for r in rules.iter().take(6) {
-                let _ = write!(label, "\n  {} => {}", truncate(&format!("{:?}", r.when), 40), truncate(&format!("{:?}", r.value), 20));
-            }
-            if rules.len() > 6 {
-                let _ = write!(label, "\n  … +{} more", rules.len() - 6);
-            }
-            if let Some(d) = default {
-                let _ = write!(label, "\ndefault => {}", truncate(&format!("{d:?}"), 20));
-            }
             if !annotate.is_empty() {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
-            g.node(label, "match")
+            let node = g.node(label, "match");
+            // Each rule is its own branch — `when` labels the edge, the rule's own value producer
+            // (which may itself be a further `Match`) hangs off a per-rule node so the tree actually
+            // branches instead of cramming every rule into one node's text.
+            for (i, r) in rules.iter().enumerate() {
+                let rule_node = g.node(format!("rule {i}"), "rule");
+                g.edge(&node, &rule_node, &truncate(&format!("{:?}", r.when), 60));
+                let value_node = render_producer(g, &r.value);
+                g.edge(&rule_node, &value_node, "");
+            }
+            if let Some(d) = default {
+                let default_node = g.node(format!("const\nvalue: {}", truncate(&format!("{d:?}"), 40)), "const");
+                g.edge(&node, &default_node, "default");
+            }
+            node
         }
         Producer::Extract { extract, sanitize, annotate } => {
             let mut label = String::from("extract");
