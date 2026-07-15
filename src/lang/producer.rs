@@ -236,6 +236,26 @@ impl Producer {
             },
         }
     }
+
+    /// The `ParentOrObj` equivalent for `p` — see `Parent`'s doc for why this is built here rather
+    /// than existing as its own variant. Used by `parser`'s `parent_or_obj` JSON sugar,
+    /// `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`, and Rust-side synthesis
+    /// (`topic::runner`) that composes already-resolved producers — all three build/compose plain
+    /// `Producer` values now, no separate as-parsed tier.
+    pub fn parent_or_obj(p: Producer) -> Producer {
+        Producer::Match {
+            rules: vec![
+                Rule {
+                    when: Filter::HasParent { has_parent: true },
+                    value: Producer::Parent(Box::new(p.clone())),
+                },
+                Rule { when: Filter::HasParent { has_parent: false }, value: p },
+            ],
+            default: None,
+            annotate: Map::new(),
+            origin: MatchOrigin::ParentOrObj,
+        }
+    }
 }
 
 /// The read strategy behind `Producer::DirectedExtract`: resolve `key`'s `:forward`/`:backward`
@@ -264,28 +284,6 @@ fn read_directed<'a>(key: &str, from: DirectedFrom, ctx: &ExtractCtx<'a>) -> Opt
             .or_else(|| ctx.annotations.get(key))
             .and_then(Value::as_str),
         DirectedFrom::Obj => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
-    }
-}
-
-impl Producer {
-    /// The `ParentOrObj` equivalent for `p` — see `Parent`'s doc for why this is built here rather
-    /// than existing as its own variant. Used by `parser`'s `parent_or_obj` JSON sugar,
-    /// `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`, and Rust-side synthesis
-    /// (`topic::runner`) that composes already-resolved producers — all three build/compose plain
-    /// `Producer` values now, no separate as-parsed tier.
-    pub fn parent_or_obj(p: Producer) -> Producer {
-        Producer::Match {
-            rules: vec![
-                Rule {
-                    when: Filter::HasParent { has_parent: true },
-                    value: Producer::Parent(Box::new(p.clone())),
-                },
-                Rule { when: Filter::HasParent { has_parent: false }, value: p },
-            ],
-            default: None,
-            annotate: Map::new(),
-            origin: MatchOrigin::ParentOrObj,
-        }
     }
 }
 
