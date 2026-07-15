@@ -23,19 +23,19 @@ use serde_json::{Map, Value};
 use crate::tag_engine::classifier::{Rule, ValueSpec};
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
-use crate::tag_engine::producer::Producer;
+use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
 
 /// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, `Parent` wrapping any nested
-/// `Producer` shape to scope it to the parent way's tags, plus `Fallback`'s `fallback` and
-/// `ParentOrObj`'s `parent_or_obj` sugar — both folded into an equivalent `Match` in `Deserialize`
-/// below, so a `Producer` value is never observably either, only ever
-/// `Match`/`Extract`/`DirectedExtract`/`Parent`. (`DirectedExtract` has no JSON shape here at all —
-/// it's only ever built directly by `topic::runner` for `split_sides`' directed keys, never
-/// parsed.) Untagged, tried in this order (more-specific/required-field shapes before `Extract`,
-/// whose fields are all optional and so would otherwise match everything first).
+/// `Producer` shape to scope it to the parent way's tags, `Fallback`'s `fallback` and
+/// `ParentOrObj`'s `parent_or_obj` sugar (both folded into an equivalent `Match` in `Deserialize`
+/// below, so a `Producer` value is never observably either), and `Directed`'s `directed` sugar for
+/// `Producer::DirectedExtract` (`{ "directed": { "key": ..., "from"?: "obj"|"parent"|
+/// "parent_or_obj"|"annotations" } }` — `from` defaults like `TagSet` itself does, to `obj`).
+/// Untagged, tried in this order (more-specific/required-field shapes before `Extract`, whose
+/// fields are all optional and so would otherwise match everything first).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum ProducerJson {
@@ -49,6 +49,9 @@ enum ProducerJson {
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
     /// equivalence exact).
     Fallback { fallback: Vec<Producer> },
+    /// Direction-sensitive read of `key` — see `Producer::DirectedExtract`. Was Rust-only (built
+    /// directly by `topic::runner` for `split_sides`' `directed_keys`); this is its JSON shape.
+    Directed { directed: DirectedRepr },
     Match {
         rules: Vec<Rule>,
         #[serde(default)] default: Option<Value>,
@@ -60,6 +63,17 @@ enum ProducerJson {
         #[serde(default)] sanitize: Option<SanitizeRef>,
         #[serde(default)] consts: Map<String, Value>,
     },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DirectedRepr {
+    key: String,
+    #[serde(default)]
+    from: TagSet,
+    #[serde(default)]
+    sanitize: Option<SanitizeRef>,
+    #[serde(default)]
+    consts: Map<String, Value>,
 }
 
 impl<'de> Deserialize<'de> for Producer {
@@ -76,6 +90,12 @@ impl<'de> Deserialize<'de> for Producer {
                     .collect(),
                 default: None,
                 consts: Map::new(),
+            },
+            ProducerJson::Directed { directed } => Producer::DirectedExtract {
+                key: directed.key,
+                from: directed.from,
+                sanitize: directed.sanitize,
+                consts: directed.consts,
             },
             ProducerJson::Match { rules, default, consts } => Producer::Match { rules, default, consts },
             ProducerJson::Extract { key, keys, sanitize, consts } => {

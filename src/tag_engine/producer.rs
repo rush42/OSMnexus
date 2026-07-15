@@ -128,10 +128,10 @@ pub enum Producer {
     /// once — the object's own (to guard against overriding an already-set key) and, when
     /// `from: Parent`, the parent's (tried bare-key-then-directed-key). Any other `from` tries only
     /// the directed variant on the object's own tags (e.g. a tag already unnested as
-    /// `traffic_sign:forward`). Used for `split_sides`' `directed_keys`/`self_directed_keys` — the
-    /// object-cardinality-changing split itself stays native, but this per-key projection is an
-    /// ordinary sided tag read. Only ever constructed directly by `topic::runner`, never parsed
-    /// from JSON.
+    /// `traffic_sign:forward`). Used for `split_sides`' `directed_keys`/`self_directed_keys` (via
+    /// `topic::runner`'s legacy synthesis) and, directly, by `transforms.json`'s `{ "directed":
+    /// {...} }` sugar (see `tag_engine::parser`) — the object-cardinality-changing split itself
+    /// stays native, but this per-key projection is an ordinary sided tag read.
     DirectedExtract {
         key: String,
         from: TagSet,
