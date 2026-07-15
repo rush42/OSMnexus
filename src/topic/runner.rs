@@ -11,7 +11,7 @@ use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::transform::{CloneStep, TransformStep};
 use crate::topic::load::{
     inline_shared_producers, load_shared_macros, load_shared_producers, load_topic_categories,
-    load_topic_macros, load_topic_sanitizers, merge,
+    load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge,
 };
 use crate::topic::pipeline::build_topic_rows;
 use crate::topic::spec::{resolve_output_entry, Field, GeometryShape, InputTransformSpec, SplitSidesSpec, TopicSpec};
@@ -132,6 +132,109 @@ fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -
     fields
 }
 
+/// Synthesize a `(pipeline, exclude_check_at)` from the legacy `input_transforms`/`split_sides`
+/// `topic.json` keys, for a topic with no `transforms.json` of its own — see `TopicRunner::load`.
+fn legacy_pipeline(
+    spec: &TopicSpec,
+    macros: &HashMap<String, Filter>,
+    sanitizers: &HashMap<String, crate::tag_engine::sanitize::Sanitizer>,
+    name: &str,
+) -> anyhow::Result<(Vec<TransformStep>, usize)> {
+    // Build the ordered `InputTransform` prefix from `input_transforms`, in declaration order.
+    let mut pipeline: Vec<TransformStep> = Vec::new();
+    for t in &spec.input_transforms {
+        match t {
+            InputTransformSpec::UnnestSidepathSelf { prefix } => {
+                let prefix = Box::leak(prefix.clone().into_boxed_str()) as &'static str;
+                pipeline.push(TransformStep::Transform(InputTransform::UnnestTags {
+                    prefix,
+                    infix: "",
+                    meta_prefixes: crate::tag_engine::transform::META_PREFIXES,
+                    guard: Some(Filter::TagInSet {
+                        extract: Extract::Value { key: "highway".to_owned() },
+                        sanitize: None,
+                        in_set: "sidepath_highway".to_owned(),
+                    }),
+                    record_infix_as: None,
+                }));
+            }
+            InputTransformSpec::TagRules { output, source } => {
+                pipeline.push(TransformStep::Transform(InputTransform::TagRule {
+                    output: output.clone(),
+                    source: source.resolve(macros, sanitizers)
+                        .with_context(|| format!("topics/{name}/topic.json: input_transforms.{output}"))?,
+                }));
+            }
+            InputTransformSpec::StripPrefix {
+                prefix, stamp_key, stamp_value, stamp_nested_under,
+            } => {
+                pipeline.push(TransformStep::Transform(InputTransform::StripPrefix {
+                    prefix: prefix.clone(),
+                    stamp_key: stamp_key.clone(),
+                    stamp_value: stamp_value.clone(),
+                    stamp_nested_under: stamp_nested_under.clone(),
+                }));
+            }
+        }
+    }
+    // Only `UnnestSidepathSelf` config entries ever produce an `UnnestTags` step today (no
+    // topic.json shape exposes a bare in-place unnest yet), so matching the variant is
+    // equivalent to matching the old dedicated `SidepathSelf` one.
+    let exclude_check_at = pipeline
+        .iter()
+        .position(|s| matches!(s, TransformStep::Transform(InputTransform::UnnestTags { .. })))
+        .unwrap_or(pipeline.len());
+
+    // Center-line splits (`split_sides`): change object cardinality, so always synthesized
+    // after every plain `InputTransform` above (`split_sides` used to be a separate list
+    // applied unconditionally last; here that's just "append after the loop", same effect,
+    // one list). One `Clone` per side, each running the same bare/`both`/side-specific
+    // `UnnestTags` priority chain this mechanism has always used, then a `TagsEmpty` drop,
+    // the literal `highway` injection, and the `directed_keys`/`self_directed_keys` reads.
+    for s in &spec.split_sides {
+        let SplitSidesSpec { highway, prefix, directed_keys, self_directed_keys } = s;
+        let directed_step = |key: &String, from: TagSet| InputTransform::TagRule {
+            output: key.clone(),
+            source: Producer::DirectedExtract { key: key.clone(), from, sanitize: None, consts: Map::new() },
+        };
+        let directed_steps: Vec<InputTransform> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
+            .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))
+            .collect();
+        let prefix_static: &'static str = Box::leak(prefix.clone().into_boxed_str());
+
+        for side_str in ["left", "right"] {
+            let unnest_steps = ["", "both", side_str].into_iter().map(|infix| InputTransform::UnnestTags {
+                prefix: prefix_static,
+                infix,
+                meta_prefixes: crate::tag_engine::transform::META_PREFIXES,
+                guard: None,
+                record_infix_as: Some("_infix"),
+            });
+            let mut steps: Vec<InputTransform> = unnest_steps.chain([
+                InputTransform::Drop { when: Filter::TagsEmpty { tags_empty: true } },
+                InputTransform::TagRule {
+                    output: "highway".to_owned(),
+                    source: Producer::Match { rules: Vec::new(), default: Some(Value::String(highway.clone())), consts: Map::new() },
+                },
+            ]).collect();
+            steps.extend(directed_steps.clone());
+
+            pipeline.push(TransformStep::Clone(CloneStep {
+                when: Some(Filter::Not { not: Box::new(Filter::TagEq {
+                    extract: Extract::Value { key: "highway".to_owned() },
+                    sanitize: None,
+                    eq: highway.clone(),
+                }) }),
+                annotate: vec![("_side".to_owned(), side_str.to_owned()), ("_prefix".to_owned(), prefix.clone())],
+                id_suffix: format!("{prefix}/{side_str}"),
+                steps,
+            }));
+        }
+    }
+
+    Ok((pipeline, exclude_check_at))
+}
+
 impl TopicRunner {
     /// Discover and load every topic under the active config directory. Only directories are
     /// considered (the shared `macros.json`/`sanitizers.json`/`producers.json`/`value_sets.json`/
@@ -241,97 +344,16 @@ impl TopicRunner {
                 .with_context(|| format!("building category order for topics/{name}"))?;
         }
 
-        // Build the ordered `InputTransform` prefix from `input_transforms`, in declaration order.
-        let mut pipeline: Vec<TransformStep> = Vec::new();
-        for t in &spec.input_transforms {
-            match t {
-                InputTransformSpec::UnnestSidepathSelf { prefix } => {
-                    let prefix = Box::leak(prefix.clone().into_boxed_str()) as &'static str;
-                    pipeline.push(TransformStep::Transform(InputTransform::UnnestTags {
-                        prefix,
-                        infix: "",
-                        meta_prefixes: crate::tag_engine::transform::META_PREFIXES,
-                        guard: Some(Filter::TagInSet {
-                            extract: Extract::Value { key: "highway".to_owned() },
-                            sanitize: None,
-                            in_set: "sidepath_highway".to_owned(),
-                        }),
-                        record_infix_as: None,
-                    }));
-                }
-                InputTransformSpec::TagRules { output, source } => {
-                    pipeline.push(TransformStep::Transform(InputTransform::TagRule {
-                        output: output.clone(),
-                        source: source.resolve(&macros, &sanitizers)
-                            .with_context(|| format!("topics/{name}/topic.json: input_transforms.{output}"))?,
-                    }));
-                }
-                InputTransformSpec::StripPrefix {
-                    prefix, stamp_key, stamp_value, stamp_nested_under,
-                } => {
-                    pipeline.push(TransformStep::Transform(InputTransform::StripPrefix {
-                        prefix: prefix.clone(),
-                        stamp_key: stamp_key.clone(),
-                        stamp_value: stamp_value.clone(),
-                        stamp_nested_under: stamp_nested_under.clone(),
-                    }));
-                }
-            }
-        }
-        // Only `UnnestSidepathSelf` config entries ever produce an `UnnestTags` step today (no
-        // topic.json shape exposes a bare in-place unnest yet), so matching the variant is
-        // equivalent to matching the old dedicated `SidepathSelf` one.
-        let exclude_check_at = pipeline
-            .iter()
-            .position(|s| matches!(s, TransformStep::Transform(InputTransform::UnnestTags { .. })))
-            .unwrap_or(pipeline.len());
-
-        // Center-line splits (`split_sides`): change object cardinality, so always synthesized
-        // after every plain `InputTransform` above (`split_sides` used to be a separate list
-        // applied unconditionally last; here that's just "append after the loop", same effect,
-        // one list). One `Clone` per side, each running the same bare/`both`/side-specific
-        // `UnnestTags` priority chain this mechanism has always used, then a `TagsEmpty` drop,
-        // the literal `highway` injection, and the `directed_keys`/`self_directed_keys` reads.
-        for s in &spec.split_sides {
-            let SplitSidesSpec { highway, prefix, directed_keys, self_directed_keys } = s;
-            let directed_step = |key: &String, from: TagSet| InputTransform::TagRule {
-                output: key.clone(),
-                source: Producer::DirectedExtract { key: key.clone(), from, sanitize: None, consts: Map::new() },
-            };
-            let directed_steps: Vec<InputTransform> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
-                .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))
-                .collect();
-            let prefix_static: &'static str = Box::leak(prefix.clone().into_boxed_str());
-
-            for side_str in ["left", "right"] {
-                let unnest_steps = ["", "both", side_str].into_iter().map(|infix| InputTransform::UnnestTags {
-                    prefix: prefix_static,
-                    infix,
-                    meta_prefixes: crate::tag_engine::transform::META_PREFIXES,
-                    guard: None,
-                    record_infix_as: Some("_infix"),
-                });
-                let mut steps: Vec<InputTransform> = unnest_steps.chain([
-                    InputTransform::Drop { when: Filter::TagsEmpty { tags_empty: true } },
-                    InputTransform::TagRule {
-                        output: "highway".to_owned(),
-                        source: Producer::Match { rules: Vec::new(), default: Some(Value::String(highway.clone())), consts: Map::new() },
-                    },
-                ]).collect();
-                steps.extend(directed_steps.clone());
-
-                pipeline.push(TransformStep::Clone(CloneStep {
-                    when: Some(Filter::Not { not: Box::new(Filter::TagEq {
-                        extract: Extract::Value { key: "highway".to_owned() },
-                        sanitize: None,
-                        eq: highway.clone(),
-                    }) }),
-                    annotate: vec![("_side".to_owned(), side_str.to_owned()), ("_prefix".to_owned(), prefix.clone())],
-                    id_suffix: format!("{prefix}/{side_str}"),
-                    steps,
-                }));
-            }
-        }
+        // `transforms.json`, if the topic has one, is the whole pipeline authored directly —
+        // otherwise synthesize an equivalent one from the legacy `input_transforms`/`split_sides`
+        // topic.json keys (see `TransformsSpec`'s own doc for why the split is explicit there
+        // instead of an inferred cut point).
+        let (pipeline, exclude_check_at) = if let Some(transforms) = load_topic_transforms(&base)? {
+            transforms.resolve(&macros, &sanitizers)
+                .with_context(|| format!("topics/{name}/transforms.json"))?
+        } else {
+            legacy_pipeline(&spec, &macros, &sanitizers, name)?
+        };
 
         // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
@@ -380,7 +402,6 @@ impl TopicRunner {
     pub fn has_kind(&self, kind: ElementKind) -> bool {
         self.categories.contains_key(&kind)
     }
-
     /// This topic wants a per-topic `{table}_edge` pgRouting table (see `db::topic_edges`).
     pub fn wants_way_graph(&self) -> bool {
         self.spec.geometry.way.contains(&GeometryShape::Graph)

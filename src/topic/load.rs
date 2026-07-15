@@ -17,6 +17,7 @@ use crate::tag_engine::categories::CategoriesFile;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::sanitize::Sanitizer;
 use crate::osm::types::ElementKind;
+use crate::topic::spec::TransformsSpec;
 
 /// Shallow merge, more-specific-scope-wins: every key in `over` overwrites the same key in
 /// `base`; keys only in `over` are added. The one primitive behind every "shared/default,
@@ -81,6 +82,22 @@ pub fn load_topic_macros(topic_dir: &std::path::Path) -> anyhow::Result<HashMap<
     } else {
         Ok(HashMap::new())
     }
+}
+
+/// Read a topic's own `transforms.json` — its whole transform pipeline, explicit about where
+/// `exclude_condition` is evaluated (see `TransformsSpec`) — if present. `None` when the topic
+/// still uses the legacy `input_transforms`/`split_sides` `topic.json` keys instead; `TopicRunner
+/// ::load` falls back to synthesizing an equivalent pipeline from those in that case. Topic-local
+/// only, no shared config-root variant (unlike `macros.json`/`sanitizers.json`) — nothing shares a
+/// transform pipeline across topics today.
+pub fn load_topic_transforms(topic_dir: &std::path::Path) -> anyhow::Result<Option<TransformsSpec>> {
+    let path = topic_dir.join("transforms.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let spec = serde_json::from_str(&std::fs::read_to_string(&path)?)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    Ok(Some(spec))
 }
 
 /// Load all `*.json` category files (sorted) in one kind subfolder into a `CategoriesFile`, seeding

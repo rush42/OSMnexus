@@ -1,6 +1,7 @@
-//! The JSON schema types a topic's `topic.json` deserializes into, plus `resolve_output_entry`,
-//! which turns one raw `outputs` map value into a resolved `Field`. Pure load-time data model —
-//! no per-object evaluation lives here.
+//! The JSON schema types a topic's `topic.json` (plus, optionally, `transforms.json` — see
+//! `TransformsSpec`) deserialize into, plus `resolve_output_entry`, which turns one raw `outputs`
+//! map value into a resolved `Field`. Pure load-time data model — no per-object evaluation lives
+//! here.
 
 use std::collections::HashMap;
 
@@ -10,7 +11,8 @@ use serde_json::{Map, Value};
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::producer::{Producer, TagSet};
-use crate::tag_engine::sanitize::{SanitizeRef, StrOrVec};
+use crate::tag_engine::sanitize::{SanitizeRef, Sanitizer, StrOrVec};
+use crate::tag_engine::transform::{CloneStep, InputTransform, TransformStep};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
@@ -253,4 +255,293 @@ pub fn resolve_output_entry(
         }
     };
     Ok(Field { output: output.to_owned(), source })
+}
+
+// ── transforms.json ─────────────────────────────────────────────────────────────
+
+/// A topic's whole transform pipeline, read from its own `transforms.json` — explicit about where
+/// `exclude_condition` is evaluated (`before_exclude` runs first, then `exclude_condition`, then
+/// `after_exclude`) rather than inferring a cut point from step shapes the way the legacy
+/// `input_transforms`/`split_sides` topic.json keys do. Optional per topic (see
+/// `topic::load::load_topic_transforms`) — when absent, `TopicRunner::load` falls back to
+/// synthesizing an equivalent pipeline from those legacy keys instead.
+#[derive(Debug, Deserialize, Default)]
+pub struct TransformsSpec {
+    #[serde(default)]
+    pub before_exclude: Vec<PipelineStepSpec>,
+    #[serde(default)]
+    pub after_exclude: Vec<PipelineStepSpec>,
+}
+
+impl TransformsSpec {
+    /// Resolve every step's macro/sanitizer references and return the ready-to-run pipeline plus
+    /// `exclude_check_at` (always `before_exclude.len()`, by construction).
+    pub fn resolve(
+        &self,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, Sanitizer>,
+    ) -> anyhow::Result<(Vec<TransformStep>, usize)> {
+        let mut pipeline: Vec<TransformStep> = self.before_exclude.iter()
+            .map(|s| s.resolve(macros, sanitizers))
+            .collect::<anyhow::Result<_>>()?;
+        let exclude_check_at = pipeline.len();
+        pipeline.extend(
+            self.after_exclude.iter()
+                .map(|s| s.resolve(macros, sanitizers))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        );
+        Ok((pipeline, exclude_check_at))
+    }
+}
+
+/// A leaf transform step — reused both for a top-level `before_exclude`/`after_exclude` phase and
+/// for a `Clone`'s own `steps` (clones don't nest, so this is deliberately a narrower type than
+/// `PipelineStepSpec`). Shape alone picks the variant, no `transform` discriminator — same
+/// convention `InputTransformSpec` uses.
+#[derive(Debug)]
+pub enum TransformSpec {
+    /// `{ "output": ..., <producer fields> }` — same shape as `InputTransformSpec::TagRules`.
+    TagRule { output: String, source: Producer },
+    /// `{ "prefix": ..., "stamp_key": ..., "stamp_value": ..., "stamp_nested_under"?: [...] }` —
+    /// identified by its required `stamp_key` field, same as `InputTransformSpec::StripPrefix`.
+    StripPrefix {
+        prefix: String,
+        stamp_key: String,
+        stamp_value: String,
+        stamp_nested_under: Vec<String>,
+    },
+    /// `{ "unnest": "<prefix>", "infix"?: "...", "meta"?: [...], "guard"?: <Filter>,
+    /// "record_infix_as"?: "..." }` — identified by its required `unnest` field. See
+    /// `tag_engine::transform::InputTransform::UnnestTags`.
+    Unnest {
+        prefix: String,
+        infix: String,
+        meta: Vec<String>,
+        guard: Option<Filter>,
+        record_infix_as: Option<String>,
+    },
+    /// `{ "drop": <Filter> }` — identified by its required `drop` field. See
+    /// `tag_engine::transform::InputTransform::Drop`.
+    Drop { when: Filter },
+}
+
+impl<'de> Deserialize<'de> for TransformSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let v = Map::deserialize(deserializer)?;
+        if v.contains_key("stamp_key") {
+            #[derive(Deserialize)]
+            struct Repr {
+                prefix: String,
+                stamp_key: String,
+                stamp_value: String,
+                #[serde(default)]
+                stamp_nested_under: Vec<String>,
+            }
+            let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
+            Ok(TransformSpec::StripPrefix {
+                prefix: r.prefix,
+                stamp_key: r.stamp_key,
+                stamp_value: r.stamp_value,
+                stamp_nested_under: r.stamp_nested_under,
+            })
+        } else if v.contains_key("unnest") {
+            #[derive(Deserialize)]
+            struct Repr {
+                unnest: String,
+                #[serde(default)]
+                infix: String,
+                #[serde(default)]
+                meta: Vec<String>,
+                #[serde(default)]
+                guard: Option<Filter>,
+                #[serde(default)]
+                record_infix_as: Option<String>,
+            }
+            let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
+            Ok(TransformSpec::Unnest { prefix: r.unnest, infix: r.infix, meta: r.meta, guard: r.guard, record_infix_as: r.record_infix_as })
+        } else if v.contains_key("drop") {
+            #[derive(Deserialize)]
+            struct Repr { drop: Filter }
+            let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
+            Ok(TransformSpec::Drop { when: r.drop })
+        } else {
+            let output = v
+                .get("output")
+                .and_then(Value::as_str)
+                .ok_or_else(|| D::Error::custom("transforms.json step needs `output`, `stamp_key`, `unnest`, or `drop`"))?
+                .to_owned();
+            let mut rest = v;
+            rest.remove("output");
+            let source = Producer::deserialize(Value::Object(rest)).map_err(D::Error::custom)?;
+            Ok(TransformSpec::TagRule { output, source })
+        }
+    }
+}
+
+impl TransformSpec {
+    fn resolve(
+        &self,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, Sanitizer>,
+    ) -> anyhow::Result<InputTransform> {
+        Ok(match self {
+            TransformSpec::TagRule { output, source } => InputTransform::TagRule {
+                output: output.clone(),
+                source: source.resolve(macros, sanitizers)?,
+            },
+            TransformSpec::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } => InputTransform::StripPrefix {
+                prefix: prefix.clone(),
+                stamp_key: stamp_key.clone(),
+                stamp_value: stamp_value.clone(),
+                stamp_nested_under: stamp_nested_under.clone(),
+            },
+            TransformSpec::Unnest { prefix, infix, meta, guard, record_infix_as } => InputTransform::UnnestTags {
+                prefix: Box::leak(prefix.clone().into_boxed_str()),
+                infix: Box::leak(infix.clone().into_boxed_str()),
+                meta_prefixes: Box::leak(
+                    meta.iter().map(|s| Box::leak(s.clone().into_boxed_str()) as &str).collect::<Vec<_>>().into_boxed_slice(),
+                ),
+                guard: guard.as_ref().map(|f| f.expand(macros, sanitizers)).transpose()?,
+                record_infix_as: record_infix_as.as_ref().map(|s| Box::leak(s.clone().into_boxed_str()) as &str),
+            },
+            TransformSpec::Drop { when } => InputTransform::Drop { when: when.expand(macros, sanitizers)? },
+        })
+    }
+}
+
+/// A top-level pipeline step: any `TransformSpec` shape, or `{ "clone": { "when"?: <Filter>,
+/// "annotate"?: {...}, "id_suffix": "...", "steps": [...] } }` — identified by being *only* that
+/// one `clone` key. See `tag_engine::transform::CloneStep`.
+#[derive(Debug)]
+pub enum PipelineStepSpec {
+    Transform(TransformSpec),
+    Clone {
+        when: Option<Filter>,
+        annotate: Vec<(String, String)>,
+        id_suffix: String,
+        steps: Vec<TransformSpec>,
+    },
+}
+
+impl<'de> Deserialize<'de> for PipelineStepSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let v = Map::deserialize(deserializer)?;
+        if v.len() == 1 && v.contains_key("clone") {
+            #[derive(Deserialize)]
+            struct Repr {
+                #[serde(default)]
+                when: Option<Filter>,
+                #[serde(default)]
+                annotate: std::collections::BTreeMap<String, String>,
+                id_suffix: String,
+                #[serde(default)]
+                steps: Vec<TransformSpec>,
+            }
+            let r: Repr = serde_json::from_value(v["clone"].clone()).map_err(D::Error::custom)?;
+            Ok(PipelineStepSpec::Clone {
+                when: r.when,
+                annotate: r.annotate.into_iter().collect(),
+                id_suffix: r.id_suffix,
+                steps: r.steps,
+            })
+        } else {
+            Ok(PipelineStepSpec::Transform(TransformSpec::deserialize(Value::Object(v)).map_err(D::Error::custom)?))
+        }
+    }
+}
+
+impl PipelineStepSpec {
+    fn resolve(
+        &self,
+        macros: &HashMap<String, Filter>,
+        sanitizers: &HashMap<String, Sanitizer>,
+    ) -> anyhow::Result<TransformStep> {
+        Ok(match self {
+            PipelineStepSpec::Transform(t) => TransformStep::Transform(t.resolve(macros, sanitizers)?),
+            PipelineStepSpec::Clone { when, annotate, id_suffix, steps } => TransformStep::Clone(CloneStep {
+                when: when.as_ref().map(|f| f.expand(macros, sanitizers)).transpose()?,
+                annotate: annotate.clone(),
+                id_suffix: id_suffix.clone(),
+                steps: steps.iter().map(|s| s.resolve(macros, sanitizers)).collect::<anyhow::Result<_>>()?,
+            }),
+        })
+    }
+}
+
+#[cfg(test)]
+mod transforms_spec_tests {
+    use super::*;
+    use crate::osm::types::RawTags;
+
+    fn tags(pairs: &[(&str, &str)]) -> RawTags {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    /// A cycleway left/right split, authored the way a topic's own `transforms.json` would,
+    /// parsed end to end (JSON string -> `TransformsSpec` -> resolved `Vec<TransformStep>`) and
+    /// run through the real engine — the one thing the hand-written `Deserialize` impls above
+    /// have no other test coverage for, since no topic has a `transforms.json` file yet.
+    #[test]
+    fn cycleway_split_parses_and_runs() {
+        let json = r#"
+        {
+          "after_exclude": [
+            {
+              "clone": {
+                "when": { "not": { "tag": "highway", "eq": "cycleway" } },
+                "annotate": { "_side": "left", "_prefix": "cycleway" },
+                "id_suffix": "cycleway/left",
+                "steps": [
+                  { "unnest": "cycleway", "infix": "", "record_infix_as": "_infix" },
+                  { "unnest": "cycleway", "infix": "both", "record_infix_as": "_infix" },
+                  { "unnest": "cycleway", "infix": "left", "record_infix_as": "_infix" },
+                  { "drop": { "tags_empty": true } },
+                  { "output": "highway", "rules": [], "default": "cycleway" }
+                ]
+              }
+            }
+          ]
+        }
+        "#;
+        let spec: TransformsSpec = serde_json::from_str(json).expect("parse transforms.json");
+        assert_eq!(spec.after_exclude.len(), 1);
+
+        let macros = HashMap::new();
+        let sanitizers = HashMap::new();
+        let (pipeline, exclude_check_at) = spec.resolve(&macros, &sanitizers).expect("resolve transforms.json");
+        assert_eq!(exclude_check_at, 0);
+        assert_eq!(pipeline.len(), 1);
+
+        let mut way_tags = tags(&[("highway", "primary"), ("cycleway:left", "lane")]);
+        let mut annotations = Map::new();
+        let mut clones = Vec::new();
+        let kept = crate::tag_engine::transform::run_transform_steps(&mut way_tags, &mut annotations, &pipeline, "way/1", &mut clones);
+        assert!(kept);
+        assert_eq!(clones.len(), 1);
+        let (clone_tags, clone_annotations, id) = &clones[0];
+        assert_eq!(id, "way/1/cycleway/left");
+        assert_eq!(clone_tags.get("cycleway").map(String::as_str), Some("lane"));
+        assert_eq!(clone_tags.get("highway").map(String::as_str), Some("cycleway"));
+        assert_eq!(clone_annotations.get("_infix").and_then(Value::as_str), Some("left"));
+    }
+
+    #[test]
+    fn drop_shape_parses() {
+        let step: TransformSpec = serde_json::from_value(serde_json::json!({ "drop": { "tags_empty": true } })).unwrap();
+        assert!(matches!(step, TransformSpec::Drop { .. }));
+    }
+
+    #[test]
+    fn tag_rule_shape_still_parses_alongside_new_shapes() {
+        let step: TransformSpec = serde_json::from_value(serde_json::json!({ "output": "surface", "key": "surface" })).unwrap();
+        assert!(matches!(step, TransformSpec::TagRule { .. }));
+    }
 }
