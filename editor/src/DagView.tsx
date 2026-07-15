@@ -10,7 +10,6 @@ type DagResponse = { topic: string; fields: Record<string, Variant[]> };
 // Mirrors the node-fill colors `src/bin/plot_dag.rs` uses for the DOT rendering, keyed on the
 // `kind` string `osmnexus::dag::DagNode` stamps (see `src/dag.rs`).
 const KIND_COLOR: Record<string, string> = {
-  root: "#dbe9f6",
   match: "#e2f0d9",
   rule: "#fdf3d9",
   extract: "#d9e8fb",

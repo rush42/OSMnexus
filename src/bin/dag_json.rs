@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use osmnexus::dag::{root_dag, DagGraph};
+use osmnexus::dag::{producer_dag, DagGraph};
 use osmnexus::tag_engine::producer::Producer;
 use osmnexus::topic::runner::TopicRunner;
 
@@ -58,8 +58,7 @@ fn main() -> Result<()> {
             let mut variants: Vec<Variant> = variants.into_values()
                 .map(|(producer, mut labels)| {
                     labels.sort();
-                    let root_label = format!("{field}\n[{}]", labels.join(", "));
-                    Variant { labels, graph: root_dag(&root_label, producer) }
+                    Variant { labels, graph: producer_dag(producer) }
                 })
                 .collect();
             variants.sort_by(|a, b| a.labels.cmp(&b.labels));

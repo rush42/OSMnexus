@@ -16,8 +16,8 @@ use crate::tag_engine::sanitize::{SanitizeRef, Sanitizer, Step};
 pub struct DagNode {
     pub id: String,
     pub label: String,
-    /// One of "root"/"match"/"rule"/"extract"/"directed_extract"/"const"/"parent"/"sanitizer"/
-    /// "step" — lets the frontend style nodes by kind without parsing `label`.
+    /// One of "match"/"rule"/"extract"/"directed_extract"/"const"/"parent"/"sanitizer"/"step" —
+    /// lets the frontend style nodes by kind without parsing `label`.
     pub kind: &'static str,
 }
 
@@ -52,12 +52,13 @@ fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max { s.to_owned() } else { format!("{}…", s.chars().take(max).collect::<String>()) }
 }
 
-/// Build a labeled root node (`label`, e.g. `"<topic>\n<field>\n[<categories>]"`) wired to `producer`'s tree.
-pub fn root_dag(root_label: &str, producer: &Producer) -> DagGraph {
+/// The pure `Producer` tree — no synthetic root node, no "who uses this" bookkeeping (that's a
+/// `topic::runner`/`bin/dag_json` concern; a node here is only ever a step in how the value itself
+/// gets built: `Match`/`Parent` branches down to `Extract`/`DirectedExtract`/`Const` leaves, plus
+/// any `Sanitizer` chain hanging off an `Extract`).
+pub fn producer_dag(producer: &Producer) -> DagGraph {
     let mut g = DagGraph::default();
-    let root = g.node(root_label.to_owned(), "root");
-    let child = render_producer(&mut g, producer);
-    g.edge(&root, &child, "");
+    render_producer(&mut g, producer);
     g
 }
 
