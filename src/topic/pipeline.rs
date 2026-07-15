@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use crate::tag_engine::categories::categorize;
 use crate::tag_engine::filter::eval_filter;
 use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::transform::side_split::generate_sides;
+use crate::tag_engine::transform::side_split::run_transform_steps;
 use crate::topic::runner::TopicRunner;
 use crate::topic::spec::Field;
 use crate::osm::types::{ElementKind, RawTags};
@@ -48,22 +48,23 @@ pub fn build_topic_rows(
         None => return Vec::new(),
     };
 
-    // Pre-categorization tag mutations are way-oriented; nodes/relations never carry them. Split
-    // around `exclude_condition` at `exclude_check_at`: tag rewrites (e.g. lifecycle's
-    // construction→real-highway swap) run first, so `exclude_condition`'s `is_allowed_highway`
-    // check sees the un-construction'd highway — but sidepath-unnest runs *after*
+    let default_id = format!("{}/{}", kind.id_prefix(), osm_id);
+    let mut annotations = Map::new();
+    annotations.insert("_side".to_owned(), Value::String("self".to_owned()));
+    let mut clones = Vec::new();
+
+    // The full transform pipeline (in-place `InputTransform`s + `Clone`s from `split_sides`) is
+    // way-oriented; nodes/relations never carry them. Split around `exclude_condition` at
+    // `exclude_check_at`: tag rewrites (e.g. lifecycle's construction→real-highway swap) run
+    // first, so `exclude_condition`'s `is_allowed_highway` check sees the un-construction'd
+    // highway — but sidepath-unnest (and every `Clone`, i.e. side-splitting) runs *after*
     // `exclude_condition`, since promoting a `cycleway:access=no`-style tag onto bare `access`
     // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
     // checks (which only ever saw the pre-unnest tags in the original pipeline).
-    //
-    // `pre_split_annotations` is a scratch map for this stage's steps (mostly relevant for a
-    // `Drop`'s condition, which nothing here constructs yet — no `input_transforms` JSON shape
-    // reaches `Drop` pre-split); it's discarded once side-splitting takes over its own.
-    let mut pre_split_annotations = Map::new();
-    if kind == ElementKind::Way {
-        for step in &runner.input_transforms[..runner.exclude_check_at] {
-            step.apply(&mut tags, &mut pre_split_annotations, None);
-        }
+    if kind == ElementKind::Way
+        && !run_transform_steps(&mut tags, &mut annotations, &runner.pipeline[..runner.exclude_check_at], &default_id, &mut clones)
+    {
+        return Vec::new();
     }
 
     if let Some(cond) = &topic.exclude_condition {
@@ -72,22 +73,14 @@ pub fn build_topic_rows(
         }
     }
 
-    if kind == ElementKind::Way {
-        for step in &runner.input_transforms[runner.exclude_check_at..] {
-            step.apply(&mut tags, &mut pre_split_annotations, None);
-        }
+    if kind == ElementKind::Way
+        && !run_transform_steps(&mut tags, &mut annotations, &runner.pipeline[runner.exclude_check_at..], &default_id, &mut clones)
+    {
+        return Vec::new();
     }
 
-    // Side-split (center-line) transforms are way-oriented; nodes/relations are never side-split.
-    let no_transforms = Vec::new();
-    let transformations = if kind == ElementKind::Way { &runner.transformations } else { &no_transforms };
-    let default_id = format!("{}/{}", kind.id_prefix(), osm_id);
-    // Moves `tags` into the self object rather than cloning it (the common no-side-split case).
-    // Post-split `directed_keys`/`self_directed_keys` steps are applied inside this call too — no
-    // side-specific logic lives here, only the per-`ExtractCtx` callback below.
     let mut rows = Vec::new();
-
-    generate_sides(tags, transformations, &default_id, |ectx| {
+    let mut emit = |ectx: ExtractCtx| {
         let Some(category) = categorize(&ectx, categories) else {
             return;
         };
@@ -101,9 +94,9 @@ pub fn build_topic_rows(
             .get(&category.id)
             .unwrap_or(&runner.default_outputs);
         // `ectx.annotations` already carries `_side`, plus `_prefix`/`_infix` for a side object
-        // (stamped by `generate_sides`); clone it as this row's base annotations map, then let
-        // `eval_fields` add each output's own `consts` provenance on top. `_parent_highway` is
-        // gone (redundant with the parent's own `highway` tag, already reachable through
+        // (stamped above / by each `Clone`); clone it as this row's base annotations map, then
+        // let `eval_fields` add each output's own `consts` provenance on top. `_parent_highway`
+        // is gone (redundant with the parent's own `highway` tag, already reachable through
         // `ectx.parent_tags`).
         let mut produced = Map::new();
         let mut annotations = ectx.annotations.clone();
@@ -111,9 +104,8 @@ pub fn build_topic_rows(
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time. `ectx.id`
-        // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"` — computed once
-        // by `generate_sides` rather than re-produced here. `category`/`id` are dedicated `TopicRow`
-        // columns, not `produced` keys — see `TopicRow::category`.
+        // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
+        // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
         rows.push(TopicRow {
             osm_id,
             osm_type: kind.osm_type(),
@@ -123,8 +115,12 @@ pub fn build_topic_rows(
             annotations,
             meta: meta.clone(),
         });
-    });
+    };
+
+    emit(ExtractCtx { obj_tags: &tags, parent_tags: None, id: &default_id, annotations: &annotations });
+    for (clone_tags, clone_annotations, id) in &clones {
+        emit(ExtractCtx { obj_tags: clone_tags, parent_tags: Some(&tags), id, annotations: clone_annotations });
+    }
 
     rows
 }
-

@@ -32,12 +32,12 @@ pub struct Produced {
 }
 
 /// Which tags (`obj_tags`, `parent_tags`), `id` — the row id for this object, defaulted to the
-/// element's own id and overwritten by `generate_sides` for a side object (e.g.
+/// element's own id and overwritten for a side object (e.g.
 /// `"way/123/cycleway/left"`) — and `annotations`, a read-only view of whatever engine bookkeeping
 /// (see `output::rows::TopicRow::annotations`) has been attached to this object so far, so a
 /// `Filter` (`Side`/`Prefix`/`Infix`/`TagsEmpty`/…) can branch on it just like it can on
 /// `obj_tags`. There is no dedicated side-split-context field: `_side`/`_prefix`/`_infix` are
-/// ordinary `annotations` entries, stamped by `generate_sides` (see its own doc) — `Filter::Side`
+/// ordinary `annotations` entries, stamped by whatever built this context (see `tag_engine::transform::side_split::run_transform_steps`) — `Filter::Side`
 /// reads `annotations["_side"]` the same way `Filter::TagEq` reads a tag. `Copy` so a producer can
 /// cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself against
 /// a different tagset — `annotations` stays a shared reference for that reason, never `&mut`;

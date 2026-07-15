@@ -31,11 +31,16 @@ pub enum InputTransform {
     /// "sidepath_highway"})`); a plain in-place unnest with no such condition just leaves it
     /// `None`. Evaluated against the same context `Drop`'s own condition sees (`tags` as they
     /// stand before this call, `parent_tags`, `annotations`).
+    /// `record_infix_as`, when set, stamps `annotations[key] = infix` iff this call actually
+    /// unnested something — the mechanism for tracking *which* of several priority-ordered
+    /// attempts (bare < both < side-specific) actually won, since a plain `TagsEmpty` check only
+    /// answers *whether* any of them did.
     UnnestTags {
         prefix: &'static str,
         infix: &'static str,
         meta_prefixes: &'static [&'static str],
         guard: Option<Filter>,
+        record_infix_as: Option<&'static str>,
     },
     /// Strip `prefix` from matching keys — see `transform::strip_prefix`. The one step
     /// needing dynamic key iteration, so it isn't a `Producer`.
@@ -47,11 +52,11 @@ pub enum InputTransform {
     },
     /// Remove this object from the active set when `when` holds — `apply`'s only variant that
     /// returns `false`. Every other variant is a pure tag mutation and always keeps the object;
-    /// `Drop` carries no mutation of its own. The generic replacement for what used to be
-    /// `generate_sides`' hand-rolled "skip this side object if nothing was ever unnested into it"
-    /// check: a freshly-cloned object starts empty, so `Drop { when: TagsEmpty { tags_empty: true } }`
-    /// run right after the unnest steps (and before any literal-value injection, e.g. `highway`)
-    /// is exactly that check, expressed through the same `Filter` engine as everything else.
+    /// `Drop` carries no mutation of its own. A freshly-cloned object starts empty, so
+    /// `Drop { when: TagsEmpty { tags_empty: true } }` run right after the unnest steps (and
+    /// before any literal-value injection, e.g. `highway`) is "skip this clone if nothing was
+    /// ever unnested into it", expressed through the same `Filter` engine as everything else —
+    /// see `transform::side_split::CloneStep`.
     Drop { when: Filter },
 }
 
@@ -78,15 +83,16 @@ impl InputTransform {
                 }
                 true
             }
-            InputTransform::UnnestTags { prefix, infix, meta_prefixes, guard } => {
+            InputTransform::UnnestTags { prefix, infix, meta_prefixes, guard, record_infix_as } => {
                 if let Some(guard) = guard {
                     let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
                     if !eval(guard, &ctx) {
                         return true;
                     }
                 }
+                let before = tags.len();
                 match parent_tags {
-                    // Cross-object unnest (e.g. `generate_sides` building a side object's tags
+                    // Cross-object unnest (e.g. a `Clone`'s own steps building a side object's tags
                     // from the way's own, `tags` starting empty): scan the given source, write
                     // into `tags`.
                     Some(source) => crate::tag_engine::transform::side_split::unnest_prefixed_tags(source, prefix, infix, meta_prefixes, tags),
@@ -95,6 +101,11 @@ impl InputTransform {
                     None => {
                         let source = tags.clone();
                         crate::tag_engine::transform::side_split::unnest_prefixed_tags(&source, prefix, infix, meta_prefixes, tags);
+                    }
+                }
+                if let Some(key) = record_infix_as {
+                    if tags.len() > before {
+                        annotations.insert((*key).to_owned(), Value::String((*infix).to_owned()));
                     }
                 }
                 true
@@ -124,7 +135,7 @@ mod unnest_tags_tests {
         let mut obj = tags(&[("highway", "path"), ("cycleway", "track"), ("cycleway:width", "1.5")]);
         let mut annotations = Map::new();
         let step = InputTransform::UnnestTags {
-            prefix: "cycleway", infix: "", meta_prefixes: &[], guard: None,
+            prefix: "cycleway", infix: "", meta_prefixes: &[], guard: None, record_infix_as: None,
         };
         let kept = step.apply(&mut obj, &mut annotations, None);
         assert!(kept);
@@ -137,7 +148,7 @@ mod unnest_tags_tests {
         let mut obj = RawTags::default();
         let mut annotations = Map::new();
         let step = InputTransform::UnnestTags {
-            prefix: "cycleway", infix: "right", meta_prefixes: &[], guard: None,
+            prefix: "cycleway", infix: "right", meta_prefixes: &[], guard: None, record_infix_as: None,
         };
         step.apply(&mut obj, &mut annotations, Some(&way_tags));
         assert_eq!(obj.get("cycleway").map(String::as_str), Some("lane"));
@@ -154,10 +165,27 @@ mod unnest_tags_tests {
                 sanitize: None,
                 in_set: "sidepath_highway".to_owned(),
             }),
+            record_infix_as: None,
         };
         // "primary" is never a sidepath_highway value in any topic's value_sets.json.
         step.apply(&mut obj, &mut annotations, None);
         assert!(!obj.contains_key("width"));
+    }
+
+    #[test]
+    fn record_infix_as_stamps_only_on_success_and_last_wins() {
+        let way_tags = tags(&[("cycleway:both", "lane"), ("cycleway:right:width", "2")]);
+        let mut obj = RawTags::default();
+        let mut annotations = Map::new();
+        for infix in ["", "both", "right"] {
+            let step = InputTransform::UnnestTags {
+                prefix: "cycleway", infix, meta_prefixes: &[], guard: None, record_infix_as: Some("_infix"),
+            };
+            step.apply(&mut obj, &mut annotations, Some(&way_tags));
+        }
+        // Priority bare < both < side-specific: "both" matches (stamping "both"), then "right"
+        // also matches (its subkey `width`), overwriting the recorded infix to "right".
+        assert_eq!(annotations.get("_infix").and_then(Value::as_str), Some("right"));
     }
 
     #[test]

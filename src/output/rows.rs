@@ -35,7 +35,7 @@ pub struct TopicRow {
     /// JSON shorthands for declaring one entry in one `outputs` map; see `TopicSpec::outputs`).
     pub produced: Map<String, Value>,
     /// Engine-attached bookkeeping about `produced`, not itself a topic-authored output: side-split
-    /// context (`_side`/`_prefix`/`_infix`, stamped by `transform::side_split::generate_sides`)
+    /// context (`_side`/`_prefix`/`_infix`, stamped by `topic::pipeline::build_topic_rows`/each `Clone`)
     /// and each output's companion `consts` provenance (`<output>_source`/`<output>_confidence`,
     /// from `Produced::consts`) — see `topic::pipeline::eval_fields`.
     pub annotations: Map<String, Value>,

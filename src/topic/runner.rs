@@ -8,7 +8,7 @@ use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::input_transforms::InputTransform;
 use crate::tag_engine::producer::{Producer, TagSet};
-use crate::tag_engine::transform::side_split::CenterLineTransformation;
+use crate::tag_engine::transform::side_split::{CloneStep, TransformStep};
 use crate::topic::load::{
     inline_shared_producers, load_shared_macros, load_shared_producers, load_topic_categories,
     load_topic_macros, load_topic_sanitizers, merge,
@@ -26,20 +26,21 @@ pub struct TopicRunner {
     /// that exists. Each pass (relations → ways → nodes) classifies with its kind's set; a topic
     /// with only a `way/` folder has just the `Way` entry. `categorize` is the same function for all.
     pub categories: HashMap<ElementKind, CategoriesFile>,
-    /// In-place tag mutations applied to each way's tags, in declared order, split around
-    /// `exclude_condition` at `exclude_check_at` — so, unlike an output's producer, these can
-    /// influence which category a way matches (or whether `exclude_condition` excludes it at all).
-    pub input_transforms: Vec<InputTransform>,
-    /// Index into `input_transforms` where `exclude_condition` is evaluated: `input_transforms[..n]` run
-    /// first, then `exclude_condition`, then `input_transforms[n..]`. Set to the first `UnnestTags`
-    /// step's index (or `input_transforms.len()` if there is none) — mirrors the original two-stage
-    /// pipeline, where tag rewrites ran before `exclude_condition` but unnesting (which can promote
-    /// a `cycleway:access=no`-style tag onto a bare `access` that `exclude_condition` checks
-    /// directly) always ran after it.
+    /// Each way's full transform pipeline, in declared order, split around `exclude_condition` at
+    /// `exclude_check_at` — a mix of ordinary in-place `InputTransform`s (from `input_transforms`)
+    /// and `Clone`s (from `split_sides`, always synthesized after every `InputTransform`, one per
+    /// side). Unlike an output's producer, these can influence which category a way matches (or
+    /// whether `exclude_condition` excludes it at all) — see `tag_engine::transform::side_split::
+    /// run_transform_steps`, which drives the whole thing.
+    pub pipeline: Vec<TransformStep>,
+    /// Index into `pipeline` where `exclude_condition` is evaluated: `pipeline[..n]` run first,
+    /// then `exclude_condition`, then `pipeline[n..]`. Set to the first `UnnestTags` step's index
+    /// (or `pipeline.len()` if there is none) — mirrors the original two-stage pipeline, where tag
+    /// rewrites ran before `exclude_condition` but unnesting (which can promote a
+    /// `cycleway:access=no`-style tag onto a bare `access` that `exclude_condition` checks
+    /// directly) always ran after it. Every `Clone` step (side-splitting) is synthesized after
+    /// every plain `InputTransform`, so it always falls in `pipeline[exclude_check_at..]`.
     pub exclude_check_at: usize,
-    /// Center-line side split (from a `split_sides` entry); empty if the topic has none. Applied
-    /// after every `InputTransform`, since it changes object cardinality rather than mutating tags.
-    pub transformations: Vec<CenterLineTransformation>,
     /// Topic-default fields (`spec.outputs`, resolved, with topic-level `defaults` folded in as
     /// each default's lowest-priority `Fallback` branch — see `merge_default_fields`) — the
     /// fallback used if a category id somehow isn't in `category_outputs` (shouldn't normally
@@ -240,37 +241,13 @@ impl TopicRunner {
                 .with_context(|| format!("building category order for topics/{name}"))?;
         }
 
-        // Center-line splits: change object cardinality, so handled separately from `input_transforms`
-        // and always applied last (see `SplitSidesSpec`).
-        let mut transformations = Vec::new();
-        for s in &spec.split_sides {
-            let SplitSidesSpec { highway, prefix, directed_keys, self_directed_keys } = s;
-            // `directed_keys`/`self_directed_keys` are just key names in JSON — translated here
-            // into ordinary `InputTransform`s (a `directed` `Producer::Extract` per key), applied
-            // per side object post-split (see `topic::pipeline`). The split itself never sees
-            // these; it only unnests.
-            let directed_step = |key: &String, from: TagSet| InputTransform::TagRule {
-                output: key.clone(),
-                source: Producer::DirectedExtract { key: key.clone(), from, sanitize: None, consts: Map::new() },
-            };
-            let steps: Vec<InputTransform> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
-                .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))
-                .collect();
-            transformations.push(CenterLineTransformation {
-                highway: Box::leak(highway.clone().into_boxed_str()),
-                prefix:  Box::leak(prefix.clone().into_boxed_str()),
-                directed_steps: Box::leak(steps.into_boxed_slice()),
-            });
-        }
-
-        // Split the declared input-transform pipeline into one ordered list of in-place
-        // `InputTransform`s, applied in declaration order before `exclude_condition`/categorization.
-        let mut input_transforms = Vec::new();
+        // Build the ordered `InputTransform` prefix from `input_transforms`, in declaration order.
+        let mut pipeline: Vec<TransformStep> = Vec::new();
         for t in &spec.input_transforms {
             match t {
                 InputTransformSpec::UnnestSidepathSelf { prefix } => {
                     let prefix = Box::leak(prefix.clone().into_boxed_str()) as &'static str;
-                    input_transforms.push(InputTransform::UnnestTags {
+                    pipeline.push(TransformStep::Transform(InputTransform::UnnestTags {
                         prefix,
                         infix: "",
                         meta_prefixes: crate::tag_engine::transform::side_split::META_PREFIXES,
@@ -279,34 +256,82 @@ impl TopicRunner {
                             sanitize: None,
                             in_set: "sidepath_highway".to_owned(),
                         }),
-                    });
+                        record_infix_as: None,
+                    }));
                 }
                 InputTransformSpec::TagRules { output, source } => {
-                    input_transforms.push(InputTransform::TagRule {
+                    pipeline.push(TransformStep::Transform(InputTransform::TagRule {
                         output: output.clone(),
                         source: source.resolve(&macros, &sanitizers)
                             .with_context(|| format!("topics/{name}/topic.json: input_transforms.{output}"))?,
-                    });
+                    }));
                 }
                 InputTransformSpec::StripPrefix {
                     prefix, stamp_key, stamp_value, stamp_nested_under,
                 } => {
-                    input_transforms.push(InputTransform::StripPrefix {
+                    pipeline.push(TransformStep::Transform(InputTransform::StripPrefix {
                         prefix: prefix.clone(),
                         stamp_key: stamp_key.clone(),
                         stamp_value: stamp_value.clone(),
                         stamp_nested_under: stamp_nested_under.clone(),
-                    });
+                    }));
                 }
             }
         }
         // Only `UnnestSidepathSelf` config entries ever produce an `UnnestTags` step today (no
         // topic.json shape exposes a bare in-place unnest yet), so matching the variant is
         // equivalent to matching the old dedicated `SidepathSelf` one.
-        let exclude_check_at = input_transforms
+        let exclude_check_at = pipeline
             .iter()
-            .position(|s| matches!(s, InputTransform::UnnestTags { .. }))
-            .unwrap_or(input_transforms.len());
+            .position(|s| matches!(s, TransformStep::Transform(InputTransform::UnnestTags { .. })))
+            .unwrap_or(pipeline.len());
+
+        // Center-line splits (`split_sides`): change object cardinality, so always synthesized
+        // after every plain `InputTransform` above (`split_sides` used to be a separate list
+        // applied unconditionally last; here that's just "append after the loop", same effect,
+        // one list). One `Clone` per side, each running the same bare/`both`/side-specific
+        // `UnnestTags` priority chain this mechanism has always used, then a `TagsEmpty` drop,
+        // the literal `highway` injection, and the `directed_keys`/`self_directed_keys` reads.
+        for s in &spec.split_sides {
+            let SplitSidesSpec { highway, prefix, directed_keys, self_directed_keys } = s;
+            let directed_step = |key: &String, from: TagSet| InputTransform::TagRule {
+                output: key.clone(),
+                source: Producer::DirectedExtract { key: key.clone(), from, sanitize: None, consts: Map::new() },
+            };
+            let directed_steps: Vec<InputTransform> = directed_keys.iter().map(|k| directed_step(k, TagSet::Parent))
+                .chain(self_directed_keys.iter().map(|k| directed_step(k, TagSet::Obj)))
+                .collect();
+            let prefix_static: &'static str = Box::leak(prefix.clone().into_boxed_str());
+
+            for side_str in ["left", "right"] {
+                let unnest_steps = ["", "both", side_str].into_iter().map(|infix| InputTransform::UnnestTags {
+                    prefix: prefix_static,
+                    infix,
+                    meta_prefixes: crate::tag_engine::transform::side_split::META_PREFIXES,
+                    guard: None,
+                    record_infix_as: Some("_infix"),
+                });
+                let mut steps: Vec<InputTransform> = unnest_steps.chain([
+                    InputTransform::Drop { when: Filter::TagsEmpty { tags_empty: true } },
+                    InputTransform::TagRule {
+                        output: "highway".to_owned(),
+                        source: Producer::Match { rules: Vec::new(), default: Some(Value::String(highway.clone())), consts: Map::new() },
+                    },
+                ]).collect();
+                steps.extend(directed_steps.clone());
+
+                pipeline.push(TransformStep::Clone(CloneStep {
+                    when: Some(Filter::Not { not: Box::new(Filter::TagEq {
+                        extract: Extract::Value { key: "highway".to_owned() },
+                        sanitize: None,
+                        eq: highway.clone(),
+                    }) }),
+                    annotate: vec![("_side".to_owned(), side_str.to_owned()), ("_prefix".to_owned(), prefix.clone())],
+                    id_suffix: format!("{prefix}/{side_str}"),
+                    steps,
+                }));
+            }
+        }
 
         // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
@@ -340,9 +365,8 @@ impl TopicRunner {
         Ok(Self {
             spec,
             categories,
-            input_transforms,
+            pipeline,
             exclude_check_at,
-            transformations,
             default_outputs,
             category_outputs,
         })
