@@ -53,6 +53,12 @@ function layoutTree(nodes: DagNode[], edges: DagEdge[]): Map<string, { x: number
   return positions;
 }
 
+// Node count of a field's biggest variant — used to sort the field picker so the most interesting
+// (most-branching) trees sort first instead of alphabetically.
+function maxNodeCount(variants: Variant[]): number {
+  return variants.reduce((max, v) => Math.max(max, v.nodes.length), 0);
+}
+
 // Plots the `Producer` tree behind a topic's output field — one tree per field, per distinct
 // producer variant (categories sharing the same effective producer for that field collapse into
 // one variant; see `src/bin/dag_json.rs`). Fetches fresh on every `topic` change since the tree
@@ -75,13 +81,17 @@ export default function DagView({ topic }: { topic: string }) {
           return;
         }
         setResponse(d);
-        setField((prev) => (d.fields[prev] ? prev : Object.keys(d.fields).sort()[0] ?? ""));
+        const sortedFields = Object.keys(d.fields).sort((a, b) => maxNodeCount(d.fields[b]) - maxNodeCount(d.fields[a]));
+        setField((prev) => (d.fields[prev] ? prev : sortedFields[0] ?? ""));
         setVariantIdx(0);
       })
       .catch((err) => setError(String(err)));
   }, [topic]);
 
-  const fieldNames = useMemo(() => (response ? Object.keys(response.fields).sort() : []), [response]);
+  const fieldNames = useMemo(
+    () => (response ? Object.keys(response.fields).sort((a, b) => maxNodeCount(response.fields[b]) - maxNodeCount(response.fields[a])) : []),
+    [response],
+  );
   const variants = response?.fields[field] ?? [];
   const variant = variants[variantIdx];
 
@@ -142,8 +152,8 @@ export default function DagView({ topic }: { topic: string }) {
         >
           {fieldNames.map((f) => (
             <option key={f} value={f}>
-              {f}
-              {response.fields[f].length > 1 ? ` (${response.fields[f].length} variants)` : ""}
+              {f} ({maxNodeCount(response.fields[f])} nodes
+              {response.fields[f].length > 1 ? `, ${response.fields[f].length} variants` : ""})
             </option>
           ))}
         </select>
