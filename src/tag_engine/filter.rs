@@ -176,6 +176,57 @@ impl Filter {
                 Filter::NumGte { num: num.clone(), sanitize: resolve(sanitize)?, gte: *gte },
         })
     }
+
+    /// A short, human-readable rendering (`surface == sett`, `a and b`, `highway in [...]`) — not
+    /// the `Debug` dump, which is precise but unreadable at a glance (e.g. in the live editor's
+    /// deriver tree view, `dag::render_producer`). Not meant to round-trip back into JSON or `eval`
+    /// — purely for display.
+    pub fn describe(&self) -> String {
+        fn key(extract: &Extract) -> String {
+            match extract {
+                Extract::Value { key } => key.clone(),
+                Extract::Candidates { keys } => format!("[{}]", keys.join("|")),
+            }
+        }
+        // A predicate whose comparison already reads as a keyword (`in`, `contains`, ...) doesn't
+        // need `(sanitized)` cluttering the common case — only flag it where it could silently
+        // change what's being compared.
+        fn maybe_sanitized(key: String, sanitize: &Option<SanitizeRef>) -> String {
+            if sanitize.is_some() { format!("{key} (sanitized)") } else { key }
+        }
+        match self {
+            Filter::Bool(b) => b.to_string(),
+            Filter::And { and } => and.iter().map(Filter::describe).collect::<Vec<_>>().join(" and "),
+            Filter::Or { or } => format!("({})", or.iter().map(Filter::describe).collect::<Vec<_>>().join(" or ")),
+            Filter::Not { not } => format!("not ({})", not.describe()),
+            Filter::Macro { r#macro } => format!("macro:{macro}"),
+            Filter::TagInSet { extract, sanitize, in_set } => format!("{} in {in_set}", maybe_sanitized(key(extract), sanitize)),
+            Filter::TagIn { extract, sanitize, r#in } => format!("{} in [{}]", maybe_sanitized(key(extract), sanitize), r#in.join(", ")),
+            Filter::TagContains { extract, sanitize, contains, case_insensitive } => format!(
+                "{} contains {contains:?}{}",
+                maybe_sanitized(key(extract), sanitize),
+                if *case_insensitive { " (ci)" } else { "" },
+            ),
+            Filter::TagStartsWith { extract, sanitize, starts_with } => format!("{} starts_with {starts_with:?}", maybe_sanitized(key(extract), sanitize)),
+            Filter::TagEndsWith { extract, sanitize, ends_with } => format!("{} ends_with {ends_with:?}", maybe_sanitized(key(extract), sanitize)),
+            Filter::TagExists { extract, sanitize, exists } => {
+                let k = maybe_sanitized(key(extract), sanitize);
+                if *exists { format!("{k} exists") } else { format!("{k} !exists") }
+            }
+            Filter::TagEq { extract, sanitize, eq } => format!("{} == {eq:?}", maybe_sanitized(key(extract), sanitize)),
+            Filter::Parent { parent } => format!("parent({})", parent.describe()),
+            Filter::Side { side } => format!("side == {side:?}"),
+            Filter::Prefix { prefix } => format!("prefix == {prefix:?}"),
+            Filter::Infix { infix } => format!("infix == {infix:?}"),
+            Filter::HasKeyPrefix { has_key_prefix } => format!("has_key_prefix({has_key_prefix:?})"),
+            Filter::HasParent { has_parent } => if *has_parent { "has_parent".to_owned() } else { "!has_parent".to_owned() },
+            Filter::TagsEmpty { tags_empty } => if *tags_empty { "tags_empty".to_owned() } else { "!tags_empty".to_owned() },
+            Filter::NumLt { num, lt, .. } => format!("{num} < {lt}"),
+            Filter::NumLte { num, lte, .. } => format!("{num} <= {lte}"),
+            Filter::NumGt { num, gt, .. } => format!("{num} > {gt}"),
+            Filter::NumGte { num, gte, .. } => format!("{num} >= {gte}"),
+        }
+    }
 }
 
 // ── Runtime evaluator ──────────────────────────────────────────────────────────
