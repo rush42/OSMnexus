@@ -17,9 +17,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use osmnexus::tag_engine::extract::Extract;
-use osmnexus::tag_engine::producer::Producer;
-use osmnexus::tag_engine::sanitize::{Sanitizer, Step};
+use osmnexus::lang::extract::Extract;
+use osmnexus::lang::producer::Producer;
+use osmnexus::lang::sanitize::{Sanitizer, Step};
 use osmnexus::topic::runner::TopicRunner;
 
 fn main() -> Result<()> {

@@ -8,11 +8,11 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use crate::tag_engine::extract::Extract;
-use crate::tag_engine::filter::FilterSpec;
-use crate::tag_engine::producer::{Producer, ProducerSpec, TagSet};
-use crate::tag_engine::sanitize::{SanitizeRef, Sanitizer, StrOrVec};
-use crate::tag_engine::transform::{CloneStep, InputTransform, TransformStep};
+use crate::lang::extract::Extract;
+use crate::lang::filter::FilterSpec;
+use crate::lang::producer::{Producer, ProducerSpec, TagSet};
+use crate::lang::sanitize::{SanitizeRef, Sanitizer, StrOrVec};
+use crate::categorize::transform::{CloneStep, InputTransform, TransformStep};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
@@ -199,7 +199,7 @@ pub enum TransformSpec {
     },
     /// `{ "unnest": "<prefix>", "infix"?: "...", "meta"?: [...], "guard"?: <Filter>,
     /// "record_infix_as"?: "..." }` — identified by its required `unnest` field. See
-    /// `tag_engine::transform::InputTransform::UnnestTags`.
+    /// `categorize::transform::InputTransform::UnnestTags`.
     Unnest {
         prefix: String,
         infix: String,
@@ -208,7 +208,7 @@ pub enum TransformSpec {
         record_infix_as: Option<String>,
     },
     /// `{ "drop": <Filter> }` — identified by its required `drop` field. See
-    /// `tag_engine::transform::InputTransform::Drop`.
+    /// `categorize::transform::InputTransform::Drop`.
     Drop { when: FilterSpec },
 }
 
@@ -302,7 +302,7 @@ impl TransformSpec {
 
 /// A top-level pipeline step: any `TransformSpec` shape, or `{ "clone": { "when"?: <Filter>,
 /// "annotate"?: {...}, "id_suffix": "...", "steps": [...] } }` — identified by being *only* that
-/// one `clone` key. See `tag_engine::transform::CloneStep`.
+/// one `clone` key. See `categorize::transform::CloneStep`.
 #[derive(Debug)]
 pub enum PipelineStepSpec {
     Transform(TransformSpec),
@@ -410,7 +410,7 @@ mod transforms_spec_tests {
         let mut way_tags = tags(&[("highway", "primary"), ("cycleway:left", "lane")]);
         let mut annotations = Map::new();
         let mut clones = Vec::new();
-        let kept = crate::tag_engine::transform::run_transform_steps(&mut way_tags, &mut annotations, &pipeline, "way/1", &mut clones);
+        let kept = crate::categorize::transform::run_transform_steps(&mut way_tags, &mut annotations, &pipeline, "way/1", &mut clones);
         assert!(kept);
         assert_eq!(clones.len(), 1);
         let (clone_tags, clone_annotations, id) = &clones[0];

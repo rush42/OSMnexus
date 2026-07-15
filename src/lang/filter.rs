@@ -7,7 +7,7 @@
 //! `eval` never does a registry lookup of any kind, and the resolved `Filter` type makes an
 //! unexpanded macro or unresolved sanitizer structurally impossible past load.
 //!
-//! Shares its context (`ExtractCtx`, in `tag_engine::producer`) with `Producer::eval` — a predicate
+//! Shares its context (`ExtractCtx`, in `lang::producer`) with `Producer::eval` — a predicate
 //! is just another "object state → output" evaluator, output `bool` instead of `Option<Value>`. The
 //! category *data model* and the priority-order compiler live in `categories`.
 
@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::tag_engine::extract::Extract;
-use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
+use crate::lang::extract::Extract;
+use crate::lang::producer::ExtractCtx;
+use crate::lang::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
 
@@ -293,7 +293,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
-        // `parent_tags` is only ever `Some` for those (see `tag_engine::transform::run_transform_steps`).
+        // `parent_tags` is only ever `Some` for those (see `categorize::transform::run_transform_steps`).
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
         Filter::TagsEmpty { tags_empty } => ctx.obj_tags.is_empty() == *tags_empty,
 
@@ -333,7 +333,7 @@ pub fn eval_filter(filter: &Filter, tags: &RawTags) -> bool {
         obj_tags: tags,
         parent_tags: None,
         id: "",
-        annotations: crate::tag_engine::producer::empty_annotations(),
+        annotations: crate::lang::producer::empty_annotations(),
     };
     eval(filter, &ctx)
 }

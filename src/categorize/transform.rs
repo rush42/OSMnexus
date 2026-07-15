@@ -10,8 +10,8 @@
 
 use serde_json::{Map, Value};
 
-use crate::tag_engine::filter::{eval, Filter};
-use crate::tag_engine::producer::{ExtractCtx, Producer};
+use crate::lang::filter::{eval, Filter};
+use crate::lang::producer::{ExtractCtx, Producer};
 use crate::osm::types::RawTags;
 
 // ── InputTransform ──────────────────────────────────────────────────────────────
@@ -352,7 +352,7 @@ mod unnest_tags_tests {
         let step = InputTransform::UnnestTags {
             prefix: "cycleway", infix: "", meta_prefixes: &[],
             guard: Some(Filter::TagInSet {
-                extract: crate::tag_engine::extract::Extract::Value { key: "highway".to_owned() },
+                extract: crate::lang::extract::Extract::Value { key: "highway".to_owned() },
                 sanitize: None,
                 in_set: "sidepath_highway".to_owned(),
             }),
@@ -447,7 +447,7 @@ mod unnest_prefixed_tags_tests {
 #[cfg(test)]
 mod run_transform_steps_tests {
     use super::*;
-    use crate::tag_engine::extract::Extract;
+    use crate::lang::extract::Extract;
 
     fn tags(pairs: &[(&str, &str)]) -> RawTags {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
@@ -479,7 +479,7 @@ mod run_transform_steps_tests {
                         rules: Vec::new(),
                         default: Some(Value::String("cycleway".to_owned())),
                         annotate: Map::new(),
-                        origin: crate::tag_engine::producer::MatchOrigin::Default,
+                        origin: crate::lang::producer::MatchOrigin::Default,
                     },
                 },
             ]).collect();

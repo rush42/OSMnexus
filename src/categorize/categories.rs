@@ -7,10 +7,10 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::tag_engine::decision_tree::{self, DecisionTree};
-use crate::tag_engine::filter::{eval, Filter, FilterSpec};
-use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::sanitize::Sanitizer;
+use crate::categorize::decision_tree::{self, DecisionTree};
+use crate::lang::filter::{eval, Filter, FilterSpec};
+use crate::lang::producer::ExtractCtx;
+use crate::lang::sanitize::Sanitizer;
 
 // ── Data types (as parsed) ────────────────────────────────────────────────────
 

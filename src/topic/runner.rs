@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use crate::tag_engine::categories::CategoriesFile;
-use crate::tag_engine::filter::{Filter, FilterSpec};
-use crate::tag_engine::producer::{Producer, ProducerSpec};
-use crate::tag_engine::transform::TransformStep;
+use crate::categorize::categories::CategoriesFile;
+use crate::lang::filter::{Filter, FilterSpec};
+use crate::lang::producer::{Producer, ProducerSpec};
+use crate::categorize::transform::TransformStep;
 use crate::topic::load::{
     inline_shared_producers, load_shared_macros, load_shared_producers, load_topic_categories,
     load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge,
@@ -28,7 +28,7 @@ pub struct TopicRunner {
     /// `exclude_check_at` — a mix of ordinary in-place `InputTransform`s (from `input_transforms`)
     /// and `Clone`s (from `split_sides`, always synthesized after every `InputTransform`, one per
     /// side). Unlike an output's producer, these can influence which category a way matches (or
-    /// whether `exclude_condition` excludes it at all) — see `tag_engine::transform::
+    /// whether `exclude_condition` excludes it at all) — see `categorize::transform::
     /// run_transform_steps`, which drives the whole thing.
     pub pipeline: Vec<TransformStep>,
     /// Index into `pipeline` where `exclude_condition` is evaluated: `pipeline[..n]` run first,
@@ -68,7 +68,7 @@ fn resolve_outputs(
     raw: Map<String, Value>,
     producer_lib: &HashMap<String, ProducerSpec>,
     macros: &HashMap<String, FilterSpec>,
-    sanitizers: &HashMap<String, crate::tag_engine::sanitize::Sanitizer>,
+    sanitizers: &HashMap<String, crate::lang::sanitize::Sanitizer>,
     context: &str,
 ) -> anyhow::Result<Vec<Field>> {
     raw.into_iter()
@@ -97,7 +97,7 @@ fn default_value_producer(v: &Value) -> Producer {
         }
         _ => (v.clone(), Map::new()),
     };
-    Producer::Match { rules: Vec::new(), default: Some(value), annotate, origin: crate::tag_engine::producer::MatchOrigin::Default }
+    Producer::Match { rules: Vec::new(), default: Some(value), annotate, origin: crate::lang::producer::MatchOrigin::Default }
 }
 
 /// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the
@@ -106,12 +106,12 @@ fn default_value_producer(v: &Value) -> Producer {
 /// second `resolve` pass isn't needed, and `Producer::Fallback` itself is JSON-parse sugar only —
 /// see `Producer::eval`).
 fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
-    let rule = |value: Producer| crate::tag_engine::classifier::Rule { when: Filter::Bool(true), value };
+    let rule = |value: Producer| crate::lang::classifier::Rule { when: Filter::Bool(true), value };
     Producer::Match {
         rules: vec![rule(primary), rule(default_source)],
         default: None,
         annotate: Map::new(),
-        origin: crate::tag_engine::producer::MatchOrigin::Fallback,
+        origin: crate::lang::producer::MatchOrigin::Fallback,
     }
 }
 

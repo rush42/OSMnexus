@@ -32,10 +32,10 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
-use crate::tag_engine::categories::{CategoriesFile, OrderedNode};
-use crate::tag_engine::filter::Filter;
-use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::linter::{filter_to_expr, to_nnf, Expr, Literal, NumOp, Predicate};
+use crate::categorize::categories::{CategoriesFile, OrderedNode};
+use crate::lang::filter::Filter;
+use crate::lang::producer::ExtractCtx;
+use crate::categorize::linter::{filter_to_expr, to_nnf, Expr, Literal, NumOp, Predicate};
 
 /// Sentinel branch key for `Predicate::Side`. Domain is exactly `{"self","left","right"}` — always
 /// fully known for a given object, so this branch never needs a wildcard fallback in practice.
@@ -595,7 +595,7 @@ fn collect_sanitized_tags(f: &Filter, out: &mut FxHashSet<String>) {
         Filter::Or { or } => or.iter().for_each(|c| collect_sanitized_tags(c, out)),
         Filter::Not { not } => collect_sanitized_tags(not, out),
         Filter::TagEq { extract, sanitize: Some(_), .. } | Filter::TagIn { extract, sanitize: Some(_), .. } => {
-            if let crate::tag_engine::extract::Extract::Value { key } = extract {
+            if let crate::lang::extract::Extract::Value { key } = extract {
                 out.insert(key.clone());
             }
         }
@@ -614,10 +614,10 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     use crate::topic::load::{load_shared_macros, load_topic_categories, load_topic_sanitizers};
-    use crate::tag_engine::categories::{categorize, categorize_linear, CategoriesFile, OrderedNode};
-    use crate::tag_engine::filter::{Filter, FilterSpec};
-    use crate::tag_engine::producer::ExtractCtx;
-    use crate::tag_engine::linter::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
+    use crate::categorize::categories::{categorize, categorize_linear, CategoriesFile, OrderedNode};
+    use crate::lang::filter::{Filter, FilterSpec};
+    use crate::lang::producer::ExtractCtx;
+    use crate::categorize::linter::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
     use serde_json::{Map, Value};
     use crate::osm::types::RawTags;
 

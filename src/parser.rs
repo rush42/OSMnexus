@@ -1,5 +1,6 @@
-//! JSON-only sugar for the tag_engine's public types, kept in one place — cleanly separated from
-//! their runtime definitions (`Producer` in `producer.rs`; `Sanitizer`/`Step` in `sanitize.rs`).
+//! JSON-only sugar for the `lang`/`categorize` engines' public types, kept in one place — cleanly
+//! separated from their runtime definitions (`Producer` in `lang/producer.rs`; `Sanitizer`/`Step`
+//! in `lang/sanitize.rs`).
 //! Each hand-written `Deserialize` impl here folds an extra on-disk JSON shape (`fallback`; a bare
 //! single sanitize step instead of an array; `cases`/`filter`/`drop`) into the type's own canonical
 //! form, backed by a private, `#[serde(untagged)]` parse-only helper enum that mirrors the old
@@ -20,11 +21,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
-use crate::tag_engine::classifier::RuleSpec;
-use crate::tag_engine::extract::Extract;
-use crate::tag_engine::filter::FilterSpec;
-use crate::tag_engine::producer::{DirectedFrom, MatchOrigin, ProducerSpec};
-use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
+use crate::lang::classifier::RuleSpec;
+use crate::lang::extract::Extract;
+use crate::lang::filter::FilterSpec;
+use crate::lang::producer::{DirectedFrom, MatchOrigin, ProducerSpec};
+use crate::lang::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
 

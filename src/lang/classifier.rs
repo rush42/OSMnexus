@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::tag_engine::filter::{eval, Filter, FilterSpec};
-use crate::tag_engine::producer::{ExtractCtx, Produced, Producer, ProducerSpec};
-use crate::tag_engine::sanitize::Sanitizer;
+use crate::lang::filter::{eval, Filter, FilterSpec};
+use crate::lang::producer::{ExtractCtx, Produced, Producer, ProducerSpec};
+use crate::lang::sanitize::Sanitizer;
 
 /// One classifier rule, **as parsed** — `when`/`value` are the as-parsed `*Spec` tiers (may carry
 /// macros/named sanitizers). Resolved into `Rule` by `resolve`.
@@ -62,7 +62,7 @@ pub struct Rule {
 /// own `annotate` field — instead.
 ///
 /// Shared by the standalone `road` classifier and the data-defined `rules` value producer
-/// (`tag_engine::producer`). Evaluated against a full `ExtractCtx` — same predicate evaluator
+/// (`lang::producer`). Evaluated against a full `ExtractCtx` — same predicate evaluator
 /// (`filter::eval`) and same context shape category matching uses, so a rule's `when` can see
 /// side/prefix/infix/parent, not just raw tags. Does not apply a `default` — callers needing one
 /// (e.g. `Producer::Match`) apply it themselves.

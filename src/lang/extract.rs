@@ -17,8 +17,8 @@ use std::borrow::Cow;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::tag_engine::keys;
-use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer};
+use crate::lang::keys;
+use crate::lang::sanitize::{resolve_sanitize, Sanitizer};
 use crate::osm::types::RawTags;
 
 /// A candidate-key read spec. `key`/`keys` accept `Producer`'s historical field names as canonical

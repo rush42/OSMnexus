@@ -4,7 +4,7 @@
 //! really just mapping/replace/builtin), and the one built-in, `parse_length`. Neither `Sanitizer`
 //! nor `Step` derives `Deserialize` here — their JSON sugar (a bare single step instead of an
 //! array; `cases`/`filter`/`drop` as sugar for `mapping`) is folded in by hand-written impls in
-//! `tag_engine::parser`, kept separate from the runtime types/eval logic defined here.
+//! `parser`, kept separate from the runtime types/eval logic defined here.
 
 use std::collections::HashMap;
 
@@ -63,7 +63,7 @@ pub fn resolve_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value
 
 /// An atomic `&str -> atomic` chain: an ordered list of `Step`s folded left (each step consumes
 /// the previous string; the terminal step may yield any atomic `Value`). Always just a
-/// `Vec<Step>` — `tag_engine::parser`'s hand-written `Deserialize` impl folds the JSON sugar (a
+/// `Vec<Step>` — `parser`'s hand-written `Deserialize` impl folds the JSON sugar (a
 /// bare single step, with no wrapping array) into a one-element `Vec` at parse time, so "a chain
 /// of one" is never a distinct concept downstream (same treatment `Producer` gives its `fallback`
 /// sugar). The field is private; `parser` builds a `Sanitizer` through `from_steps` rather than
@@ -72,7 +72,7 @@ pub fn resolve_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value
 pub struct Sanitizer(Vec<Step>);
 
 impl Sanitizer {
-    /// Construct directly from already-known steps — used by `tag_engine::parser`'s `Deserialize`
+    /// Construct directly from already-known steps — used by `parser`'s `Deserialize`
     /// impl (after folding any JSON sugar) and by `SanitizeRef::resolve`'s builtin-name fallback.
     pub(crate) fn from_steps(steps: Vec<Step>) -> Self {
         Sanitizer(steps)
@@ -112,7 +112,7 @@ impl StrOrVec {
 }
 
 /// One transform step: a table lookup (`Mapping`), literal rewrites (`Replace`), or a built-in
-/// (`Builtin`) — see `tag_engine::parser`'s hand-written `Deserialize` impl for the JSON sugar
+/// (`Builtin`) — see `parser`'s hand-written `Deserialize` impl for the JSON sugar
 /// (`cases`/`filter`/`drop`) that folds into `Mapping` at parse time, so a `Step` value is only
 /// ever one of these three:
 /// - `cases` (`{ "<output>": "<input>" | ["<input>", ...] }`, the inverted-lookup shorthand)

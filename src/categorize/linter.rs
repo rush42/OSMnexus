@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::topic::load::{load_shared_macros, load_topic_categories};
-use crate::tag_engine::categories::CategoriesFileSpec;
-use crate::tag_engine::extract::Extract;
-use crate::tag_engine::filter::{Filter, FilterSpec};
+use crate::categorize::categories::CategoriesFileSpec;
+use crate::lang::extract::Extract;
+use crate::lang::filter::{Filter, FilterSpec};
 use crate::osm::types::ElementKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -73,8 +73,8 @@ pub enum Expr {
 /// `extract`'s key if `Value`, else the first candidate of `Candidates` — the representative key
 /// used for `Predicate` atoms that can only name one plain key (see `filter_to_expr`'s doc on why
 /// that's an approximation for the `Candidates`/`first_tag` case).
-fn extract_key(extract: &crate::tag_engine::extract::Extract) -> String {
-    use crate::tag_engine::extract::Extract;
+fn extract_key(extract: &crate::lang::extract::Extract) -> String {
+    use crate::lang::extract::Extract;
     match extract {
         Extract::Value { key } => key.clone(),
         Extract::Candidates { keys } => keys.first().cloned()

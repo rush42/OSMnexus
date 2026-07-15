@@ -2,7 +2,7 @@
 //! sanitizers. Encodes the topic-directory-layout convention (`{node,way,relation}/`,
 //! `macros.json`, `sanitizers.json`, plus the config-root-level shared `macros.json`/
 //! `sanitizers.json`) — nothing generic-engine lives here, only the disk-I/O side of getting a
-//! topic's raw data into the shape `tag_engine` types expect.
+//! topic's raw data into the shape `lang`/`categorize` types expect.
 //!
 //! Layout: a topic organizes its categories into per-kind subfolders directly under the topic dir
 //! — `topics/<t>/{node,way,relation}/*.json` (one category per file, id = file stem). Topic-wide
@@ -13,9 +13,9 @@ use std::collections::HashMap;
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use crate::tag_engine::categories::CategoriesFileSpec;
-use crate::tag_engine::filter::FilterSpec;
-use crate::tag_engine::sanitize::Sanitizer;
+use crate::categorize::categories::CategoriesFileSpec;
+use crate::lang::filter::FilterSpec;
+use crate::lang::sanitize::Sanitizer;
 use crate::osm::types::ElementKind;
 use crate::topic::spec::TransformsSpec;
 

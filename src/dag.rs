@@ -10,9 +10,9 @@ use serde::Serialize;
 
 use serde_json::{Map, Value};
 
-use crate::tag_engine::extract::Extract;
-use crate::tag_engine::producer::{MatchOrigin, Producer};
-use crate::tag_engine::sanitize::{Sanitizer, Step};
+use crate::lang::extract::Extract;
+use crate::lang::producer::{MatchOrigin, Producer};
+use crate::lang::sanitize::{Sanitizer, Step};
 
 #[derive(Serialize)]
 pub struct DagNode {

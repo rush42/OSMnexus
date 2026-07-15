@@ -3,7 +3,7 @@
 //! resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result (`Produced`) types it
 //! evaluates over. Two branch shapes (`Match`, `Parent`) and three leaf/read shapes (`Extract`,
 //! `DirectedExtract`, `Const`) — everything else is JSON-only sugar, folded into one of these by
-//! `tag_engine::parser`'s hand-written `Deserialize` impl (`fallback`, `parent_or_obj`, the
+//! `parser`'s hand-written `Deserialize` impl (`fallback`, `parent_or_obj`, the
 //! `{"tag": ...}`/`{"tag_or", "or"}` shorthands) so it never exists as a `Producer` value here, not
 //! pre-`resolve`, not transiently, not ever (see `parser`'s own doc for why that folding lives in
 //! its own module rather than inline in this one). A named *shared* classifier table (`{ "shared":
@@ -17,11 +17,11 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::tag_engine::classifier::{Rule, RuleSpec};
-use crate::tag_engine::extract::Extract;
-use crate::tag_engine::filter::{Filter, FilterSpec};
-use crate::tag_engine::keys;
-use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
+use crate::lang::classifier::{Rule, RuleSpec};
+use crate::lang::extract::Extract;
+use crate::lang::filter::{Filter, FilterSpec};
+use crate::lang::keys;
+use crate::lang::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
 use crate::osm::types::RawTags;
 
 /// A produced value plus optional provenance. The `annotate` are arbitrary key/value pairs the
@@ -39,7 +39,7 @@ pub struct Produced {
 /// (see `output::rows::TopicRow::annotations`) has been attached to this object so far, so a
 /// `Filter` (`Side`/`Prefix`/`Infix`/`TagsEmpty`/…) can branch on it just like it can on
 /// `obj_tags`. There is no dedicated side-split-context field: `_side`/`_prefix`/`_infix` are
-/// ordinary `annotations` entries, stamped by whatever built this context (see `tag_engine::transform::run_transform_steps`) — `Filter::Side`
+/// ordinary `annotations` entries, stamped by whatever built this context (see `categorize::transform::run_transform_steps`) — `Filter::Side`
 /// reads `annotations["_side"]` the same way `Filter::TagEq` reads a tag. `Copy` so a producer can
 /// cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself against
 /// a different tagset — `annotations` stays a shared reference for that reason, never `&mut`;
@@ -111,7 +111,7 @@ pub enum MatchOrigin {
     /// Authored directly as `{"rules": [...], ...}` — a real rule table, not folded from anything.
     #[default]
     Rules,
-    /// Desugared from `{"fallback": [...]}` (`tag_engine::parser`) or built directly by
+    /// Desugared from `{"fallback": [...]}` (`parser`) or built directly by
     /// `topic::runner::as_fallback_pair` — every rule `when: true`, first branch that produces
     /// anything wins.
     Fallback,
@@ -128,7 +128,7 @@ pub enum MatchOrigin {
 /// `Extract`/`DirectedExtract` `sanitize` are named `SanitizeRef`s, both resolved by `resolve` into
 /// the runtime `Producer` below. `Deserialize` isn't derived on this type itself — deliberately, so
 /// a stray `#[derive(Deserialize)]` here can't reintroduce a shape `parser` doesn't know about;
-/// `tag_engine::parser`'s hand-written impl targets this `ProducerSpec` (folding `fallback` etc.
+/// `parser`'s hand-written impl targets this `ProducerSpec` (folding `fallback` etc.
 /// sugar into it).
 #[derive(Debug, Clone)]
 pub enum ProducerSpec {
@@ -157,7 +157,7 @@ pub enum ProducerSpec {
 }
 
 /// A value producer, **resolved**: `Match` (a rule table) or `Extract` (a leaf tag read) — see
-/// `tag_engine::parser`'s hand-written `Deserialize` impl (targeting `ProducerSpec`) for the
+/// `parser`'s hand-written `Deserialize` impl (targeting `ProducerSpec`) for the
 /// `fallback` JSON shape that folds into `Match` at parse time and so never appears here. Every
 /// named reference (`Match` rules' macros, `Extract`'s `sanitize`) is already resolved (see
 /// `ProducerSpec::resolve`), so `eval` never does a registry lookup.
@@ -215,7 +215,7 @@ pub enum Producer {
     /// `from: Parent`, the parent's (tried bare-key-then-directed-key). `from: Obj` tries only the
     /// directed variant on the object's own tags (e.g. a tag already unnested as
     /// `traffic_sign:forward`); `from: Annotations` reads `ctx.annotations` instead of any tagset.
-    /// Built from `transforms.json`'s `{ "directed": {...} }` sugar (see `tag_engine::parser`) — the
+    /// Built from `transforms.json`'s `{ "directed": {...} }` sugar (see `parser`) — the
     /// object-cardinality-changing split itself stays native, but this per-key projection is an
     /// ordinary sided tag read.
     DirectedExtract {
@@ -229,7 +229,7 @@ pub enum Producer {
     /// documents the same shape in more detail.
     ///
     /// `ParentOrObj` (matching the old `TagSet::ParentOrObj`/yes_flag `source: parent`) isn't a
-    /// variant here — it's JSON-parse sugar (`tag_engine::parser`) for `Match{rules: [{when:
+    /// variant here — it's JSON-parse sugar (`parser`) for `Match{rules: [{when:
     /// HasParent(true), value: Parent(p)}, {when: HasParent(false), value: p}]}`. That's not the
     /// same as `{"fallback": [Parent(p), p]}`: `Match`'s rule search re-evaluates each `when`
     /// independently (a matching-but-empty rule doesn't make the next rule's `when` any truer), so
@@ -243,7 +243,7 @@ impl Producer {
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
             Producer::Match { rules, default, annotate, .. } => {
-                crate::tag_engine::classifier::match_rules(rules, ctx, annotate)
+                crate::lang::classifier::match_rules(rules, ctx, annotate)
                     .or_else(|| default.clone().map(|value| Produced { value, annotate: annotate.clone() }))
             }
 
@@ -325,7 +325,7 @@ impl ProducerSpec {
     }
 
     /// The `ParentOrObj` equivalent for a *pre-resolve* `p` — see `Producer::parent_or_obj` for the
-    /// `Match`+`Parent` shape. Used by `tag_engine::parser`'s `parent_or_obj` JSON sugar and
+    /// `Match`+`Parent` shape. Used by `parser`'s `parent_or_obj` JSON sugar and
     /// `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`, both of which build an unresolved
     /// `ProducerSpec` (it carries a `SanitizeRef`) that's resolved later.
     pub fn parent_or_obj(p: ProducerSpec) -> ProducerSpec {
@@ -367,8 +367,8 @@ impl Producer {
 #[cfg(test)]
 mod classify_bool_tests {
     use super::*;
-    use crate::tag_engine::classifier::Rule;
-    use crate::tag_engine::filter::Filter;
+    use crate::lang::classifier::Rule;
+    use crate::lang::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
         ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations() }

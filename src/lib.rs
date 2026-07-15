@@ -1,11 +1,13 @@
+pub mod categorize;
 pub mod config;
 pub mod dag;
 pub mod db;
+pub mod lang;
 pub mod osm;
 pub mod output;
+mod parser;
 pub mod paths;
 pub mod processing;
-pub mod tag_engine;
 pub mod topic;
 pub mod traffic;
 pub mod units;

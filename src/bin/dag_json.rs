@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use osmnexus::dag::{producer_dag, DagGraph};
-use osmnexus::tag_engine::producer::Producer;
+use osmnexus::lang::producer::Producer;
 use osmnexus::topic::runner::TopicRunner;
 
 #[derive(Serialize)]

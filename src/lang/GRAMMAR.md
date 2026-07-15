@@ -1,6 +1,6 @@
 # Tag-engine JSON grammar
 
-This is the grammar for the JSON rule language read by `src/tag_engine/*`
+This is the grammar for the JSON rule language read by `src/lang/*`
 (`Producer`, `Filter`, `Extract`, `Sanitizer`) and by `src/topic/spec.rs`
 (`topic.json` / `transforms.json`). It describes the *authored* shapes,
 including all sugar forms; sugar is folded into the smaller runtime shape at
@@ -255,11 +255,11 @@ TagRule. `PipelineStep` is `clone` vs. everything else (delegated to
 
 ## Source of truth
 
-- `Extract` — `src/tag_engine/extract.rs`
-- `Filter` — `src/tag_engine/filter.rs`
-- `Sanitizer` / `Step` / `SanitizeRef` — `src/tag_engine/sanitize.rs`
-- `Producer` / `Rule` — `src/tag_engine/producer.rs`, `src/tag_engine/classifier.rs`
-- Sugar-folding `Deserialize` impls — `src/tag_engine/parser.rs`
+- `Extract` — `src/lang/extract.rs`
+- `Filter` — `src/lang/filter.rs`
+- `Sanitizer` / `Step` / `SanitizeRef` — `src/lang/sanitize.rs`
+- `Producer` / `Rule` — `src/lang/producer.rs`, `src/lang/classifier.rs`
+- Sugar-folding `Deserialize` impls — `src/lang/parser.rs`
 - `topic.json` / `transforms.json` schema — `src/topic/spec.rs`
 
 See also memory: [[producer-engine-unified-to-match]], [[json-sugar-collapse-pattern]].
