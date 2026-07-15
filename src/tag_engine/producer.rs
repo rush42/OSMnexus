@@ -99,6 +99,30 @@ pub enum DirectedFrom {
     Annotations,
 }
 
+/// Why a `Producer::Match` exists — a real authored rule table, or the runtime shape one of the
+/// JSON sugars (`fallback`/`parent_or_obj`/`tag_or`) or a Rust-side synthesis (`topic::runner`'s
+/// `default_value_producer`/`as_fallback_pair`) folds into. Purely informational — `eval`/`resolve`
+/// never branch on it, only display code does (see `dag::render_producer`): a `Fallback`/`TagOr`
+/// match's rules are always `when: true` by construction, so describing that condition on every
+/// rule node is noise — what actually distinguishes each branch is its priority, not a predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatchOrigin {
+    /// Authored directly as `{"rules": [...], ...}` — a real rule table, not folded from anything.
+    #[default]
+    Rules,
+    /// Desugared from `{"fallback": [...]}` (`tag_engine::parser`) or built directly by
+    /// `topic::runner::as_fallback_pair` — every rule `when: true`, first branch that produces
+    /// anything wins.
+    Fallback,
+    /// Desugared from `{"parent_or_obj": ...}` — see `Producer::parent_or_obj`.
+    ParentOrObj,
+    /// Desugared from `{"tag_or": ..., "or": ...}` — a single `when: true` rule plus `default`.
+    TagOr,
+    /// Built directly from a `defaults` JSON entry (`topic::runner::default_value_producer`) — no
+    /// rules at all, just a `default`.
+    Default,
+}
+
 /// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see `tag_engine::
 /// parser`'s hand-written `Deserialize` impl for the `fallback` JSON shape that folds into `Match`
 /// at parse time and so never appears here. `Deserialize` isn't derived on this type itself —
@@ -128,6 +152,8 @@ pub enum Producer {
         rules: Vec<crate::tag_engine::classifier::Rule>,
         default: Option<Value>,
         annotate: Map<String, Value>,
+        /// Display-only provenance — see `MatchOrigin`'s own doc.
+        origin: MatchOrigin,
     },
     /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`/`parent_or_obj` for the
     /// parent's tags). `sanitize` is a sibling of `extract`, not part of it — see `Extract`'s own
@@ -183,7 +209,7 @@ pub enum Producer {
 impl Producer {
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
-            Producer::Match { rules, default, annotate } => {
+            Producer::Match { rules, default, annotate, .. } => {
                 crate::tag_engine::classifier::match_rules(rules, ctx, annotate)
                     .or_else(|| default.clone().map(|value| Produced { value, annotate: annotate.clone() }))
             }
@@ -241,7 +267,7 @@ impl Producer {
         sanitizers: &HashMap<String, Sanitizer>,
     ) -> anyhow::Result<Producer> {
         Ok(match self {
-            Producer::Match { rules, default, annotate } => Producer::Match {
+            Producer::Match { rules, default, annotate, origin } => Producer::Match {
                 rules: rules.iter()
                     .map(|r| Ok(crate::tag_engine::classifier::Rule {
                         when: r.when.expand(macros, sanitizers)?,
@@ -250,6 +276,7 @@ impl Producer {
                     .collect::<anyhow::Result<_>>()?,
                 default: default.clone(),
                 annotate: annotate.clone(),
+                origin: *origin,
             },
             Producer::Extract { extract, sanitize, annotate } => Producer::Extract {
                 extract: extract.clone(),
@@ -283,6 +310,7 @@ impl Producer {
             ],
             default: None,
             annotate: Map::new(),
+            origin: MatchOrigin::ParentOrObj,
         }
     }
 }
@@ -307,6 +335,7 @@ mod classify_bool_tests {
             }],
             default: Some(Value::Bool(false)),
             annotate: Map::new(),
+            origin: MatchOrigin::Rules,
         };
         match from {
             TagSet::Obj => base,

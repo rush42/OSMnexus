@@ -479,6 +479,7 @@ mod run_transform_steps_tests {
                         rules: Vec::new(),
                         default: Some(Value::String("cycleway".to_owned())),
                         annotate: Map::new(),
+                        origin: crate::tag_engine::producer::MatchOrigin::Default,
                     },
                 },
             ]).collect();

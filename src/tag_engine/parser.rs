@@ -23,7 +23,7 @@ use serde_json::{Map, Value};
 use crate::tag_engine::classifier::Rule;
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
-use crate::tag_engine::producer::{DirectedFrom, Producer};
+use crate::tag_engine::producer::{DirectedFrom, MatchOrigin, Producer};
 use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
@@ -98,6 +98,7 @@ impl<'de> Deserialize<'de> for Producer {
                 rules: fallback.into_iter().map(|value| Rule { when: Filter::Bool(true), value }).collect(),
                 default: None,
                 annotate: Map::new(),
+                origin: MatchOrigin::Fallback,
             },
             ProducerJson::Directed { directed } => Producer::DirectedExtract {
                 key: directed.key,
@@ -115,8 +116,11 @@ impl<'de> Deserialize<'de> for Producer {
                 }],
                 default: Some(or),
                 annotate: Map::new(),
+                origin: MatchOrigin::TagOr,
             },
-            ProducerJson::Match { rules, default, annotate } => Producer::Match { rules, default, annotate },
+            ProducerJson::Match { rules, default, annotate } => {
+                Producer::Match { rules, default, annotate, origin: MatchOrigin::Rules }
+            }
             ProducerJson::Extract { key, keys, sanitize, annotate } => {
                 let extract = match (key, keys) {
                     (Some(key), None) => Extract::Value { key },

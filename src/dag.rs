@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::tag_engine::extract::Extract;
-use crate::tag_engine::producer::Producer;
+use crate::tag_engine::producer::{MatchOrigin, Producer};
 use crate::tag_engine::sanitize::{SanitizeRef, Sanitizer, Step};
 
 #[derive(Serialize)]
@@ -64,18 +64,39 @@ pub fn producer_dag(producer: &Producer) -> DagGraph {
 
 fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
     match p {
-        Producer::Match { rules, default, annotate } => {
-            let mut label = format!("match\n{} rule(s)", rules.len());
+        Producer::Match { rules: _, default, annotate, origin: MatchOrigin::Default } => {
+            // No real branching — a `defaults` JSON entry bundled straight into a producer
+            // (`topic::runner::default_value_producer`), always empty `rules`. Shown as a plain
+            // literal, not a one-branch "match" wrapper around nothing.
+            let d = default.as_ref().expect("MatchOrigin::Default always carries a default");
+            let mut label = format!("default\nvalue: {}", truncate(&format!("{d:?}"), 40));
+            if !annotate.is_empty() {
+                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
+            }
+            g.node(label, "const")
+        }
+        Producer::Match { rules, default, annotate, origin } => {
+            // `Fallback`/`TagOr` matches always have `when: true` on every rule by construction
+            // (see `MatchOrigin`'s own doc) — describing a condition that's always "true" is noise,
+            // so those show priority order instead of the (uninformative) condition text.
+            let priority_only = matches!(origin, MatchOrigin::Fallback | MatchOrigin::TagOr);
+            let mut label = match origin {
+                MatchOrigin::Rules => format!("match\n{} rule(s)", rules.len()),
+                MatchOrigin::Fallback => format!("fallback\n{} branch(es)", rules.len()),
+                MatchOrigin::ParentOrObj => "parent_or_obj".to_owned(),
+                MatchOrigin::TagOr => "tag_or".to_owned(),
+                MatchOrigin::Default => unreachable!("handled above"),
+            };
             if !annotate.is_empty() {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(label, "match");
-            // Each rule is its own branch — the rule's `when` (human-described, not a bare index —
-            // "rule 2" says nothing) is the node's own label, and its value producer (which may
-            // itself be a further `Match`) hangs off that node so the tree actually branches instead
-            // of cramming every rule into one node's text.
-            for r in rules {
-                let rule_node = g.node(truncate(&r.when.describe(), 120), "rule");
+            // Each rule is its own branch, and its value producer (which may itself be a further
+            // `Match`) hangs off that node so the tree actually branches instead of cramming every
+            // rule into one node's text.
+            for (i, r) in rules.iter().enumerate() {
+                let rule_label = if priority_only { format!("priority {}", i + 1) } else { truncate(&r.when.describe(), 120) };
+                let rule_node = g.node(rule_label, "rule");
                 g.edge(&node, &rule_node, "");
                 let value_node = render_producer(g, &r.value);
                 g.edge(&rule_node, &value_node, "");

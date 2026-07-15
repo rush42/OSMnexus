@@ -93,7 +93,7 @@ fn default_value_producer(v: &Value) -> Producer {
         }
         _ => (v.clone(), Map::new()),
     };
-    Producer::Match { rules: Vec::new(), default: Some(value), annotate }
+    Producer::Match { rules: Vec::new(), default: Some(value), annotate, origin: crate::tag_engine::producer::MatchOrigin::Default }
 }
 
 /// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the
@@ -107,6 +107,7 @@ fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
         rules: vec![rule(primary), rule(default_source)],
         default: None,
         annotate: Map::new(),
+        origin: crate::tag_engine::producer::MatchOrigin::Fallback,
     }
 }
 

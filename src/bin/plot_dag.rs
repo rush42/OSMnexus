@@ -126,7 +126,7 @@ fn render_dot(topic: &str, field: &str, labels: &[String], producer: &Producer) 
 
 fn render_producer(g: &mut Graph, p: &Producer) -> String {
     match p {
-        Producer::Match { rules, default, annotate } => {
+        Producer::Match { rules, default, annotate, .. } => {
             let mut label = format!("match\n{} rule(s)", rules.len());
             for r in rules.iter().take(6) {
                 let _ = write!(label, "\n  {} => {}", truncate(&format!("{:?}", r.when), 40), truncate(&format!("{:?}", r.value), 20));
