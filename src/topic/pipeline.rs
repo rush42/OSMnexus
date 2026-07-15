@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use crate::categorize::categories::categorize;
 use crate::lang::filter::eval_filter;
 use crate::lang::producer::ExtractCtx;
-use crate::categorize::transform::run_transform_steps;
+use crate::categorize::transform::{run_transform_steps, TransformStep};
 use crate::topic::runner::TopicRunner;
 use crate::topic::spec::Field;
 use crate::osm::types::{ElementKind, RawTags};
@@ -52,17 +52,19 @@ pub fn build_topic_rows(
     annotations.insert("_side".to_owned(), Value::String("self".to_owned()));
     let mut clones = Vec::new();
 
-    // The full transform pipeline (in-place `InputTransform`s + `Clone`s from `split_sides`) is
-    // way-oriented; nodes/relations never carry them. Split around `exclude_condition` at
-    // `exclude_check_at`: tag rewrites (e.g. lifecycle's construction→real-highway swap) run
-    // first, so `exclude_condition`'s `is_allowed_highway` check sees the un-construction'd
-    // highway — but sidepath-unnest (and every `Clone`, i.e. side-splitting) runs *after*
-    // `exclude_condition`, since promoting a `cycleway:access=no`-style tag onto bare `access`
-    // must not retroactively trigger `exclude_condition`'s own direct `access`/`bicycle`/`foot`
-    // checks (which only ever saw the pre-unnest tags in the original pipeline).
-    if kind == ElementKind::Way
-        && !run_transform_steps(&mut tags, &mut annotations, &runner.pipeline[..runner.exclude_check_at], &default_id, &mut clones)
-    {
+    // This kind's own transform pipeline (in-place `InputTransform`s + `Clone`s from
+    // `split_sides`), if `transforms.json` defines one — a kind with none simply has an empty
+    // slice, a no-op. Split around `exclude_check_at`: tag rewrites (e.g. lifecycle's
+    // construction→real-highway swap) run first, so `exclude_condition`'s `is_allowed_highway`
+    // check sees the un-construction'd highway — but sidepath-unnest (and every `Clone`, i.e.
+    // side-splitting) runs *after* `exclude_condition`, since promoting a `cycleway:access=no`-style
+    // tag onto bare `access` must not retroactively trigger `exclude_condition`'s own direct
+    // `access`/`bicycle`/`foot` checks (which only ever saw the pre-unnest tags in the original
+    // pipeline).
+    static EMPTY_PIPELINE: (Vec<TransformStep>, usize) = (Vec::new(), 0);
+    let (pipeline, exclude_check_at) = runner.pipelines.get(&kind).unwrap_or(&EMPTY_PIPELINE);
+
+    if !run_transform_steps(&mut tags, &mut annotations, &pipeline[..*exclude_check_at], &default_id, &mut clones) {
         return Vec::new();
     }
 
@@ -72,9 +74,7 @@ pub fn build_topic_rows(
         }
     }
 
-    if kind == ElementKind::Way
-        && !run_transform_steps(&mut tags, &mut annotations, &runner.pipeline[runner.exclude_check_at..], &default_id, &mut clones)
-    {
+    if !run_transform_steps(&mut tags, &mut annotations, &pipeline[*exclude_check_at..], &default_id, &mut clones) {
         return Vec::new();
     }
 

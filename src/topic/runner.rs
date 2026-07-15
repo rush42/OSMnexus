@@ -12,7 +12,7 @@ use crate::topic::load::{
     load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge, resolve_macros, resolve_refs,
 };
 use crate::topic::pipeline::build_topic_rows;
-use crate::topic::spec::{resolve_output_entry, Field, GeometryShape, TopicSpec};
+use crate::topic::spec::{resolve_output_entry, Field, GeometryShape, TopicSpec, TransformsSpec};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
@@ -24,21 +24,15 @@ pub struct TopicRunner {
     /// that exists. Each pass (relations → ways → nodes) classifies with its kind's set; a topic
     /// with only a `way/` folder has just the `Way` entry. `categorize` is the same function for all.
     pub categories: HashMap<ElementKind, CategoriesFile>,
-    /// Each way's full transform pipeline, in declared order, split around `exclude_condition` at
-    /// `exclude_check_at` — a mix of ordinary in-place `InputTransform`s (from `input_transforms`)
-    /// and `Clone`s (from `split_sides`, always synthesized after every `InputTransform`, one per
-    /// side). Unlike an output's producer, these can influence which category a way matches (or
-    /// whether `exclude_condition` excludes it at all) — see `categorize::transform::
-    /// run_transform_steps`, which drives the whole thing.
-    pub pipeline: Vec<TransformStep>,
-    /// Index into `pipeline` where `exclude_condition` is evaluated: `pipeline[..n]` run first,
-    /// then `exclude_condition`, then `pipeline[n..]`. Set to the first `UnnestTags` step's index
-    /// (or `pipeline.len()` if there is none) — mirrors the original two-stage pipeline, where tag
-    /// rewrites ran before `exclude_condition` but unnesting (which can promote a
-    /// `cycleway:access=no`-style tag onto a bare `access` that `exclude_condition` checks
-    /// directly) always ran after it. Every `Clone` step (side-splitting) is synthesized after
-    /// every plain `InputTransform`, so it always falls in `pipeline[exclude_check_at..]`.
-    pub exclude_check_at: usize,
+    /// Each kind's full transform pipeline, in declared order, split around `exclude_condition` at
+    /// its own `exclude_check_at` — a mix of ordinary in-place `InputTransform`s and `Clone`s (from
+    /// `split_sides`, always synthesized after every `InputTransform`, one per side). Unlike an
+    /// output's producer, these can influence which category an element matches (or whether
+    /// `exclude_condition` excludes it at all) — see `categorize::transform::run_transform_steps`,
+    /// which drives the whole thing. Keyed by `ElementKind`; a kind with no `transforms.json`
+    /// entry (or no `transforms.json` at all) simply has no entry here — see
+    /// `topic::spec::TransformsSpec::into_pipelines`.
+    pub pipelines: HashMap<ElementKind, (Vec<TransformStep>, usize)>,
     /// The topic's `exclude_condition` (`topic.json`), already macro/sanitizer-resolved by the time
     /// `TopicSpec` deserializes it (see `TopicRunner::load`). Held here (taken out of `spec`, not
     /// duplicated) so the runtime pipeline (`topic::pipeline::build_topic_rows`) reads it directly.
@@ -232,13 +226,12 @@ impl TopicRunner {
             categories.insert(kind, cats);
         }
 
-        // `transforms.json`, if the topic has one, is the whole pipeline (already resolved by
-        // `load_topic_transforms`); a topic with none simply has an empty pipeline (see
+        // `transforms.json`, if the topic has one, is the whole per-kind pipeline set (already
+        // resolved by `load_topic_transforms`); a topic with none simply has no pipelines (see
         // `TransformsSpec`'s own doc).
-        let (pipeline, exclude_check_at) = match load_topic_transforms(&base, &resolved_macros, &sanitizers)? {
-            Some(transforms) => transforms.into_pipeline(),
-            None => (Vec::new(), 0),
-        };
+        let pipelines = load_topic_transforms(&base, &resolved_macros, &sanitizers)?
+            .map(TransformsSpec::into_pipelines)
+            .unwrap_or_default();
 
         // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
@@ -272,8 +265,7 @@ impl TopicRunner {
         Ok(Self {
             spec,
             categories,
-            pipeline,
-            exclude_check_at,
+            pipelines,
             exclude_condition,
             default_outputs,
             category_outputs,
@@ -305,10 +297,9 @@ impl TopicRunner {
     }
 
     /// Run the topic's pipeline for one element of `kind`: clone its raw tags, then hand off to
-    /// `build_topic_rows`, which applies `input_transforms` (way kind only — they're way-oriented),
-    /// `exclude_condition`, side-split, categorize/extract into tag rows against the kind's
-    /// category set. `raw_tags` are the element's untouched tags. Geometry is produced separately
-    /// (way-only) via `build_geom_rows`.
+    /// `build_topic_rows`, which applies `kind`'s own transform pipeline (if any), `exclude_condition`,
+    /// side-split, categorize/extract into tag rows against the kind's category set. `raw_tags` are
+    /// the element's untouched tags. Geometry is produced separately (way-only) via `build_geom_rows`.
     pub fn process(
         &self,
         kind: ElementKind,

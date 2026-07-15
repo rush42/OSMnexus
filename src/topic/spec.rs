@@ -151,20 +151,34 @@ pub fn resolve_output_entry(
 
 // ── transforms.json ─────────────────────────────────────────────────────────────
 
-/// A topic's whole transform pipeline, read from its own `transforms.json` — explicit about where
-/// `exclude_condition` is evaluated (`before_exclude` runs first, then `exclude_condition`, then
-/// `after_exclude`) rather than inferring a cut point from step shapes. Optional per topic (see
+/// A topic's whole transform pipeline, read from its own `transforms.json`, nested one
+/// `KindTransformsSpec` per element kind (mirrors `GeometrySpec`'s `way`/`relation` split) — so a
+/// topic can define separate pipelines for its nodes, ways, and relations instead of one
+/// way-oriented pipeline for the whole topic. Optional per topic (see
 /// `topic::load::load_topic_transforms`) — a topic with no `transforms.json` simply has an empty
-/// pipeline (`TopicRunner::load` defaults to `(Vec::new(), 0)`).
+/// pipeline for every kind (`TopicRunner::load` defaults to an empty `HashMap`).
 #[derive(Debug, Deserialize, Default)]
 pub struct TransformsSpec {
+    #[serde(default)]
+    pub node: KindTransformsSpec,
+    #[serde(default)]
+    pub way: KindTransformsSpec,
+    #[serde(default)]
+    pub relation: KindTransformsSpec,
+}
+
+/// One element kind's transform pipeline — explicit about where `exclude_condition` is evaluated
+/// (`before_exclude` runs first, then `exclude_condition`, then `after_exclude`) rather than
+/// inferring a cut point from step shapes.
+#[derive(Debug, Deserialize, Default)]
+pub struct KindTransformsSpec {
     #[serde(default)]
     pub before_exclude: Vec<PipelineStepSpec>,
     #[serde(default)]
     pub after_exclude: Vec<PipelineStepSpec>,
 }
 
-impl TransformsSpec {
+impl KindTransformsSpec {
     /// Build the ready-to-run pipeline plus `exclude_check_at` (always `before_exclude.len()`, by
     /// construction). Every step's `Filter`/`Producer` field is already resolved — the whole
     /// `transforms.json` document went through `topic::load::resolve_refs` before it was
@@ -176,6 +190,20 @@ impl TransformsSpec {
         let exclude_check_at = pipeline.len();
         pipeline.extend(self.after_exclude.into_iter().map(PipelineStepSpec::into_transform_step));
         (pipeline, exclude_check_at)
+    }
+}
+
+impl TransformsSpec {
+    /// Build the ready-to-run per-kind pipelines, keyed by `ElementKind` — only kinds with a
+    /// non-empty pipeline get an entry, so `TopicRunner::pipelines.get(&kind)` naturally falls
+    /// back to "no transforms" for the rest.
+    pub fn into_pipelines(self) -> HashMap<crate::osm::types::ElementKind, (Vec<TransformStep>, usize)> {
+        use crate::osm::types::ElementKind;
+        [(ElementKind::Node, self.node), (ElementKind::Way, self.way), (ElementKind::Relation, self.relation)]
+            .into_iter()
+            .filter(|(_, spec)| !spec.before_exclude.is_empty() || !spec.after_exclude.is_empty())
+            .map(|(kind, spec)| (kind, spec.into_pipeline()))
+            .collect()
     }
 }
 
@@ -362,28 +390,30 @@ mod transforms_spec_tests {
     fn cycleway_split_parses_and_runs() {
         let json = r#"
         {
-          "after_exclude": [
-            {
-              "clone": {
-                "when": { "not": { "tag": "highway", "eq": "cycleway" } },
-                "annotate": { "_side": "left", "_prefix": "cycleway" },
-                "id_suffix": "cycleway/left",
-                "steps": [
-                  { "unnest": "cycleway", "infix": "", "record_infix_as": "_infix" },
-                  { "unnest": "cycleway", "infix": "both", "record_infix_as": "_infix" },
-                  { "unnest": "cycleway", "infix": "left", "record_infix_as": "_infix" },
-                  { "drop": { "tags_empty": true } },
-                  { "output": "highway", "rules": [], "default": "cycleway" }
-                ]
+          "way": {
+            "after_exclude": [
+              {
+                "clone": {
+                  "when": { "not": { "tag": "highway", "eq": "cycleway" } },
+                  "annotate": { "_side": "left", "_prefix": "cycleway" },
+                  "id_suffix": "cycleway/left",
+                  "steps": [
+                    { "unnest": "cycleway", "infix": "", "record_infix_as": "_infix" },
+                    { "unnest": "cycleway", "infix": "both", "record_infix_as": "_infix" },
+                    { "unnest": "cycleway", "infix": "left", "record_infix_as": "_infix" },
+                    { "drop": { "tags_empty": true } },
+                    { "output": "highway", "rules": [], "default": "cycleway" }
+                  ]
+                }
               }
-            }
-          ]
+            ]
+          }
         }
         "#;
         let spec: TransformsSpec = serde_json::from_str(json).expect("parse transforms.json");
-        assert_eq!(spec.after_exclude.len(), 1);
+        assert_eq!(spec.way.after_exclude.len(), 1);
 
-        let (pipeline, exclude_check_at) = spec.into_pipeline();
+        let (pipeline, exclude_check_at) = spec.way.into_pipeline();
         assert_eq!(exclude_check_at, 0);
         assert_eq!(pipeline.len(), 1);
 
