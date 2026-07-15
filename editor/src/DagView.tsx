@@ -18,19 +18,29 @@ const KIND_COLOR: Record<string, string> = {
   parent: "#fff2cc",
   sanitizer: "#f4cccc",
   step: "#ead1dc",
+  annotate: "#f3f3f3",
 };
 
 const NODE_W = 260;
 const NODE_H = 90;
 const GAP_X = 40;
 const GAP_Y = 70;
+const ANNOTATE_GAP_X = 24;
 
 // A `Producer`/`Sanitizer` tree from `src/dag.rs` is a strict tree (single root, each non-root node
 // has exactly one incoming edge) — no need for a general graph-layout library. Post-order DFS: a
 // leaf claims the next free column, an internal node centers over its children's span.
+//
+// "annotate" nodes (src/dag.rs's `annotate_node`) are excluded from that DFS entirely — they're not
+// a step in the value's build flow, just a side note on their owner — and instead placed directly
+// beside it afterward, same row, one node-width to the right.
 function layoutTree(nodes: DagNode[], edges: DagEdge[]): Map<string, { x: number; y: number }> {
+  const kindOf = new Map(nodes.map((n) => [n.id, n.kind]));
+  const treeEdges = edges.filter((e) => kindOf.get(e.target) !== "annotate");
+  const annotateEdges = edges.filter((e) => kindOf.get(e.target) === "annotate");
+
   const childrenOf = new Map<string, string[]>();
-  for (const e of edges) {
+  for (const e of treeEdges) {
     if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
     childrenOf.get(e.source)!.push(e.target);
   }
@@ -50,6 +60,11 @@ function layoutTree(nodes: DagNode[], edges: DagEdge[]): Map<string, { x: number
     return x;
   }
   if (nodes[0]) place(nodes[0].id, 0);
+
+  for (const e of annotateEdges) {
+    const ownerPos = positions.get(e.source);
+    if (ownerPos) positions.set(e.target, { x: ownerPos.x + NODE_W + ANNOTATE_GAP_X, y: ownerPos.y });
+  }
   return positions;
 }
 
@@ -104,7 +119,7 @@ export default function DagView({ topic }: { topic: string }) {
       data: { label: n.label },
       style: {
         background: KIND_COLOR[n.kind] ?? "#eee",
-        border: "1px solid var(--border)",
+        border: n.kind === "annotate" ? "1px dashed var(--muted)" : "1px solid var(--border)",
         borderRadius: 6,
         padding: 8,
         fontSize: 11,

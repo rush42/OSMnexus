@@ -8,6 +8,8 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use serde_json::{Map, Value};
+
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::producer::{MatchOrigin, Producer};
 use crate::tag_engine::sanitize::{SanitizeRef, Sanitizer, Step};
@@ -52,6 +54,19 @@ fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max { s.to_owned() } else { format!("{}…", s.chars().take(max).collect::<String>()) }
 }
 
+/// If `annotate` is non-empty, give it its own node off `owner` (kind "annotate", edge labeled
+/// "annotate") instead of cramming it into `owner`'s own label — the frontend positions an
+/// "annotate" node beside its owner rather than as a real tree child (see `DagView.tsx`'s
+/// `layoutTree`), so it reads as a side note on the branch, not another step in the value's flow.
+fn annotate_node(g: &mut DagGraph, owner: &str, annotate: &Map<String, Value>) {
+    if annotate.is_empty() {
+        return;
+    }
+    let label = annotate.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n");
+    let node = g.node(label, "annotate");
+    g.edge(owner, &node, "annotate");
+}
+
 /// The pure `Producer` tree — no synthetic root node, no "who uses this" bookkeeping (that's a
 /// `topic::runner`/`bin/dag_json` concern; a node here is only ever a step in how the value itself
 /// gets built: `Match`/`Parent` branches down to `Extract`/`DirectedExtract`/`Const` leaves, plus
@@ -69,28 +84,25 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             // (`topic::runner::default_value_producer`), always empty `rules`. Shown as a plain
             // literal, not a one-branch "match" wrapper around nothing.
             let d = default.as_ref().expect("MatchOrigin::Default always carries a default");
-            let mut label = format!("default\nvalue: {}", truncate(&format!("{d:?}"), 40));
-            if !annotate.is_empty() {
-                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
-            }
-            g.node(label, "const")
+            let label = format!("default\nvalue: {}", truncate(&format!("{d:?}"), 40));
+            let node = g.node(label, "const");
+            annotate_node(g, &node, annotate);
+            node
         }
         Producer::Match { rules, default, annotate, origin } => {
             // `Fallback`/`TagOr` matches always have `when: true` on every rule by construction
             // (see `MatchOrigin`'s own doc) — describing a condition that's always "true" is noise,
             // so those show priority order instead of the (uninformative) condition text.
             let priority_only = matches!(origin, MatchOrigin::Fallback | MatchOrigin::TagOr);
-            let mut label = match origin {
+            let label = match origin {
                 MatchOrigin::Rules => format!("match\n{} rule(s)", rules.len()),
                 MatchOrigin::Fallback => format!("fallback\n{} branch(es)", rules.len()),
                 MatchOrigin::ParentOrObj => "parent_or_obj".to_owned(),
                 MatchOrigin::TagOr => "tag_or".to_owned(),
                 MatchOrigin::Default => unreachable!("handled above"),
             };
-            if !annotate.is_empty() {
-                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
-            }
             let node = g.node(label, "match");
+            annotate_node(g, &node, annotate);
             // Each rule is its own branch, and its value producer (which may itself be a further
             // `Match`) hangs off that node so the tree actually branches instead of cramming every
             // rule into one node's text.
@@ -113,10 +125,8 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
                 Extract::Value { key } => { let _ = write!(label, "\nkey: {key}"); }
                 Extract::Candidates { keys } => { let _ = write!(label, "\nkeys: {keys:?}"); }
             }
-            if !annotate.is_empty() {
-                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
-            }
             let node = g.node(label, "extract");
+            annotate_node(g, &node, annotate);
             if let Some(sref) = sanitize {
                 let chain_root = render_sanitize_ref(g, sref);
                 g.edge(&node, &chain_root, "sanitize");
@@ -124,11 +134,9 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             node
         }
         Producer::DirectedExtract { key, from, sanitize, annotate } => {
-            let mut label = format!("directed extract\nkey: {key}\nfrom: {from:?}");
-            if !annotate.is_empty() {
-                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
-            }
+            let label = format!("directed extract\nkey: {key}\nfrom: {from:?}");
             let node = g.node(label, "directed_extract");
+            annotate_node(g, &node, annotate);
             if let Some(sref) = sanitize {
                 let chain_root = render_sanitize_ref(g, sref);
                 g.edge(&node, &chain_root, "sanitize");
@@ -136,11 +144,10 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             node
         }
         Producer::Const { value, annotate } => {
-            let mut label = format!("const\nvalue: {}", truncate(&format!("{value:?}"), 40));
-            if !annotate.is_empty() {
-                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
-            }
-            g.node(label, "const")
+            let label = format!("const\nvalue: {}", truncate(&format!("{value:?}"), 40));
+            let node = g.node(label, "const");
+            annotate_node(g, &node, annotate);
+            node
         }
         Producer::Parent(inner) => {
             let node = g.node("parent".to_owned(), "parent");
