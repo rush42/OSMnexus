@@ -73,11 +73,18 @@ fn annotate_node(g: &mut DagGraph, owner: &str, annotate: &Map<String, Value>) {
 /// any `Sanitizer` chain hanging off an `Extract`).
 pub fn producer_dag(producer: &Producer) -> DagGraph {
     let mut g = DagGraph::default();
-    render_producer(&mut g, producer);
+    render_producer(&mut g, producer, None);
     g
 }
 
-fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
+/// Renders `p`, returning its own node id (for the caller to wire a value-flow edge to). `annotate_to`
+/// is where *this producer's own* `annotate` (not any nested producer's) should attach — the nearest
+/// condition/rule ancestor, i.e. the caller's own anchor, not the producer's own freshly-made node:
+/// an annotate describes why a *branch* produced what it did, and the branch is identified by its
+/// condition, not by however many hops (a `Parent` wrap, a further nested `Match`) the value takes to
+/// actually resolve. `None` only at the tree root, where there is no condition to attach to yet, so
+/// it falls back to the producer's own node.
+fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) -> String {
     match p {
         Producer::Match { rules: _, default, annotate, origin: MatchOrigin::Default } => {
             // No real branching — a `defaults` JSON entry bundled straight into a producer
@@ -86,7 +93,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             let d = default.as_ref().expect("MatchOrigin::Default always carries a default");
             let label = format!("default\nvalue: {}", truncate(&format!("{d:?}"), 40));
             let node = g.node(label, "const");
-            annotate_node(g, &node, annotate);
+            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
             node
         }
         Producer::Match { rules, default, annotate, origin } => {
@@ -102,15 +109,16 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
                 MatchOrigin::Default => unreachable!("handled above"),
             };
             let node = g.node(label, "match");
-            annotate_node(g, &node, annotate);
+            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
             // Each rule is its own branch, and its value producer (which may itself be a further
             // `Match`) hangs off that node so the tree actually branches instead of cramming every
-            // rule into one node's text.
+            // rule into one node's text. The rule node is the value's `annotate_to` — its own
+            // condition, not the value node however many hops down it ends up.
             for (i, r) in rules.iter().enumerate() {
                 let rule_label = if priority_only { format!("priority {}", i + 1) } else { truncate(&r.when.describe(), 120) };
                 let rule_node = g.node(rule_label, "rule");
                 g.edge(&node, &rule_node, "");
-                let value_node = render_producer(g, &r.value);
+                let value_node = render_producer(g, &r.value, Some(&rule_node));
                 g.edge(&rule_node, &value_node, "");
             }
             if let Some(d) = default {
@@ -126,7 +134,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
                 Extract::Candidates { keys } => { let _ = write!(label, "\nkeys: {keys:?}"); }
             }
             let node = g.node(label, "extract");
-            annotate_node(g, &node, annotate);
+            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
             if let Some(sref) = sanitize {
                 let chain_root = render_sanitize_ref(g, sref);
                 g.edge(&node, &chain_root, "sanitize");
@@ -136,7 +144,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
         Producer::DirectedExtract { key, from, sanitize, annotate } => {
             let label = format!("directed extract\nkey: {key}\nfrom: {from:?}");
             let node = g.node(label, "directed_extract");
-            annotate_node(g, &node, annotate);
+            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
             if let Some(sref) = sanitize {
                 let chain_root = render_sanitize_ref(g, sref);
                 g.edge(&node, &chain_root, "sanitize");
@@ -146,12 +154,15 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
         Producer::Const { value, annotate } => {
             let label = format!("const\nvalue: {}", truncate(&format!("{value:?}"), 40));
             let node = g.node(label, "const");
-            annotate_node(g, &node, annotate);
+            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
             node
         }
         Producer::Parent(inner) => {
+            // Not a condition itself — transparent plumbing (a tagset switch), so it forwards
+            // whatever `annotate_to` it received rather than substituting its own node: `inner`'s
+            // annotate still belongs to the nearest real condition, same as if `Parent` weren't there.
             let node = g.node("parent".to_owned(), "parent");
-            let child = render_producer(g, inner);
+            let child = render_producer(g, inner, annotate_to);
             g.edge(&node, &child, "");
             node
         }
