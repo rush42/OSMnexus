@@ -32,7 +32,7 @@
   "defaults": {
     "oneway": {
       "value": "implicit_yes",
-      "consts": {
+      "annotate": {
         "confidence": "low"
       }
     }

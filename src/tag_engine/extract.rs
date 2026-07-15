@@ -7,9 +7,9 @@
 //! (`Filter::Tag*`, `Producer::Extract`), not part of the read primitive itself, so it can be
 //! resolved (`SanitizeRef::resolve`) and applied uniformly by the embedding type instead of being
 //! duplicated inside `Extract`'s own `resolve`/`read`. `read`/`read_str` below take it as a
-//! parameter for that reason. Also carries no `consts`/provenance — that's a `Producer`-only
+//! parameter for that reason. Also carries no `annotate`/provenance — that's a `Producer`-only
 //! concept (what a winning branch contributes), meaningless for a boolean predicate.
-//! `Producer::Extract` wraps one alongside its own `sanitize`/`consts`; `Filter`'s `Tag*` variants
+//! `Producer::Extract` wraps one alongside its own `sanitize`/`annotate`; `Filter`'s `Tag*` variants
 //! flatten one into themselves alongside their own `sanitize` and comparison field (`eq`/`in`/…).
 
 use std::borrow::Cow;

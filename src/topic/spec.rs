@@ -116,7 +116,7 @@ pub fn resolve_output_entry(
                 keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
             },
             sanitize: Some(SanitizeRef::Name(r.name)),
-            consts: Map::new(),
+            annotate: Map::new(),
         };
         match r.from {
             TagSet::Obj => extract,
@@ -131,7 +131,7 @@ pub fn resolve_output_entry(
             Value::Bool(true) => Producer::Extract {
                 extract: Extract::Value { key: output.to_owned() },
                 sanitize: None,
-                consts: Map::new(),
+                annotate: Map::new(),
             },
             Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),
             Value::String(name) => producer_lib.get(&name).cloned().ok_or_else(|| {

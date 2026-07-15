@@ -24,8 +24,8 @@ fn eval_fields(fields: &[Field], ctx: &ExtractCtx, produced: &mut Map<String, Va
     for field in fields {
         if let Some(p) = field.source.eval(ctx) {
             produced.insert(field.output.clone(), p.value);
-            // Companion consts → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
-            for (k, v) in p.consts {
+            // Companion annotate → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
+            for (k, v) in p.annotate {
                 annotations.insert(format!("{}_{}", field.output, k), v);
             }
         }
@@ -95,7 +95,7 @@ pub fn build_topic_rows(
             .unwrap_or(&runner.default_outputs);
         // `ectx.annotations` already carries `_side`, plus `_prefix`/`_infix` for a side object
         // (stamped above / by each `Clone`); clone it as this row's base annotations map, then
-        // let `eval_fields` add each output's own `consts` provenance on top. `_parent_highway`
+        // let `eval_fields` add each output's own `annotate` provenance on top. `_parent_highway`
         // is gone (redundant with the parent's own `highway` tag, already reachable through
         // `ectx.parent_tags`).
         let mut produced = Map::new();

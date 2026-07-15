@@ -22,13 +22,13 @@ use crate::tag_engine::keys;
 use crate::tag_engine::sanitize::{resolve_sanitize, Sanitizer, SanitizeRef};
 use crate::osm::types::RawTags;
 
-/// A produced value plus optional provenance. The `consts` are arbitrary key/value pairs the
+/// A produced value plus optional provenance. The `annotate` are arbitrary key/value pairs the
 /// winning fallback branch contributes; each is emitted as `<field>_<k>` (e.g.
 /// `source`/`confidence` → `<field>_source`/`<field>_confidence`).
 #[derive(Debug, Clone)]
 pub struct Produced {
     pub value: Value,
-    pub consts: Map<String, Value>,
+    pub annotate: Map<String, Value>,
 }
 
 /// Which tags (`obj_tags`, `parent_tags`), `id` — the row id for this object, defaulted to the
@@ -94,7 +94,7 @@ pub enum Producer {
     /// (`ValueSpec::Producer`), which is what lets this one variant also subsume conditionals and
     /// ordered fallback chains: a rule matches when its `when` holds, and — if its value is itself
     /// a producer that produces nothing — matching doesn't stop the search, the next rule is
-    /// tried (see `classifier::match_rules`). `consts` is the provenance a *literal*-valued rule
+    /// tried (see `classifier::match_rules`). `annotate` is the provenance a *literal*-valued rule
     /// contributes when it produces (a `Producer`-valued rule carries its own). With no `default`,
     /// returns `None` when no rule matches — letting a category const default or an enclosing
     /// fallback branch supply the value. Must be tried before `Extract` below, since `rules` is a
@@ -109,7 +109,7 @@ pub enum Producer {
     Match {
         rules: Vec<crate::tag_engine::classifier::Rule>,
         default: Option<Value>,
-        consts: Map<String, Value>,
+        annotate: Map<String, Value>,
     },
     /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`/`parent_or_obj` for the
     /// parent's tags). `sanitize` is a sibling of `extract`, not part of it — see `Extract`'s own
@@ -119,7 +119,7 @@ pub enum Producer {
         sanitize: Option<SanitizeRef>,
         /// Companion key/values this branch contributes when it produces the value; emitted as
         /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
-        consts: Map<String, Value>,
+        annotate: Map<String, Value>,
     },
     /// Direction-sensitive read of `key`: resolves its `:forward`/`:backward` variant from
     /// `ctx.annotations["_side"]` + the global left/right-hand-traffic setting
@@ -136,7 +136,7 @@ pub enum Producer {
         key: String,
         from: TagSet,
         sanitize: Option<SanitizeRef>,
-        consts: Map<String, Value>,
+        annotate: Map<String, Value>,
     },
     /// Re-evaluate the inner producer against the parent way's tags instead of the object's own —
     /// `None` when there is no parent. The `Filter`-side sibling of this (`Filter::Parent`)
@@ -156,17 +156,17 @@ pub enum Producer {
 impl Producer {
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
-            Producer::Match { rules, default, consts } => {
-                crate::tag_engine::classifier::match_rules(rules, ctx, consts)
-                    .or_else(|| default.clone().map(|value| Produced { value, consts: consts.clone() }))
+            Producer::Match { rules, default, annotate } => {
+                crate::tag_engine::classifier::match_rules(rules, ctx, annotate)
+                    .or_else(|| default.clone().map(|value| Produced { value, annotate: annotate.clone() }))
             }
 
-            Producer::Extract { extract, sanitize, consts } => {
+            Producer::Extract { extract, sanitize, annotate } => {
                 let value = extract.read(sanitize.as_ref(), ctx.obj_tags)?;
-                Some(Produced { value, consts: consts.clone() })
+                Some(Produced { value, annotate: annotate.clone() })
             }
 
-            Producer::DirectedExtract { key, from, sanitize, consts } => {
+            Producer::DirectedExtract { key, from, sanitize, annotate } => {
                 if ctx.obj_tags.contains_key(key.as_str()) {
                     return None; // already set (e.g. by an earlier unnest) — don't override it
                 }
@@ -188,7 +188,7 @@ impl Producer {
                     _ => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
                 }?;
                 let value = resolve_sanitize(sanitize.as_ref(), raw)?;
-                Some(Produced { value, consts: consts.clone() })
+                Some(Produced { value, annotate: annotate.clone() })
             }
 
             Producer::Parent(inner) => match ctx.parent_tags {
@@ -212,7 +212,7 @@ impl Producer {
         sanitizers: &HashMap<String, Sanitizer>,
     ) -> anyhow::Result<Producer> {
         Ok(match self {
-            Producer::Match { rules, default, consts } => Producer::Match {
+            Producer::Match { rules, default, annotate } => Producer::Match {
                 rules: rules.iter()
                     .map(|r| Ok(crate::tag_engine::classifier::Rule {
                         when: r.when.expand(macros, sanitizers)?,
@@ -220,18 +220,18 @@ impl Producer {
                     }))
                     .collect::<anyhow::Result<_>>()?,
                 default: default.clone(),
-                consts: consts.clone(),
+                annotate: annotate.clone(),
             },
-            Producer::Extract { extract, sanitize, consts } => Producer::Extract {
+            Producer::Extract { extract, sanitize, annotate } => Producer::Extract {
                 extract: extract.clone(),
                 sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
-                consts: consts.clone(),
+                annotate: annotate.clone(),
             },
-            Producer::DirectedExtract { key, from, sanitize, consts } => Producer::DirectedExtract {
+            Producer::DirectedExtract { key, from, sanitize, annotate } => Producer::DirectedExtract {
                 key: key.clone(),
                 from: *from,
                 sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
-                consts: consts.clone(),
+                annotate: annotate.clone(),
             },
             Producer::Parent(inner) => Producer::Parent(Box::new(inner.resolve(macros, sanitizers)?)),
         })
@@ -255,7 +255,7 @@ impl Producer {
                 },
             ],
             default: None,
-            consts: Map::new(),
+            annotate: Map::new(),
         }
     }
 }
@@ -276,7 +276,7 @@ mod classify_bool_tests {
         let base = Producer::Match {
             rules: vec![Rule { when: filter, value: ValueSpec::Const(Value::Bool(true)) }],
             default: Some(Value::Bool(false)),
-            consts: Map::new(),
+            annotate: Map::new(),
         };
         match from {
             TagSet::Obj => base,
@@ -335,7 +335,7 @@ mod directed_extract_tests {
     }
 
     fn directed(key: &str, from: TagSet) -> Producer {
-        Producer::DirectedExtract { key: key.to_owned(), from, sanitize: None, consts: Map::new() }
+        Producer::DirectedExtract { key: key.to_owned(), from, sanitize: None, annotate: Map::new() }
     }
 
     #[test]

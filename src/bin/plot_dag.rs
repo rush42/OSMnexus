@@ -126,7 +126,7 @@ fn render_dot(topic: &str, field: &str, labels: &[String], producer: &Producer) 
 
 fn render_producer(g: &mut Graph, p: &Producer) -> String {
     match p {
-        Producer::Match { rules, default, consts } => {
+        Producer::Match { rules, default, annotate } => {
             let mut label = format!("match\n{} rule(s)", rules.len());
             for r in rules.iter().take(6) {
                 let _ = write!(label, "\n  {} => {}", truncate(&format!("{:?}", r.when), 40), truncate(&format!("{:?}", r.value), 20));
@@ -137,19 +137,19 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             if let Some(d) = default {
                 let _ = write!(label, "\ndefault => {}", truncate(&format!("{d:?}"), 20));
             }
-            if !consts.is_empty() {
-                let _ = write!(label, "\nconsts: {}", truncate(&format!("{consts:?}"), 40));
+            if !annotate.is_empty() {
+                let _ = write!(label, "\nconsts: {}", truncate(&format!("{annotate:?}"), 40));
             }
             g.node(&label, "note", "#e2f0d9")
         }
-        Producer::Extract { extract, sanitize, consts } => {
+        Producer::Extract { extract, sanitize, annotate } => {
             let mut label = String::from("extract");
             match extract {
                 Extract::Value { key } => { let _ = write!(label, "\nkey: {key}"); }
                 Extract::Candidates { keys } => { let _ = write!(label, "\nkeys: {keys:?}"); }
             }
-            if !consts.is_empty() {
-                let _ = write!(label, "\nconsts: {}", truncate(&format!("{consts:?}"), 40));
+            if !annotate.is_empty() {
+                let _ = write!(label, "\nconsts: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(&label, "box", "#d9e8fb");
             if let Some(sref) = sanitize {
@@ -158,10 +158,10 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             }
             node
         }
-        Producer::DirectedExtract { key, from, sanitize, consts } => {
+        Producer::DirectedExtract { key, from, sanitize, annotate } => {
             let mut label = format!("directed extract\nkey: {key}\nfrom: {from:?}");
-            if !consts.is_empty() {
-                let _ = write!(label, "\nconsts: {}", truncate(&format!("{consts:?}"), 40));
+            if !annotate.is_empty() {
+                let _ = write!(label, "\nconsts: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(&label, "box", "#d9e8fb");
             if let Some(sref) = sanitize {

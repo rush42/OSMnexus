@@ -82,8 +82,8 @@
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
-        ], "consts": { "source": "tag", "confidence": "high" } },
-      { "key": "surface", "sanitize": "surface_normalize", "consts": { "source": "tag", "confidence": "high" } }
+        ], "annotate": { "source": "tag", "confidence": "high" } },
+      { "key": "surface", "sanitize": "surface_normalize", "annotate": { "source": "tag", "confidence": "high" } }
     ]
   },
   "surface_from_parent": {
@@ -92,23 +92,23 @@
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
-        ], "consts": { "source": "tag", "confidence": "high" } },
-      { "key": "surface", "sanitize": "surface_normalize", "consts": { "source": "tag", "confidence": "high" } },
+        ], "annotate": { "source": "tag", "confidence": "high" } },
+      { "key": "surface", "sanitize": "surface_normalize", "annotate": { "source": "tag", "confidence": "high" } },
       { "parent": { "rules": [
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
-        ], "consts": { "source": "parent_highway_tag", "confidence": "high" } } },
-      { "parent": { "key": "surface", "sanitize": "surface_normalize", "consts": { "source": "parent_highway_tag", "confidence": "high" } } }
+        ], "annotate": { "source": "parent_highway_tag", "confidence": "high" } } },
+      { "parent": { "key": "surface", "sanitize": "surface_normalize", "annotate": { "source": "parent_highway_tag", "confidence": "high" } } }
     ]
   },
   "smoothness": {
     "fallback": [
-      { "key": "smoothness", "sanitize": "smoothness_direct", "consts": { "source": "tag",            "confidence": "high" } },
-      { "key": "smoothness", "sanitize": "smoothness_norm",   "consts": { "source": "tag_normalized", "confidence": "high" } },
-      { "key": "surface",    "sanitize": "surface_to_smoothness",   "consts": { "source": "surface_to_smoothness",   "confidence": "medium" } },
-      { "key": "tracktype",  "sanitize": "tracktype_to_smoothness", "consts": { "source": "tracktype_to_smoothness", "confidence": "medium" } },
-      { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness", "consts": { "source": "mtb:scale_to_smoothness", "confidence": "medium" } }
+      { "key": "smoothness", "sanitize": "smoothness_direct", "annotate": { "source": "tag",            "confidence": "high" } },
+      { "key": "smoothness", "sanitize": "smoothness_norm",   "annotate": { "source": "tag_normalized", "confidence": "high" } },
+      { "key": "surface",    "sanitize": "surface_to_smoothness",   "annotate": { "source": "surface_to_smoothness",   "confidence": "medium" } },
+      { "key": "tracktype",  "sanitize": "tracktype_to_smoothness", "annotate": { "source": "tracktype_to_smoothness", "confidence": "medium" } },
+      { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness", "annotate": { "source": "mtb:scale_to_smoothness", "confidence": "medium" } }
     ]
   }
 }

@@ -78,8 +78,8 @@ fn resolve_outputs(
         .collect()
 }
 
-/// A `defaults` JSON entry as a `Producer`: a bundled `{ "value": ..., "consts": {...} }` object
-/// carries its companions as the producer's own `consts` (so `Producer::eval` emits them exactly
+/// A `defaults` JSON entry as a `Producer`: a bundled `{ "value": ..., "annotate": {...} }` object
+/// carries its companions as the producer's own `annotate` (so `Producer::eval` emits them exactly
 /// when this branch produces — no separate "did the default survive" bookkeeping needed
 /// elsewhere); any other JSON is a bare literal with no companions. `rules: []` means `Match`
 /// always falls through to `default`, so this unconditionally "produces" — the default value is
@@ -87,13 +87,13 @@ fn resolve_outputs(
 /// `Producer` value (not JSON) after `resolve_outputs` has already run, so it deliberately bypasses
 /// `Producer::resolve` — fine here since it carries no macro/sanitizer references to resolve.
 fn default_value_producer(v: &Value) -> Producer {
-    let (value, consts) = match v {
+    let (value, annotate) = match v {
         Value::Object(obj) if obj.contains_key("value") => {
-            (obj["value"].clone(), obj.get("consts").and_then(Value::as_object).cloned().unwrap_or_default())
+            (obj["value"].clone(), obj.get("annotate").and_then(Value::as_object).cloned().unwrap_or_default())
         }
         _ => (v.clone(), Map::new()),
     };
-    Producer::Match { rules: Vec::new(), default: Some(value), consts }
+    Producer::Match { rules: Vec::new(), default: Some(value), annotate }
 }
 
 /// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the
@@ -109,7 +109,7 @@ fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
     Producer::Match {
         rules: vec![rule(primary), rule(default_source)],
         default: None,
-        consts: Map::new(),
+        annotate: Map::new(),
     }
 }
 

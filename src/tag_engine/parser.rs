@@ -45,7 +45,7 @@ enum ProducerJson {
     /// `Producer::parent_or_obj` for the `Match`+`Parent` equivalence this desugars to.
     ParentOrObj { parent_or_obj: Box<Producer> },
     /// Try each branch in order; the first one that produces anything wins, carrying its own
-    /// branch-level `consts`. Desugars to an all-`when: true` `Match` (see `classifier::match_rules`
+    /// branch-level `annotate`. Desugars to an all-`when: true` `Match` (see `classifier::match_rules`
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
     /// equivalence exact).
     Fallback { fallback: Vec<Producer> },
@@ -55,13 +55,13 @@ enum ProducerJson {
     Match {
         rules: Vec<Rule>,
         #[serde(default)] default: Option<Value>,
-        #[serde(default)] consts: Map<String, Value>,
+        #[serde(default)] annotate: Map<String, Value>,
     },
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
         #[serde(default)] sanitize: Option<SanitizeRef>,
-        #[serde(default)] consts: Map<String, Value>,
+        #[serde(default)] annotate: Map<String, Value>,
     },
 }
 
@@ -73,7 +73,7 @@ struct DirectedRepr {
     #[serde(default)]
     sanitize: Option<SanitizeRef>,
     #[serde(default)]
-    consts: Map<String, Value>,
+    annotate: Map<String, Value>,
 }
 
 impl<'de> Deserialize<'de> for Producer {
@@ -89,23 +89,23 @@ impl<'de> Deserialize<'de> for Producer {
                     .map(|p| Rule { when: Filter::Bool(true), value: ValueSpec::Producer(Box::new(p)) })
                     .collect(),
                 default: None,
-                consts: Map::new(),
+                annotate: Map::new(),
             },
             ProducerJson::Directed { directed } => Producer::DirectedExtract {
                 key: directed.key,
                 from: directed.from,
                 sanitize: directed.sanitize,
-                consts: directed.consts,
+                annotate: directed.annotate,
             },
-            ProducerJson::Match { rules, default, consts } => Producer::Match { rules, default, consts },
-            ProducerJson::Extract { key, keys, sanitize, consts } => {
+            ProducerJson::Match { rules, default, annotate } => Producer::Match { rules, default, annotate },
+            ProducerJson::Extract { key, keys, sanitize, annotate } => {
                 let extract = match (key, keys) {
                     (Some(key), None) => Extract::Value { key },
                     (None, Some(keys)) => Extract::Candidates { keys },
                     (None, None) => return Err(serde::de::Error::custom("Extract needs `key` or `keys`")),
                     (Some(_), Some(_)) => return Err(serde::de::Error::custom("Extract: set only one of `key`/`keys`, not both")),
                 };
-                Producer::Extract { extract, sanitize, consts }
+                Producer::Extract { extract, sanitize, annotate }
             }
         })
     }

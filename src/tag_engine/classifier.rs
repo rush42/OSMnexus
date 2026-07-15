@@ -69,9 +69,9 @@ pub struct Rule {
 /// first branch that produces anything wins) as well as a conditional (one real `when`, then an
 /// unconditional trailing rule for the "else"), in addition to the classic flat classify table.
 ///
-/// A `ValueSpec::Producer` branch carries its own provenance (`Produced::consts`) — e.g. an
-/// `Extract`'s own `consts` field — which is used as-is. A literal branch (`Tag`/`TagOr`/`Const`)
-/// carries none of its own, so `own_consts` (the enclosing `Producer::Match`'s `consts` field)
+/// A `ValueSpec::Producer` branch carries its own provenance (`Produced::annotate`) — e.g. an
+/// `Extract`'s own `annotate` field — which is used as-is. A literal branch (`Tag`/`TagOr`/`Const`)
+/// carries none of its own, so `own_consts` (the enclosing `Producer::Match`'s `annotate` field)
 /// supplies its provenance instead.
 ///
 /// Shared by the standalone `road` classifier and the data-defined `rules` value producer
@@ -85,12 +85,12 @@ pub fn match_rules(rules: &[Rule], ctx: &ExtractCtx, own_consts: &Map<String, Va
             continue;
         }
         let produced = match &rule.value {
-            ValueSpec::Const(v) => Some(Produced { value: v.clone(), consts: own_consts.clone() }),
+            ValueSpec::Const(v) => Some(Produced { value: v.clone(), annotate: own_consts.clone() }),
             ValueSpec::Tag { tag } => ctx.obj_tags.get(tag).cloned()
-                .map(|value| Produced { value: Value::String(value), consts: own_consts.clone() }),
+                .map(|value| Produced { value: Value::String(value), annotate: own_consts.clone() }),
             ValueSpec::TagOr { tag_or, or } => Some(Produced {
                 value: ctx.obj_tags.get(tag_or).cloned().map(Value::String).unwrap_or_else(|| or.clone()),
-                consts: own_consts.clone(),
+                annotate: own_consts.clone(),
             }),
             ValueSpec::Producer(p) => p.eval(ctx),
         };

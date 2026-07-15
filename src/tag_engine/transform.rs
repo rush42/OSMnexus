@@ -478,7 +478,7 @@ mod run_transform_steps_tests {
                     source: Producer::Match {
                         rules: Vec::new(),
                         default: Some(Value::String("cycleway".to_owned())),
-                        consts: Map::new(),
+                        annotate: Map::new(),
                     },
                 },
             ]).collect();

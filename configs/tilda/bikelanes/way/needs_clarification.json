@@ -120,7 +120,7 @@
   "defaults": {
     "oneway": {
       "value": "assumed_no",
-      "consts": {
+      "annotate": {
         "confidence": "low"
       }
     }

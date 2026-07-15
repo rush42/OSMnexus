@@ -36,8 +36,8 @@ pub struct TopicRow {
     pub produced: Map<String, Value>,
     /// Engine-attached bookkeeping about `produced`, not itself a topic-authored output: side-split
     /// context (`_side`/`_prefix`/`_infix`, stamped by `topic::pipeline::build_topic_rows`/each `Clone`)
-    /// and each output's companion `consts` provenance (`<output>_source`/`<output>_confidence`,
-    /// from `Produced::consts`) — see `topic::pipeline::eval_fields`.
+    /// and each output's companion `annotate` provenance (`<output>_source`/`<output>_confidence`,
+    /// from `Produced::annotate`) — see `topic::pipeline::eval_fields`.
     pub annotations: Map<String, Value>,
     pub meta: OsmMeta,
 }

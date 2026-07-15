@@ -22,7 +22,7 @@ use crate::topic::spec::TransformsSpec;
 /// Shallow merge, more-specific-scope-wins: every key in `over` overwrites the same key in
 /// `base`; keys only in `over` are added. The one primitive behind every "shared/default,
 /// specific-scope overrides" cascade in the engine — macros and sanitizers (shared → topic) here,
-/// consts and private (topic → category) in `runner.rs`. Works over any map-like type
+/// annotate and private (topic → category) in `runner.rs`. Works over any map-like type
 /// (`HashMap`, `serde_json::Map`) via the standard `IntoIterator`/`Extend` traits, so one
 /// implementation covers every level any concept happens to have — there's no single universal
 /// shared→topic→category cascade, different concepts stop at different levels (see the doc on
@@ -178,7 +178,7 @@ pub fn load_shared_producers(config_root: &std::path::Path) -> anyhow::Result<Ma
 }
 
 /// Recursively replace every `{ "shared": "<name>", ... }` object in `value` with `shared[name]`'s
-/// own producer JSON — any sibling keys the referencing site set (`from`/`consts`) override the
+/// own producer JSON — any sibling keys the referencing site set (`from`/`annotate`) override the
 /// same keys in the shared table's JSON. This is the entire "shared classifier" mechanism: it
 /// happens once here, at topic-directory-read time, on raw JSON — the same treatment shared
 /// macros/sanitizers get (see `merge`) — so `Producer`'s own `Deserialize` never has to represent
