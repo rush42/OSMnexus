@@ -1,4 +1,5 @@
 pub mod config;
+pub mod dag;
 pub mod db;
 pub mod osm;
 pub mod output;

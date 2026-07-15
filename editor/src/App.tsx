@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Map from "./Map";
 import Editor from "./Editor";
+import DagView from "./DagView";
 
 const DEFAULT_KIND = "way";
 const DEBOUNCE_MS = 300;
@@ -65,6 +66,7 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [showNodes, setShowNodes] = useState(false);
   const [followSelection, setFollowSelection] = useState(true);
+  const [viewMode, setViewMode] = useState<"text" | "tree">("text");
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [cutPoints, setCutPoints] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -629,15 +631,34 @@ export default function App() {
                     background: "#f7f8fa",
                     borderTop: "1px solid var(--border)",
                     borderBottom: "1px solid var(--border)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
                   }}
                 >
-                  {active.isTopicConfig ? `${active.topic}/topic.json` : `${active.topic}/${active.kind}/${active.name}.json`}
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {active.isTopicConfig ? `${active.topic}/topic.json` : `${active.topic}/${active.kind}/${active.name}.json`}
+                  </span>
+                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                    <button
+                      onClick={() => setViewMode("text")}
+                      style={{ fontWeight: viewMode === "text" ? 700 : 400 }}
+                      title="Edit JSON"
+                    >
+                      Text
+                    </button>
+                    <button
+                      onClick={() => setViewMode("tree")}
+                      style={{ fontWeight: viewMode === "tree" ? 700 : 400 }}
+                      title="Plot this topic's deriver (Producer) trees"
+                    >
+                      Tree
+                    </button>
+                  </div>
                 </div>
                 <div style={{ flex: 1, minHeight: 0 }}>
-                  <Editor value={text} onChange={setText} />
+                  {viewMode === "text" ? <Editor value={text} onChange={setText} /> : <DagView topic={active.topic} />}
                 </div>
               </div>
             )}

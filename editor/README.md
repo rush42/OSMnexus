@@ -18,10 +18,10 @@ docker compose up
 
 `docker compose up` builds the image automatically the first time (rebuild explicitly with
 `docker compose up --build` after changing Rust code, `Dockerfile`, or `package.json`) — the pipeline
-binary is compiled into the image, no host Rust toolchain needed. To iterate on Rust code without a
-full image rebuild each time, point at a host-built binary instead:
-`PIPELINE_BIN_PATH=/repo/target/release/osmnexus docker compose up` (after `cargo build --release`
-from the repo root).
+binary (and the `dag_json` tree-view binary) is compiled into the image, no host Rust toolchain
+needed. To iterate on Rust code without a full image rebuild each time, point at host-built binaries
+instead: `PIPELINE_BIN_PATH=/repo/target/release/osmnexus DAG_JSON_BIN_PATH=/repo/target/release/dag_json
+docker compose up` (after `cargo build --release --bin osmnexus --bin dag_json` from the repo root).
 
 Open http://localhost:5173, draw a bbox on the map (bounded by `MAX_BBOX_M`, default 10000m), and
 it extracts that area, runs the pipeline, and renders the result. Edit a category/topic JSON and
@@ -61,11 +61,14 @@ files.
 
 - **`vite.config.ts`** — a Vite plugin (`liveEditorApi`) that serves a small JSON API alongside the
   dev server: listing/switching configs, extracting a bbox (via `osmium extract`), listing
-  topics/categories, reading/writing a category or topic's JSON file, and re-running the pipeline
-  after every write.
-- **`src/App.tsx`** / **`Map.tsx`** / **`Editor.tsx`** — the React UI: a MapLibre map for bbox
-  selection and rendering classified features, and a CodeMirror JSON editor for the selected
-  topic/category file.
+  topics/categories, reading/writing a category or topic's JSON file, re-running the pipeline
+  after every write, and plotting a topic's output `Producer` trees (via `dag_json`, see below).
+- **`src/App.tsx`** / **`Map.tsx`** / **`Editor.tsx`** / **`DagView.tsx`** — the React UI: a
+  MapLibre map for bbox selection and rendering classified features, a CodeMirror JSON editor for
+  the selected topic/category file (the "Text" tab), and an `@xyflow/react` graph view (the "Tree"
+  tab) that plots the selected topic's output-field `Producer` trees — each field's `Match`/
+  `Extract`/`Const`/... tree, and the `Sanitizer` chain hanging off any `Extract` leaf, same walk
+  as `src/bin/plot_dag.rs`'s Graphviz DOT output but as JSON (`src/dag.rs`) rendered in-browser.
 - **`fixtures/tiny.osm.pbf`** — the default base extract when no larger one is mounted (see
   `BASE_PBF_PATH` above).
 

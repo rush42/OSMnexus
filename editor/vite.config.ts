@@ -11,6 +11,8 @@ const REPO_DIR = path.resolve(__dirname, "..");
 // host-built target/release/osmnexus instead, for iterating on Rust code without a full image
 // rebuild (e.g. `PIPELINE_BIN_PATH=/repo/target/release/osmnexus docker compose up`).
 const PIPELINE_BIN = process.env.PIPELINE_BIN_PATH || path.join(REPO_DIR, "target", "release", "osmnexus");
+// Emits a topic's output Producer trees as node/edge JSON for the tree view — see `src/bin/dag_json.rs`.
+const DAG_JSON_BIN = process.env.DAG_JSON_BIN_PATH || path.join(REPO_DIR, "target", "release", "dag_json");
 const CONFIGS_ROOT = path.join(REPO_DIR, "configs");
 const BASE_PBF = process.env.BASE_PBF_PATH || path.join(EDITOR_DIR, "fixtures", "tiny.osm.pbf");
 const EXTRACT_DIR = path.join(EDITOR_DIR, "live-extract");
@@ -264,6 +266,22 @@ function liveEditorApi(): Plugin {
 
         if (url.pathname === "/api/topics" && req.method === "GET") {
           return sendJson(res, 200, { topics: await listTopics() });
+        }
+
+        const dagMatch = url.pathname.match(/^\/api\/dag\/([^/]+)$/);
+        if (dagMatch && req.method === "GET") {
+          const topic = decodeURIComponent(dagMatch[1]);
+          if (!(await listTopics()).includes(topic)) {
+            return sendJson(res, 400, { error: `unknown topic '${topic}'` });
+          }
+          const configDir = await ensureConfigSelected();
+          const result = await run(DAG_JSON_BIN, [configDir, topic]);
+          if (!result.ok) return sendJson(res, 500, { error: result.message });
+          try {
+            return sendJson(res, 200, JSON.parse(result.stdout));
+          } catch (err) {
+            return sendJson(res, 500, { error: `dag_json produced invalid JSON: ${String(err)}` });
+          }
         }
 
         const categoriesMatch = url.pathname.match(/^\/api\/categories\/([^/]+)$/);

@@ -6,7 +6,7 @@ FROM rust:1-bookworm AS rust-builder
 WORKDIR /repo
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --bin osmnexus
+RUN cargo build --release --bin osmnexus --bin dag_json
 
 FROM node:20-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends osmium-tool curl ca-certificates \
@@ -20,6 +20,7 @@ WORKDIR /repo
 COPY configs ./configs
 COPY editor ./editor
 COPY --from=rust-builder /repo/target/release/osmnexus ./target/release/osmnexus
+COPY --from=rust-builder /repo/target/release/dag_json ./target/release/dag_json
 
 ENV BASE_PBF_PATH=/data/base.osm.pbf
 WORKDIR /repo/editor
