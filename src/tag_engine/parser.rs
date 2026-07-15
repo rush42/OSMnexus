@@ -23,7 +23,7 @@ use serde_json::{Map, Value};
 use crate::tag_engine::classifier::Rule;
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
-use crate::tag_engine::producer::{Producer, TagSet};
+use crate::tag_engine::producer::{DirectedFrom, Producer};
 use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
@@ -32,8 +32,9 @@ use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, Str
 /// `Producer` shape to scope it to the parent way's tags, `Fallback`'s `fallback` and
 /// `ParentOrObj`'s `parent_or_obj` sugar (both folded into an equivalent `Match` in `Deserialize`
 /// below, so a `Producer` value is never observably either), `Directed`'s `directed` sugar for
-/// `Producer::DirectedExtract` (`{ "directed": { "key": ..., "from"?: "obj"|"parent"|
-/// "parent_or_obj"|"annotations" } }` — `from` defaults like `TagSet` itself does, to `obj`), and
+/// `Producer::DirectedExtract` (`{ "directed": { "key": ..., "from"?: "obj"|"parent"|"annotations" } }`
+/// — `from` is `DirectedFrom`, not the general `TagSet` (no `parent_or_obj`; see `DirectedFrom`'s own
+/// doc for why), defaulting to `obj` same as `TagSet` does), and
 /// `Tag`/`TagOr`'s `{"tag": ...}`/`{"tag_or": ..., "or": ...}` shorthands (fold into a plain
 /// `Extract`, or a `Match` using its own `default` for the "or" branch — so neither ever exists as
 /// its own runtime variant; a bare literal needs no sugar here at all, since `Const`'s a real
@@ -53,8 +54,7 @@ enum ProducerJson {
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
     /// equivalence exact).
     Fallback { fallback: Vec<Producer> },
-    /// Direction-sensitive read of `key` — see `Producer::DirectedExtract`. Was Rust-only (built
-    /// directly by `topic::runner` for `split_sides`' `directed_keys`); this is its JSON shape.
+    /// Direction-sensitive read of `key` — see `Producer::DirectedExtract`.
     Directed { directed: DirectedRepr },
     /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
     Tag { tag: String },
@@ -79,7 +79,7 @@ enum ProducerJson {
 struct DirectedRepr {
     key: String,
     #[serde(default)]
-    from: TagSet,
+    from: DirectedFrom,
     #[serde(default)]
     sanitize: Option<SanitizeRef>,
     #[serde(default)]

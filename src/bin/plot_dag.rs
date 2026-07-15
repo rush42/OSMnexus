@@ -138,7 +138,7 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
                 let _ = write!(label, "\ndefault => {}", truncate(&format!("{d:?}"), 20));
             }
             if !annotate.is_empty() {
-                let _ = write!(label, "\nconsts: {}", truncate(&format!("{annotate:?}"), 40));
+                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
             g.node(&label, "note", "#e2f0d9")
         }
@@ -149,7 +149,7 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
                 Extract::Candidates { keys } => { let _ = write!(label, "\nkeys: {keys:?}"); }
             }
             if !annotate.is_empty() {
-                let _ = write!(label, "\nconsts: {}", truncate(&format!("{annotate:?}"), 40));
+                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(&label, "box", "#d9e8fb");
             if let Some(sref) = sanitize {
@@ -161,7 +161,7 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
         Producer::DirectedExtract { key, from, sanitize, annotate } => {
             let mut label = format!("directed extract\nkey: {key}\nfrom: {from:?}");
             if !annotate.is_empty() {
-                let _ = write!(label, "\nconsts: {}", truncate(&format!("{annotate:?}"), 40));
+                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(&label, "box", "#d9e8fb");
             if let Some(sref) = sanitize {
@@ -169,6 +169,13 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
                 g.edge(&node, &chain_root, "sanitize");
             }
             node
+        }
+        Producer::Const { value, annotate } => {
+            let mut label = format!("const\nvalue: {}", truncate(&format!("{value:?}"), 40));
+            if !annotate.is_empty() {
+                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
+            }
+            g.node(&label, "box", "#d9e8fb")
         }
         Producer::Parent(inner) => {
             let node = g.node("parent", "diamond", "#fff2cc");

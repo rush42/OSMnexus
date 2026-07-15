@@ -59,12 +59,10 @@ pub(crate) fn empty_annotations() -> &'static Map<String, Value> {
     EMPTY.get_or_init(Map::new)
 }
 
-/// Which tagset `Producer::DirectedExtract` reads (and, via `topic::spec`'s sanitizer-shorthand,
-/// which tagset a bare `{name, from}` output entry reads) — `DirectedExtract` is the only producer
-/// left with a `from` field; every other tagset-scoping need goes through `Producer::Parent`/
-/// `parent_or_obj` instead (see their docs), since a directed read needs both `parent_tags` and the
-/// object's own `obj_tags` simultaneously (to guard against overriding an already-set key) and so
-/// can't be expressed as a plain "swap `obj_tags`, recurse" wrapper.
+/// Which tagset a bare `{name, from}` sanitizer-shorthand output entry reads (`topic::spec`) — every
+/// tagset-scoping need here goes through `Producer::Parent`/`parent_or_obj` wrapping the base
+/// producer (see their docs), never a field carried at runtime; `TagSet` is JSON vocabulary that
+/// picks the wrapper, not a `Producer` field itself.
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TagSet {
@@ -77,8 +75,27 @@ pub enum TagSet {
     /// parent exists — distinct from a `fallback:[{parent},{obj}]`, which would also fall
     /// through when the parent merely lacks the key.
     ParentOrObj,
-    /// `ctx.annotations` instead of a tagset — lets a directed read (or the sanitizer-shorthand
-    /// output sugar) pull an engine-attached value (e.g. `_side`) into a real output field.
+    /// `ctx.annotations` instead of a tagset — lets the sanitizer-shorthand output sugar pull an
+    /// engine-attached value (e.g. `_side`) into a real output field. Rejected for the sanitizer
+    /// shorthand itself (see `topic::spec`) — only meaningful today via `DirectedFrom::Annotations`.
+    Annotations,
+}
+
+/// Which tagset `Producer::DirectedExtract` reads — its own, narrower `from`, distinct from the
+/// general `TagSet` above: a directed read needs both `parent_tags` and the object's own `obj_tags`
+/// simultaneously (to guard against overriding an already-set key), so it can't be expressed as a
+/// plain "swap `obj_tags`, recurse" wrapper the way every other tagset-scoping need is — see
+/// `DirectedExtract`'s own doc. No `ParentOrObj`: unlike the general case, a directed read has
+/// nothing distinct to commit to — parent tags need the two-key (bare-then-directed) fallback `Parent`
+/// implements, so a `ParentOrObj` here could only ever mean "try that, then plain `Obj`," which
+/// nobody's asked for; keeping it out of the type means it can't be spelled by accident and silently
+/// behave like `Obj` (as it used to, sharing `TagSet`'s catch-all arm).
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectedFrom {
+    #[default]
+    Obj,
+    Parent,
     Annotations,
 }
 
@@ -136,15 +153,15 @@ pub enum Producer {
     /// (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no direction to
     /// resolve). Not expressible as a plain `Extract` wrapped in `Parent`: it needs both tagsets at
     /// once — the object's own (to guard against overriding an already-set key) and, when
-    /// `from: Parent`, the parent's (tried bare-key-then-directed-key). Any other `from` tries only
-    /// the directed variant on the object's own tags (e.g. a tag already unnested as
-    /// `traffic_sign:forward`). Used for `split_sides`' `directed_keys`/`self_directed_keys` (via
-    /// `topic::runner`'s legacy synthesis) and, directly, by `transforms.json`'s `{ "directed":
-    /// {...} }` sugar (see `tag_engine::parser`) — the object-cardinality-changing split itself
-    /// stays native, but this per-key projection is an ordinary sided tag read.
+    /// `from: Parent`, the parent's (tried bare-key-then-directed-key). `from: Obj` tries only the
+    /// directed variant on the object's own tags (e.g. a tag already unnested as
+    /// `traffic_sign:forward`); `from: Annotations` reads `ctx.annotations` instead of any tagset.
+    /// Built from `transforms.json`'s `{ "directed": {...} }` sugar (see `tag_engine::parser`) — the
+    /// object-cardinality-changing split itself stays native, but this per-key projection is an
+    /// ordinary sided tag read.
     DirectedExtract {
         key: String,
-        from: TagSet,
+        from: DirectedFrom,
         sanitize: Option<SanitizeRef>,
         annotate: Map<String, Value>,
     },
@@ -190,14 +207,14 @@ impl Producer {
                 };
                 let directed_key = format!("{key}{suffix}");
                 let raw = match from {
-                    TagSet::Parent => {
+                    DirectedFrom::Parent => {
                         let tags = ctx.parent_tags?;
                         keys::first_present(tags, [key.as_str(), directed_key.as_str()])
                     }
-                    TagSet::Annotations => ctx.annotations.get(directed_key.as_str())
+                    DirectedFrom::Annotations => ctx.annotations.get(directed_key.as_str())
                         .or_else(|| ctx.annotations.get(key.as_str()))
                         .and_then(Value::as_str),
-                    _ => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
+                    DirectedFrom::Obj => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
                 }?;
                 let value = resolve_sanitize(sanitize.as_ref(), raw)?;
                 Some(Produced { value, annotate: annotate.clone() })
@@ -347,7 +364,7 @@ mod directed_extract_tests {
         ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations }
     }
 
-    fn directed(key: &str, from: TagSet) -> Producer {
+    fn directed(key: &str, from: DirectedFrom) -> Producer {
         Producer::DirectedExtract { key: key.to_owned(), from, sanitize: None, annotate: Map::new() }
     }
 
@@ -355,7 +372,7 @@ mod directed_extract_tests {
     fn parent_source_prefers_existing_obj_value() {
         let obj = tags(&[("cycleway:lanes", "existing")]);
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
-        let producer = directed("cycleway:lanes", TagSet::Parent);
+        let producer = directed("cycleway:lanes", DirectedFrom::Parent);
         let annotations = side_annotations("right");
         assert!(producer.eval(&ctx(&obj, Some(&parent), &annotations)).is_none());
     }
@@ -364,7 +381,7 @@ mod directed_extract_tests {
     fn parent_source_falls_back_to_bare_then_directed_key() {
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
-        let producer = directed("cycleway:lanes", TagSet::Parent);
+        let producer = directed("cycleway:lanes", DirectedFrom::Parent);
         let annotations = side_annotations("right");
         let produced = producer.eval(&ctx(&obj, Some(&parent), &annotations)).unwrap();
         assert_eq!(produced.value, Value::String("lane".to_owned()));
@@ -377,7 +394,7 @@ mod directed_extract_tests {
     #[test]
     fn self_source_reads_from_obj_own_directed_key() {
         let obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
-        let producer = directed("traffic_sign", TagSet::Obj);
+        let producer = directed("traffic_sign", DirectedFrom::Obj);
         let annotations = side_annotations("right");
         let produced = producer.eval(&ctx(&obj, None, &annotations)).unwrap();
         assert_eq!(produced.value, Value::String("DE:1022-10".to_owned()));
@@ -387,7 +404,7 @@ mod directed_extract_tests {
     fn noop_for_self_side() {
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
-        let producer = directed("cycleway:lanes", TagSet::Parent);
+        let producer = directed("cycleway:lanes", DirectedFrom::Parent);
         let annotations = side_annotations("self");
         assert!(producer.eval(&ctx(&obj, Some(&parent), &annotations)).is_none());
     }
@@ -396,7 +413,7 @@ mod directed_extract_tests {
     fn handedness_flips_suffix() {
         let obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:backward", "lane")]);
-        let producer = directed("cycleway:lanes", TagSet::Parent);
+        let producer = directed("cycleway:lanes", DirectedFrom::Parent);
         // Right-hand traffic (global default in tests): Side::Right reads `:forward`, not
         // `:backward` — so this should NOT match.
         let right = side_annotations("right");
