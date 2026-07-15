@@ -126,12 +126,22 @@ Producer =
   | { "directed": { "key": String, "from"?: TagSet, "sanitize"?: SanitizeRef, "annotate"?: {String: JSON} } }
       // sugar for DirectedExtract — side-aware tag read (used with left/right split ways)
 
+  | { "tag": String }
+      // sugar for Extract{key: tag}
+
+  | { "tag_or": String, "or": JSON }
+      // sugar for a 1-rule Match, "default": or
+
   | { "rules": [Rule, ...], "default"?: JSON, "annotate"?: {String: JSON} }
       // Match: first matching rule wins; a rule that matches but yields
       // nothing does NOT stop the search (this is what "fallback" desugars into)
 
   | { "key"?: String, "keys"?: [String,...], "sanitize"?: SanitizeRef, "annotate"?: {String: JSON} }
-      // Extract (catch-all — tried last): reads + sanitizes a raw tag
+      // Extract (tried after all the above, whose fields are all optional
+      // and so would otherwise match everything first): reads + sanitizes a raw tag
+
+  | JSON
+      // Const (catch-all — tried last): a literal value, independent of any tag
 ```
 
 `{ "shared": "name" }` is a pre-Producer reference, inlined from a shared
@@ -140,18 +150,14 @@ is not a `Producer` shape itself.
 
 `annotate` are extra literal fields merged onto the produced value's metadata
 (e.g. `{"source": "tag", "confidence": "high"}`) — used by attribution/UI, not
-by matching.
+by matching. `Const` has no on-disk way to carry its own (a bare JSON literal
+has nowhere to hang one) — as a `Match` rule's value it inherits the enclosing
+`Match`'s `annotate` instead.
 
 ### Rule (used inside `Match`)
 
 ```
-Rule = { "when": Filter, "value": ValueSpec }
-
-ValueSpec =
-  { "tag": String }                          // sugar for Producer Extract{key}
-  | { "tag_or": String, "or": JSON }         // sugar for a 1-rule Match with "default": or
-  | Producer                                  // nested producer
-  | JSON                                      // literal constant (catch-all)
+Rule = { "when": Filter, "value": Producer }
 ```
 
 ## `outputs` (topic.json)
@@ -252,7 +258,7 @@ TagRule. `PipelineStep` is `clone` vs. everything else (delegated to
 - `Extract` — `src/tag_engine/extract.rs`
 - `Filter` — `src/tag_engine/filter.rs`
 - `Sanitizer` / `Step` / `SanitizeRef` — `src/tag_engine/sanitize.rs`
-- `Producer` / `Rule` / `ValueSpec` — `src/tag_engine/producer.rs`, `src/tag_engine/classifier.rs`
+- `Producer` / `Rule` — `src/tag_engine/producer.rs`, `src/tag_engine/classifier.rs`
 - Sugar-folding `Deserialize` impls — `src/tag_engine/parser.rs`
 - `topic.json` / `transforms.json` schema — `src/topic/spec.rs`
 

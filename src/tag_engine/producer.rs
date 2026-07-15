@@ -1,14 +1,15 @@
-//! The `Producer` engine — just `Match` and `Extract`, full stop — that evaluates one output's
-//! value (the one mechanism behind every `outputs` entry, `TopicSpec::outputs`), its load-time
-//! reference resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result
-//! (`Produced`) types it evaluates over. `fallback` is JSON-only sugar, folded into an equivalent
-//! `Match` by `tag_engine::parser`'s hand-written `Deserialize` impl — so it never exists as a
-//! `Producer` value here, not pre-`resolve`, not transiently, not ever (see `parser`'s own doc for
-//! why that folding lives in its own module rather than inline in this one). A named *shared*
-//! classifier table (`{ "shared": "<name>" }`) isn't even sugar `Producer`/`parser` know about:
-//! it's inlined as plain JSON — before anything here ever sees it — by `topic::load::
-//! inline_shared_producers`, at topic-directory-read time, the same way shared macros/sanitizers
-//! are merged in. `Producer` the Rust type really does only have two variants.
+//! The `Producer` engine — a small tree of variants that evaluates one output's value (the one
+//! mechanism behind every `outputs` entry, `TopicSpec::outputs`), its load-time reference
+//! resolution (`resolve`), and the context (`ExtractCtx`/`TagSet`) and result (`Produced`) types it
+//! evaluates over. Two branch shapes (`Match`, `Parent`) and three leaf/read shapes (`Extract`,
+//! `DirectedExtract`, `Const`) — everything else is JSON-only sugar, folded into one of these by
+//! `tag_engine::parser`'s hand-written `Deserialize` impl (`fallback`, `parent_or_obj`, the
+//! `{"tag": ...}`/`{"tag_or", "or"}` shorthands) so it never exists as a `Producer` value here, not
+//! pre-`resolve`, not transiently, not ever (see `parser`'s own doc for why that folding lives in
+//! its own module rather than inline in this one). A named *shared* classifier table (`{ "shared":
+//! "<name>" }`) isn't even sugar `Producer`/`parser` know about: it's inlined as plain JSON —
+//! before anything here ever sees it — by `topic::load::inline_shared_producers`, at
+//! topic-directory-read time, the same way shared macros/sanitizers are merged in.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -89,13 +90,13 @@ pub enum TagSet {
 #[derive(Debug, Clone)]
 pub enum Producer {
     /// A data-defined first-match-wins rule table (same engine as the `road` classifier). Each
-    /// rule's value can be any JSON literal — a string (category/tag classification), a number
-    /// (e.g. `minzoom`), a bool (e.g. a filter-driven flag) — or an arbitrary nested `Producer`
-    /// (`ValueSpec::Producer`), which is what lets this one variant also subsume conditionals and
-    /// ordered fallback chains: a rule matches when its `when` holds, and — if its value is itself
-    /// a producer that produces nothing — matching doesn't stop the search, the next rule is
-    /// tried (see `classifier::match_rules`). `annotate` is the provenance a *literal*-valued rule
-    /// contributes when it produces (a `Producer`-valued rule carries its own). With no `default`,
+    /// rule's `value` is itself an arbitrary `Producer` — a literal (`Const`, e.g. a category id, a
+    /// `minzoom` number, a filter-driven bool), a plain `Extract`, or a further nested `Match` —
+    /// which is what lets this one variant also subsume conditionals and ordered fallback chains: a
+    /// rule matches when its `when` holds, and — if its value is a producer that produces nothing —
+    /// matching doesn't stop the search, the next rule is tried (see `classifier::match_rules`).
+    /// `annotate` is the provenance a rule whose value produces an *empty* `annotate` of its own
+    /// (chiefly `Const`, which has no way to spell one) inherits when it produces. With no `default`,
     /// returns `None` when no rule matches — letting a category const default or an enclosing
     /// fallback branch supply the value. Must be tried before `Extract` below, since `rules` is a
     /// required field and so unambiguously distinguishes it. Always reads `ctx.obj_tags` — wrap in
@@ -119,6 +120,15 @@ pub enum Producer {
         sanitize: Option<SanitizeRef>,
         /// Companion key/values this branch contributes when it produces the value; emitted as
         /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
+        annotate: Map<String, Value>,
+    },
+    /// A literal value, independent of any tag — `Extract`'s opposite number: the other leaf a
+    /// producer tree bottoms out at. Always produces; has no on-disk way to carry its own
+    /// `annotate` (a bare JSON literal has nowhere to hang one), so it's always empty here — a
+    /// `Const` used as a `Rule` branch inherits the enclosing `Match`'s `annotate` instead (see
+    /// `classifier::match_rules`).
+    Const {
+        value: Value,
         annotate: Map<String, Value>,
     },
     /// Direction-sensitive read of `key`: resolves its `:forward`/`:backward` variant from
@@ -165,6 +175,8 @@ impl Producer {
                 let value = extract.read(sanitize.as_ref(), ctx.obj_tags)?;
                 Some(Produced { value, annotate: annotate.clone() })
             }
+
+            Producer::Const { value, annotate } => Some(Produced { value: value.clone(), annotate: annotate.clone() }),
 
             Producer::DirectedExtract { key, from, sanitize, annotate } => {
                 if ctx.obj_tags.contains_key(key.as_str()) {
@@ -227,6 +239,7 @@ impl Producer {
                 sanitize: sanitize.as_ref().map(|r| r.resolve(sanitizers)).transpose()?,
                 annotate: annotate.clone(),
             },
+            Producer::Const { value, annotate } => Producer::Const { value: value.clone(), annotate: annotate.clone() },
             Producer::DirectedExtract { key, from, sanitize, annotate } => Producer::DirectedExtract {
                 key: key.clone(),
                 from: *from,
@@ -242,17 +255,14 @@ impl Producer {
     /// sugar and `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`. Takes an already-built
     /// `Producer` (not raw JSON), so it composes with either call site's own construction.
     pub fn parent_or_obj(p: Producer) -> Producer {
-        use crate::tag_engine::classifier::{Rule, ValueSpec};
+        use crate::tag_engine::classifier::Rule;
         Producer::Match {
             rules: vec![
                 Rule {
                     when: Filter::HasParent { has_parent: true },
-                    value: ValueSpec::Producer(Box::new(Producer::Parent(Box::new(p.clone())))),
+                    value: Producer::Parent(Box::new(p.clone())),
                 },
-                Rule {
-                    when: Filter::HasParent { has_parent: false },
-                    value: ValueSpec::Producer(Box::new(p)),
-                },
+                Rule { when: Filter::HasParent { has_parent: false }, value: p },
             ],
             default: None,
             annotate: Map::new(),
@@ -263,7 +273,7 @@ impl Producer {
 #[cfg(test)]
 mod classify_bool_tests {
     use super::*;
-    use crate::tag_engine::classifier::{Rule, ValueSpec};
+    use crate::tag_engine::classifier::Rule;
     use crate::tag_engine::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
@@ -274,7 +284,10 @@ mod classify_bool_tests {
     /// `from` wraps it in `Parent`/`parent_or_obj` when not `TagSet::Obj`.
     fn bool_producer(filter: Filter, from: TagSet) -> Producer {
         let base = Producer::Match {
-            rules: vec![Rule { when: filter, value: ValueSpec::Const(Value::Bool(true)) }],
+            rules: vec![Rule {
+                when: filter,
+                value: Producer::Const { value: Value::Bool(true), annotate: Map::new() },
+            }],
             default: Some(Value::Bool(false)),
             annotate: Map::new(),
         };

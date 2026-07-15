@@ -20,70 +20,26 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
-use crate::tag_engine::classifier::{Rule, ValueSpec};
+use crate::tag_engine::classifier::Rule;
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
 use crate::tag_engine::producer::{Producer, TagSet};
 use crate::tag_engine::sanitize::{ReplaceRule, SanitizeRef, Sanitizer, Step, StrOrVec};
-
-// ── ValueSpec ────────────────────────────────────────────────────────────────
-
-/// The JSON shapes a `Rule`'s `value` accepts: `{"tag": ...}` and `{"tag_or": ..., "or": ...}` are
-/// sugar, folded into an equivalent `Producer` below (a plain `Extract`, or a `Match` using its own
-/// `default` for the "or" branch) — so `ValueSpec::Producer` is what actually carries them, not a
-/// dedicated runtime variant (see `classifier::ValueSpec`'s own doc for why). Untagged; `Producer`
-/// must be tried before the bare-JSON `Const` catch-all.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum ValueSpecJson {
-    /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
-    Tag { tag: String },
-    /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
-    TagOr { tag_or: String, or: Value },
-    Producer(Producer),
-    /// A literal value.
-    Const(Value),
-}
-
-impl<'de> Deserialize<'de> for ValueSpec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(match ValueSpecJson::deserialize(deserializer)? {
-            ValueSpecJson::Tag { tag } => ValueSpec::Producer(Box::new(Producer::Extract {
-                extract: Extract::Value { key: tag },
-                sanitize: None,
-                annotate: Map::new(),
-            })),
-            ValueSpecJson::TagOr { tag_or, or } => ValueSpec::Producer(Box::new(Producer::Match {
-                rules: vec![Rule {
-                    when: Filter::Bool(true),
-                    value: ValueSpec::Producer(Box::new(Producer::Extract {
-                        extract: Extract::Value { key: tag_or },
-                        sanitize: None,
-                        annotate: Map::new(),
-                    })),
-                }],
-                default: Some(or),
-                annotate: Map::new(),
-            })),
-            ValueSpecJson::Producer(p) => ValueSpec::Producer(Box::new(p)),
-            ValueSpecJson::Const(v) => ValueSpec::Const(v),
-        })
-    }
-}
 
 // ── Producer ─────────────────────────────────────────────────────────────────
 
 /// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, `Parent` wrapping any nested
 /// `Producer` shape to scope it to the parent way's tags, `Fallback`'s `fallback` and
 /// `ParentOrObj`'s `parent_or_obj` sugar (both folded into an equivalent `Match` in `Deserialize`
-/// below, so a `Producer` value is never observably either), and `Directed`'s `directed` sugar for
+/// below, so a `Producer` value is never observably either), `Directed`'s `directed` sugar for
 /// `Producer::DirectedExtract` (`{ "directed": { "key": ..., "from"?: "obj"|"parent"|
-/// "parent_or_obj"|"annotations" } }` — `from` defaults like `TagSet` itself does, to `obj`).
-/// Untagged, tried in this order (more-specific/required-field shapes before `Extract`, whose
-/// fields are all optional and so would otherwise match everything first).
+/// "parent_or_obj"|"annotations" } }` — `from` defaults like `TagSet` itself does, to `obj`), and
+/// `Tag`/`TagOr`'s `{"tag": ...}`/`{"tag_or": ..., "or": ...}` shorthands (fold into a plain
+/// `Extract`, or a `Match` using its own `default` for the "or" branch — so neither ever exists as
+/// its own runtime variant; a bare literal needs no sugar here at all, since `Const`'s a real
+/// variant that deserializes straight from a bare JSON value). Untagged, tried in this order
+/// (more-specific/required-field shapes before `Extract`, whose fields are all optional and so
+/// would otherwise match everything first, and before `Const`, the bare-JSON catch-all).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum ProducerJson {
@@ -100,6 +56,10 @@ enum ProducerJson {
     /// Direction-sensitive read of `key` — see `Producer::DirectedExtract`. Was Rust-only (built
     /// directly by `topic::runner` for `split_sides`' `directed_keys`); this is its JSON shape.
     Directed { directed: DirectedRepr },
+    /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
+    Tag { tag: String },
+    /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
+    TagOr { tag_or: String, or: Value },
     Match {
         rules: Vec<Rule>,
         #[serde(default)] default: Option<Value>,
@@ -111,6 +71,8 @@ enum ProducerJson {
         #[serde(default)] sanitize: Option<SanitizeRef>,
         #[serde(default)] annotate: Map<String, Value>,
     },
+    /// A literal value, independent of any tag.
+    Const(Value),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -133,9 +95,7 @@ impl<'de> Deserialize<'de> for Producer {
             ProducerJson::Parent { parent } => Producer::Parent(parent),
             ProducerJson::ParentOrObj { parent_or_obj } => Producer::parent_or_obj(*parent_or_obj),
             ProducerJson::Fallback { fallback } => Producer::Match {
-                rules: fallback.into_iter()
-                    .map(|p| Rule { when: Filter::Bool(true), value: ValueSpec::Producer(Box::new(p)) })
-                    .collect(),
+                rules: fallback.into_iter().map(|value| Rule { when: Filter::Bool(true), value }).collect(),
                 default: None,
                 annotate: Map::new(),
             },
@@ -144,6 +104,17 @@ impl<'de> Deserialize<'de> for Producer {
                 from: directed.from,
                 sanitize: directed.sanitize,
                 annotate: directed.annotate,
+            },
+            ProducerJson::Tag { tag } => {
+                Producer::Extract { extract: Extract::Value { key: tag }, sanitize: None, annotate: Map::new() }
+            }
+            ProducerJson::TagOr { tag_or, or } => Producer::Match {
+                rules: vec![Rule {
+                    when: Filter::Bool(true),
+                    value: Producer::Extract { extract: Extract::Value { key: tag_or }, sanitize: None, annotate: Map::new() },
+                }],
+                default: Some(or),
+                annotate: Map::new(),
             },
             ProducerJson::Match { rules, default, annotate } => Producer::Match { rules, default, annotate },
             ProducerJson::Extract { key, keys, sanitize, annotate } => {
@@ -155,6 +126,7 @@ impl<'de> Deserialize<'de> for Producer {
                 };
                 Producer::Extract { extract, sanitize, annotate }
             }
+            ProducerJson::Const(value) => Producer::Const { value, annotate: Map::new() },
         })
     }
 }

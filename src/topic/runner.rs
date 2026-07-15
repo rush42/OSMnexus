@@ -102,10 +102,7 @@ fn default_value_producer(v: &Value) -> Producer {
 /// second `resolve` pass isn't needed, and `Producer::Fallback` itself is JSON-parse sugar only —
 /// see `Producer::eval`).
 fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
-    let rule = |p: Producer| crate::tag_engine::classifier::Rule {
-        when: Filter::Bool(true),
-        value: crate::tag_engine::classifier::ValueSpec::Producer(Box::new(p)),
-    };
+    let rule = |value: Producer| crate::tag_engine::classifier::Rule { when: Filter::Bool(true), value };
     Producer::Match {
         rules: vec![rule(primary), rule(default_source)],
         default: None,
