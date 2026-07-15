@@ -70,12 +70,13 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(label, "match");
-            // Each rule is its own branch — `when` labels the edge, the rule's own value producer
-            // (which may itself be a further `Match`) hangs off a per-rule node so the tree actually
-            // branches instead of cramming every rule into one node's text.
+            // Each rule is its own branch — the rule's `when` is the node's own label (not just an
+            // index), and its value producer (which may itself be a further `Match`) hangs off that
+            // node so the tree actually branches instead of cramming every rule into one node's text.
             for (i, r) in rules.iter().enumerate() {
-                let rule_node = g.node(format!("rule {i}"), "rule");
-                g.edge(&node, &rule_node, &truncate(&format!("{:?}", r.when), 60));
+                let rule_label = format!("rule {i}\nwhen: {}", truncate(&format!("{:?}", r.when), 120));
+                let rule_node = g.node(rule_label, "rule");
+                g.edge(&node, &rule_node, "");
                 let value_node = render_producer(g, &r.value);
                 g.edge(&rule_node, &value_node, "");
             }
