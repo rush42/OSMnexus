@@ -1,9 +1,133 @@
+//! Everything to do with a topic's transform pipeline: `InputTransform` (one in-place tag
+//! mutation), `TransformStep`/`CloneStep` (the object-cardinality-changing wrapper around it —
+//! side-splitting today, anything else needing it tomorrow), and the two dynamic-key-iteration
+//! helpers (`unnest_prefixed_tags`, `strip_prefix`) `InputTransform`'s own variants are built
+//! from. One file because these are really one concept at different granularities — a single
+//! step, a pipeline of them, and the couple of primitives no bare `Producer` output can express
+//! (dynamic key iteration) — not separate subsystems. Nothing here is topic-directory-specific;
+//! only the *construction* of a `Vec<TransformStep>` from `topic.json`'s `input_transforms`/
+//! `split_sides` is (see `topic::runner::TopicRunner::load`).
+
 use serde_json::{Map, Value};
 
-use crate::osm::types::RawTags;
 use crate::tag_engine::filter::{eval, Filter};
-use crate::tag_engine::input_transforms::InputTransform;
-use crate::tag_engine::producer::ExtractCtx;
+use crate::tag_engine::producer::{ExtractCtx, Producer};
+use crate::osm::types::RawTags;
+
+// ── InputTransform ──────────────────────────────────────────────────────────────
+
+/// One in-place tag mutation, applied to an object's tags before categorization — either at the
+/// whole-way, pre-split stage (no `parent_tags`), or, for `directed`-style steps, per already-split
+/// object (its own annotated side + the parent way's tags). This is the same primitive either way;
+/// only the `ExtractCtx` passed to `apply` differs.
+#[derive(Clone)]
+pub enum InputTransform {
+    /// Write `output` from a full `Producer`. A produced `null` deletes `output`; a produced
+    /// non-null value must be a string and overwrites it; no match (`None`) leaves it untouched.
+    TagRule { output: String, source: Producer },
+    /// Unnest bare `{prefix}[:{infix}]`-prefixed tags (plus each `meta_prefixes` entry's
+    /// documentation companion, e.g. `source:`/`note:` — see `unnest_prefixed_tags`) onto `tags`,
+    /// in place (so `tags` doubles as both the source to scan and the destination — for a
+    /// whole-way self-unnest that's the same object; for building a side object's tags from
+    /// scratch, `tags` is that (initially empty) object, scanned against its own pre-populated
+    /// content each call).
+    /// `guard`, when set, only applies the unnest when it holds — this is what used to be the
+    /// dedicated `SidepathSelf` variant (`guard: Some(TagInSet{tag: "highway", in_set:
+    /// "sidepath_highway"})`); a plain in-place unnest with no such condition just leaves it
+    /// `None`. Evaluated against the same context `Drop`'s own condition sees (`tags` as they
+    /// stand before this call, `parent_tags`, `annotations`).
+    /// `record_infix_as`, when set, stamps `annotations[key] = infix` iff this call actually
+    /// unnested something — the mechanism for tracking *which* of several priority-ordered
+    /// attempts (bare < both < side-specific) actually won, since a plain `TagsEmpty` check only
+    /// answers *whether* any of them did.
+    UnnestTags {
+        prefix: &'static str,
+        infix: &'static str,
+        meta_prefixes: &'static [&'static str],
+        guard: Option<Filter>,
+        record_infix_as: Option<&'static str>,
+    },
+    /// Strip `prefix` from matching keys — see `strip_prefix`. The one step needing dynamic key
+    /// iteration, so it isn't a `Producer`.
+    StripPrefix {
+        prefix: String,
+        stamp_key: String,
+        stamp_value: String,
+        stamp_nested_under: Vec<String>,
+    },
+    /// Remove this object from the active set when `when` holds — `apply`'s only variant that
+    /// returns `false`. Every other variant is a pure tag mutation and always keeps the object;
+    /// `Drop` carries no mutation of its own. A freshly-cloned object starts empty, so
+    /// `Drop { when: TagsEmpty { tags_empty: true } }` run right after the unnest steps (and
+    /// before any literal-value injection, e.g. `highway`) is "skip this clone if nothing was
+    /// ever unnested into it", expressed through the same `Filter` engine as everything else —
+    /// see `CloneStep`.
+    Drop { when: Filter },
+}
+
+impl InputTransform {
+    /// Returns whether the object should be kept in the active set — always `true` except for
+    /// `Drop`, which returns `false` exactly when its `when` filter holds.
+    pub fn apply(
+        &self,
+        tags: &mut RawTags,
+        annotations: &mut Map<String, Value>,
+        parent_tags: Option<&RawTags>,
+    ) -> bool {
+        match self {
+            InputTransform::TagRule { output, source } => {
+                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                if let Some(p) = source.eval(&ctx) {
+                    match p.value {
+                        Value::Null => { tags.remove(output); }
+                        Value::String(s) => { tags.insert(output.clone(), s); }
+                        other => panic!(
+                            "tag_rules for '{output}' produced a non-string, non-null value: {other}"
+                        ),
+                    }
+                }
+                true
+            }
+            InputTransform::UnnestTags { prefix, infix, meta_prefixes, guard, record_infix_as } => {
+                if let Some(guard) = guard {
+                    let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                    if !eval(guard, &ctx) {
+                        return true;
+                    }
+                }
+                let before = tags.len();
+                match parent_tags {
+                    // Cross-object unnest (e.g. a `Clone`'s own steps building a side object's
+                    // tags from the way's own, `tags` starting empty): scan the given source,
+                    // write into `tags`.
+                    Some(source) => unnest_prefixed_tags(source, prefix, infix, meta_prefixes, tags),
+                    // Self-unnest (e.g. `SidepathSelf`): scan-and-mutate the same object, so the
+                    // scan needs its own snapshot to avoid borrowing `tags` both ways at once.
+                    None => {
+                        let source = tags.clone();
+                        unnest_prefixed_tags(&source, prefix, infix, meta_prefixes, tags);
+                    }
+                }
+                if let Some(key) = record_infix_as {
+                    if tags.len() > before {
+                        annotations.insert((*key).to_owned(), Value::String((*infix).to_owned()));
+                    }
+                }
+                true
+            }
+            InputTransform::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } => {
+                strip_prefix(tags, prefix, stamp_key, stamp_value, stamp_nested_under);
+                true
+            }
+            InputTransform::Drop { when } => {
+                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                !eval(when, &ctx)
+            }
+        }
+    }
+}
+
+// ── TransformStep / CloneStep ───────────────────────────────────────────────────
 
 pub(crate) const META_PREFIXES: &[&str] = &["source:", "note:"];
 
@@ -87,6 +211,8 @@ pub fn run_transform_steps(
     true
 }
 
+// ── Dynamic-key-iteration helpers ───────────────────────────────────────────────
+
 /// Unnest tags matching `{prefix}[:{infix}]` onto `dest`, plus — for each `meta_prefixes` entry
 /// (e.g. `"source:"`, `"note:"`) — the meta-tag documenting the same matched key, if present.
 ///
@@ -152,6 +278,118 @@ pub(crate) fn unnest_prefixed_tags(
             };
             dest.insert(dest_key, meta_val.clone());
         }
+    }
+}
+
+/// For every key starting with `prefix`, strip it, re-key the value onto the base tag, and stamp
+/// a marker. The marker key is `<base>:<stamp_key>` when the base starts with one of
+/// `stamp_nested_under`, else `stamp_key`. The one remaining native in-place tag transform: it
+/// needs to iterate keys matching a runtime-unknown pattern, which no `Producer`/`Rule` primitive
+/// can express (they all name their target key(s) statically). Everything else that used to live
+/// here (`lifecycle`, `rename_key`, `value_cases`) is expressible as `tag_rules` `Producer`
+/// entries and has moved to topic JSON.
+pub fn strip_prefix(
+    tags: &mut RawTags,
+    prefix: &str,
+    stamp_key: &str,
+    stamp_value: &str,
+    stamp_nested_under: &[String],
+) {
+    let matched: Vec<(String, String)> = tags
+        .iter()
+        .filter(|(k, _)| k.starts_with(prefix))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    for (key, value) in matched {
+        let base = key[prefix.len()..].to_owned();
+        tags.insert(base.clone(), value);
+        tags.remove(&key);
+
+        let marker = if stamp_nested_under.iter().any(|p| base.starts_with(p.as_str())) {
+            format!("{base}:{stamp_key}")
+        } else {
+            stamp_key.to_owned()
+        };
+        tags.insert(marker, stamp_value.to_owned());
+    }
+}
+
+#[cfg(test)]
+mod unnest_tags_tests {
+    use super::*;
+
+    fn tags(pairs: &[(&str, &str)]) -> RawTags {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn self_unnest_scans_and_mutates_the_same_object() {
+        let mut obj = tags(&[("highway", "path"), ("cycleway", "track"), ("cycleway:width", "1.5")]);
+        let mut annotations = Map::new();
+        let step = InputTransform::UnnestTags {
+            prefix: "cycleway", infix: "", meta_prefixes: &[], guard: None, record_infix_as: None,
+        };
+        let kept = step.apply(&mut obj, &mut annotations, None);
+        assert!(kept);
+        assert_eq!(obj.get("width").map(String::as_str), Some("1.5"));
+    }
+
+    #[test]
+    fn cross_object_unnest_scans_parent_tags_writes_into_tags() {
+        let way_tags = tags(&[("highway", "primary"), ("cycleway:right", "lane")]);
+        let mut obj = RawTags::default();
+        let mut annotations = Map::new();
+        let step = InputTransform::UnnestTags {
+            prefix: "cycleway", infix: "right", meta_prefixes: &[], guard: None, record_infix_as: None,
+        };
+        step.apply(&mut obj, &mut annotations, Some(&way_tags));
+        assert_eq!(obj.get("cycleway").map(String::as_str), Some("lane"));
+    }
+
+    #[test]
+    fn guard_blocks_unrelated_highway() {
+        let mut obj = tags(&[("highway", "primary"), ("cycleway", "track")]);
+        let mut annotations = Map::new();
+        let step = InputTransform::UnnestTags {
+            prefix: "cycleway", infix: "", meta_prefixes: &[],
+            guard: Some(Filter::TagInSet {
+                extract: crate::tag_engine::extract::Extract::Value { key: "highway".to_owned() },
+                sanitize: None,
+                in_set: "sidepath_highway".to_owned(),
+            }),
+            record_infix_as: None,
+        };
+        // "primary" is never a sidepath_highway value in any topic's value_sets.json.
+        step.apply(&mut obj, &mut annotations, None);
+        assert!(!obj.contains_key("width"));
+    }
+
+    #[test]
+    fn record_infix_as_stamps_only_on_success_and_last_wins() {
+        let way_tags = tags(&[("cycleway:both", "lane"), ("cycleway:right:width", "2")]);
+        let mut obj = RawTags::default();
+        let mut annotations = Map::new();
+        for infix in ["", "both", "right"] {
+            let step = InputTransform::UnnestTags {
+                prefix: "cycleway", infix, meta_prefixes: &[], guard: None, record_infix_as: Some("_infix"),
+            };
+            step.apply(&mut obj, &mut annotations, Some(&way_tags));
+        }
+        // Priority bare < both < side-specific: "both" matches (stamping "both"), then "right"
+        // also matches (its subkey `width`), overwriting the recorded infix to "right".
+        assert_eq!(annotations.get("_infix").and_then(Value::as_str), Some("right"));
+    }
+
+    #[test]
+    fn drop_removes_object_when_tags_are_empty() {
+        let mut obj = RawTags::default();
+        let mut annotations = Map::new();
+        let drop = InputTransform::Drop { when: Filter::TagsEmpty { tags_empty: true } };
+        assert!(!drop.apply(&mut obj, &mut annotations, None));
+
+        obj.insert("cycleway".to_owned(), "lane".to_owned());
+        assert!(drop.apply(&mut obj, &mut annotations, None));
     }
 }
 
@@ -239,7 +477,7 @@ mod run_transform_steps_tests {
                 InputTransform::Drop { when: Filter::TagsEmpty { tags_empty: true } },
                 InputTransform::TagRule {
                     output: "highway".to_owned(),
-                    source: crate::tag_engine::producer::Producer::Match {
+                    source: Producer::Match {
                         rules: Vec::new(),
                         default: Some(Value::String("cycleway".to_owned())),
                         consts: Map::new(),

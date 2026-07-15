@@ -26,9 +26,10 @@
 //!   compiler (`build_order`) of a category set's `excludes` relation into a priority order.
 //! - `decision_tree`: the discrimination net that prunes `categorize`'s first-match walk, plus its
 //!   load-time compiler.
-//! - `input_transforms`: `InputTransform`, the runtime in-place tag-mutation step.
-//! - `transform`: object-cardinality-changing steps (center-line side-split) and `strip_prefix` —
-//!   the operations needing dynamic key iteration a single `Producer` output can't express.
+//! - `transform`: `InputTransform` (one in-place tag-mutation step), `TransformStep`/`CloneStep`
+//!   (the object-cardinality-changing wrapper around it — side-splitting today), and the two
+//!   dynamic-key-iteration helpers (`unnest_prefixed_tags`, `strip_prefix`) a single `Producer`
+//!   output can't express.
 //! - `keys`: generic tag-key selection helpers (`first_present`) shared by `producer`
 //!   and `filter`.
 //! - `linter`: the category-overlap lint — compiles a `Filter` to a boolean `Expr`
@@ -39,7 +40,6 @@ pub mod classifier;
 pub mod decision_tree;
 pub mod extract;
 pub mod filter;
-pub mod input_transforms;
 pub mod keys;
 pub mod linter;
 mod parser;

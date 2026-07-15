@@ -6,9 +6,9 @@ use serde_json::{Map, Value};
 use crate::tag_engine::categories::CategoriesFile;
 use crate::tag_engine::extract::Extract;
 use crate::tag_engine::filter::Filter;
-use crate::tag_engine::input_transforms::InputTransform;
+use crate::tag_engine::transform::InputTransform;
 use crate::tag_engine::producer::{Producer, TagSet};
-use crate::tag_engine::transform::side_split::{CloneStep, TransformStep};
+use crate::tag_engine::transform::{CloneStep, TransformStep};
 use crate::topic::load::{
     inline_shared_producers, load_shared_macros, load_shared_producers, load_topic_categories,
     load_topic_macros, load_topic_sanitizers, merge,
@@ -30,7 +30,7 @@ pub struct TopicRunner {
     /// `exclude_check_at` — a mix of ordinary in-place `InputTransform`s (from `input_transforms`)
     /// and `Clone`s (from `split_sides`, always synthesized after every `InputTransform`, one per
     /// side). Unlike an output's producer, these can influence which category a way matches (or
-    /// whether `exclude_condition` excludes it at all) — see `tag_engine::transform::side_split::
+    /// whether `exclude_condition` excludes it at all) — see `tag_engine::transform::
     /// run_transform_steps`, which drives the whole thing.
     pub pipeline: Vec<TransformStep>,
     /// Index into `pipeline` where `exclude_condition` is evaluated: `pipeline[..n]` run first,
@@ -250,7 +250,7 @@ impl TopicRunner {
                     pipeline.push(TransformStep::Transform(InputTransform::UnnestTags {
                         prefix,
                         infix: "",
-                        meta_prefixes: crate::tag_engine::transform::side_split::META_PREFIXES,
+                        meta_prefixes: crate::tag_engine::transform::META_PREFIXES,
                         guard: Some(Filter::TagInSet {
                             extract: Extract::Value { key: "highway".to_owned() },
                             sanitize: None,
@@ -307,7 +307,7 @@ impl TopicRunner {
                 let unnest_steps = ["", "both", side_str].into_iter().map(|infix| InputTransform::UnnestTags {
                     prefix: prefix_static,
                     infix,
-                    meta_prefixes: crate::tag_engine::transform::side_split::META_PREFIXES,
+                    meta_prefixes: crate::tag_engine::transform::META_PREFIXES,
                     guard: None,
                     record_infix_as: Some("_infix"),
                 });

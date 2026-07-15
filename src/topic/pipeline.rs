@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use crate::tag_engine::categories::categorize;
 use crate::tag_engine::filter::eval_filter;
 use crate::tag_engine::producer::ExtractCtx;
-use crate::tag_engine::transform::side_split::run_transform_steps;
+use crate::tag_engine::transform::run_transform_steps;
 use crate::topic::runner::TopicRunner;
 use crate::topic::spec::Field;
 use crate::osm::types::{ElementKind, RawTags};

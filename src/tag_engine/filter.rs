@@ -79,7 +79,7 @@ pub enum Filter {
     /// specific key. The generic replacement for a one-off "did this clone end up with nothing"
     /// check: a freshly-cloned object starts genuinely empty, so `{ "tags_empty": true }` right
     /// after its unnest steps and before any literal-value injection (e.g. `highway`) is exactly
-    /// "nothing was ever unnested into it" — see `topic::pipeline::build_topic_rows`/`tag_engine::transform::side_split::run_transform_steps`.
+    /// "nothing was ever unnested into it" — see `topic::pipeline::build_topic_rows`/`tag_engine::transform::run_transform_steps`.
     TagsEmpty { tags_empty: bool },
 
     // Numeric comparisons. `num` names the tag to read, optionally run through a `sanitize` chain
@@ -231,7 +231,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
-        // `parent_tags` is only ever `Some` for those (see `tag_engine::transform::side_split::run_transform_steps`).
+        // `parent_tags` is only ever `Some` for those (see `tag_engine::transform::run_transform_steps`).
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
         Filter::TagsEmpty { tags_empty } => ctx.obj_tags.is_empty() == *tags_empty,
 

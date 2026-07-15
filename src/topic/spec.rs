@@ -22,7 +22,7 @@ pub struct TopicSpec {
     #[serde(default)]
     pub split_sides: Vec<SplitSidesSpec>,
     /// Ordered pipeline of in-place tag rewrites, applied before categorization (see
-    /// `tag_engine::input_transforms::InputTransform`). Each entry is data-driven — no `transform`
+    /// `tag_engine::transform::InputTransform`). Each entry is data-driven — no `transform`
     /// discriminator: a bare `{ "output": ..., <producer fields> }` (the common case) writes
     /// `output` from any full `Producer`; `strip_prefix`/`unnest_sidepath_self`-shaped entries (see
     /// `InputTransformSpec`) are the few operations needing dynamic key iteration a single
