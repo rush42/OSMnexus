@@ -85,7 +85,6 @@ pub enum DirectedFrom {
     #[default]
     Obj,
     Parent,
-    Annotations,
 }
 
 impl Extract {
@@ -146,9 +145,6 @@ fn read_directed<'a>(directed: &DirectedKey, ctx: &ExtractCtx<'a>) -> Option<&'a
             let tags = ctx.parent_tags?;
             keys::first_present(tags, [key.as_str(), directed_key.as_str()])
         }
-        DirectedFrom::Annotations => ctx.annotations.get(directed_key.as_str())
-            .or_else(|| ctx.annotations.get(key.as_str()))
-            .and_then(Value::as_str),
         DirectedFrom::Obj => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
     }
 }

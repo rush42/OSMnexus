@@ -113,10 +113,6 @@ pub enum TagSet {
     /// parent exists — distinct from a `fallback:[{parent},{obj}]`, which would also fall
     /// through when the parent merely lacks the key.
     ParentOrObj,
-    /// `ctx.annotations` instead of a tagset — lets the sanitizer-shorthand output sugar pull an
-    /// engine-attached value (e.g. `_side`) into a real output field. Rejected for the sanitizer
-    /// shorthand itself (see `topic::spec`) — only meaningful today via `DirectedFrom::Annotations`.
-    Annotations,
 }
 
 /// Why a `Producer::Match` exists — a real authored rule table, or the runtime shape one of the
@@ -279,7 +275,6 @@ mod classify_bool_tests {
             TagSet::Obj => base,
             TagSet::Parent => Producer::Parent(Box::new(base)),
             TagSet::ParentOrObj => Producer::parent_or_obj(base),
-            TagSet::Annotations => unreachable!("not exercised by these tests"),
         }
     }
 

@@ -128,9 +128,6 @@ pub fn resolve_output_entry(
             TagSet::Obj => extract,
             TagSet::Parent => Producer::Parent(Box::new(extract)),
             TagSet::ParentOrObj => Producer::parent_or_obj(extract),
-            TagSet::Annotations => anyhow::bail!(
-                "topic outputs.{output}: `from: annotations` is only supported for directed reads, not the sanitizer shorthand"
-            ),
         }
     } else {
         match value {
