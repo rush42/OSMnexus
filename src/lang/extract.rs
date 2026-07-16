@@ -3,7 +3,7 @@
 //! so it's written (and tested) once. Three key-resolution shapes: a single key, an ordered
 //! candidate list (first-present wins), or a direction-sensitive key (`Directed`, resolved against
 //! a full `ExtractCtx` rather than a bare tagset — see its own doc for why it needs more than
-//! `keys::first_present` can give it). `sanitize` lives on every variant, not as a field the
+//! `first_present` can give it). `sanitize` lives on every variant, not as a field the
 //! embedding type carries separately — every current embedding (`Filter`'s tag/num predicates,
 //! `Producer::Extract`) pairs one `sanitize` with exactly one `Extract` 1:1, so there was no
 //! independent axis of variation left to justify keeping them apart; `read`/`read_str` below no
@@ -17,9 +17,9 @@ use std::borrow::Cow;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::lang::keys;
 use crate::lang::producer::ExtractCtx;
 use crate::lang::sanitize::{resolve_sanitize, Sanitizer};
+use crate::osm::types::RawTags;
 
 /// A candidate-key read spec plus its `sanitize` chain. `key`/`keys` accept `Producer`'s
 /// historical field names as canonical with `Filter`'s historical names (`tag`/`first_tag`, and
@@ -101,8 +101,8 @@ impl Extract {
     /// (`Directed`) a side/handedness-resolved key. Not yet run through `sanitize`.
     pub fn read_raw<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<&'a str> {
         match self {
-            Extract::Value { key, .. } => keys::first_present(ctx.obj_tags, std::iter::once(key.as_str())),
-            Extract::Candidates { keys, .. } => keys::first_present(ctx.obj_tags, keys.iter().map(String::as_str)),
+            Extract::Value { key, .. } => first_present(ctx.obj_tags, std::iter::once(key.as_str())),
+            Extract::Candidates { keys, .. } => first_present(ctx.obj_tags, keys.iter().map(String::as_str)),
             Extract::Directed { directed, .. } => read_directed(directed, ctx),
         }
     }
@@ -143,8 +143,14 @@ fn read_directed<'a>(directed: &DirectedKey, ctx: &ExtractCtx<'a>) -> Option<&'a
     match from {
         DirectedFrom::Parent => {
             let tags = ctx.parent_tags?;
-            keys::first_present(tags, [key.as_str(), directed_key.as_str()])
+            first_present(tags, [key.as_str(), directed_key.as_str()])
         }
-        DirectedFrom::Obj => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
+        DirectedFrom::Obj => first_present(ctx.obj_tags, [directed_key.as_str()]),
     }
+}
+
+/// The first-present fallback over an ordered list of candidate keys — the single primitive
+/// behind `Extract::Candidates`. Returns the first key that is set.
+fn first_present<K: AsRef<str>>(tags: &RawTags, keys: impl IntoIterator<Item = K>) -> Option<&str> {
+    keys.into_iter().find_map(|k| tags.get(k.as_ref()).map(String::as_str))
 }

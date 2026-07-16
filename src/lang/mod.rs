@@ -21,11 +21,8 @@
 //!   `Filter`'s tag/num predicates and `Producer::Extract` — factored out so it's written once.
 //! - `sanitize`: the atomic `&str -> atomic` chain machinery (`Sanitizer`/`Step`) underneath an
 //!   `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
-//! - `keys`: generic tag-key selection helpers (`first_present`) shared by `producer`
-//!   and `filter`.
 
 pub mod extract;
 pub mod filter;
-pub mod keys;
 pub mod producer;
 pub mod sanitize;
