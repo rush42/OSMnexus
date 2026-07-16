@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ReactFlow, Background, Controls, type Node, type Edge } from "@xyflow/react";
+import { ReactFlow, Background, BackgroundVariant, Controls, MarkerType, type Node, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
 type DagNode = { id: string; label: string; kind: string };
@@ -8,23 +8,24 @@ type Variant = { labels: string[]; nodes: DagNode[]; edges: DagEdge[] };
 type DagResponse = { topic: string; fields: Record<string, Variant[]> };
 
 // Mirrors the node-fill colors `src/bin/plot_dag.rs` uses for the DOT rendering, keyed on the
-// `kind` string `osmnexus::dag::DagNode` stamps (see `src/dag.rs`).
-const KIND_COLOR: Record<string, string> = {
-  match: "#e2f0d9",
-  rule: "#fdf3d9",
-  extract: "#d9e8fb",
-  directed_extract: "#d9e8fb",
-  const: "#d9e8fb",
-  parent: "#fff2cc",
-  sanitizer: "#f4cccc",
-  step: "#ead1dc",
-  annotate: "#f3f3f3",
+// `kind` string `osmnexus::dag::DagNode` stamps (see `src/dag.rs`) — paired with a matching border
+// tone so nodes read as soft, tinted cards rather than flat fills with a generic gray outline.
+const KIND_COLOR: Record<string, { bg: string; border: string }> = {
+  match: { bg: "#e9f5e0", border: "#a9d18e" },
+  rule: { bg: "#fdf3d9", border: "#e6c66b" },
+  extract: { bg: "#dcebfc", border: "#8fb8e8" },
+  directed_extract: { bg: "#dcebfc", border: "#8fb8e8" },
+  const: { bg: "#dcebfc", border: "#8fb8e8" },
+  parent: { bg: "#fff2cc", border: "#e0c25a" },
+  sanitizer: { bg: "#f8d7d7", border: "#e08a8a" },
+  step: { bg: "#f0dbe8", border: "#d197bd" },
+  annotate: { bg: "#f3f3f4", border: "#d4d6da" },
 };
 
 const NODE_W = 260;
 const NODE_H = 90;
-const GAP_X = 40;
-const GAP_Y = 70;
+const GAP_X = 44;
+const GAP_Y = 76;
 const ANNOTATE_GAP_X = 24;
 
 // A `Producer`/`Sanitizer` tree from `src/dag.rs` is a strict tree (single root, each non-root node
@@ -121,41 +122,51 @@ export default function DagView({ topic, category }: { topic: string; category?:
   const { nodes, edges } = useMemo(() => {
     if (!variant) return { nodes: [] as Node[], edges: [] as Edge[] };
     const positions = layoutTree(variant.nodes, variant.edges);
-    const nodes: Node[] = variant.nodes.map((n) => ({
-      id: n.id,
-      position: positions.get(n.id) ?? { x: 0, y: 0 },
-      data: { label: n.label },
-      style: {
-        background: KIND_COLOR[n.kind] ?? "#eee",
-        border: n.kind === "annotate" ? "1px dashed var(--muted)" : "1px solid var(--border)",
-        borderRadius: 6,
-        padding: 8,
-        fontSize: 11,
-        fontFamily: "var(--font-mono)",
-        whiteSpace: "pre-wrap",
-        width: NODE_W,
-      },
-    }));
+    const nodes: Node[] = variant.nodes.map((n) => {
+      const colors = KIND_COLOR[n.kind] ?? { bg: "#eee", border: "var(--border)" };
+      return {
+        id: n.id,
+        position: positions.get(n.id) ?? { x: 0, y: 0 },
+        data: { label: n.label },
+        style: {
+          background: colors.bg,
+          border: n.kind === "annotate" ? `1.5px dashed ${colors.border}` : `1.5px solid ${colors.border}`,
+          borderRadius: 10,
+          padding: "10px 12px",
+          fontSize: 12.5,
+          fontFamily: "var(--font-mono)",
+          whiteSpace: "pre-wrap",
+          width: NODE_W,
+          boxShadow: "0 1px 2px rgba(16, 24, 40, 0.06), 0 2px 6px rgba(16, 24, 40, 0.05)",
+        },
+      };
+    });
     const edges: Edge[] = variant.edges.map((e) => ({
       id: e.id,
       source: e.source,
       target: e.target,
       label: e.label || undefined,
-      style: { stroke: "var(--border)" },
+      type: "smoothstep",
+      style: { stroke: "#9aa1ac", strokeWidth: 1.5 },
+      labelStyle: { fontFamily: "var(--font-ui)", fontSize: 11, fill: "var(--muted)" },
+      labelBgStyle: { fill: "var(--panel)" },
+      labelBgPadding: [4, 2] as [number, number],
+      labelBgBorderRadius: 4,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#9aa1ac" },
     }));
     return { nodes, edges };
   }, [variant]);
 
   if (error) {
     return (
-      <div style={{ padding: 12, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--danger-text)" }}>
+      <div style={{ padding: 14, fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--danger-text)" }}>
         {error}
       </div>
     );
   }
   if (!response) {
     return (
-      <div style={{ padding: 12, fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--muted)" }}>
+      <div style={{ padding: 14, fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--muted)" }}>
         Loading…
       </div>
     );
@@ -163,15 +174,25 @@ export default function DagView({ topic, category }: { topic: string; category?:
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div style={{ display: "flex", gap: 8, padding: "6px 12px", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
-        <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--muted)" }}>field</span>
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          padding: "10px 14px",
+          borderBottom: "1px solid var(--border)",
+          alignItems: "center",
+          background: "var(--panel)",
+          boxShadow: "var(--shadow-sm)",
+        }}
+      >
+        <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>field</span>
         <select
           value={field}
           onChange={(e) => {
             setField(e.target.value);
             setVariantIdx(0);
           }}
-          style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-mono)", fontSize: 12 }}
+          style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-mono)", fontSize: 13 }}
         >
           {fieldNames.map((f) => (
             <option key={f} value={f}>
@@ -184,7 +205,7 @@ export default function DagView({ topic, category }: { topic: string; category?:
           <select
             value={variantIdx}
             onChange={(e) => setVariantIdx(Number(e.target.value))}
-            style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+            style={{ fontFamily: "var(--font-mono)", fontSize: 13 }}
           >
             {variants.map((v, i) => (
               <option key={i} value={i}>
@@ -200,12 +221,14 @@ export default function DagView({ topic, category }: { topic: string; category?:
           nodes={nodes}
           edges={edges}
           fitView
+          fitViewOptions={{ padding: 0.15 }}
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
+          proOptions={{ hideAttribution: true }}
         >
-          <Background />
-          <Controls />
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1.5} color="#d8dbe0" />
+          <Controls showInteractive={false} />
         </ReactFlow>
       </div>
     </div>

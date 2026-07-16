@@ -506,7 +506,7 @@ export default function App() {
             style={{
               padding: "8px 12px",
               fontFamily: "var(--font-ui)",
-              fontSize: 12,
+              fontSize: 13,
               borderBottom: "1px solid var(--border)",
               display: "flex",
               alignItems: "center",
@@ -539,9 +539,9 @@ export default function App() {
                       className="row"
                       onClick={() => toggleTopicExpanded(topic)}
                       style={{
-                        padding: "6px 12px",
+                        padding: "8px 12px",
                         fontFamily: "var(--font-mono)",
-                        fontSize: 12,
+                        fontSize: 13,
                         fontWeight: 600,
                         cursor: "pointer",
                         display: "flex",
@@ -588,9 +588,9 @@ export default function App() {
                             }
                           }}
                           style={{
-                            padding: "6px 12px",
+                            padding: "7px 12px",
                             fontFamily: "var(--font-mono)",
-                            fontSize: 12,
+                            fontSize: 13,
                             fontWeight: 600,
                             cursor: "pointer",
                             display: "flex",
@@ -610,7 +610,7 @@ export default function App() {
                               if (e.key === "Enter") addCategory(topic);
                             }}
                             placeholder={`new category in ${topic}`}
-                            style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
+                            style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13 }}
                           />
                           <button onClick={() => addCategory(topic)} title="Add category">
                             +
@@ -633,9 +633,9 @@ export default function App() {
                               }
                             }}
                             style={{
-                              padding: "6px 12px",
+                              padding: "7px 12px",
                               fontFamily: "var(--font-mono)",
-                              fontSize: 12,
+                              fontSize: 13,
                               cursor: "pointer",
                               display: "flex",
                               alignItems: "center",
@@ -696,7 +696,7 @@ export default function App() {
                   border: "1px solid #f5c2c0",
                   borderRadius: "var(--radius-sm)",
                   fontFamily: "var(--font-mono)",
-                  fontSize: 12,
+                  fontSize: 13,
                   whiteSpace: "pre-wrap",
                 }}
               >

@@ -9,8 +9,9 @@
   --danger-bg: #fdecec;
   --danger-text: #b3261e;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px rgba(16, 24, 40, 0.06);
-  --radius: 8px;
-  --radius-sm: 6px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --radius: 10px;
+  --radius-sm: 8px;
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -30,6 +31,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -46,20 +48,24 @@ button {
   background: var(--panel);
   color: var(--text);
   border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  font-size: 12px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.4;
   cursor: pointer;
-  transition: background-color 0.12s ease, border-color 0.12s ease;
+  box-shadow: var(--shadow-sm);
+  transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
 }
 
 button:hover {
   background: #f0f2f5;
   border-color: #d3d7de;
+  box-shadow: var(--shadow);
 }
 
 button:active {
   background: #e7eaef;
+  transform: translateY(0.5px);
 }
 
 select,
@@ -69,8 +75,8 @@ input:not([type]) {
   border: 1px solid var(--border);
   background: var(--panel);
   border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  font-size: 12px;
+  padding: 6px 10px;
+  font-size: 13px;
 }
 
 select:focus,
@@ -113,4 +119,32 @@ button:focus {
 
 .icon-btn:hover {
   background: #0000000d;
+}
+
+/* react-flow chrome: bump it up to match the rest of the app's larger, softer controls. */
+.react-flow__controls {
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.react-flow__controls-button {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.react-flow__controls-button:hover {
+  background: #f0f2f5;
+}
+
+.react-flow__controls-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.react-flow__attribution {
+  font-size: 10px;
 }
