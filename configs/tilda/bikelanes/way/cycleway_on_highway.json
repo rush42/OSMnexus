@@ -1,25 +1,16 @@
 {
   "condition": {
-    "and": [
-      {
-        "macro": "is_advisory_or_exclusive"
-      },
-      {
-        "tag": "lane",
-        "eq": "exclusive"
-      }
-    ]
+    "macro": "is_advisory_or_exclusive"
   },
   "excludes": [
     "bicycle_road",
     "bicycle_road_vehicle_destination",
     "crossing",
-    "cycleway_link",
-    "cycleway_on_highway_between_lanes",
-    "cycleway_on_highway_protected",
     "cycleway_adjoining",
     "cycleway_adjoining_or_isolated",
     "cycleway_isolated",
+    "cycleway_link",
+    "cycleway_on_highway_between_lanes",
     "data_no",
     "foot_and_cycleway_segregated_adjoining",
     "foot_and_cycleway_segregated_adjoining_or_isolated",
@@ -46,5 +37,40 @@
     "surface": "surface_from_parent",
     "traffic_mode_left": "traffic_mode_left_from_parking_directional",
     "traffic_mode_right": "traffic_mode_right_from_parking_directional"
-  }
+  },
+  "categories": [
+    {
+      "name": "advisory",
+      "condition": {
+        "tag": "lane",
+        "eq": "advisory"
+      }
+    },
+    {
+      "name": "exclusive",
+      "condition": {
+        "tag": "lane",
+        "eq": "exclusive"
+      },
+      "excludes": [
+        "cycleway_on_highway_protected"
+      ]
+    },
+    {
+      "name": "advisory_or_exclusive",
+      "excludes": [
+        "cycleway_on_highway_advisory",
+        "cycleway_on_highway_exclusive",
+        "cycleway_on_highway_protected"
+      ],
+      "defaults": {
+        "oneway": {
+          "value": "implicit_yes",
+          "annotate": {
+            "confidence": "medium"
+          }
+        }
+      }
+    }
+  ]
 }

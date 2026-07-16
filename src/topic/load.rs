@@ -207,8 +207,10 @@ pub fn load_topic_categories(
     Ok(out)
 }
 
-/// Load all `*.json` category files (sorted) in one kind subfolder into a `CategoriesFile`. The
-/// category `id` is the file stem.
+/// Load all `*.json` category files (sorted) in one kind subfolder into a `CategoriesFile`. Each
+/// file is either a single category (id = file stem, as before) or a *family*: a base object
+/// carrying shared `condition`/`excludes`/`defaults`/`outputs` plus a `categories` array of
+/// variants, each expanded into its own category by `expand_family` (id = `<stem>_<name>`).
 pub fn load_categories_dir(
     dir: &std::path::Path,
     resolved_macros: &Map<String, Value>,
@@ -221,21 +223,100 @@ pub fn load_categories_dir(
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
-    let mut categories: Vec<Value> = Vec::with_capacity(entries.len());
+    let mut categories: Vec<Value> = Vec::new();
     for entry in entries {
         let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
-        let mut obj: Value = serde_json::from_str(&std::fs::read_to_string(entry.path())?)
+        let obj: Value = serde_json::from_str(&std::fs::read_to_string(entry.path())?)
             .with_context(|| format!("parsing {}", entry.path().display()))?;
-        if let Value::Object(ref mut map) = obj {
-            map.insert("id".to_owned(), Value::String(stem));
-        }
-        categories.push(obj);
+        categories.extend(expand_family(&stem, obj)
+            .with_context(|| format!("expanding {}", entry.path().display()))?);
     }
 
     let combined = Value::Object(Map::from_iter([("categories".to_owned(), Value::Array(categories))]));
     let resolved = resolve_refs(combined, resolved_macros, sanitizers)
         .with_context(|| format!("resolving {}", dir.display()))?;
     CategoriesFile::from_categories_json(resolved, macros_filter.clone())
+}
+
+/// Expand one category file's raw JSON into one or more flat category objects, each carrying its
+/// own `id`. A plain object (no `categories` key) is a single category, unchanged apart from
+/// getting `id: <stem>` — today's behavior. A `categories` array turns the file into a *family*:
+/// the object's own `condition`/`excludes`/`defaults`/`outputs` become the shared base, and each
+/// array entry is a variant merged over that base — `condition` ANDed, `excludes` unioned,
+/// `defaults`/`outputs` key-merged (variant wins) — with `id: <stem>_<variant name>`, so ids stay
+/// identical to what today's one-category-per-file layout would produce for the same names.
+fn expand_family(stem: &str, mut obj: Value) -> anyhow::Result<Vec<Value>> {
+    let Some(map) = obj.as_object_mut() else {
+        anyhow::bail!("category file must contain a JSON object");
+    };
+    let Some(Value::Array(variants)) = map.remove("categories") else {
+        // Not a family: restore nothing removed, just stamp the id.
+        map.insert("id".to_owned(), Value::String(stem.to_owned()));
+        return Ok(vec![obj]);
+    };
+
+    let base = map; // remaining keys after removing `categories`: condition/excludes/defaults/outputs/...
+    let base_condition = base.get("condition").cloned();
+    let base_excludes: Vec<Value> =
+        base.get("excludes").and_then(Value::as_array).cloned().unwrap_or_default();
+    let base_defaults = base.get("defaults").and_then(Value::as_object).cloned().unwrap_or_default();
+    let base_outputs = base.get("outputs").and_then(Value::as_object).cloned().unwrap_or_default();
+
+    variants.into_iter().map(|variant| {
+        let mut variant = variant;
+        let Some(vmap) = variant.as_object_mut() else {
+            anyhow::bail!("each family variant must be a JSON object");
+        };
+        let name = match vmap.remove("name") {
+            Some(Value::String(name)) => name,
+            _ => anyhow::bail!("each family variant needs a string `name`"),
+        };
+
+        let condition = match (base_condition.clone(), vmap.remove("condition")) {
+            (Some(b), Some(v)) => Value::Object(Map::from_iter([
+                ("and".to_owned(), Value::Array(vec![b, v])),
+            ])),
+            (Some(b), None) => b,
+            (None, Some(v)) => v,
+            (None, None) => anyhow::bail!("variant '{name}' has no condition (and family has no base condition)"),
+        };
+
+        let mut excludes = base_excludes.clone();
+        if let Some(Value::Array(extra)) = vmap.remove("excludes") {
+            for e in extra {
+                if !excludes.contains(&e) {
+                    excludes.push(e);
+                }
+            }
+        }
+
+        let mut defaults = base_defaults.clone();
+        if let Some(Value::Object(over)) = vmap.remove("defaults") {
+            defaults = merge(&defaults, &over);
+        }
+        let mut outputs = base_outputs.clone();
+        if let Some(Value::Object(over)) = vmap.remove("outputs") {
+            outputs = merge(&outputs, &over);
+        }
+
+        let mut result = Map::new();
+        result.insert("id".to_owned(), Value::String(format!("{stem}_{name}")));
+        result.insert("condition".to_owned(), condition);
+        if !excludes.is_empty() {
+            result.insert("excludes".to_owned(), Value::Array(excludes));
+        }
+        if !defaults.is_empty() {
+            result.insert("defaults".to_owned(), Value::Object(defaults));
+        }
+        if !outputs.is_empty() {
+            result.insert("outputs".to_owned(), Value::Object(outputs));
+        }
+        // Any other variant-specific keys (forward-compatible) pass through untouched.
+        for (k, v) in vmap.iter() {
+            result.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        Ok(Value::Object(result))
+    }).collect()
 }
 
 // ── Sanitizers ───────────────────────────────────────────────────────────────

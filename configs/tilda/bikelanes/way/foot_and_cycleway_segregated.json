@@ -1,0 +1,56 @@
+{
+  "condition": {
+    "macro": "is_foot_and_cycleway_segregated_base"
+  },
+  "excludes": [
+    "bicycle_road",
+    "bicycle_road_vehicle_destination",
+    "cycleway_link",
+    "cycleway_on_highway_between_lanes",
+    "data_no",
+    "not_expected",
+    "separate_geometry",
+    "shared_bus_lane_bike_with_bus",
+    "shared_bus_lane_bus_with_bike",
+    "shared_motor_vehicle_lane"
+  ],
+  "defaults": {
+    "oneway": {
+      "value": "implicit_yes",
+      "annotate": {
+        "confidence": "low"
+      }
+    }
+  },
+  "categories": [
+    {
+      "name": "isolated",
+      "condition": {
+        "macro": "sidepath_isolated"
+      },
+      "excludes": [
+        "cycleway_on_highway_protected",
+        "foot_and_cycleway_shared_isolated"
+      ]
+    },
+    {
+      "name": "adjoining",
+      "condition": {
+        "macro": "sidepath_adjoining"
+      },
+      "excludes": [
+        "cycleway_on_highway_protected",
+        "foot_and_cycleway_shared_adjoining"
+      ]
+    },
+    {
+      "name": "adjoining_or_isolated",
+      "condition": {
+        "macro": "sidepath_unknown"
+      },
+      "excludes": [
+        "foot_and_cycleway_shared_adjoining_or_isolated"
+      ]
+    }
+  ]
+}
