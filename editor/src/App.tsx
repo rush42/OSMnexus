@@ -345,6 +345,52 @@ export default function App() {
           />
         )}
         <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8 }}>
+          {viewMode === "map" && (
+            <>
+              <label
+                style={{
+                  padding: "7px 12px",
+                  background: "rgba(255,255,255,0.85)",
+                  backdropFilter: "blur(6px)",
+                  color: "var(--text)",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  borderRadius: "var(--radius)",
+                  boxShadow: "var(--shadow)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
+                Show intersections
+              </label>
+              <label
+                style={{
+                  padding: "7px 12px",
+                  background: "rgba(255,255,255,0.85)",
+                  backdropFilter: "blur(6px)",
+                  color: "var(--text)",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  borderRadius: "var(--radius)",
+                  boxShadow: "var(--shadow)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
+                Follow selection
+              </label>
+            </>
+          )}
           <div style={{ display: "flex", gap: 4 }}>
             <button
               onClick={() => setViewMode("map")}
@@ -396,52 +442,6 @@ export default function App() {
               Categorize
             </button>
           </div>
-          {viewMode === "map" && (
-            <>
-              <label
-                style={{
-                  padding: "7px 12px",
-                  background: "rgba(255,255,255,0.85)",
-                  backdropFilter: "blur(6px)",
-                  color: "var(--text)",
-                  fontFamily: "var(--font-ui)",
-                  fontSize: 13,
-                  borderRadius: "var(--radius)",
-                  boxShadow: "var(--shadow)",
-                  border: "1px solid var(--border)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
-                Show intersections
-              </label>
-              <label
-                style={{
-                  padding: "7px 12px",
-                  background: "rgba(255,255,255,0.85)",
-                  backdropFilter: "blur(6px)",
-                  color: "var(--text)",
-                  fontFamily: "var(--font-ui)",
-                  fontSize: 13,
-                  borderRadius: "var(--radius)",
-                  boxShadow: "var(--shadow)",
-                  border: "1px solid var(--border)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
-                Follow selection
-              </label>
-            </>
-          )}
         </div>
         {viewMode === "map" && (!selected || extracting) && (
           <div

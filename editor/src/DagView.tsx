@@ -236,6 +236,8 @@ export default function DagView({
           edges={edges}
           fitView
           fitViewOptions={{ padding: 0.15 }}
+          minZoom={0.05}
+          maxZoom={2}
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
