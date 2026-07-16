@@ -16,7 +16,7 @@ services:
       - MAX_BBOX_M=${MAX_BBOX_M:-10000}
       # Uncomment (or set on the CLI) to use host-built binaries instead of the image's baked-in
       # ones, for iterating on Rust code without a full image rebuild:
-      # - PIPELINE_BIN_PATH=/repo/target/release/osmnexus
-      # - DAG_JSON_BIN_PATH=/repo/target/release/dag_json
+      - PIPELINE_BIN_PATH=/repo/target/release/osmnexus
+      - DAG_JSON_BIN_PATH=/repo/target/release/dag_json
     ports:
       - "5173:5173"

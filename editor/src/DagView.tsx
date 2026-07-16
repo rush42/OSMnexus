@@ -78,7 +78,7 @@ function maxNodeCount(variants: Variant[]): number {
 // producer variant (categories sharing the same effective producer for that field collapse into
 // one variant; see `src/bin/dag_json.rs`). Fetches fresh on every `topic` change since the tree
 // reflects whatever's currently on disk in the (possibly just-edited) config.
-export default function DagView({ topic }: { topic: string }) {
+export default function DagView({ topic, category }: { topic: string; category?: string | null }) {
   const [response, setResponse] = useState<DagResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<string>("");
@@ -109,6 +109,14 @@ export default function DagView({ topic }: { topic: string }) {
   );
   const variants = response?.fields[field] ?? [];
   const variant = variants[variantIdx];
+
+  // A focused category (from the sidebar tree) limits which variant this view shows — jump to
+  // whichever variant covers that category instead of leaving the last-picked one selected.
+  useEffect(() => {
+    if (!category || variants.length <= 1) return;
+    const idx = variants.findIndex((v) => v.labels.includes(category));
+    if (idx > 0) setVariantIdx(idx);
+  }, [category, variants]);
 
   const { nodes, edges } = useMemo(() => {
     if (!variant) return { nodes: [] as Node[], edges: [] as Edge[] };
@@ -187,7 +195,15 @@ export default function DagView({ topic }: { topic: string }) {
         )}
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        <ReactFlow nodes={nodes} edges={edges} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}>
+        <ReactFlow
+          key={`${field}-${variantIdx}`}
+          nodes={nodes}
+          edges={edges}
+          fitView
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+        >
           <Background />
           <Controls />
         </ReactFlow>

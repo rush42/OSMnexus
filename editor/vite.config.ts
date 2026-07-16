@@ -163,9 +163,45 @@ async function readMergedFeatureCollections(outDir: string, topics: string[]) {
   };
 }
 
-async function categoryFilePath(topic: string, kind: string, name: string) {
+// A category file is either a single category (id = file stem) or a *family*: an object with a
+// `categories` array of variants, each with a `name`, whose id is `<stem>_<name>` — mirrors
+// `expand_family` in `src/topic/load.rs`. Lists every id a file produces.
+async function categoryIdsInFile(filePath: string): Promise<string[]> {
+  const stem = path.basename(filePath, ".json");
+  let obj: unknown;
+  try {
+    obj = JSON.parse(await fs.readFile(filePath, "utf-8"));
+  } catch {
+    return [stem];
+  }
+  const categories = (obj as { categories?: unknown }).categories;
+  if (!Array.isArray(categories)) return [stem];
+  return categories
+    .filter((v): v is { name: string } => typeof (v as { name?: unknown })?.name === "string")
+    .map((v) => `${stem}_${v.name}`);
+}
+
+// Resolves a category id (as shown in the sidebar / stamped on classified features) back to the
+// physical file that defines it — either `<id>.json` directly, or a family file whose `categories`
+// array contains a variant producing that id.
+async function categoryFilePath(topic: string, kind: string, name: string): Promise<string> {
   const configDir = await ensureConfigSelected();
-  return path.join(configDir, topic, kind, `${name}.json`);
+  const dir = path.join(configDir, topic, kind);
+  let entries: string[] = [];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    // Directory doesn't exist yet (new category being created in a fresh kind) — fall back to the
+    // flat-file path so the caller's write creates it.
+    return path.join(dir, `${name}.json`);
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const filePath = path.join(dir, entry);
+    if ((await categoryIdsInFile(filePath)).includes(name)) return filePath;
+  }
+  // No existing file produces this id — new category, create it flat.
+  return path.join(dir, `${name}.json`);
 }
 
 // Path segments come straight from the request; a blank/malformed one would silently create a
@@ -298,7 +334,9 @@ function liveEditorApi(): Plugin {
               continue;
             }
             for (const entry of entries) {
-              if (entry.endsWith(".json")) categories.push({ kind, name: entry.slice(0, -".json".length) });
+              if (!entry.endsWith(".json")) continue;
+              const ids = await categoryIdsInFile(path.join(topicDir, kind, entry));
+              for (const name of ids) categories.push({ kind, name });
             }
           }
           return sendJson(res, 200, { categories });
@@ -318,7 +356,21 @@ function liveEditorApi(): Plugin {
         if (categoryMatch && req.method === "DELETE") {
           const [topic, kind, name] = categoryMatch.slice(1).map(decodeURIComponent);
           try {
-            await fs.unlink(await categoryFilePath(topic, kind, name));
+            const filePath = await categoryFilePath(topic, kind, name);
+            const stem = path.basename(filePath, ".json");
+            const raw = await fs.readFile(filePath, "utf-8");
+            const obj = JSON.parse(raw);
+            if (Array.isArray(obj.categories) && name !== stem) {
+              // Family file: drop just this id's variant, keep its siblings.
+              obj.categories = obj.categories.filter((v: { name?: string }) => `${stem}_${v.name}` !== name);
+              if (obj.categories.length === 0) {
+                await fs.unlink(filePath);
+              } else {
+                await fs.writeFile(filePath, JSON.stringify(obj, null, 2) + "\n", "utf-8");
+              }
+            } else {
+              await fs.unlink(filePath);
+            }
             return sendJson(res, 200, { ok: true });
           } catch (err) {
             return sendJson(res, 404, { error: String(err) });

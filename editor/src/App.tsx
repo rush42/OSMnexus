@@ -326,7 +326,7 @@ export default function App() {
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
       <div style={{ flex: "1 1 60%", position: "relative" }}>
         {viewMode === "tree" && active.topic ? (
-          <DagView topic={active.topic} />
+          <DagView topic={active.topic} category={active.isTopicConfig ? null : active.name || null} />
         ) : (
           <Map
             bounds={bounds}
@@ -582,8 +582,10 @@ export default function App() {
                           className="row"
                           onClick={() => {
                             setActive({ topic, kind: "", name: "", isTopicConfig: true });
-                            setManualSelect(true);
-                            setFocusTick((t) => t + 1);
+                            if (viewMode === "map") {
+                              setManualSelect(true);
+                              setFocusTick((t) => t + 1);
+                            }
                           }}
                           style={{
                             padding: "6px 12px",
@@ -621,11 +623,13 @@ export default function App() {
                             onClick={() => {
                               if (active.topic === c.topic && active.kind === c.kind && active.name === c.name) {
                                 setActive(NO_SELECTION);
-                                setManualSelect(false);
+                                if (viewMode === "map") setManualSelect(false);
                               } else {
                                 setActive(c);
-                                setManualSelect(true);
-                                setFocusTick((t) => t + 1);
+                                if (viewMode === "map") {
+                                  setManualSelect(true);
+                                  setFocusTick((t) => t + 1);
+                                }
                               }
                             }}
                             style={{

@@ -214,14 +214,70 @@ pub fn build(cats: &CategoriesFile, max_depth: usize) -> DecisionTree {
         .map(|n| to_nnf(filter_to_expr(node_condition(cats, n))))
         .collect();
 
+    // First-match semantics mean node `i` only ever decides anything once every earlier node has
+    // failed, so its *effective* condition is `cond_i ∧ ¬cond_1 ∧ … ∧ ¬cond_{i-1}` — fold that in
+    // once, here, at load time. This both hands the tree builder a smaller residual to branch on
+    // and, when a node's residual collapses to `Expr::False` outright, proves it's fully shadowed
+    // (dead) before the tree is even built.
+    let neg_exprs: Vec<Expr> =
+        exprs.iter().map(|e| to_nnf(Expr::Not(Box::new(e.clone())))).collect();
+    let mut residuals: Vec<Expr> = Vec::with_capacity(exprs.len());
+    for i in 0..exprs.len() {
+        let mut parts = Vec::with_capacity(i + 1);
+        parts.push(exprs[i].clone());
+        parts.extend(neg_exprs[..i].iter().cloned());
+        residuals.push(conjoin(parts));
+    }
+
     // Tags used anywhere with a `sanitize` chain are ineligible as branch keys.
     let mut banned: FxHashSet<String> = FxHashSet::default();
     for n in &cats.order {
         collect_sanitized_tags(node_condition(cats, n), &mut banned);
     }
 
-    let all: Vec<Candidate> = exprs.into_iter().enumerate().collect();
+    let all: Vec<Candidate> = residuals.into_iter().enumerate().collect();
     build_rec(&banned, all, &mut FxHashSet::default(), &mut FxHashSet::default(), 0, max_depth)
+}
+
+/// Build an `And` of `parts` (each already NNF), flattening nested `And`s and collapsing to
+/// `Expr::False` when two direct top-level conjuncts are exact-opposite literals of the same
+/// predicate. Doesn't attempt full DNF-level contradiction detection (that's `to_dnf` +
+/// `check_term_consistency`, used by the overlap lint): expanding to DNF here risks exponential
+/// blowup once many prior `Or`-shaped conditions are negated and ANDed together, so this only
+/// catches contradictions between literals that are already top-level conjuncts, not ones buried
+/// across `Or` branches — the rest of a node's residual complexity gets resolved lazily, per
+/// branch, by `simplify`/`kleene` during the tree walk below.
+fn conjoin(parts: Vec<Expr>) -> Expr {
+    let mut lits: Vec<Literal> = Vec::new();
+    let mut rest: Vec<Expr> = Vec::new();
+    let mut stack = parts;
+    while let Some(p) = stack.pop() {
+        match p {
+            Expr::True => {}
+            Expr::False => return Expr::False,
+            Expr::And(xs) => stack.extend(xs),
+            Expr::Lit(l) => lits.push(l),
+            other => rest.push(other),
+        }
+    }
+    for l in &lits {
+        let opposite = match l {
+            Literal::Pos(p) => Literal::Neg(p.clone()),
+            Literal::Neg(p) => Literal::Pos(p.clone()),
+        };
+        if lits.contains(&opposite) {
+            return Expr::False;
+        }
+    }
+    lits.sort();
+    lits.dedup();
+    let mut children: Vec<Expr> = lits.into_iter().map(Expr::Lit).collect();
+    children.extend(rest);
+    match children.len() {
+        0 => Expr::True,
+        1 => children.into_iter().next().unwrap(),
+        _ => Expr::And(children),
+    }
 }
 
 fn node_condition<'a>(cats: &'a CategoriesFile, n: &'a OrderedNode) -> &'a Filter {
@@ -728,3 +784,4 @@ mod tests {
         }
     }
 }
+
