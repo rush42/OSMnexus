@@ -21,10 +21,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
-use crate::lang::classifier::Rule;
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
-use crate::lang::producer::{DirectedFrom, MatchOrigin, Producer};
+use crate::lang::producer::{DirectedFrom, MatchOrigin, Producer, Rule};
 use crate::lang::sanitize::{ReplaceRule, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
@@ -51,7 +50,7 @@ enum ProducerJson {
     /// `Producer::parent_or_obj` for the `Match`+`Parent` equivalence this desugars to.
     ParentOrObj { parent_or_obj: Box<Producer> },
     /// Try each branch in order; the first one that produces anything wins, carrying its own
-    /// branch-level `annotate`. Desugars to an all-`when: true` `Match` (see `classifier::match_rules`
+    /// branch-level `annotate`. Desugars to an all-`when: true` `Match` (see `producer::match_rules`
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
     /// equivalence exact).
     Fallback { fallback: Vec<Producer> },

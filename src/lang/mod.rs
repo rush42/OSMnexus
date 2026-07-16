@@ -14,17 +14,16 @@
 //! this module's `Deserialize` impls ever run, so there's only one (resolved) tier of each type.
 //! - `filter`: the `Filter` predicate AST and `eval`.
 //! - `producer`: the `Producer` value engine — really just `Match`/`Extract` (`fallback` is
-//!   JSON-only sugar for a `Match`), its `eval`, and its context (`ExtractCtx`/`TagSet`) and
-//!   result (`Produced`) types.
+//!   JSON-only sugar for a `Match`), its `eval`, its context (`ExtractCtx`/`TagSet`) and result
+//!   (`Produced`) types, and the generic first-match-wins rule table (`Rule`/`match_rules`)
+//!   underneath `Producer::Match`.
 //! - `extract`: `Extract`, the "read a raw tag value, optionally sanitized" logic shared by every
 //!   `Filter`'s tag/num predicates and `Producer::Extract` — factored out so it's written once.
 //! - `sanitize`: the atomic `&str -> atomic` chain machinery (`Sanitizer`/`Step`) underneath an
 //!   `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
-//! - `classifier`: the generic first-match-wins rule table underneath `Producer::Match`.
 //! - `keys`: generic tag-key selection helpers (`first_present`) shared by `producer`
 //!   and `filter`.
 
-pub mod classifier;
 pub mod extract;
 pub mod filter;
 pub mod keys;

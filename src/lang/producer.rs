@@ -17,12 +17,50 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::lang::classifier::Rule;
 use crate::lang::extract::Extract;
-use crate::lang::filter::Filter;
+use crate::lang::filter::{self, Filter};
 use crate::lang::keys;
 use crate::lang::sanitize::{resolve_sanitize, Sanitizer};
 use crate::osm::types::RawTags;
+
+/// One classifier rule — `when`/`value` are already-resolved `Filter`/`Producer` (no macro or
+/// named-sanitizer reference can reach here; see their own docs), so a plain derive suffices, no
+/// hand-written `parser` impl needed. What `match_rules` evaluates.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Rule {
+    pub when: Filter,
+    pub value: Producer,
+}
+
+/// First rule whose `when` holds *and* whose value actually produces something, in order — a
+/// matching rule that produces nothing doesn't stop the search, it just tries the next rule. This
+/// is what lets `Producer::Match` subsume a plain ordered fallback chain (every rule `when: true`,
+/// first branch that produces anything wins) as well as a conditional (one real `when`, then an
+/// unconditional trailing rule for the "else"), in addition to the classic flat classify table.
+///
+/// A winning branch that carries its own `annotate` (e.g. an `Extract`'s own field, explicitly
+/// set) is used as-is; a branch that produces an *empty* `annotate` (e.g. a bare `Producer::Const`
+/// literal, which has no way to spell one) inherits `own_consts` — the enclosing `Producer::Match`'s
+/// own `annotate` field — instead.
+///
+/// Evaluated against a full `ExtractCtx` — same predicate evaluator (`filter::eval`) and same
+/// context shape category matching uses, so a rule's `when` can see side/prefix/infix/parent, not
+/// just raw tags. Does not apply a `default` — callers needing one (`Producer::Match`) apply it
+/// themselves.
+pub fn match_rules(rules: &[Rule], ctx: &ExtractCtx, own_consts: &Map<String, Value>) -> Option<Produced> {
+    for rule in rules {
+        if !filter::eval(&rule.when, ctx) {
+            continue;
+        }
+        if let Some(mut produced) = rule.value.eval(ctx) {
+            if produced.annotate.is_empty() {
+                produced.annotate = own_consts.clone();
+            }
+            return Some(produced);
+        }
+    }
+    None
+}
 
 /// A produced value plus optional provenance. The `annotate` are arbitrary key/value pairs the
 /// winning fallback branch contributes; each is emitted as `<field>_<k>` (e.g.
@@ -138,7 +176,7 @@ pub enum Producer {
     /// `minzoom` number, a filter-driven bool), a plain `Extract`, or a further nested `Match` —
     /// which is what lets this one variant also subsume conditionals and ordered fallback chains: a
     /// rule matches when its `when` holds, and — if its value is a producer that produces nothing —
-    /// matching doesn't stop the search, the next rule is tried (see `classifier::match_rules`).
+    /// matching doesn't stop the search, the next rule is tried (see `match_rules`).
     /// `annotate` is the provenance a rule whose value produces an *empty* `annotate` of its own
     /// (chiefly `Const`, which has no way to spell one) inherits when it produces. With no `default`,
     /// returns `None` when no rule matches — letting a category const default or an enclosing
@@ -172,7 +210,7 @@ pub enum Producer {
     /// producer tree bottoms out at. Always produces; has no on-disk way to carry its own
     /// `annotate` (a bare JSON literal has nowhere to hang one), so it's always empty here — a
     /// `Const` used as a `Rule` branch inherits the enclosing `Match`'s `annotate` instead (see
-    /// `classifier::match_rules`).
+    /// `match_rules`).
     Const {
         value: Value,
         annotate: Map<String, Value>,
@@ -213,7 +251,7 @@ impl Producer {
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
             Producer::Match { rules, default, annotate, .. } => {
-                crate::lang::classifier::match_rules(rules, ctx, annotate)
+                match_rules(rules, ctx, annotate)
                     .or_else(|| default.clone().map(|value| Produced { value, annotate: annotate.clone() }))
             }
 
@@ -290,7 +328,6 @@ fn read_directed<'a>(key: &str, from: DirectedFrom, ctx: &ExtractCtx<'a>) -> Opt
 #[cfg(test)]
 mod classify_bool_tests {
     use super::*;
-    use crate::lang::classifier::Rule;
     use crate::lang::filter::Filter;
 
     fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
