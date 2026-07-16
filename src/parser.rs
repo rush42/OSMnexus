@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
-use crate::lang::extract::{DirectedFrom, DirectedKey, Extract};
+use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer, Rule};
 use crate::lang::sanitize::{ReplaceRule, Sanitizer, Step, StrOrVec};
@@ -31,16 +31,17 @@ use crate::lang::sanitize::{ReplaceRule, Sanitizer, Step, StrOrVec};
 /// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, `Parent` wrapping any nested
 /// `Producer` shape to scope it to the parent way's tags, `Fallback`'s `fallback` and
 /// `ParentOrObj`'s `parent_or_obj` sugar (both folded into an equivalent `Match` in `Deserialize`
-/// below, so a `Producer` value is never observably either), `Directed`'s `directed` sugar for
-/// `Producer::DirectedExtract` (`{ "directed": { "key": ..., "from"?: "obj"|"parent"|"annotations" } }`
-/// — `from` is `DirectedFrom`, not the general `TagSet` (no `parent_or_obj`; see `DirectedFrom`'s own
-/// doc for why), defaulting to `obj` same as `TagSet` does), and
+/// below, so a `Producer` value is never observably either), and
 /// `Tag`/`TagOr`'s `{"tag": ...}`/`{"tag_or": ..., "or": ...}` shorthands (fold into a plain
 /// `Extract`, or a `Match` using its own `default` for the "or" branch — so neither ever exists as
 /// its own runtime variant; a bare literal needs no sugar here at all, since `Const`'s a real
 /// variant that deserializes straight from a bare JSON value). Untagged, tried in this order
 /// (more-specific/required-field shapes before `Extract`, whose fields are all optional and so
 /// would otherwise match everything first, and before `Const`, the bare-JSON catch-all).
+///
+/// A direction-sensitive read (`{ "directed": {...} }`) is deliberately NOT a `Producer` shape —
+/// see `categorize::transform::InputTransform::DirectedExtract`'s own doc for why it moved to its
+/// own transform-pipeline step instead.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum ProducerJson {
@@ -54,8 +55,6 @@ enum ProducerJson {
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
     /// equivalence exact).
     Fallback { fallback: Vec<Producer> },
-    /// Direction-sensitive read of `key` — see `Extract::Directed`.
-    Directed { directed: DirectedRepr },
     /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
     Tag { tag: String },
     /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
@@ -75,17 +74,6 @@ enum ProducerJson {
     Const(Value),
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct DirectedRepr {
-    key: String,
-    #[serde(default)]
-    from: DirectedFrom,
-    #[serde(default)]
-    sanitize: Option<Sanitizer>,
-    #[serde(default)]
-    annotate: Map<String, Value>,
-}
-
 impl<'de> Deserialize<'de> for Producer {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -99,13 +87,6 @@ impl<'de> Deserialize<'de> for Producer {
                 default: None,
                 annotate: Map::new(),
                 origin: MatchOrigin::Fallback,
-            },
-            ProducerJson::Directed { directed } => Producer::Extract {
-                extract: Extract::Directed {
-                    directed: DirectedKey { key: directed.key, from: directed.from },
-                    sanitize: directed.sanitize,
-                },
-                annotate: directed.annotate,
             },
             ProducerJson::Tag { tag } => {
                 Producer::Extract { extract: Extract::Value { key: tag, sanitize: None }, annotate: Map::new() }

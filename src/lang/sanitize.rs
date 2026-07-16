@@ -42,7 +42,7 @@ pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Sanitize
 /// Evaluate a resolved `sanitize` chain against `raw`. `None` is the identity transform
 /// (always succeeds) — every `sanitize:` field is `Option<Sanitizer>`, already resolved by the
 /// time `Filter`/`Producer` deserialize it (see `resolve_named_sanitizer`'s own doc).
-pub fn resolve_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value> {
+pub fn eval_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value> {
     match sanitize {
         None => Some(identity(raw)),
         Some(chain) => chain.eval(raw),

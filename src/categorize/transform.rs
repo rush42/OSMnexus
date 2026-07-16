@@ -8,10 +8,13 @@
 //! only the *construction* of a `Vec<TransformStep>` from `topic.json`'s `input_transforms`/
 //! `split_sides` is (see `topic::runner::TopicRunner::load`).
 
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::lang::extract::first_present;
 use crate::lang::filter::{eval, Filter};
 use crate::lang::producer::{ExtractCtx, Producer};
+use crate::lang::sanitize::{eval_sanitize, Sanitizer};
 use crate::osm::types::RawTags;
 
 // ── InputTransform ──────────────────────────────────────────────────────────────
@@ -55,6 +58,19 @@ pub enum InputTransform {
         stamp_value: String,
         stamp_nested_under: Vec<String>,
     },
+    /// Direction-sensitive read of `key`, written onto `output` — resolves `key`'s
+    /// `:forward`/`:backward` variant from `annotations["_side"]` + the global
+    /// left/right-hand-traffic setting (`traffic::is_left_hand_traffic`), producing nothing for a
+    /// `self` object (no direction to resolve). Every real use is exactly this shape: a step
+    /// placed right after the unnest steps that built this (already-split) object, so `apply`'s
+    /// own `parent_tags` is all the dual-tagset access it needs — no separate `ExtractCtx`-per-read
+    /// plumbing the way a live `Filter`/`Match` read would require.
+    DirectedExtract {
+        output: String,
+        key: String,
+        from: DirectedFrom,
+        sanitize: Option<Sanitizer>,
+    },
     /// Remove this object from the active set when `when` holds — `apply`'s only variant that
     /// returns `false`. Every other variant is a pure tag mutation and always keeps the object;
     /// `Drop` carries no mutation of its own. A freshly-cloned object starts empty, so
@@ -63,6 +79,22 @@ pub enum InputTransform {
     /// ever unnested into it", expressed through the same `Filter` engine as everything else —
     /// see `CloneStep`.
     Drop { when: Filter },
+}
+
+/// Which tagset `InputTransform::DirectedExtract` resolves its directed key against — its own,
+/// narrower vocabulary, distinct from the general `TagSet` (`producer`): a directed read needs
+/// both `parent_tags` and the object's own `obj_tags` simultaneously (parent tags need the
+/// two-key, bare-then-directed fallback), so it can't be expressed as a plain "swap `obj_tags`,
+/// recurse" wrapper the way every other tagset-scoping need is. No `ParentOrObj`: unlike the
+/// general case, a directed read has nothing distinct to commit to — a `ParentOrObj` here could
+/// only ever mean "try that, then plain `Obj`," which nobody's asked for; keeping it out of the
+/// type means it can't be spelled by accident and silently behave like `Obj`.
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectedFrom {
+    #[default]
+    Obj,
+    Parent,
 }
 
 impl InputTransform {
@@ -77,7 +109,7 @@ impl InputTransform {
         match self {
             InputTransform::TagRule { output, source } => {
                 let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
-                if let Some(p) = source.eval(&ctx) {
+                if let Some(p) = source.eval(&ctx).into_option() {
                     match p.value {
                         Value::Null => { tags.remove(output); }
                         Value::String(s) => { tags.insert(output.clone(), s); }
@@ -111,6 +143,18 @@ impl InputTransform {
                 if let Some(key) = record_infix_as {
                     if tags.len() > before {
                         annotations.insert((*key).to_owned(), Value::String((*infix).to_owned()));
+                    }
+                }
+                true
+            }
+            InputTransform::DirectedExtract { output, key, from, sanitize } => {
+                if let Some(raw) = read_directed(tags, parent_tags, annotations, key, *from) {
+                    match eval_sanitize(sanitize.as_ref(), raw) {
+                        None | Some(Value::Null) => {}
+                        Some(Value::String(s)) => { tags.insert(output.clone(), s); }
+                        Some(other) => panic!(
+                            "directed extract for '{output}' produced a non-string, non-null value: {other}"
+                        ),
                     }
                 }
                 true
@@ -207,6 +251,36 @@ pub fn run_transform_steps(
         }
     }
     true
+}
+
+/// The read strategy behind `InputTransform::DirectedExtract` — needs both `tags` (to guard
+/// against overriding an already-set key) and, when `from: Parent`, `parent_tags` (tried
+/// bare-key-then-directed-key) at once, which is why it's a step in the transform pipeline rather
+/// than a generic `Extract` shape: `apply`'s signature already carries both.
+fn read_directed<'a>(
+    tags: &'a RawTags,
+    parent_tags: Option<&'a RawTags>,
+    annotations: &Map<String, Value>,
+    key: &str,
+    from: DirectedFrom,
+) -> Option<&'a str> {
+    if tags.contains_key(key) {
+        return None; // already set (e.g. by an earlier unnest) — don't override it
+    }
+    let obj_side = annotations.get("_side").and_then(Value::as_str).unwrap_or("self");
+    let suffix = match (obj_side, crate::traffic::is_left_hand_traffic()) {
+        ("left", false) | ("right", true) => ":backward",
+        ("right", false) | ("left", true) => ":forward",
+        _ => return None, // "self": no direction to resolve
+    };
+    let directed_key = format!("{key}{suffix}");
+    match from {
+        DirectedFrom::Parent => {
+            let parent = parent_tags?;
+            first_present(parent, [key, directed_key.as_str()])
+        }
+        DirectedFrom::Obj => first_present(tags, [directed_key.as_str()]),
+    }
 }
 
 // ── Dynamic-key-iteration helpers ───────────────────────────────────────────────
@@ -387,6 +461,82 @@ mod unnest_tags_tests {
 
         obj.insert("cycleway".to_owned(), "lane".to_owned());
         assert!(drop.apply(&mut obj, &mut annotations, None));
+    }
+}
+
+#[cfg(test)]
+mod directed_extract_tests {
+    use super::*;
+
+    fn tags(pairs: &[(&str, &str)]) -> RawTags {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    fn side_annotations(side: &str) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("_side".to_owned(), Value::String(side.to_owned()));
+        m
+    }
+
+    fn step(key: &str, from: DirectedFrom) -> InputTransform {
+        InputTransform::DirectedExtract { output: key.to_owned(), key: key.to_owned(), from, sanitize: None }
+    }
+
+    #[test]
+    fn parent_source_prefers_existing_obj_value() {
+        let mut obj = tags(&[("cycleway:lanes", "existing")]);
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        let mut annotations = side_annotations("right");
+        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
+        assert_eq!(obj.get("cycleway:lanes").map(String::as_str), Some("existing"));
+    }
+
+    #[test]
+    fn parent_source_falls_back_to_bare_then_directed_key() {
+        let mut obj = RawTags::default();
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        let mut annotations = side_annotations("right");
+        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
+        assert_eq!(obj.get("cycleway:lanes").map(String::as_str), Some("lane"));
+
+        let mut obj = RawTags::default();
+        let parent = RawTags::default();
+        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
+        assert!(!obj.contains_key("cycleway:lanes"));
+    }
+
+    #[test]
+    fn self_source_reads_from_obj_own_directed_key() {
+        let mut obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
+        let mut annotations = side_annotations("right");
+        step("traffic_sign", DirectedFrom::Obj).apply(&mut obj, &mut annotations, None);
+        assert_eq!(obj.get("traffic_sign").map(String::as_str), Some("DE:1022-10"));
+    }
+
+    #[test]
+    fn noop_for_self_side() {
+        let mut obj = RawTags::default();
+        let parent = tags(&[("cycleway:lanes:forward", "lane")]);
+        let mut annotations = side_annotations("self");
+        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
+        assert!(!obj.contains_key("cycleway:lanes"));
+    }
+
+    #[test]
+    fn handedness_flips_suffix() {
+        let parent = tags(&[("cycleway:lanes:backward", "lane")]);
+
+        // Right-hand traffic (global default in tests): Side::Right reads `:forward`, not
+        // `:backward` — so this should NOT match.
+        let mut obj = RawTags::default();
+        let mut right = side_annotations("right");
+        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut right, Some(&parent));
+        assert!(!obj.contains_key("cycleway:lanes"));
+
+        let mut obj = RawTags::default();
+        let mut left = side_annotations("left");
+        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut left, Some(&parent));
+        assert_eq!(obj.get("cycleway:lanes").map(String::as_str), Some("lane"));
     }
 }
 

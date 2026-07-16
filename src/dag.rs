@@ -18,7 +18,7 @@ use crate::lang::sanitize::{Sanitizer, Step};
 pub struct DagNode {
     pub id: String,
     pub label: String,
-    /// One of "match"/"rule"/"extract"/"directed_extract"/"const"/"parent"/"sanitizer"/"step" —
+    /// One of "match"/"rule"/"extract"/"const"/"parent"/"sanitizer"/"step" —
     /// lets the frontend style nodes by kind without parsing `label`.
     pub kind: &'static str,
 }
@@ -131,9 +131,6 @@ fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) ->
             let (label, kind) = match extract {
                 Extract::Value { key, .. } => (format!("extract\nkey: {key}"), "extract"),
                 Extract::Candidates { keys, .. } => (format!("extract\nkeys: {keys:?}"), "extract"),
-                Extract::Directed { directed, .. } => {
-                    (format!("directed extract\nkey: {}\nfrom: {:?}", directed.key, directed.from), "directed_extract")
-                }
             };
             let node = g.node(label, kind);
             annotate_node(g, annotate_to.unwrap_or(&node), annotate);

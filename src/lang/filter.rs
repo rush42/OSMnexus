@@ -79,7 +79,6 @@ impl Filter {
             match extract {
                 Extract::Value { key, .. } => key.clone(),
                 Extract::Candidates { keys, .. } => format!("[{}]", keys.join("|")),
-                Extract::Directed { directed, .. } => format!("{} (directed)", directed.key),
             }
         }
         // A predicate whose comparison already reads as a keyword (`in`, `contains`, ...) doesn't
@@ -188,7 +187,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
 /// available: classification is tag-only.
 fn read_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
     match extract.sanitize() {
-        Some(_) => num_from_value(&extract.read(ctx)?),
+        Some(_) => num_from_value(&extract.read(ctx).into_option()?),
         None => extract.read_raw(ctx)?.trim().parse().ok(),
     }
 }

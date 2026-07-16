@@ -12,7 +12,7 @@ use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{Producer, TagSet};
 use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer, StrOrVec};
-use crate::categorize::transform::{CloneStep, InputTransform, TransformStep};
+use crate::categorize::transform::{CloneStep, DirectedFrom, InputTransform, TransformStep};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
@@ -210,6 +210,16 @@ impl TransformsSpec {
 pub enum TransformSpec {
     /// `{ "output": ..., <producer fields> }`.
     TagRule { output: String, source: Producer },
+    /// `{ "output": ..., "directed": { "key": ..., "from"?: "obj"|"parent", "sanitize"?: ... } }` —
+    /// identified by its required `directed` field (checked before the generic `TagRule` catch-all,
+    /// since a bare `Producer::deserialize` no longer accepts this shape). See
+    /// `categorize::transform::InputTransform::DirectedExtract`.
+    DirectedExtract {
+        output: String,
+        key: String,
+        from: DirectedFrom,
+        sanitize: Option<Sanitizer>,
+    },
     /// `{ "prefix": ..., "stamp_key": ..., "stamp_value": ..., "stamp_nested_under"?: [...] }` —
     /// identified by its required `stamp_key` field.
     StripPrefix {
@@ -276,6 +286,27 @@ impl<'de> Deserialize<'de> for TransformSpec {
             struct Repr { drop: Filter }
             let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
             Ok(TransformSpec::Drop { when: r.drop })
+        } else if v.contains_key("directed") {
+            #[derive(Deserialize)]
+            struct DirectedRepr {
+                key: String,
+                #[serde(default)]
+                from: DirectedFrom,
+                #[serde(default)]
+                sanitize: Option<Sanitizer>,
+            }
+            #[derive(Deserialize)]
+            struct Repr {
+                output: String,
+                directed: DirectedRepr,
+            }
+            let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
+            Ok(TransformSpec::DirectedExtract {
+                output: r.output,
+                key: r.directed.key,
+                from: r.directed.from,
+                sanitize: r.directed.sanitize,
+            })
         } else {
             let output = v
                 .get("output")
@@ -294,6 +325,8 @@ impl TransformSpec {
     fn into_input_transform(self) -> InputTransform {
         match self {
             TransformSpec::TagRule { output, source } => InputTransform::TagRule { output, source },
+            TransformSpec::DirectedExtract { output, key, from, sanitize } =>
+                InputTransform::DirectedExtract { output, key, from, sanitize },
             TransformSpec::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } =>
                 InputTransform::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under },
             TransformSpec::Unnest { prefix, infix, meta, guard, record_infix_as } => InputTransform::UnnestTags {
