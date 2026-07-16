@@ -66,7 +66,7 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [showNodes, setShowNodes] = useState(false);
   const [followSelection, setFollowSelection] = useState(true);
-  const [viewMode, setViewMode] = useState<"map" | "tree">("map");
+  const [viewMode, setViewMode] = useState<"map" | "tree" | "categorize">("map");
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [cutPoints, setCutPoints] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -326,7 +326,9 @@ export default function App() {
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
       <div style={{ flex: "1 1 60%", position: "relative" }}>
         {viewMode === "tree" && active.topic ? (
-          <DagView topic={active.topic} category={active.isTopicConfig ? null : active.name || null} />
+          <DagView topic={active.topic} category={active.isTopicConfig ? null : active.name || null} mode="deriver" />
+        ) : viewMode === "categorize" && active.topic ? (
+          <DagView topic={active.topic} category={active.isTopicConfig ? null : active.name || null} mode="category" />
         ) : (
           <Map
             bounds={bounds}
@@ -375,6 +377,23 @@ export default function App() {
               title="Plot this topic's deriver (Producer) trees"
             >
               Tree
+            </button>
+            <button
+              onClick={() => active.topic && setViewMode("categorize")}
+              disabled={!active.topic}
+              style={{
+                fontWeight: viewMode === "categorize" ? 700 : 400,
+                opacity: active.topic ? 1 : 0.5,
+                padding: "7px 12px",
+                background: "rgba(255,255,255,0.85)",
+                backdropFilter: "blur(6px)",
+                borderRadius: "var(--radius)",
+                boxShadow: "var(--shadow)",
+                border: "1px solid var(--border)",
+              }}
+              title="Plot this topic's categorization trees (which category an object gets)"
+            >
+              Categorize
             </button>
           </div>
           {viewMode === "map" && (

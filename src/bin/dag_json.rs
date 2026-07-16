@@ -1,17 +1,20 @@
-//! Emit a topic's output `Producer` trees as JSON node/edge graphs (see `osmnexus::dag`) — the
-//! live editor's backend spawns this to feed its browser-rendered tree view. Same field/variant
-//! grouping as `bin/plot_dag` (which emits Graphviz DOT instead), just JSON on stdout rather than
-//! one `.dot` file per variant.
+//! Emit a topic's output `Producer` trees, or its categorization trees, as JSON node/edge graphs
+//! (see `osmnexus::dag`) — the live editor's backend spawns this to feed its browser-rendered tree
+//! views. Same field/variant grouping as `bin/plot_dag` (which emits Graphviz DOT instead, deriver
+//! trees only), just JSON on stdout rather than one `.dot` file per variant.
 //!
-//! Usage: `dag_json <config-dir> <topic-name>`, e.g. `dag_json configs/tilda tilda/bikelanes`.
-//! `<topic-name>` is the same string `TopicRunner::load` takes — `<config-dir>/<topic-name>/`.
+//! Usage: `dag_json <config-dir> <topic-name> [category]`, e.g. `dag_json configs/tilda
+//! tilda/bikelanes`. `<topic-name>` is the same string `TopicRunner::load` takes —
+//! `<config-dir>/<topic-name>/`. Pass `category` as the third argument to get the per-`ElementKind`
+//! categorization trees (which category an object is assigned) instead of the default per-field
+//! deriver trees (how an already-classified object's output values are computed).
 
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use osmnexus::dag::{producer_dag, DagGraph};
+use osmnexus::dag::{category_order_dag, producer_dag, DagGraph};
 use osmnexus::lang::producer::Producer;
 use osmnexus::topic::runner::TopicRunner;
 
@@ -30,41 +33,55 @@ struct Response {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let config_dir = args.next().context("usage: dag_json <config-dir> <topic-name>")?;
-    let topic_name = args.next().context("usage: dag_json <config-dir> <topic-name>")?;
+    let config_dir = args.next().context("usage: dag_json <config-dir> <topic-name> [category]")?;
+    let topic_name = args.next().context("usage: dag_json <config-dir> <topic-name> [category]")?;
+    let category_mode = args.next().as_deref() == Some("category");
 
     osmnexus::paths::set_config_root(config_dir);
     let runner = TopicRunner::load(&topic_name, 64)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
-    // field -> repr(producer) -> (one instance, labels of who produces it this way) — same dedup
-    // `bin/plot_dag` does, so categories sharing a field's producer collapse into one variant.
-    let mut by_field: HashMap<String, HashMap<String, (&Producer, Vec<String>)>> = HashMap::new();
-    for field in &runner.default_outputs {
-        let repr = format!("{:?}", field.source);
-        by_field.entry(field.output.clone()).or_default()
-            .entry(repr).or_insert((&field.source, Vec::new())).1.push("default".to_owned());
-    }
-    for (category, fields) in &runner.category_outputs {
-        for field in fields {
+    let fields = if category_mode {
+        // "field" here is the element kind ("node"/"way"/"relation") — one tree per kind the topic
+        // has any categories for, single variant each (a categorization tree has no per-category
+        // dedup the way a field's producer does).
+        runner.categories.iter()
+            .map(|(kind, cats)| {
+                let variant = Variant { labels: vec![kind.id_prefix().to_owned()], graph: category_order_dag(cats) };
+                (kind.id_prefix().to_owned(), vec![variant])
+            })
+            .collect()
+    } else {
+        // field -> repr(producer) -> (one instance, labels of who produces it this way) — same
+        // dedup `bin/plot_dag` does, so categories sharing a field's producer collapse into one
+        // variant.
+        let mut by_field: HashMap<String, HashMap<String, (&Producer, Vec<String>)>> = HashMap::new();
+        for field in &runner.default_outputs {
             let repr = format!("{:?}", field.source);
             by_field.entry(field.output.clone()).or_default()
-                .entry(repr).or_insert((&field.source, Vec::new())).1.push(category.clone());
+                .entry(repr).or_insert((&field.source, Vec::new())).1.push("default".to_owned());
         }
-    }
+        for (category, fields) in &runner.category_outputs {
+            for field in fields {
+                let repr = format!("{:?}", field.source);
+                by_field.entry(field.output.clone()).or_default()
+                    .entry(repr).or_insert((&field.source, Vec::new())).1.push(category.clone());
+            }
+        }
 
-    let fields = by_field.into_iter()
-        .map(|(field, variants)| {
-            let mut variants: Vec<Variant> = variants.into_values()
-                .map(|(producer, mut labels)| {
-                    labels.sort();
-                    Variant { labels, graph: producer_dag(producer) }
-                })
-                .collect();
-            variants.sort_by(|a, b| a.labels.cmp(&b.labels));
-            (field, variants)
-        })
-        .collect();
+        by_field.into_iter()
+            .map(|(field, variants)| {
+                let mut variants: Vec<Variant> = variants.into_values()
+                    .map(|(producer, mut labels)| {
+                        labels.sort();
+                        Variant { labels, graph: producer_dag(producer) }
+                    })
+                    .collect();
+                variants.sort_by(|a, b| a.labels.cmp(&b.labels));
+                (field, variants)
+            })
+            .collect()
+    };
 
     println!("{}", serde_json::to_string(&Response { topic: topic_name, fields })?);
     Ok(())

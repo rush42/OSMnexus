@@ -75,21 +75,35 @@ function maxNodeCount(variants: Variant[]): number {
   return variants.reduce((max, v) => Math.max(max, v.nodes.length), 0);
 }
 
-// Plots the `Producer` tree behind a topic's output field — one tree per field, per distinct
-// producer variant (categories sharing the same effective producer for that field collapse into
-// one variant; see `src/bin/dag_json.rs`). Fetches fresh on every `topic` change since the tree
-// reflects whatever's currently on disk in the (possibly just-edited) config.
-export default function DagView({ topic, category }: { topic: string; category?: string | null }) {
+// Plots the `Producer` tree behind a topic's output field (`mode: "deriver"`) or the categorization
+// tree that assigns an object to a category in the first place (`mode: "category"`, one tree per
+// `ElementKind` instead of per field; see `src/dag.rs`'s `category_order_dag`) — one tree per
+// field/kind, per distinct variant (categories sharing the same effective producer for a field
+// collapse into one variant; see `src/bin/dag_json.rs`). Fetches fresh on every `topic`/`mode`
+// change since the tree reflects whatever's currently on disk in the (possibly just-edited) config.
+export default function DagView({
+  topic,
+  category,
+  mode = "deriver",
+}: {
+  topic: string;
+  category?: string | null;
+  mode?: "deriver" | "category";
+}) {
   const [response, setResponse] = useState<DagResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<string>("");
   const [variantIdx, setVariantIdx] = useState(0);
+  const fieldLabel = mode === "category" ? "kind" : "field";
 
   useEffect(() => {
     setResponse(null);
     setError(null);
+    setField("");
+    setVariantIdx(0);
     if (!topic) return;
-    fetch(`/api/dag/${encodeURIComponent(topic)}`)
+    const endpoint = mode === "category" ? "/api/categorize-dag/" : "/api/dag/";
+    fetch(`${endpoint}${encodeURIComponent(topic)}`)
       .then((r) => r.json())
       .then((d: DagResponse | { error: string }) => {
         if ("error" in d) {
@@ -102,7 +116,7 @@ export default function DagView({ topic, category }: { topic: string; category?:
         setVariantIdx(0);
       })
       .catch((err) => setError(String(err)));
-  }, [topic]);
+  }, [topic, mode]);
 
   const fieldNames = useMemo(
     () => (response ? Object.keys(response.fields).sort((a, b) => maxNodeCount(response.fields[b]) - maxNodeCount(response.fields[a])) : []),
@@ -185,7 +199,7 @@ export default function DagView({ topic, category }: { topic: string; category?:
           boxShadow: "var(--shadow-sm)",
         }}
       >
-        <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>field</span>
+        <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>{fieldLabel}</span>
         <select
           value={field}
           onChange={(e) => {
