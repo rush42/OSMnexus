@@ -170,8 +170,8 @@ fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
 /// context. `None` means "no matching enumerated child" → fall through to the wildcard.
 fn branch_key<'a>(ctx: &'a ExtractCtx, tag: &str) -> Option<&'a str> {
     match tag {
-        // `_side` is always stamped by `topic::pipeline::build_topic_rows`/each `Clone` (self included); default to "self" for
-        // parity with `Filter::Side`'s own eval fallback.
+        // `_side` is always stamped by `topic::pipeline::build_topic_rows`/each `Clone` (self
+        // included) — defaulting to "self" here is a safety net, not the normal path.
         SIDE_KEY => Some(ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self")),
         HAS_PARENT_KEY => Some(if ctx.parent_tags.is_some() { "true" } else { "false" }),
         PREFIX_KEY => ctx.annotations.get("_prefix").and_then(Value::as_str),

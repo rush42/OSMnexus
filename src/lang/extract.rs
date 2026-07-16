@@ -51,41 +51,6 @@ pub enum Extract {
     },
 }
 
-/// The outcome of resolving a value from tags: found (and, if `sanitize`d, accepted); the key(s)
-/// simply weren't set; or a key *was* set and `sanitize` rejected it. `Absent` and `Rejected` look
-/// the same to an `Option`-based caller, but a fallback chain (`Producer::Match`) must not treat
-/// them alike: absence means "try the next branch," a rejection means the source had an opinion
-/// and it was no — that should stop the whole search, not get silently papered over by whichever
-/// unrelated branch happens to come next. See `producer::match_rules` for where the distinction is
-/// spent.
-#[derive(Debug, Clone)]
-pub enum Presence<T> {
-    Present(T),
-    Absent,
-    Rejected,
-}
-
-impl<T> Presence<T> {
-    /// Collapse the distinction for callers that only care "did we get a value" (e.g. the
-    /// outermost per-field emission in `topic::pipeline::eval_fields`, or `InputTransform`'s
-    /// tag-rule application) — a rejection is still "no value" to them, it just isn't
-    /// retry-eligible on the way there.
-    pub fn into_option(self) -> Option<T> {
-        match self {
-            Presence::Present(v) => Some(v),
-            Presence::Absent | Presence::Rejected => None,
-        }
-    }
-
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Presence<U> {
-        match self {
-            Presence::Present(v) => Presence::Present(f(v)),
-            Presence::Absent => Presence::Absent,
-            Presence::Rejected => Presence::Rejected,
-        }
-    }
-}
-
 impl Extract {
     /// This variant's own `sanitize` chain, if any.
     pub fn sanitize(&self) -> Option<&Sanitizer> {
@@ -104,14 +69,8 @@ impl Extract {
     }
 
     /// Read and run through `sanitize` (identity if unset) — what `Producer::Extract` produces.
-    /// Distinguishes "no candidate key was set" (`Absent`) from "a key was set but `sanitize`
-    /// dropped its value" (`Rejected`) — see `Presence`'s own doc for why that split matters.
-    pub fn read(&self, ctx: &ExtractCtx) -> Presence<Value> {
-        let Some(raw) = self.read_raw(ctx) else { return Presence::Absent };
-        match eval_sanitize(self.sanitize(), raw) {
-            Some(value) => Presence::Present(value),
-            None => Presence::Rejected,
-        }
+    pub fn read(&self, ctx: &ExtractCtx) -> Option<Value> {
+        eval_sanitize(self.sanitize(), self.read_raw(ctx)?)
     }
 
     /// Like `read`, coerced to a string — what every `Filter` `Tag*` comparison reads. A dropped

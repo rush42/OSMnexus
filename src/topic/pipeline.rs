@@ -22,7 +22,7 @@ use crate::output::{rows::TopicRow, types::OsmMeta};
 /// is needed here.
 fn eval_fields(fields: &[Field], ctx: &ExtractCtx, produced: &mut Map<String, Value>, annotations: &mut Map<String, Value>) {
     for field in fields {
-        if let Some(p) = field.source.eval(ctx).into_option() {
+        if let Some(p) = field.source.eval(ctx) {
             produced.insert(field.output.clone(), p.value);
             // Companion annotate → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
             for (k, v) in p.annotate {

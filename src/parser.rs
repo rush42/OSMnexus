@@ -194,3 +194,73 @@ impl<'de> Deserialize<'de> for Step {
         })
     }
 }
+
+// ── Filter ───────────────────────────────────────────────────────────────────
+
+/// The JSON shapes `Filter` accepts: every real variant verbatim, plus `Side`/`Prefix`/`Infix`'s
+/// on-disk sugar for `Filter::AnnotationEq` (`{"side"|"prefix"|"infix": <value>}`, translated to
+/// `annotations["_side"|"_prefix"|"_infix"] == <value>` — see `Filter::AnnotationEq`'s own doc).
+/// Untagged, tried in this order (more-specific/required-field shapes before `Eq`, whose
+/// `#[serde(flatten)] extract` field is optional-shaped enough to otherwise match too broadly).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum FilterJson {
+    Bool(bool),
+    And { and: Vec<Filter> },
+    Or { or: Vec<Filter> },
+    Not { not: Box<Filter> },
+    InSet { #[serde(flatten)] extract: Extract, in_set: String },
+    In { #[serde(flatten)] extract: Extract, r#in: Vec<String> },
+    Contains { #[serde(flatten)] extract: Extract, contains: String, #[serde(default)] case_insensitive: bool },
+    StartsWith { #[serde(flatten)] extract: Extract, starts_with: String },
+    EndsWith { #[serde(flatten)] extract: Extract, ends_with: String },
+    Exists { #[serde(flatten)] extract: Extract, exists: bool },
+    Parent { parent: Box<Filter> },
+    /// Sugar for `Filter::AnnotationEq { key: "_side", .. }`.
+    Side { side: String },
+    /// Sugar for `Filter::AnnotationEq { key: "_prefix", .. }`.
+    Prefix { prefix: String },
+    /// Sugar for `Filter::AnnotationEq { key: "_infix", .. }`.
+    Infix { infix: String },
+    HasKeyPrefix { has_key_prefix: String },
+    HasParent { has_parent: bool },
+    TagsEmpty { tags_empty: bool },
+    NumLt { #[serde(flatten)] extract: Extract, lt: f64 },
+    NumLte { #[serde(flatten)] extract: Extract, lte: f64 },
+    NumGt { #[serde(flatten)] extract: Extract, gt: f64 },
+    NumGte { #[serde(flatten)] extract: Extract, gte: f64 },
+    Eq { #[serde(flatten)] extract: Extract, eq: String },
+}
+
+impl<'de> Deserialize<'de> for Filter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match FilterJson::deserialize(deserializer)? {
+            FilterJson::Bool(b) => Filter::Bool(b),
+            FilterJson::And { and } => Filter::And { and },
+            FilterJson::Or { or } => Filter::Or { or },
+            FilterJson::Not { not } => Filter::Not { not },
+            FilterJson::InSet { extract, in_set } => Filter::InSet { extract, in_set },
+            FilterJson::In { extract, r#in } => Filter::In { extract, r#in },
+            FilterJson::Contains { extract, contains, case_insensitive } =>
+                Filter::Contains { extract, contains, case_insensitive },
+            FilterJson::StartsWith { extract, starts_with } => Filter::StartsWith { extract, starts_with },
+            FilterJson::EndsWith { extract, ends_with } => Filter::EndsWith { extract, ends_with },
+            FilterJson::Exists { extract, exists } => Filter::Exists { extract, exists },
+            FilterJson::Eq { extract, eq } => Filter::Eq { extract, eq },
+            FilterJson::Parent { parent } => Filter::Parent { parent },
+            FilterJson::Side { side } => Filter::AnnotationEq { key: "_side".to_owned(), eq: side },
+            FilterJson::Prefix { prefix } => Filter::AnnotationEq { key: "_prefix".to_owned(), eq: prefix },
+            FilterJson::Infix { infix } => Filter::AnnotationEq { key: "_infix".to_owned(), eq: infix },
+            FilterJson::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix },
+            FilterJson::HasParent { has_parent } => Filter::HasParent { has_parent },
+            FilterJson::TagsEmpty { tags_empty } => Filter::TagsEmpty { tags_empty },
+            FilterJson::NumLt { extract, lt } => Filter::NumLt { extract, lt },
+            FilterJson::NumLte { extract, lte } => Filter::NumLte { extract, lte },
+            FilterJson::NumGt { extract, gt } => Filter::NumGt { extract, gt },
+            FilterJson::NumGte { extract, gte } => Filter::NumGte { extract, gte },
+        })
+    }
+}

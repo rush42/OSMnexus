@@ -132,9 +132,12 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
 
         Filter::Parent { parent } => prefix_expr_tags(filter_to_expr(parent)),
 
-        Filter::Side { side } => Expr::Lit(Literal::Pos(Predicate::Side(side.clone()))),
-        Filter::Prefix { prefix } => Expr::Lit(Literal::Pos(Predicate::Prefix(prefix.clone()))),
-        Filter::Infix { infix } => Expr::Lit(Literal::Pos(Predicate::Infix(infix.clone()))),
+        Filter::AnnotationEq { key, eq } => match key.as_str() {
+            "_side" => Expr::Lit(Literal::Pos(Predicate::Side(eq.clone()))),
+            "_prefix" => Expr::Lit(Literal::Pos(Predicate::Prefix(eq.clone()))),
+            "_infix" => Expr::Lit(Literal::Pos(Predicate::Infix(eq.clone()))),
+            other => unreachable!("Filter::AnnotationEq only ever spelled for _side/_prefix/_infix, got {other}"),
+        },
         Filter::NumLt  { extract, lt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Lt,  lt.to_bits()))),
         Filter::NumLte { extract, lte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Lte, lte.to_bits()))),
         Filter::NumGt  { extract, gt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Gt,  gt.to_bits()))),

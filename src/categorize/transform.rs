@@ -109,7 +109,7 @@ impl InputTransform {
         match self {
             InputTransform::TagRule { output, source } => {
                 let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
-                if let Some(p) = source.eval(&ctx).into_option() {
+                if let Some(p) = source.eval(&ctx) {
                     match p.value {
                         Value::Null => { tags.remove(output); }
                         Value::String(s) => { tags.insert(output.clone(), s); }

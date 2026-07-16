@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::lang::extract::{Extract, Presence};
+use crate::lang::extract::Extract;
 use crate::lang::filter::{self, Filter};
 use crate::osm::types::RawTags;
 
@@ -45,25 +45,19 @@ pub struct Rule {
 /// context shape category matching uses, so a rule's `when` can see side/prefix/infix/parent, not
 /// just raw tags. Does not apply a `default` — callers needing one (`Producer::Match`) apply it
 /// themselves.
-pub fn match_rules(rules: &[Rule], ctx: &ExtractCtx, own_consts: &Map<String, Value>) -> Presence<Produced> {
+pub fn match_rules(rules: &[Rule], ctx: &ExtractCtx, own_consts: &Map<String, Value>) -> Option<Produced> {
     for rule in rules {
         if !filter::eval(&rule.when, ctx) {
             continue;
         }
-        match rule.value.eval(ctx) {
-            Presence::Present(mut produced) => {
-                if produced.annotate.is_empty() {
-                    produced.annotate = own_consts.clone();
-                }
-                return Presence::Present(produced);
+        if let Some(mut produced) = rule.value.eval(ctx) {
+            if produced.annotate.is_empty() {
+                produced.annotate = own_consts.clone();
             }
-            Presence::Absent => continue,
-            // A branch had an opinion and it was rejected — don't let a later, unrelated
-            // branch paper over that by producing something else. See `Presence`'s own doc.
-            Presence::Rejected => return Presence::Rejected,
+            return Some(produced);
         }
     }
-    Presence::Absent
+    None
 }
 
 /// A produced value plus optional provenance. The `annotate` are arbitrary key/value pairs the
@@ -81,7 +75,7 @@ pub struct Produced {
 /// (see `output::rows::TopicRow::annotations`) has been attached to this object so far, so a
 /// `Filter` (`Side`/`Prefix`/`Infix`/`TagsEmpty`/…) can branch on it just like it can on
 /// `obj_tags`. There is no dedicated side-split-context field: `_side`/`_prefix`/`_infix` are
-/// ordinary `annotations` entries, stamped by whatever built this context (see `categorize::transform::run_transform_steps`) — `Filter::Side`
+/// ordinary `annotations` entries, stamped by whatever built this context (see `categorize::transform::run_transform_steps`) — `Filter::AnnotationEq`
 /// reads `annotations["_side"]` the same way `Filter::Eq` reads a tag. `Copy` so a producer can
 /// cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself against
 /// a different tagset — `annotations` stays a shared reference for that reason, never `&mut`;
@@ -212,30 +206,22 @@ pub enum Producer {
 }
 
 impl Producer {
-    /// See `Presence`'s own doc for why this isn't a plain `Option` — a `Match`'s rule search
-    /// (`match_rules`) needs to tell "no rule produced" (try `default`) apart from "a rule's value
-    /// was rejected by its own sanitize" (skip `default`, propagate the rejection as-is).
-    pub fn eval(&self, ctx: &ExtractCtx) -> Presence<Produced> {
+    pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
-            Producer::Match { rules, default, annotate, .. } => match match_rules(rules, ctx, annotate) {
-                Presence::Present(produced) => Presence::Present(produced),
-                Presence::Rejected => Presence::Rejected,
-                Presence::Absent => match default.clone() {
-                    Some(value) => Presence::Present(Produced { value, annotate: annotate.clone() }),
-                    None => Presence::Absent,
-                },
-            },
+            Producer::Match { rules, default, annotate, .. } => {
+                match_rules(rules, ctx, annotate)
+                    .or_else(|| default.clone().map(|value| Produced { value, annotate: annotate.clone() }))
+            }
 
             Producer::Extract { extract, annotate } => {
-                extract.read(ctx).map(|value| Produced { value, annotate: annotate.clone() })
+                let value = extract.read(ctx)?;
+                Some(Produced { value, annotate: annotate.clone() })
             }
 
-            Producer::Const { value, annotate } => {
-                Presence::Present(Produced { value: value.clone(), annotate: annotate.clone() })
-            }
+            Producer::Const { value, annotate } => Some(Produced { value: value.clone(), annotate: annotate.clone() }),
 
             Producer::Parent(inner) => match ctx.parent_tags {
-                None => Presence::Absent,
+                None => None,
                 Some(parent_tags) => inner.eval(&ExtractCtx { obj_tags: parent_tags, ..*ctx }),
             },
         }
@@ -297,7 +283,7 @@ mod classify_bool_tests {
             Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: None }, eq: "yes".to_owned() },
             TagSet::Obj,
         );
-        let produced = producer.eval(&ctx(&obj, None)).into_option().unwrap();
+        let produced = producer.eval(&ctx(&obj, None)).unwrap();
         assert_eq!(produced.value, Value::Bool(true));
     }
 
@@ -308,7 +294,7 @@ mod classify_bool_tests {
             Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: None }, eq: "yes".to_owned() },
             TagSet::Obj,
         );
-        let produced = producer.eval(&ctx(&obj, None)).into_option().unwrap();
+        let produced = producer.eval(&ctx(&obj, None)).unwrap();
         assert_eq!(produced.value, Value::Bool(false));
     }
 
@@ -316,6 +302,6 @@ mod classify_bool_tests {
     fn missing_tagset_produces_none() {
         let obj = RawTags::default();
         let producer = bool_producer(Filter::Bool(true), TagSet::Parent);
-        assert!(producer.eval(&ctx(&obj, None)).into_option().is_none());
+        assert!(producer.eval(&ctx(&obj, None)).is_none());
     }
 }

@@ -1,17 +1,18 @@
-//! The `Filter` predicate AST: its runtime evaluator (`eval`/`eval_filter`) and its `Deserialize`
-//! (plain derive, right below). A `Filter` value never carries a named macro or sanitizer
-//! reference — `{"macro": "<name>"}` and a bare `"sanitize": "<name>"` are both resolved away as a
-//! `serde_json::Value`-tree rewrite (`topic::load::inline_macro_refs`/`inline_sanitize_refs`)
-//! *before* any `Filter` JSON is deserialized, so `eval` never does a registry lookup of any kind
-//! and an unexpanded macro or unresolved sanitizer is structurally impossible here — same
-//! treatment `Producer` gets (there via a hand-written `parser` impl, since `Producer` also folds
-//! sugar shapes; `Filter` needs no such folding, so a plain derive suffices).
+//! The `Filter` predicate AST: its runtime evaluator (`eval`/`eval_filter`). A `Filter` value never
+//! carries a named macro or sanitizer reference — `{"macro": "<name>"}` and a bare
+//! `"sanitize": "<name>"` are both resolved away as a `serde_json::Value`-tree rewrite
+//! (`topic::load::inline_macro_refs`/`inline_sanitize_refs`) *before* any `Filter` JSON is
+//! deserialized, so `eval` never does a registry lookup of any kind and an unexpanded macro or
+//! unresolved sanitizer is structurally impossible here. `Deserialize` isn't derived directly —
+//! `side`/`prefix`/`infix` are on-disk sugar for one canonical `AnnotationEq`, folded by `parser`'s
+//! hand-written impl (same treatment `Producer` gets, and for the same reason: a JSON shape that's
+//! really one runtime behavior spelled three ways shouldn't grow three variants `eval` has to keep
+//! handling — see the `[[json-sugar-collapse-pattern]]` memory).
 //!
 //! Shares its context (`ExtractCtx`, in `lang::producer`) with `Producer::eval` — a predicate
 //! is just another "object state → output" evaluator, output `bool` instead of `Option<Value>`. The
 //! category *data model* and the priority-order compiler live in `categories`.
 
-use serde::Deserialize;
 use serde_json::Value;
 
 use crate::lang::extract::Extract;
@@ -19,11 +20,11 @@ use crate::lang::producer::ExtractCtx;
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
 
-/// Filter expression. Variants are tried in declaration order by serde's untagged deserializer,
-/// so more-specific variants (those with unique secondary fields) come before catch-alls. No
-/// `Macro` variant — see this module's own doc for where `{"macro": ...}` is resolved instead.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+/// Filter expression. On-disk shapes are enumerated by `parser::FilterJson` (untagged, tried in
+/// declaration order, more-specific/required-field shapes before catch-alls) rather than derived
+/// directly here — see this module's own doc for why. No `Macro` variant — see this module's own
+/// doc for where `{"macro": ...}` is resolved instead.
+#[derive(Debug, Clone)]
 pub enum Filter {
     /// A literal `true`/`false` — e.g. for topics (like osmnx's) whose whole filter already lives
     /// in `exclude_condition`, so a category just wants "match everything that reached here":
@@ -38,22 +39,27 @@ pub enum Filter {
     // Tag predicates — secondary field disambiguates (Eq is the catch-all). Each flattens an
     // `Extract` (`tag`/`first_tag`, `Extract`'s JSON aliases for `key`/`keys` — see its own doc),
     // whose own `sanitize` field (if set) normalizes the raw tag value before comparison.
-    InSet     { #[serde(flatten)] extract: Extract, in_set:      String      },
-    In        { #[serde(flatten)] extract: Extract, r#in:        Vec<String> },
-    Contains  { #[serde(flatten)] extract: Extract, contains: String, #[serde(default)] case_insensitive: bool },
-    StartsWith{ #[serde(flatten)] extract: Extract, starts_with: String      },
-    EndsWith  { #[serde(flatten)] extract: Extract, ends_with:   String      },
-    Exists    { #[serde(flatten)] extract: Extract, exists:      bool        },
-    Eq        { #[serde(flatten)] extract: Extract, eq:          String      },
+    InSet     { extract: Extract, in_set:      String      },
+    In        { extract: Extract, r#in:        Vec<String> },
+    Contains  { extract: Extract, contains: String, case_insensitive: bool },
+    StartsWith{ extract: Extract, starts_with: String      },
+    EndsWith  { extract: Extract, ends_with:   String      },
+    Exists    { extract: Extract, exists:      bool        },
+    Eq        { extract: Extract, eq:          String      },
 
     /// Evaluate the inner filter's tag predicates against the parent way's tags instead of the
     /// object's own — `false` when there is no parent.
     Parent { parent: Box<Filter> },
 
     // Context predicates
-    Side      { side:       String },   // "self" | "left" | "right"
-    Prefix    { prefix:     String },
-    Infix     { infix:      String },
+    /// A plain `annotations[key] == eq` read — the canonical form `side`/`prefix`/`infix` JSON
+    /// sugar folds into (`parser`), e.g. `{"side": "left"}` → `AnnotationEq{key: "_side", eq:
+    /// "left"}`. Never spelled directly in JSON; `key` is always one of `_side`/`_prefix`/`_infix`
+    /// in practice, whatever `topic::pipeline::build_topic_rules`/`CloneStep` stamps.
+    AnnotationEq { key: String, eq: String },
+    /// True iff some `obj_tags` key starts with `has_key_prefix` — a dynamic, unknown-suffix scan
+    /// over the object's own raw tags, not an annotation read (unlike the three above), so it
+    /// can't fold into `AnnotationEq`.
     HasKeyPrefix { has_key_prefix: String },
     /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
     HasParent { has_parent: bool },
@@ -63,10 +69,10 @@ pub enum Filter {
 
     // Numeric comparisons — same `Extract` shape the tag predicates use (its `sanitize` chain may
     // yield a JSON number, e.g. `parse_length`) before parsing to f64.
-    NumLt  { #[serde(flatten)] extract: Extract, lt:  f64 },
-    NumLte { #[serde(flatten)] extract: Extract, lte: f64 },
-    NumGt  { #[serde(flatten)] extract: Extract, gt:  f64 },
-    NumGte { #[serde(flatten)] extract: Extract, gte: f64 },
+    NumLt  { extract: Extract, lt:  f64 },
+    NumLte { extract: Extract, lte: f64 },
+    NumGt  { extract: Extract, gt:  f64 },
+    NumGte { extract: Extract, gte: f64 },
 }
 
 impl Filter {
@@ -108,9 +114,7 @@ impl Filter {
             }
             Filter::Eq { extract, eq } => format!("{} == {eq:?}", maybe_sanitized(extract)),
             Filter::Parent { parent } => format!("parent({})", parent.describe()),
-            Filter::Side { side } => format!("side == {side:?}"),
-            Filter::Prefix { prefix } => format!("prefix == {prefix:?}"),
-            Filter::Infix { infix } => format!("infix == {infix:?}"),
+            Filter::AnnotationEq { key, eq } => format!("{key} == {eq:?}"),
             Filter::HasKeyPrefix { has_key_prefix } => format!("has_key_prefix({has_key_prefix:?})"),
             Filter::HasParent { has_parent } => if *has_parent { "has_parent".to_owned() } else { "!has_parent".to_owned() },
             Filter::TagsEmpty { tags_empty } => if *tags_empty { "tags_empty".to_owned() } else { "!tags_empty".to_owned() },
@@ -159,12 +163,12 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
             Some(parent_tags) => eval(parent, &ExtractCtx { obj_tags: parent_tags, ..*ctx }),
         },
 
-        // `_side` is always present in practice (`topic::pipeline::build_topic_rows` stamps it on every object,
-        // self included) — defaulting to "self" here is a safety net, not the normal path.
-        Filter::Side { side } =>
-            ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self") == side.as_str(),
-        Filter::Prefix { prefix } => ctx.annotations.get("_prefix").and_then(Value::as_str) == Some(prefix.as_str()),
-        Filter::Infix  { infix  } => ctx.annotations.get("_infix").and_then(Value::as_str)  == Some(infix.as_str()),
+        // `_side` is always present in practice (`topic::pipeline::build_topic_rows` stamps it on
+        // every object, self included), so there's no missing-annotation case to default here the
+        // way the old `Filter::Side` did — an absent key simply compares unequal, same as `_prefix`/
+        // `_infix` (only ever present on a side-split object to begin with).
+        Filter::AnnotationEq { key, eq } =>
+            ctx.annotations.get(key).and_then(Value::as_str) == Some(eq.as_str()),
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
@@ -187,7 +191,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
 /// available: classification is tag-only.
 fn read_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
     match extract.sanitize() {
-        Some(_) => num_from_value(&extract.read(ctx).into_option()?),
+        Some(_) => num_from_value(&extract.read(ctx)?),
         None => extract.read_raw(ctx)?.trim().parse().ok(),
     }
 }
