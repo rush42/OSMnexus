@@ -16,7 +16,6 @@ use serde_json::Value;
 
 use crate::lang::extract::Extract;
 use crate::lang::producer::ExtractCtx;
-use crate::lang::sanitize::{resolve_sanitize, Sanitizer};
 use crate::osm::types::RawTags;
 use crate::value_sets::value_set;
 
@@ -37,16 +36,15 @@ pub enum Filter {
     Not { not: Box<Filter> },
 
     // Tag predicates — secondary field disambiguates (Eq is the catch-all). Each flattens an
-    // `Extract` (`tag`/`first_tag`, `Extract`'s JSON aliases for `key`/`keys` — see its own doc).
-    // `sanitize` is a sibling field (not part of `Extract` itself — see its doc), and when set
-    // normalizes the raw tag value before comparison.
-    InSet     { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, in_set:      String      },
-    In        { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, r#in:        Vec<String> },
-    Contains  { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, contains: String, #[serde(default)] case_insensitive: bool },
-    StartsWith{ #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, starts_with: String      },
-    EndsWith  { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, ends_with:   String      },
-    Exists    { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, exists:      bool        },
-    Eq        { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, eq:          String      },
+    // `Extract` (`tag`/`first_tag`, `Extract`'s JSON aliases for `key`/`keys` — see its own doc),
+    // whose own `sanitize` field (if set) normalizes the raw tag value before comparison.
+    InSet     { #[serde(flatten)] extract: Extract, in_set:      String      },
+    In        { #[serde(flatten)] extract: Extract, r#in:        Vec<String> },
+    Contains  { #[serde(flatten)] extract: Extract, contains: String, #[serde(default)] case_insensitive: bool },
+    StartsWith{ #[serde(flatten)] extract: Extract, starts_with: String      },
+    EndsWith  { #[serde(flatten)] extract: Extract, ends_with:   String      },
+    Exists    { #[serde(flatten)] extract: Extract, exists:      bool        },
+    Eq        { #[serde(flatten)] extract: Extract, eq:          String      },
 
     /// Evaluate the inner filter's tag predicates against the parent way's tags instead of the
     /// object's own — `false` when there is no parent.
@@ -63,12 +61,12 @@ pub enum Filter {
     /// specific key.
     TagsEmpty { tags_empty: bool },
 
-    // Numeric comparisons — same `Extract` + sibling `sanitize` shape the tag predicates use (a
-    // sanitize chain may yield a JSON number, e.g. `parse_length`) before parsing to f64.
-    NumLt  { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, lt:  f64 },
-    NumLte { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, lte: f64 },
-    NumGt  { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, gt:  f64 },
-    NumGte { #[serde(flatten)] extract: Extract, #[serde(default)] sanitize: Option<Sanitizer>, gte: f64 },
+    // Numeric comparisons — same `Extract` shape the tag predicates use (its `sanitize` chain may
+    // yield a JSON number, e.g. `parse_length`) before parsing to f64.
+    NumLt  { #[serde(flatten)] extract: Extract, lt:  f64 },
+    NumLte { #[serde(flatten)] extract: Extract, lte: f64 },
+    NumGt  { #[serde(flatten)] extract: Extract, gt:  f64 },
+    NumGte { #[serde(flatten)] extract: Extract, gte: f64 },
 }
 
 impl Filter {
@@ -79,36 +77,37 @@ impl Filter {
     pub fn describe(&self) -> String {
         fn key(extract: &Extract) -> String {
             match extract {
-                Extract::Value { key } => key.clone(),
-                Extract::Candidates { keys } => format!("[{}]", keys.join("|")),
-                Extract::Directed { directed } => format!("{} (directed)", directed.key),
+                Extract::Value { key, .. } => key.clone(),
+                Extract::Candidates { keys, .. } => format!("[{}]", keys.join("|")),
+                Extract::Directed { directed, .. } => format!("{} (directed)", directed.key),
             }
         }
         // A predicate whose comparison already reads as a keyword (`in`, `contains`, ...) doesn't
         // need `(sanitized)` cluttering the common case — only flag it where it could silently
         // change what's being compared.
-        fn maybe_sanitized(key: String, sanitize: &Option<Sanitizer>) -> String {
-            if sanitize.is_some() { format!("{key} (sanitized)") } else { key }
+        fn maybe_sanitized(extract: &Extract) -> String {
+            let k = key(extract);
+            if extract.sanitize().is_some() { format!("{k} (sanitized)") } else { k }
         }
         match self {
             Filter::Bool(b) => b.to_string(),
             Filter::And { and } => and.iter().map(Filter::describe).collect::<Vec<_>>().join(" and "),
             Filter::Or { or } => format!("({})", or.iter().map(Filter::describe).collect::<Vec<_>>().join(" or ")),
             Filter::Not { not } => format!("not ({})", not.describe()),
-            Filter::InSet { extract, sanitize, in_set } => format!("{} in {in_set}", maybe_sanitized(key(extract), sanitize)),
-            Filter::In { extract, sanitize, r#in } => format!("{} in [{}]", maybe_sanitized(key(extract), sanitize), r#in.join(", ")),
-            Filter::Contains { extract, sanitize, contains, case_insensitive } => format!(
+            Filter::InSet { extract, in_set } => format!("{} in {in_set}", maybe_sanitized(extract)),
+            Filter::In { extract, r#in } => format!("{} in [{}]", maybe_sanitized(extract), r#in.join(", ")),
+            Filter::Contains { extract, contains, case_insensitive } => format!(
                 "{} contains {contains:?}{}",
-                maybe_sanitized(key(extract), sanitize),
+                maybe_sanitized(extract),
                 if *case_insensitive { " (ci)" } else { "" },
             ),
-            Filter::StartsWith { extract, sanitize, starts_with } => format!("{} starts_with {starts_with:?}", maybe_sanitized(key(extract), sanitize)),
-            Filter::EndsWith { extract, sanitize, ends_with } => format!("{} ends_with {ends_with:?}", maybe_sanitized(key(extract), sanitize)),
-            Filter::Exists { extract, sanitize, exists } => {
-                let k = maybe_sanitized(key(extract), sanitize);
+            Filter::StartsWith { extract, starts_with } => format!("{} starts_with {starts_with:?}", maybe_sanitized(extract)),
+            Filter::EndsWith { extract, ends_with } => format!("{} ends_with {ends_with:?}", maybe_sanitized(extract)),
+            Filter::Exists { extract, exists } => {
+                let k = maybe_sanitized(extract);
                 if *exists { format!("{k} exists") } else { format!("{k} !exists") }
             }
-            Filter::Eq { extract, sanitize, eq } => format!("{} == {eq:?}", maybe_sanitized(key(extract), sanitize)),
+            Filter::Eq { extract, eq } => format!("{} == {eq:?}", maybe_sanitized(extract)),
             Filter::Parent { parent } => format!("parent({})", parent.describe()),
             Filter::Side { side } => format!("side == {side:?}"),
             Filter::Prefix { prefix } => format!("prefix == {prefix:?}"),
@@ -116,10 +115,10 @@ impl Filter {
             Filter::HasKeyPrefix { has_key_prefix } => format!("has_key_prefix({has_key_prefix:?})"),
             Filter::HasParent { has_parent } => if *has_parent { "has_parent".to_owned() } else { "!has_parent".to_owned() },
             Filter::TagsEmpty { tags_empty } => if *tags_empty { "tags_empty".to_owned() } else { "!tags_empty".to_owned() },
-            Filter::NumLt { extract, lt, .. } => format!("{} < {lt}", key(extract)),
-            Filter::NumLte { extract, lte, .. } => format!("{} <= {lte}", key(extract)),
-            Filter::NumGt { extract, gt, .. } => format!("{} > {gt}", key(extract)),
-            Filter::NumGte { extract, gte, .. } => format!("{} >= {gte}", key(extract)),
+            Filter::NumLt { extract, lt } => format!("{} < {lt}", key(extract)),
+            Filter::NumLte { extract, lte } => format!("{} <= {lte}", key(extract)),
+            Filter::NumGt { extract, gt } => format!("{} > {gt}", key(extract)),
+            Filter::NumGte { extract, gte } => format!("{} >= {gte}", key(extract)),
         }
     }
 }
@@ -135,26 +134,26 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::Or  { or  } => or.iter().any(|f| eval(f, ctx)),
         Filter::Not { not } => !eval(not, ctx),
 
-        Filter::Eq { extract, sanitize, eq } =>
-            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| v.as_ref() == eq.as_str()),
-        Filter::InSet { extract, sanitize, in_set } =>
-            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| value_set(in_set).contains(v.as_ref())),
-        Filter::In { extract, sanitize, r#in } =>
-            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
-        Filter::Contains { extract, sanitize, contains, case_insensitive } =>
-            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| {
+        Filter::Eq { extract, eq } =>
+            extract.read_str(ctx).is_some_and(|v| v.as_ref() == eq.as_str()),
+        Filter::InSet { extract, in_set } =>
+            extract.read_str(ctx).is_some_and(|v| value_set(in_set).contains(v.as_ref())),
+        Filter::In { extract, r#in } =>
+            extract.read_str(ctx).is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
+        Filter::Contains { extract, contains, case_insensitive } =>
+            extract.read_str(ctx).is_some_and(|v| {
                 if *case_insensitive {
                     v.to_lowercase().contains(contains.as_str())
                 } else {
                     v.contains(contains.as_str())
                 }
             }),
-        Filter::StartsWith { extract, sanitize, starts_with } =>
-            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| v.starts_with(starts_with.as_str())),
-        Filter::EndsWith { extract, sanitize, ends_with } =>
-            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| v.ends_with(ends_with.as_str())),
-        Filter::Exists { extract, sanitize, exists } =>
-            extract.read_str(sanitize.as_ref(), ctx).is_some() == *exists,
+        Filter::StartsWith { extract, starts_with } =>
+            extract.read_str(ctx).is_some_and(|v| v.starts_with(starts_with.as_str())),
+        Filter::EndsWith { extract, ends_with } =>
+            extract.read_str(ctx).is_some_and(|v| v.ends_with(ends_with.as_str())),
+        Filter::Exists { extract, exists } =>
+            extract.read_str(ctx).is_some() == *exists,
 
         Filter::Parent { parent } => match ctx.parent_tags {
             None => false,
@@ -174,24 +173,23 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
         Filter::TagsEmpty { tags_empty } => ctx.obj_tags.is_empty() == *tags_empty,
 
-        Filter::NumLt  { extract, sanitize, lt  } => read_num(extract, ctx, sanitize.as_ref()).is_some_and(|n| n <  *lt),
-        Filter::NumLte { extract, sanitize, lte } => read_num(extract, ctx, sanitize.as_ref()).is_some_and(|n| n <= *lte),
-        Filter::NumGt  { extract, sanitize, gt  } => read_num(extract, ctx, sanitize.as_ref()).is_some_and(|n| n >  *gt),
-        Filter::NumGte { extract, sanitize, gte } => read_num(extract, ctx, sanitize.as_ref()).is_some_and(|n| n >= *gte),
+        Filter::NumLt  { extract, lt  } => read_num(extract, ctx).is_some_and(|n| n <  *lt),
+        Filter::NumLte { extract, lte } => read_num(extract, ctx).is_some_and(|n| n <= *lte),
+        Filter::NumGt  { extract, gt  } => read_num(extract, ctx).is_some_and(|n| n >  *gt),
+        Filter::NumGte { extract, gte } => read_num(extract, ctx).is_some_and(|n| n >= *gte),
     }
 }
 
 /// Read a numeric value for a `num` predicate: reads `extract` (single key or first-present
-/// candidate list, same as the tag predicates) and, when `sanitize` is set, runs it through that
-/// sanitizer chain (which may yield a JSON number, e.g. `parse_length`) before coercing to f64.
-/// Returns None when the tag is absent or the value is unparseable — so every numeric comparison
-/// is false on missing/garbage input. No geometry-derived values (length, …) are available:
-/// classification is tag-only.
-fn read_num(extract: &Extract, ctx: &ExtractCtx, sanitize: Option<&Sanitizer>) -> Option<f64> {
-    let raw = extract.read_raw(ctx)?;
-    match sanitize {
-        Some(_) => num_from_value(&resolve_sanitize(sanitize, raw)?),
-        None => raw.trim().parse().ok(),
+/// candidate list, same as the tag predicates) and, when its `sanitize` is set, runs it through
+/// that sanitizer chain (which may yield a JSON number, e.g. `parse_length`) before coercing to
+/// f64. Returns None when the tag is absent or the value is unparseable — so every numeric
+/// comparison is false on missing/garbage input. No geometry-derived values (length, …) are
+/// available: classification is tag-only.
+fn read_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
+    match extract.sanitize() {
+        Some(_) => num_from_value(&extract.read(ctx)?),
+        None => extract.read_raw(ctx)?.trim().parse().ok(),
     }
 }
 

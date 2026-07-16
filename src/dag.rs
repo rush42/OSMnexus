@@ -127,17 +127,17 @@ fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) ->
             }
             node
         }
-        Producer::Extract { extract, sanitize, annotate } => {
+        Producer::Extract { extract, annotate } => {
             let (label, kind) = match extract {
-                Extract::Value { key } => (format!("extract\nkey: {key}"), "extract"),
-                Extract::Candidates { keys } => (format!("extract\nkeys: {keys:?}"), "extract"),
-                Extract::Directed { directed } => {
+                Extract::Value { key, .. } => (format!("extract\nkey: {key}"), "extract"),
+                Extract::Candidates { keys, .. } => (format!("extract\nkeys: {keys:?}"), "extract"),
+                Extract::Directed { directed, .. } => {
                     (format!("directed extract\nkey: {}\nfrom: {:?}", directed.key, directed.from), "directed_extract")
                 }
             };
             let node = g.node(label, kind);
             annotate_node(g, annotate_to.unwrap_or(&node), annotate);
-            if let Some(chain) = sanitize {
+            if let Some(chain) = extract.sanitize() {
                 let chain_root = render_chain(g, chain);
                 g.edge(&node, &chain_root, "sanitize");
             }

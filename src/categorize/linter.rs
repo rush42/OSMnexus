@@ -78,10 +78,10 @@ pub enum Expr {
 fn extract_key(extract: &crate::lang::extract::Extract) -> String {
     use crate::lang::extract::Extract;
     match extract {
-        Extract::Value { key } => key.clone(),
-        Extract::Candidates { keys } => keys.first().cloned()
+        Extract::Value { key, .. } => key.clone(),
+        Extract::Candidates { keys, .. } => keys.first().cloned()
             .expect("Extract::Candidates needs a non-empty `keys`/`first_tag`"),
-        Extract::Directed { directed } => directed.key.clone(),
+        Extract::Directed { directed, .. } => directed.key.clone(),
     }
 }
 
@@ -101,8 +101,8 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::Not { not } => Expr::Not(Box::new(filter_to_expr(not))),
 
         Filter::Eq { extract, eq, .. } => match extract {
-            Extract::Value { key } => Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), eq.clone()))),
-            Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
+            Extract::Value { key, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), eq.clone()))),
+            Extract::Candidates { keys, .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
             Extract::Directed { .. } => Expr::Lit(Literal::Pos(Predicate::Eq(extract_key(extract), eq.clone()))),
         },
         Filter::Exists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))),
@@ -111,11 +111,11 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::StartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract_key(extract), starts_with.clone()))),
         Filter::EndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract_key(extract), ends_with.clone()))),
         Filter::In { extract, r#in, .. } => match extract {
-            Extract::Value { key } => {
+            Extract::Value { key, .. } => {
                 let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone())))).collect();
                 Expr::Or(exprs)
             }
-            Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
+            Extract::Candidates { keys, .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
             Extract::Directed { .. } => {
                 let key = extract_key(extract);
                 let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone())))).collect();
@@ -123,14 +123,14 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
             }
         },
         Filter::InSet { extract, in_set, .. } => match extract {
-            Extract::Value { key } => {
+            Extract::Value { key, .. } => {
                 let exprs: Vec<_> = crate::value_sets::value_set(in_set)
                     .iter()
                     .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone()))))
                     .collect();
                 Expr::Or(exprs)
             }
-            Extract::Candidates { keys } => {
+            Extract::Candidates { keys, .. } => {
                 let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
                 vals.sort();
                 Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vals)))

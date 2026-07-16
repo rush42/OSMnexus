@@ -101,17 +101,19 @@ impl<'de> Deserialize<'de> for Producer {
                 origin: MatchOrigin::Fallback,
             },
             ProducerJson::Directed { directed } => Producer::Extract {
-                extract: Extract::Directed { directed: DirectedKey { key: directed.key, from: directed.from } },
-                sanitize: directed.sanitize,
+                extract: Extract::Directed {
+                    directed: DirectedKey { key: directed.key, from: directed.from },
+                    sanitize: directed.sanitize,
+                },
                 annotate: directed.annotate,
             },
             ProducerJson::Tag { tag } => {
-                Producer::Extract { extract: Extract::Value { key: tag }, sanitize: None, annotate: Map::new() }
+                Producer::Extract { extract: Extract::Value { key: tag, sanitize: None }, annotate: Map::new() }
             }
             ProducerJson::TagOr { tag_or, or } => Producer::Match {
                 rules: vec![Rule {
                     when: Filter::Bool(true),
-                    value: Producer::Extract { extract: Extract::Value { key: tag_or }, sanitize: None, annotate: Map::new() },
+                    value: Producer::Extract { extract: Extract::Value { key: tag_or, sanitize: None }, annotate: Map::new() },
                 }],
                 default: Some(or),
                 annotate: Map::new(),
@@ -122,12 +124,12 @@ impl<'de> Deserialize<'de> for Producer {
             }
             ProducerJson::Extract { key, keys, sanitize, annotate } => {
                 let extract = match (key, keys) {
-                    (Some(key), None) => Extract::Value { key },
-                    (None, Some(keys)) => Extract::Candidates { keys },
+                    (Some(key), None) => Extract::Value { key, sanitize },
+                    (None, Some(keys)) => Extract::Candidates { keys, sanitize },
                     (None, None) => return Err(serde::de::Error::custom("Extract needs `key` or `keys`")),
                     (Some(_), Some(_)) => return Err(serde::de::Error::custom("Extract: set only one of `key`/`keys`, not both")),
                 };
-                Producer::Extract { extract, sanitize, annotate }
+                Producer::Extract { extract, annotate }
             }
             ProducerJson::Const(value) => Producer::Const { value, annotate: Map::new() },
         })

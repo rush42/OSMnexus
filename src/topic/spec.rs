@@ -120,8 +120,8 @@ pub fn resolve_output_entry(
         let extract = Producer::Extract {
             extract: Extract::Candidates {
                 keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
+                sanitize: Some(resolve_named_sanitizer(&r.name, sanitizers)),
             },
-            sanitize: Some(resolve_named_sanitizer(&r.name, sanitizers)),
             annotate: Map::new(),
         };
         match r.from {
@@ -135,8 +135,7 @@ pub fn resolve_output_entry(
     } else {
         match value {
             Value::Bool(true) => Producer::Extract {
-                extract: Extract::Value { key: output.to_owned() },
-                sanitize: None,
+                extract: Extract::Value { key: output.to_owned(), sanitize: None },
                 annotate: Map::new(),
             },
             Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),

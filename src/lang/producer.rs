@@ -20,7 +20,6 @@ use serde_json::{Map, Value};
 
 use crate::lang::extract::Extract;
 use crate::lang::filter::{self, Filter};
-use crate::lang::sanitize::Sanitizer;
 use crate::osm::types::RawTags;
 
 /// One classifier rule — `when`/`value` are already-resolved `Filter`/`Producer` (no macro or
@@ -179,12 +178,11 @@ pub enum Producer {
         origin: MatchOrigin,
     },
     /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`/`parent_or_obj` for the
-    /// parent's tags). `sanitize` is a sibling of `extract`, not part of it — see `Extract`'s own
-    /// doc for why. `extract` itself may be a direction-sensitive read (`Extract::Directed`) — see
-    /// its own doc for why that needs the full `ExtractCtx` `eval` already threads through here.
+    /// parent's tags). `extract` carries its own `sanitize` (see `Extract`'s own doc for why) and
+    /// may be a direction-sensitive read (`Extract::Directed`) — either way `eval` just calls
+    /// `extract.read`, which already threads the full `ExtractCtx` through.
     Extract {
         extract: Extract,
-        sanitize: Option<Sanitizer>,
         /// Companion key/values this branch contributes when it produces the value; emitted as
         /// `<output>_<k>` (e.g. `{ "source": "tag", "confidence": "high" }`).
         annotate: Map<String, Value>,
@@ -221,8 +219,8 @@ impl Producer {
                     .or_else(|| default.clone().map(|value| Produced { value, annotate: annotate.clone() }))
             }
 
-            Producer::Extract { extract, sanitize, annotate } => {
-                let value = extract.read(sanitize.as_ref(), ctx)?;
+            Producer::Extract { extract, annotate } => {
+                let value = extract.read(ctx)?;
                 Some(Produced { value, annotate: annotate.clone() })
             }
 
@@ -289,7 +287,7 @@ mod classify_bool_tests {
     fn matching_filter_produces_true() {
         let obj: RawTags = [("oneway".to_owned(), "yes".to_owned())].into_iter().collect();
         let producer = bool_producer(
-            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned() }, sanitize: None, eq: "yes".to_owned() },
+            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: None }, eq: "yes".to_owned() },
             TagSet::Obj,
         );
         let produced = producer.eval(&ctx(&obj, None)).unwrap();
@@ -300,7 +298,7 @@ mod classify_bool_tests {
     fn non_matching_filter_produces_false() {
         let obj: RawTags = [("oneway".to_owned(), "no".to_owned())].into_iter().collect();
         let producer = bool_producer(
-            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned() }, sanitize: None, eq: "yes".to_owned() },
+            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: None }, eq: "yes".to_owned() },
             TagSet::Obj,
         );
         let produced = producer.eval(&ctx(&obj, None)).unwrap();
@@ -336,8 +334,7 @@ mod directed_extract_tests {
 
     fn directed(key: &str, from: DirectedFrom) -> Producer {
         Producer::Extract {
-            extract: Extract::Directed { directed: DirectedKey { key: key.to_owned(), from } },
-            sanitize: None,
+            extract: Extract::Directed { directed: DirectedKey { key: key.to_owned(), from }, sanitize: None },
             annotate: Map::new(),
         }
     }

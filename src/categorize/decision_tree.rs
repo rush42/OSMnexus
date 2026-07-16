@@ -650,14 +650,16 @@ fn collect_sanitized_tags(f: &Filter, out: &mut FxHashSet<String>) {
         Filter::And { and } => and.iter().for_each(|c| collect_sanitized_tags(c, out)),
         Filter::Or { or } => or.iter().for_each(|c| collect_sanitized_tags(c, out)),
         Filter::Not { not } => collect_sanitized_tags(not, out),
-        Filter::Eq { extract, sanitize: Some(_), .. }
-        | Filter::In { extract, sanitize: Some(_), .. }
-        | Filter::NumLt { extract, sanitize: Some(_), .. }
-        | Filter::NumLte { extract, sanitize: Some(_), .. }
-        | Filter::NumGt { extract, sanitize: Some(_), .. }
-        | Filter::NumGte { extract, sanitize: Some(_), .. } => {
-            if let crate::lang::extract::Extract::Value { key } = extract {
-                out.insert(key.clone());
+        Filter::Eq { extract, .. }
+        | Filter::In { extract, .. }
+        | Filter::NumLt { extract, .. }
+        | Filter::NumLte { extract, .. }
+        | Filter::NumGt { extract, .. }
+        | Filter::NumGte { extract, .. } => {
+            if extract.sanitize().is_some() {
+                if let crate::lang::extract::Extract::Value { key, .. } = extract {
+                    out.insert(key.clone());
+                }
             }
         }
         _ => {}
