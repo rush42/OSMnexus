@@ -66,7 +66,7 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [showNodes, setShowNodes] = useState(false);
   const [followSelection, setFollowSelection] = useState(true);
-  const [viewMode, setViewMode] = useState<"text" | "tree">("text");
+  const [viewMode, setViewMode] = useState<"map" | "tree">("map");
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [cutPoints, setCutPoints] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -325,64 +325,106 @@ export default function App() {
   return (
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
       <div style={{ flex: "1 1 60%", position: "relative" }}>
-        <Map
-          bounds={bounds}
-          data={data}
-          cutPoints={cutPoints}
-          topicColors={topicColors}
-          hiddenTopics={hiddenTopics}
-          isolateCategory={isolateCategory}
-          focusTarget={focusTarget}
-          focusTick={focusTick}
-          followSelection={followSelection}
-          showNodes={showNodes}
-          onBboxSelected={selectBbox}
-        />
+        {viewMode === "tree" && active.topic ? (
+          <DagView topic={active.topic} />
+        ) : (
+          <Map
+            bounds={bounds}
+            data={data}
+            cutPoints={cutPoints}
+            topicColors={topicColors}
+            hiddenTopics={hiddenTopics}
+            isolateCategory={isolateCategory}
+            focusTarget={focusTarget}
+            focusTick={focusTick}
+            followSelection={followSelection}
+            showNodes={showNodes}
+            onBboxSelected={selectBbox}
+          />
+        )}
         <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8 }}>
-          <label
-            style={{
-              padding: "7px 12px",
-              background: "rgba(255,255,255,0.85)",
-              backdropFilter: "blur(6px)",
-              color: "var(--text)",
-              fontFamily: "var(--font-ui)",
-              fontSize: 13,
-              borderRadius: "var(--radius)",
-              boxShadow: "var(--shadow)",
-              border: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              cursor: "pointer",
-              userSelect: "none",
-            }}
-          >
-            <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
-            Show intersections
-          </label>
-          <label
-            style={{
-              padding: "7px 12px",
-              background: "rgba(255,255,255,0.85)",
-              backdropFilter: "blur(6px)",
-              color: "var(--text)",
-              fontFamily: "var(--font-ui)",
-              fontSize: 13,
-              borderRadius: "var(--radius)",
-              boxShadow: "var(--shadow)",
-              border: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              cursor: "pointer",
-              userSelect: "none",
-            }}
-          >
-            <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
-            Follow selection
-          </label>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              onClick={() => setViewMode("map")}
+              style={{
+                fontWeight: viewMode === "map" ? 700 : 400,
+                padding: "7px 12px",
+                background: "rgba(255,255,255,0.85)",
+                backdropFilter: "blur(6px)",
+                borderRadius: "var(--radius)",
+                boxShadow: "var(--shadow)",
+                border: "1px solid var(--border)",
+              }}
+              title="Show classified features on the map"
+            >
+              Map
+            </button>
+            <button
+              onClick={() => active.topic && setViewMode("tree")}
+              disabled={!active.topic}
+              style={{
+                fontWeight: viewMode === "tree" ? 700 : 400,
+                opacity: active.topic ? 1 : 0.5,
+                padding: "7px 12px",
+                background: "rgba(255,255,255,0.85)",
+                backdropFilter: "blur(6px)",
+                borderRadius: "var(--radius)",
+                boxShadow: "var(--shadow)",
+                border: "1px solid var(--border)",
+              }}
+              title="Plot this topic's deriver (Producer) trees"
+            >
+              Tree
+            </button>
+          </div>
+          {viewMode === "map" && (
+            <>
+              <label
+                style={{
+                  padding: "7px 12px",
+                  background: "rgba(255,255,255,0.85)",
+                  backdropFilter: "blur(6px)",
+                  color: "var(--text)",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  borderRadius: "var(--radius)",
+                  boxShadow: "var(--shadow)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
+                Show intersections
+              </label>
+              <label
+                style={{
+                  padding: "7px 12px",
+                  background: "rgba(255,255,255,0.85)",
+                  backdropFilter: "blur(6px)",
+                  color: "var(--text)",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  borderRadius: "var(--radius)",
+                  boxShadow: "var(--shadow)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
+                Follow selection
+              </label>
+            </>
+          )}
         </div>
-        {(!selected || extracting) && (
+        {viewMode === "map" && (!selected || extracting) && (
           <div
             style={{
               position: "absolute",
@@ -403,7 +445,7 @@ export default function App() {
             {extracting ? "Extracting…" : "Shift+drag on the map to select an area to edit"}
           </div>
         )}
-        {(extractMs !== null || pipelineMs !== null) && (
+        {viewMode === "map" && (extractMs !== null || pipelineMs !== null) && (
           <div
             style={{
               position: "absolute",
@@ -631,34 +673,12 @@ export default function App() {
                     background: "#f7f8fa",
                     borderTop: "1px solid var(--border)",
                     borderBottom: "1px solid var(--border)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 8,
                   }}
                 >
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {active.isTopicConfig ? `${active.topic}/topic.json` : `${active.topic}/${active.kind}/${active.name}.json`}
-                  </span>
-                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                    <button
-                      onClick={() => setViewMode("text")}
-                      style={{ fontWeight: viewMode === "text" ? 700 : 400 }}
-                      title="Edit JSON"
-                    >
-                      Text
-                    </button>
-                    <button
-                      onClick={() => setViewMode("tree")}
-                      style={{ fontWeight: viewMode === "tree" ? 700 : 400 }}
-                      title="Plot this topic's deriver (Producer) trees"
-                    >
-                      Tree
-                    </button>
-                  </div>
+                  {active.isTopicConfig ? `${active.topic}/topic.json` : `${active.topic}/${active.kind}/${active.name}.json`}
                 </div>
                 <div style={{ flex: 1, minHeight: 0 }}>
-                  {viewMode === "text" ? <Editor value={text} onChange={setText} /> : <DagView topic={active.topic} />}
+                  <Editor value={text} onChange={setText} />
                 </div>
               </div>
             )}
