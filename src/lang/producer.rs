@@ -1,7 +1,8 @@
 //! The `Producer` engine — a small tree of variants that evaluates one output's value (the one
 //! mechanism behind every `outputs` entry, `TopicSpec::outputs`) plus the context (`ExtractCtx`/
 //! `TagSet`) and result (`Produced`) types it evaluates over. Two branch shapes (`Match`, `Parent`)
-//! and three leaf/read shapes (`Extract`, `DirectedExtract`, `Const`) — everything else is
+//! and two leaf/read shapes (`Extract` — itself covering plain and direction-sensitive reads, see
+//! `lang::extract`'s `Extract::Directed` — and `Const`) — everything else is
 //! JSON-only sugar, folded into one of these by `parser`'s hand-written `Deserialize` impl
 //! (`fallback`, `parent_or_obj`, the `{"tag": ...}`/`{"tag_or", "or"}` shorthands) so it never
 //! exists as a `Producer` value here, not even transiently (see `parser`'s own doc for why that
@@ -19,8 +20,7 @@ use serde_json::{Map, Value};
 
 use crate::lang::extract::Extract;
 use crate::lang::filter::{self, Filter};
-use crate::lang::keys;
-use crate::lang::sanitize::{resolve_sanitize, Sanitizer};
+use crate::lang::sanitize::Sanitizer;
 use crate::osm::types::RawTags;
 
 /// One classifier rule — `when`/`value` are already-resolved `Filter`/`Producer` (no macro or
@@ -120,24 +120,6 @@ pub enum TagSet {
     Annotations,
 }
 
-/// Which tagset `Producer::DirectedExtract` reads — its own, narrower `from`, distinct from the
-/// general `TagSet` above: a directed read needs both `parent_tags` and the object's own `obj_tags`
-/// simultaneously (to guard against overriding an already-set key), so it can't be expressed as a
-/// plain "swap `obj_tags`, recurse" wrapper the way every other tagset-scoping need is — see
-/// `DirectedExtract`'s own doc. No `ParentOrObj`: unlike the general case, a directed read has
-/// nothing distinct to commit to — parent tags need the two-key (bare-then-directed) fallback `Parent`
-/// implements, so a `ParentOrObj` here could only ever mean "try that, then plain `Obj`," which
-/// nobody's asked for; keeping it out of the type means it can't be spelled by accident and silently
-/// behave like `Obj` (as it used to, sharing `TagSet`'s catch-all arm).
-#[derive(Debug, Deserialize, Clone, Copy, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DirectedFrom {
-    #[default]
-    Obj,
-    Parent,
-    Annotations,
-}
-
 /// Why a `Producer::Match` exists — a real authored rule table, or the runtime shape one of the
 /// JSON sugars (`fallback`/`parent_or_obj`/`tag_or`) or a Rust-side synthesis (`topic::runner`'s
 /// `default_value_producer`/`as_fallback_pair`) folds into. Purely informational — `eval`/`resolve`
@@ -198,7 +180,8 @@ pub enum Producer {
     },
     /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`/`parent_or_obj` for the
     /// parent's tags). `sanitize` is a sibling of `extract`, not part of it — see `Extract`'s own
-    /// doc for why.
+    /// doc for why. `extract` itself may be a direction-sensitive read (`Extract::Directed`) — see
+    /// its own doc for why that needs the full `ExtractCtx` `eval` already threads through here.
     Extract {
         extract: Extract,
         sanitize: Option<Sanitizer>,
@@ -213,23 +196,6 @@ pub enum Producer {
     /// `match_rules`).
     Const {
         value: Value,
-        annotate: Map<String, Value>,
-    },
-    /// Direction-sensitive read of `key`: resolves its `:forward`/`:backward` variant from
-    /// `ctx.annotations["_side"]` + the global left/right-hand-traffic setting
-    /// (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no direction to
-    /// resolve). Not expressible as a plain `Extract` wrapped in `Parent`: it needs both tagsets at
-    /// once — the object's own (to guard against overriding an already-set key) and, when
-    /// `from: Parent`, the parent's (tried bare-key-then-directed-key). `from: Obj` tries only the
-    /// directed variant on the object's own tags (e.g. a tag already unnested as
-    /// `traffic_sign:forward`); `from: Annotations` reads `ctx.annotations` instead of any tagset.
-    /// Built from `transforms.json`'s `{ "directed": {...} }` sugar (see `parser`) — the
-    /// object-cardinality-changing split itself stays native, but this per-key projection is an
-    /// ordinary sided tag read.
-    DirectedExtract {
-        key: String,
-        from: DirectedFrom,
-        sanitize: Option<Sanitizer>,
         annotate: Map<String, Value>,
     },
     /// Re-evaluate the inner producer against the parent way's tags instead of the object's own —
@@ -256,17 +222,11 @@ impl Producer {
             }
 
             Producer::Extract { extract, sanitize, annotate } => {
-                let value = extract.read(sanitize.as_ref(), ctx.obj_tags)?;
+                let value = extract.read(sanitize.as_ref(), ctx)?;
                 Some(Produced { value, annotate: annotate.clone() })
             }
 
             Producer::Const { value, annotate } => Some(Produced { value: value.clone(), annotate: annotate.clone() }),
-
-            Producer::DirectedExtract { key, from, sanitize, annotate } => {
-                let raw = read_directed(key, *from, ctx)?;
-                let value = resolve_sanitize(sanitize.as_ref(), raw)?;
-                Some(Produced { value, annotate: annotate.clone() })
-            }
 
             Producer::Parent(inner) => match ctx.parent_tags {
                 None => None,
@@ -293,35 +253,6 @@ impl Producer {
             annotate: Map::new(),
             origin: MatchOrigin::ParentOrObj,
         }
-    }
-}
-
-/// The read strategy behind `Producer::DirectedExtract`: resolve `key`'s `:forward`/`:backward`
-/// variant from `ctx.annotations["_side"]` + the global left/right-hand-traffic setting, then read
-/// it from whichever tagset `from` names. Not expressed as an `Extract` shape (unlike every other
-/// `Producer` leaf) because it needs more than one tagset's worth of context at once — `ctx.obj_tags`
-/// (to guard against overriding an already-set key) and, for `from: Parent`, `ctx.parent_tags` too
-/// (tried bare-key-then-directed-key) — where `Extract::read` only ever sees a single `&RawTags`.
-fn read_directed<'a>(key: &str, from: DirectedFrom, ctx: &ExtractCtx<'a>) -> Option<&'a str> {
-    if ctx.obj_tags.contains_key(key) {
-        return None; // already set (e.g. by an earlier unnest) — don't override it
-    }
-    let obj_side = ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self");
-    let suffix = match (obj_side, crate::traffic::is_left_hand_traffic()) {
-        ("left", false) | ("right", true) => ":backward",
-        ("right", false) | ("left", true) => ":forward",
-        _ => return None, // "self": no direction to resolve
-    };
-    let directed_key = format!("{key}{suffix}");
-    match from {
-        DirectedFrom::Parent => {
-            let tags = ctx.parent_tags?;
-            keys::first_present(tags, [key, directed_key.as_str()])
-        }
-        DirectedFrom::Annotations => ctx.annotations.get(directed_key.as_str())
-            .or_else(|| ctx.annotations.get(key))
-            .and_then(Value::as_str),
-        DirectedFrom::Obj => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
     }
 }
 
@@ -387,6 +318,7 @@ mod classify_bool_tests {
 #[cfg(test)]
 mod directed_extract_tests {
     use super::*;
+    use crate::lang::extract::{DirectedFrom, DirectedKey};
 
     fn tags(pairs: &[(&str, &str)]) -> RawTags {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
@@ -403,7 +335,11 @@ mod directed_extract_tests {
     }
 
     fn directed(key: &str, from: DirectedFrom) -> Producer {
-        Producer::DirectedExtract { key: key.to_owned(), from, sanitize: None, annotate: Map::new() }
+        Producer::Extract {
+            extract: Extract::Directed { directed: DirectedKey { key: key.to_owned(), from } },
+            sanitize: None,
+            annotate: Map::new(),
+        }
     }
 
     #[test]

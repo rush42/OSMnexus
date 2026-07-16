@@ -143,23 +143,11 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             g.node(&label, "note", "#e2f0d9")
         }
         Producer::Extract { extract, sanitize, annotate } => {
-            let mut label = String::from("extract");
-            match extract {
-                Extract::Value { key } => { let _ = write!(label, "\nkey: {key}"); }
-                Extract::Candidates { keys } => { let _ = write!(label, "\nkeys: {keys:?}"); }
-            }
-            if !annotate.is_empty() {
-                let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
-            }
-            let node = g.node(&label, "box", "#d9e8fb");
-            if let Some(chain) = sanitize {
-                let chain_root = render_chain(g, chain);
-                g.edge(&node, &chain_root, "sanitize");
-            }
-            node
-        }
-        Producer::DirectedExtract { key, from, sanitize, annotate } => {
-            let mut label = format!("directed extract\nkey: {key}\nfrom: {from:?}");
+            let mut label = match extract {
+                Extract::Value { key } => format!("extract\nkey: {key}"),
+                Extract::Candidates { keys } => format!("extract\nkeys: {keys:?}"),
+                Extract::Directed { directed } => format!("directed extract\nkey: {}\nfrom: {:?}", directed.key, directed.from),
+            };
             if !annotate.is_empty() {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }

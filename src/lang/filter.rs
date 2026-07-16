@@ -81,6 +81,7 @@ impl Filter {
             match extract {
                 Extract::Value { key } => key.clone(),
                 Extract::Candidates { keys } => format!("[{}]", keys.join("|")),
+                Extract::Directed { directed } => format!("{} (directed)", directed.key),
             }
         }
         // A predicate whose comparison already reads as a keyword (`in`, `contains`, ...) doesn't
@@ -135,13 +136,13 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::Not { not } => !eval(not, ctx),
 
         Filter::Eq { extract, sanitize, eq } =>
-            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| v.as_ref() == eq.as_str()),
+            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::InSet { extract, sanitize, in_set } =>
-            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| value_set(in_set).contains(v.as_ref())),
+            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| value_set(in_set).contains(v.as_ref())),
         Filter::In { extract, sanitize, r#in } =>
-            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
+            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::Contains { extract, sanitize, contains, case_insensitive } =>
-            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| {
+            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| {
                 if *case_insensitive {
                     v.to_lowercase().contains(contains.as_str())
                 } else {
@@ -149,11 +150,11 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
                 }
             }),
         Filter::StartsWith { extract, sanitize, starts_with } =>
-            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| v.starts_with(starts_with.as_str())),
+            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| v.starts_with(starts_with.as_str())),
         Filter::EndsWith { extract, sanitize, ends_with } =>
-            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some_and(|v| v.ends_with(ends_with.as_str())),
+            extract.read_str(sanitize.as_ref(), ctx).is_some_and(|v| v.ends_with(ends_with.as_str())),
         Filter::Exists { extract, sanitize, exists } =>
-            extract.read_str(sanitize.as_ref(), ctx.obj_tags).is_some() == *exists,
+            extract.read_str(sanitize.as_ref(), ctx).is_some() == *exists,
 
         Filter::Parent { parent } => match ctx.parent_tags {
             None => false,
@@ -187,7 +188,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
 /// is false on missing/garbage input. No geometry-derived values (length, …) are available:
 /// classification is tag-only.
 fn read_num(extract: &Extract, ctx: &ExtractCtx, sanitize: Option<&Sanitizer>) -> Option<f64> {
-    let raw = extract.read_raw(ctx.obj_tags)?;
+    let raw = extract.read_raw(ctx)?;
     match sanitize {
         Some(_) => num_from_value(&resolve_sanitize(sanitize, raw)?),
         None => raw.trim().parse().ok(),

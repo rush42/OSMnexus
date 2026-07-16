@@ -21,9 +21,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
-use crate::lang::extract::Extract;
+use crate::lang::extract::{DirectedFrom, DirectedKey, Extract};
 use crate::lang::filter::Filter;
-use crate::lang::producer::{DirectedFrom, MatchOrigin, Producer, Rule};
+use crate::lang::producer::{MatchOrigin, Producer, Rule};
 use crate::lang::sanitize::{ReplaceRule, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ enum ProducerJson {
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
     /// equivalence exact).
     Fallback { fallback: Vec<Producer> },
-    /// Direction-sensitive read of `key` — see `Producer::DirectedExtract`.
+    /// Direction-sensitive read of `key` — see `Extract::Directed`.
     Directed { directed: DirectedRepr },
     /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
     Tag { tag: String },
@@ -100,9 +100,8 @@ impl<'de> Deserialize<'de> for Producer {
                 annotate: Map::new(),
                 origin: MatchOrigin::Fallback,
             },
-            ProducerJson::Directed { directed } => Producer::DirectedExtract {
-                key: directed.key,
-                from: directed.from,
+            ProducerJson::Directed { directed } => Producer::Extract {
+                extract: Extract::Directed { directed: DirectedKey { key: directed.key, from: directed.from } },
                 sanitize: directed.sanitize,
                 annotate: directed.annotate,
             },

@@ -1,7 +1,8 @@
 //! `Extract`: "resolve a raw tag value from a candidate key spec" — the one piece of read logic
 //! `Filter`'s `Tag*` predicates and `Producer::Extract` both need, factored out so it's written
-//! (and tested) once. Two shapes, nothing else: a single key, or an ordered candidate list
-//! (first-present wins). Resolved against a tagset via `keys::first_present`.
+//! (and tested) once. Three shapes: a single key, an ordered candidate list (first-present wins),
+//! or a direction-sensitive key (`Directed`, resolved against a full `ExtractCtx` rather than a
+//! bare tagset — see its own doc for why it needs more than `keys::first_present` can give it).
 //!
 //! Deliberately carries no `sanitize` — that's a sibling field wherever `Extract` is embedded
 //! (`Filter`'s tag/num predicates, `Producer::Extract`), not part of the read primitive itself, so it's applied
@@ -18,8 +19,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::lang::keys;
+use crate::lang::producer::ExtractCtx;
 use crate::lang::sanitize::{resolve_sanitize, Sanitizer};
-use crate::osm::types::RawTags;
 
 /// A candidate-key read spec. `key`/`keys` accept `Producer`'s historical field names as canonical
 /// with `Filter`'s historical names (`tag`/`first_tag`, and `num` for its numeric predicates) as
@@ -39,26 +40,64 @@ pub enum Extract {
         #[serde(alias = "tag", alias = "num")]
         key: String,
     },
+    /// Direction-sensitive read of `directed.key` — see `DirectedKey`'s own doc. Built from
+    /// `transforms.json`'s `{ "directed": {...} }` sugar (see `parser`) — the
+    /// object-cardinality-changing split itself stays native, but this per-key projection is an
+    /// ordinary sided tag read.
+    Directed { directed: DirectedKey },
+}
+
+/// The `key`/`from` pair behind `Extract::Directed`: resolves `key`'s `:forward`/`:backward`
+/// variant from `ctx.annotations["_side"]` + the global left/right-hand-traffic setting
+/// (`traffic::is_left_hand_traffic`), producing nothing for a `self` object (no direction to
+/// resolve). Not expressible as `Extract::Value`/`Candidates` plus a tagset wrapper: it needs both
+/// tagsets at once — the object's own (to guard against overriding an already-set key) and, when
+/// `from: Parent`, the parent's (tried bare-key-then-directed-key) — which is why `Extract::read*`
+/// takes a full `ExtractCtx` rather than a bare `&RawTags`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DirectedKey {
+    pub key: String,
+    #[serde(default)]
+    pub from: DirectedFrom,
+}
+
+/// Which tagset a directed read resolves against — its own, narrower vocabulary, distinct from
+/// the general `TagSet` (`producer`): a directed read needs both `parent_tags` and the object's
+/// own `obj_tags` simultaneously, so it can't be expressed as a plain "swap `obj_tags`, recurse"
+/// wrapper the way every other tagset-scoping need is — see `DirectedKey`'s own doc. No
+/// `ParentOrObj`: unlike the general case, a directed read has nothing distinct to commit to —
+/// parent tags need the two-key (bare-then-directed) fallback `Producer::Parent` implements, so a
+/// `ParentOrObj` here could only ever mean "try that, then plain `Obj`," which nobody's asked for;
+/// keeping it out of the type means it can't be spelled by accident and silently behave like `Obj`.
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectedFrom {
+    #[default]
+    Obj,
+    Parent,
+    Annotations,
 }
 
 impl Extract {
-    /// Resolve the raw string — a first-present fallback over the candidate list, or a single key.
-    pub fn read_raw<'a>(&self, tags: &'a RawTags) -> Option<&'a str> {
+    /// Resolve the raw string — a first-present fallback over the candidate list, a single key, or
+    /// (`Directed`) a side/handedness-resolved key.
+    pub fn read_raw<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<&'a str> {
         match self {
-            Extract::Value { key } => keys::first_present(tags, std::iter::once(key.as_str())),
-            Extract::Candidates { keys } => keys::first_present(tags, keys.iter().map(String::as_str)),
+            Extract::Value { key } => keys::first_present(ctx.obj_tags, std::iter::once(key.as_str())),
+            Extract::Candidates { keys } => keys::first_present(ctx.obj_tags, keys.iter().map(String::as_str)),
+            Extract::Directed { directed } => read_directed(directed, ctx),
         }
     }
 
     /// Read and run through `sanitize` (identity if unset) — what `Producer::Extract` produces.
-    pub fn read(&self, sanitize: Option<&Sanitizer>, tags: &RawTags) -> Option<Value> {
-        resolve_sanitize(sanitize, self.read_raw(tags)?)
+    pub fn read(&self, sanitize: Option<&Sanitizer>, ctx: &ExtractCtx) -> Option<Value> {
+        resolve_sanitize(sanitize, self.read_raw(ctx)?)
     }
 
     /// Like `read`, coerced to a string — what every `Filter` `Tag*` comparison reads. A dropped
     /// sanitize output (or one that isn't string-shaped) compares as absent, not equal to "".
-    pub fn read_str<'a>(&self, sanitize: Option<&Sanitizer>, tags: &'a RawTags) -> Option<Cow<'a, str>> {
-        let raw = self.read_raw(tags)?;
+    pub fn read_str<'a>(&self, sanitize: Option<&Sanitizer>, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
+        let raw = self.read_raw(ctx)?;
         match sanitize {
             None => Some(Cow::Borrowed(raw)),
             Some(_) => match resolve_sanitize(sanitize, raw)? {
@@ -66,5 +105,31 @@ impl Extract {
                 other => other.as_str().map(|s| Cow::Owned(s.to_owned())),
             },
         }
+    }
+}
+
+/// The read strategy behind `Extract::Directed` — see `DirectedKey`'s own doc for why it needs a
+/// full `ExtractCtx`.
+fn read_directed<'a>(directed: &DirectedKey, ctx: &ExtractCtx<'a>) -> Option<&'a str> {
+    let DirectedKey { key, from } = directed;
+    if ctx.obj_tags.contains_key(key) {
+        return None; // already set (e.g. by an earlier unnest) — don't override it
+    }
+    let obj_side = ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self");
+    let suffix = match (obj_side, crate::traffic::is_left_hand_traffic()) {
+        ("left", false) | ("right", true) => ":backward",
+        ("right", false) | ("left", true) => ":forward",
+        _ => return None, // "self": no direction to resolve
+    };
+    let directed_key = format!("{key}{suffix}");
+    match from {
+        DirectedFrom::Parent => {
+            let tags = ctx.parent_tags?;
+            keys::first_present(tags, [key.as_str(), directed_key.as_str()])
+        }
+        DirectedFrom::Annotations => ctx.annotations.get(directed_key.as_str())
+            .or_else(|| ctx.annotations.get(key.as_str()))
+            .and_then(Value::as_str),
+        DirectedFrom::Obj => keys::first_present(ctx.obj_tags, [directed_key.as_str()]),
     }
 }

@@ -4,13 +4,13 @@
 //! binary and `bin/dag_json` (the live editor's backend) can build a tree from the same `Producer`
 //! without duplicating the walk.
 
-use std::fmt::Write as _;
-
 use serde::Serialize;
 
 use serde_json::{Map, Value};
 
+use crate::categorize::categories::{CategoriesFile, OrderedNode};
 use crate::lang::extract::Extract;
+use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer};
 use crate::lang::sanitize::{Sanitizer, Step};
 
@@ -69,7 +69,7 @@ fn annotate_node(g: &mut DagGraph, owner: &str, annotate: &Map<String, Value>) {
 
 /// The pure `Producer` tree — no synthetic root node, no "who uses this" bookkeeping (that's a
 /// `topic::runner`/`bin/dag_json` concern; a node here is only ever a step in how the value itself
-/// gets built: `Match`/`Parent` branches down to `Extract`/`DirectedExtract`/`Const` leaves, plus
+/// gets built: `Match`/`Parent` branches down to `Extract`/`Const` leaves, plus
 /// any `Sanitizer` chain hanging off an `Extract`).
 pub fn producer_dag(producer: &Producer) -> DagGraph {
     let mut g = DagGraph::default();
@@ -128,22 +128,14 @@ fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) ->
             node
         }
         Producer::Extract { extract, sanitize, annotate } => {
-            let mut label = String::from("extract");
-            match extract {
-                Extract::Value { key } => { let _ = write!(label, "\nkey: {key}"); }
-                Extract::Candidates { keys } => { let _ = write!(label, "\nkeys: {keys:?}"); }
-            }
-            let node = g.node(label, "extract");
-            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
-            if let Some(chain) = sanitize {
-                let chain_root = render_chain(g, chain);
-                g.edge(&node, &chain_root, "sanitize");
-            }
-            node
-        }
-        Producer::DirectedExtract { key, from, sanitize, annotate } => {
-            let label = format!("directed extract\nkey: {key}\nfrom: {from:?}");
-            let node = g.node(label, "directed_extract");
+            let (label, kind) = match extract {
+                Extract::Value { key } => (format!("extract\nkey: {key}"), "extract"),
+                Extract::Candidates { keys } => (format!("extract\nkeys: {keys:?}"), "extract"),
+                Extract::Directed { directed } => {
+                    (format!("directed extract\nkey: {}\nfrom: {:?}", directed.key, directed.from), "directed_extract")
+                }
+            };
+            let node = g.node(label, kind);
             annotate_node(g, annotate_to.unwrap_or(&node), annotate);
             if let Some(chain) = sanitize {
                 let chain_root = render_chain(g, chain);
@@ -193,5 +185,66 @@ fn step_label(step: &Step) -> String {
         }
         Step::Replace { replace } => format!("replace\n{} rule(s)", replace.len()),
         Step::Builtin(name) => format!("builtin: {name}"),
+    }
+}
+
+/// The categorization tree for one `ElementKind`'s `CategoriesFile` — which category (or no
+/// category, for a disqualifier) an object gets, tried in `order` (the compiled priority list;
+/// see `categories::build_order`), each branch's condition rendered as a `Filter` expression tree.
+/// A flat, single-level branch per `order` entry (not a discrimination net like `DecisionTree`) —
+/// it mirrors `categorize_linear`'s reference walk, which is what a human actually reads a
+/// category set as: try these conditions in order, first match wins.
+pub fn category_order_dag(cats: &CategoriesFile) -> DagGraph {
+    let mut g = DagGraph::default();
+    let root = g.node(format!("categorize\n{} rule(s)", cats.order.len()), "match");
+    for (i, node) in cats.order.iter().enumerate() {
+        match node {
+            OrderedNode::Category { idx } => {
+                let cat = &cats.categories[*idx];
+                let branch = g.node(format!("priority {}\ncategory: {}", i + 1, cat.id), "rule");
+                g.edge(&root, &branch, "");
+                let cond = render_filter(&mut g, &cat.condition);
+                g.edge(&branch, &cond, "if");
+            }
+            OrderedNode::Skip { condition } => {
+                let branch = g.node(format!("priority {}\n(no category)", i + 1), "sanitizer");
+                g.edge(&root, &branch, "");
+                let cond = render_filter(&mut g, condition);
+                g.edge(&branch, &cond, "if");
+            }
+        }
+    }
+    g
+}
+
+/// Renders `f`, returning its own node id. Combinators (`and`/`or`/`not`) get their own branching
+/// node so nested boolean structure is visible in the graph; every other `Filter` variant already
+/// has a precise one-line rendering (`Filter::describe`), so it's a single leaf node rather than
+/// broken down further (there's nothing more to a tag predicate that a sub-tree would clarify).
+fn render_filter(g: &mut DagGraph, f: &Filter) -> String {
+    match f {
+        Filter::And { and } => {
+            let node = g.node(format!("and\n{} clause(s)", and.len()), "match");
+            for c in and {
+                let child = render_filter(g, c);
+                g.edge(&node, &child, "");
+            }
+            node
+        }
+        Filter::Or { or } => {
+            let node = g.node(format!("or\n{} clause(s)", or.len()), "match");
+            for c in or {
+                let child = render_filter(g, c);
+                g.edge(&node, &child, "");
+            }
+            node
+        }
+        Filter::Not { not } => {
+            let node = g.node("not".to_owned(), "parent");
+            let child = render_filter(g, not);
+            g.edge(&node, &child, "");
+            node
+        }
+        other => g.node(truncate(&other.describe(), 120), "extract"),
     }
 }

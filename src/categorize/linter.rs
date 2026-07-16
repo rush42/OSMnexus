@@ -81,6 +81,7 @@ fn extract_key(extract: &crate::lang::extract::Extract) -> String {
         Extract::Value { key } => key.clone(),
         Extract::Candidates { keys } => keys.first().cloned()
             .expect("Extract::Candidates needs a non-empty `keys`/`first_tag`"),
+        Extract::Directed { directed } => directed.key.clone(),
     }
 }
 
@@ -102,6 +103,7 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::Eq { extract, eq, .. } => match extract {
             Extract::Value { key } => Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), eq.clone()))),
             Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
+            Extract::Directed { .. } => Expr::Lit(Literal::Pos(Predicate::Eq(extract_key(extract), eq.clone()))),
         },
         Filter::Exists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))),
         Filter::Exists { extract, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(extract_key(extract)))),
@@ -114,6 +116,11 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
                 Expr::Or(exprs)
             }
             Extract::Candidates { keys } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
+            Extract::Directed { .. } => {
+                let key = extract_key(extract);
+                let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone())))).collect();
+                Expr::Or(exprs)
+            }
         },
         Filter::InSet { extract, in_set, .. } => match extract {
             Extract::Value { key } => {
@@ -127,6 +134,14 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
                 let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
                 vals.sort();
                 Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vals)))
+            }
+            Extract::Directed { .. } => {
+                let key = extract_key(extract);
+                let exprs: Vec<_> = crate::value_sets::value_set(in_set)
+                    .iter()
+                    .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone()))))
+                    .collect();
+                Expr::Or(exprs)
             }
         },
 
