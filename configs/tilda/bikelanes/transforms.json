@@ -179,7 +179,7 @@
                 { "not": { "tag": "oneway:bicycle", "eq": "no" } }
               ]
             },
-            "value": { "tag_or": "traffic_sign:forward", "or": "" }
+            "value": { "tag": "traffic_sign:forward", "or": "" }
           }
         ]
       },

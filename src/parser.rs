@@ -32,10 +32,10 @@ use crate::lang::sanitize::{ReplaceRule, Sanitizer, Step, StrOrVec};
 /// `Producer` shape to scope it to the parent way's tags, `Fallback`'s `fallback` and
 /// `ParentOrObj`'s `parent_or_obj` sugar (both folded into an equivalent `Match` in `Deserialize`
 /// below, so a `Producer` value is never observably either), and
-/// `Tag`/`TagOr`'s `{"tag": ...}`/`{"tag_or": ..., "or": ...}` shorthands (fold into a plain
-/// `Extract`, or a `Match` using its own `default` for the "or" branch — so neither ever exists as
-/// its own runtime variant; a bare literal needs no sugar here at all, since `Const`'s a real
-/// variant that deserializes straight from a bare JSON value). Untagged, tried in this order
+/// `Tag`'s `{"tag": ..., "or"?: ...}` shorthand (folds into a plain `Extract`, or — when `or` is
+/// present — a `Match` using its own `default` for the "or" branch; neither ever exists as its own
+/// runtime variant); a bare literal needs no sugar here at all, since `Const`'s a real variant that
+/// deserializes straight from a bare JSON value. Untagged, tried in this order
 /// (more-specific/required-field shapes before `Extract`, whose fields are all optional and so
 /// would otherwise match everything first, and before `Const`, the bare-JSON catch-all).
 ///
@@ -55,10 +55,13 @@ enum ProducerJson {
     /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
     /// equivalence exact).
     Fallback { fallback: Vec<Producer> },
-    /// Copy a tag's own value (e.g. fall back to the raw `highway` value).
-    Tag { tag: String },
-    /// Copy `tag_or`'s value, or the literal `or` when the tag is absent.
-    TagOr { tag_or: String, or: Value },
+    /// Copy a tag's own value (e.g. fall back to the raw `highway` value), or — when `or` is
+    /// present — that literal instead if the tag is absent.
+    Tag {
+        tag: String,
+        #[serde(default)]
+        or: Option<Value>,
+    },
     Match {
         rules: Vec<Rule>,
         #[serde(default)] default: Option<Value>,
@@ -88,13 +91,13 @@ impl<'de> Deserialize<'de> for Producer {
                 annotate: Map::new(),
                 origin: MatchOrigin::Fallback,
             },
-            ProducerJson::Tag { tag } => {
+            ProducerJson::Tag { tag, or: None } => {
                 Producer::Extract { extract: Extract::Value { key: tag, sanitize: None }, annotate: Map::new() }
             }
-            ProducerJson::TagOr { tag_or, or } => Producer::Match {
+            ProducerJson::Tag { tag, or: Some(or) } => Producer::Match {
                 rules: vec![Rule {
                     when: Filter::Bool(true),
-                    value: Producer::Extract { extract: Extract::Value { key: tag_or, sanitize: None }, annotate: Map::new() },
+                    value: Producer::Extract { extract: Extract::Value { key: tag, sanitize: None }, annotate: Map::new() },
                 }],
                 default: Some(or),
                 annotate: Map::new(),

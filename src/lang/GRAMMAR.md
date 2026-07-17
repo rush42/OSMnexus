@@ -124,11 +124,8 @@ Producer =
   | { "directed": { "key": String, "from"?: TagSet, "sanitize"?: SanitizeRef, "annotate"?: {String: JSON} } }
       // sugar for DirectedExtract — side-aware tag read (used with left/right split ways)
 
-  | { "tag": String }
-      // sugar for Extract{key: tag}
-
-  | { "tag_or": String, "or": JSON }
-      // sugar for a 1-rule Match, "default": or
+  | { "tag": String, "or"?: JSON }
+      // sugar for Extract{key: tag}; with "or" present, a 1-rule Match, "default": or
 
   | { "rules": [Rule, ...], "default"?: JSON, "annotate"?: {String: JSON} }
       // Match: first matching rule wins; a rule that matches but yields

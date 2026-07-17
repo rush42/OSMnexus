@@ -3,7 +3,7 @@
 //! `TagSet`) and result (`Produced`) types it evaluates over. Two branch shapes (`Match`, `Parent`)
 //! and two leaf/read shapes (`Extract` — a plain key/candidate-list tag read — and `Const`) —
 //! everything else is JSON-only sugar, folded into one of these by `parser`'s hand-written `Deserialize` impl
-//! (`fallback`, `parent_or_obj`, the `{"tag": ...}`/`{"tag_or", "or"}` shorthands) so it never
+//! (`fallback`, `parent_or_obj`, the `{"tag": ..., "or"?: ...}` shorthand) so it never
 //! exists as a `Producer` value here, not even transiently (see `parser`'s own doc for why that
 //! folding lives in its own module rather than inline in this one). A named reference — a macro,
 //! a `sanitize: "<name>"`, a *shared* classifier table (`{ "shared": "<name>" }`) — is never a
@@ -131,7 +131,7 @@ pub enum MatchOrigin {
     Fallback,
     /// Desugared from `{"parent_or_obj": ...}` — see `Producer::parent_or_obj`.
     ParentOrObj,
-    /// Desugared from `{"tag_or": ..., "or": ...}` — a single `when: true` rule plus `default`.
+    /// Desugared from `{"tag": ..., "or": ...}` — a single `when: true` rule plus `default`.
     TagOr,
     /// Built directly from a `defaults` JSON entry (`topic::runner::default_value_producer`) — no
     /// rules at all, just a `default`.
