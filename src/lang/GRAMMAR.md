@@ -77,9 +77,7 @@ Filter =
   | { <Extract fields>, "sanitize"?: SanitizeRef, "exists": Boolean }
   | { <Extract fields>, "sanitize"?: SanitizeRef, "eq": String }    // catch-all comparison
   | { "parent": Filter }                            // re-run filter against parent tags
-  | { "side": "self" | "left" | "right" }
-  | { "prefix": String }
-  | { "infix": String }
+  | { "annotation": String, "eq": String }          // annotations[annotation] == eq (e.g. "_side"/"_prefix"/"_infix")
   | { "has_key_prefix": String }
   | { "has_parent": Boolean }
   | { "tags_empty": Boolean }
@@ -89,11 +87,9 @@ Filter =
   | { <Extract fields>, "sanitize"?: SanitizeRef, "gte": Number }
 ```
 
-Note: `<Extract fields>` means either `"key": String` (aliases `"tag"`, `"num"`)
+Note: `<Extract fields>` means either `"key": String` (alias `"tag"`)
 or `"keys": [String,...]` (alias `"first_tag"`) supplied inline in the same
-object. `"num"` is accepted only as a `"key"` alias for backward compatibility
-with existing configs (`bikelanes/producers.json`) — new numeric predicates
-should prefer `"key"`/`"keys"` like every other predicate.
+object.
 
 There is no `Cond`/`if-then-else` node. A conditional value is expressed as a
 `Match` producer: a rule with a real `when:` filter for the "then" branch,

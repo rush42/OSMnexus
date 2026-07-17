@@ -197,10 +197,9 @@ impl<'de> Deserialize<'de> for Step {
 
 // ── Filter ───────────────────────────────────────────────────────────────────
 
-/// The JSON shapes `Filter` accepts: every real variant verbatim, plus `Side`/`Prefix`/`Infix`'s
-/// on-disk sugar for `Filter::AnnotationEq` (`{"side"|"prefix"|"infix": <value>}`, translated to
-/// `annotations["_side"|"_prefix"|"_infix"] == <value>` — see `Filter::AnnotationEq`'s own doc).
-/// Untagged, tried in this order (more-specific/required-field shapes before `Eq`, whose
+/// The JSON shapes `Filter` accepts: every real variant verbatim, including `Filter::AnnotationEq`
+/// spelled directly as `{"annotation": <key>, "eq": <value>}` — see `Filter::AnnotationEq`'s own
+/// doc. Untagged, tried in this order (more-specific/required-field shapes before `Eq`, whose
 /// `#[serde(flatten)] extract` field is optional-shaped enough to otherwise match too broadly).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -216,12 +215,7 @@ enum FilterJson {
     EndsWith { #[serde(flatten)] extract: Extract, ends_with: String },
     Exists { #[serde(flatten)] extract: Extract, exists: bool },
     Parent { parent: Box<Filter> },
-    /// Sugar for `Filter::AnnotationEq { key: "_side", .. }`.
-    Side { side: String },
-    /// Sugar for `Filter::AnnotationEq { key: "_prefix", .. }`.
-    Prefix { prefix: String },
-    /// Sugar for `Filter::AnnotationEq { key: "_infix", .. }`.
-    Infix { infix: String },
+    Annotation { annotation: String, eq: String },
     HasKeyPrefix { has_key_prefix: String },
     HasParent { has_parent: bool },
     TagsEmpty { tags_empty: bool },
@@ -251,9 +245,7 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::Exists { extract, exists } => Filter::Exists { extract, exists },
             FilterJson::Eq { extract, eq } => Filter::Eq { extract, eq },
             FilterJson::Parent { parent } => Filter::Parent { parent },
-            FilterJson::Side { side } => Filter::AnnotationEq { key: "_side".to_owned(), eq: side },
-            FilterJson::Prefix { prefix } => Filter::AnnotationEq { key: "_prefix".to_owned(), eq: prefix },
-            FilterJson::Infix { infix } => Filter::AnnotationEq { key: "_infix".to_owned(), eq: infix },
+            FilterJson::Annotation { annotation, eq } => Filter::AnnotationEq { key: annotation, eq },
             FilterJson::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix },
             FilterJson::HasParent { has_parent } => Filter::HasParent { has_parent },
             FilterJson::TagsEmpty { tags_empty } => Filter::TagsEmpty { tags_empty },

@@ -54,7 +54,7 @@
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
         ] },
         "value": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" } },
-      { "when": { "side": "left" },
+      { "when": { "annotation": "_side", "eq": "left" },
         "value": { "parent_or_obj": { "keys": ["parking:left", "parking:both"], "sanitize": "parking" } } }
     ]
   },
@@ -65,7 +65,7 @@
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
         ] },
         "value": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" } },
-      { "when": { "side": "right" },
+      { "when": { "annotation": "_side", "eq": "right" },
         "value": { "parent_or_obj": { "keys": ["parking:right", "parking:both"], "sanitize": "parking" } } }
     ]
   },
@@ -79,9 +79,9 @@
   "surface": {
     "fallback": [
       { "rules": [
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
         ], "annotate": { "source": "tag", "confidence": "high" } },
       { "key": "surface", "sanitize": "surface_normalize", "annotate": { "source": "tag", "confidence": "high" } }
     ]
@@ -89,15 +89,15 @@
   "surface_from_parent": {
     "fallback": [
       { "rules": [
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
         ], "annotate": { "source": "tag", "confidence": "high" } },
       { "key": "surface", "sanitize": "surface_normalize", "annotate": { "source": "tag", "confidence": "high" } },
       { "parent": { "rules": [
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
-          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "num": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
+          { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
         ], "annotate": { "source": "parent_highway_tag", "confidence": "high" } } },
       { "parent": { "key": "surface", "sanitize": "surface_normalize", "annotate": { "source": "parent_highway_tag", "confidence": "high" } } }
     ]

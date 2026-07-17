@@ -4,10 +4,8 @@
 //! (`topic::load::inline_macro_refs`/`inline_sanitize_refs`) *before* any `Filter` JSON is
 //! deserialized, so `eval` never does a registry lookup of any kind and an unexpanded macro or
 //! unresolved sanitizer is structurally impossible here. `Deserialize` isn't derived directly —
-//! `side`/`prefix`/`infix` are on-disk sugar for one canonical `AnnotationEq`, folded by `parser`'s
-//! hand-written impl (same treatment `Producer` gets, and for the same reason: a JSON shape that's
-//! really one runtime behavior spelled three ways shouldn't grow three variants `eval` has to keep
-//! handling — see the `[[json-sugar-collapse-pattern]]` memory).
+//! `parser`'s hand-written impl disambiguates the untagged on-disk shapes (same treatment
+//! `Producer` gets).
 //!
 //! Shares its context (`ExtractCtx`, in `lang::producer`) with `Producer::eval` — a predicate
 //! is just another "object state → output" evaluator, output `bool` instead of `Option<Value>`. The
@@ -52,14 +50,13 @@ pub enum Filter {
     Parent { parent: Box<Filter> },
 
     // Context predicates
-    /// A plain `annotations[key] == eq` read — the canonical form `side`/`prefix`/`infix` JSON
-    /// sugar folds into (`parser`), e.g. `{"side": "left"}` → `AnnotationEq{key: "_side", eq:
-    /// "left"}`. Never spelled directly in JSON; `key` is always one of `_side`/`_prefix`/`_infix`
-    /// in practice, whatever `topic::pipeline::build_topic_rules`/`CloneStep` stamps.
+    /// A plain `annotations[key] == eq` read, spelled directly in JSON as `{"annotation": key,
+    /// "eq": value}` (`parser`) — `key` is typically one of `_side`/`_prefix`/`_infix`, whatever
+    /// `topic::pipeline::build_topic_rules`/`CloneStep` stamps.
     AnnotationEq { key: String, eq: String },
     /// True iff some `obj_tags` key starts with `has_key_prefix` — a dynamic, unknown-suffix scan
-    /// over the object's own raw tags, not an annotation read (unlike the three above), so it
-    /// can't fold into `AnnotationEq`.
+    /// over the object's own raw tags, not an annotation read, so it can't fold into
+    /// `AnnotationEq`.
     HasKeyPrefix { has_key_prefix: String },
     /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
     HasParent { has_parent: bool },

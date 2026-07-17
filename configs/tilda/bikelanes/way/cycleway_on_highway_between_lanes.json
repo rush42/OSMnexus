@@ -2,7 +2,8 @@
   "condition": {
     "and": [
       {
-        "side": "self"
+        "annotation": "_side",
+        "eq": "self"
       },
       {
         "or": [

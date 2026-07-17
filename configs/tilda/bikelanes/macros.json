@@ -46,9 +46,9 @@
   },
   "not_expected": {
     "and": [
-      { "prefix": "cycleway" },
-      { "infix": "" },
-      { "side": "left" },
+      { "annotation": "_prefix", "eq": "cycleway" },
+      { "annotation": "_infix", "eq": "" },
+      { "annotation": "_side", "eq": "left" },
       { "parent": { "tag": "oneway", "eq": "yes" } },
       { "not": { "parent": { "tag": "oneway:bicycle", "eq": "no" } } }
     ]
@@ -115,7 +115,7 @@
           { "tag": "mtb:scale", "exists": false },
           {
             "and": [
-              { "num": "mtb:scale", "sanitize": "mtb_scale", "lte": 1.0 },
+              { "key": "mtb:scale", "sanitize": "mtb_scale", "lte": 1.0 },
               {
                 "or": [
                   { "tag": "traffic_sign", "exists": true },
@@ -130,7 +130,7 @@
   },
   "has_between_lanes_conditions": {
     "and": [
-      { "not": { "side": "self" } },
+      { "not": { "annotation": "_side", "eq": "self" } },
       {
         "or": [
           { "tag": "lanes", "contains": "|lane|" },

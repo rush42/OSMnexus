@@ -25,9 +25,9 @@ use crate::lang::sanitize::{eval_sanitize, Sanitizer};
 use crate::osm::types::RawTags;
 
 /// A candidate-key read spec plus its `sanitize` chain. `key`/`keys` accept `Producer`'s
-/// historical field names as canonical with `Filter`'s historical names (`tag`/`first_tag`, and
-/// `num` for its numeric predicates) as JSON aliases, so neither call site's existing configs
-/// needed to change. Untagged variants are disambiguated by their own (distinct, required) field
+/// historical field names as canonical with `Filter`'s historical names (`tag`/`first_tag`) as
+/// JSON aliases, so neither call site's existing configs needed to change. Untagged variants are
+/// disambiguated by their own (distinct, required) field
 /// name, so declaration order doesn't matter here; `sanitize` is optional and shared by all three,
 /// so it never participates in that disambiguation. `Extract` is always `#[serde(flatten)]`ed into
 /// its embedding struct, so `sanitize` living here rather than as a sibling field changes nothing
@@ -44,7 +44,7 @@ pub enum Extract {
     },
     /// A single, specific key.
     Value {
-        #[serde(alias = "tag", alias = "num")]
+        #[serde(alias = "tag")]
         key: String,
         #[serde(default)]
         sanitize: Option<Sanitizer>,
