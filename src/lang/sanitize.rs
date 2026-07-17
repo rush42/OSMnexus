@@ -73,8 +73,20 @@ impl serde::Serialize for Sanitizer {
 impl Sanitizer {
     /// Construct directly from already-known steps — used by `parser`'s `Deserialize`
     /// impl (after folding any JSON sugar) and by `resolve_named_sanitizer`'s builtin-name fallback.
+    /// Built by folding each step onto the chain one at a time: append it, unless it composes with
+    /// the current last step (`Step::compose`) — e.g. `cases` normalizing raw values then `filter`
+    /// keeping only an allowed set, both desugar to `Step::Mapping` (see `parser`) — in which case
+    /// the composed step replaces the last one instead. Folding one step at a time (rather than
+    /// scanning the whole `Vec` for runs) is what makes a run of N collapse correctly: each new
+    /// step composes against whatever the previous compose already produced, however long the run.
     pub(crate) fn from_steps(steps: Vec<Step>) -> Self {
-        Sanitizer(steps)
+        Sanitizer(steps.into_iter().fold(Vec::new(), |mut chain, step| {
+            match chain.last().and_then(|last| last.compose(&step)) {
+                Some(composed) => *chain.last_mut().unwrap() = composed,
+                None => chain.push(step),
+            }
+            chain
+        }))
     }
 
     /// The chain's steps, in evaluation order — e.g. for diagnostics (`plot_dag`'s DAG rendering).
@@ -213,6 +225,25 @@ impl Step {
             Step::Builtin(name) => apply_builtin(name, v),
         }
     }
+
+    /// If `self` immediately followed by `next` can be represented as one step running in their
+    /// place — today only two `Mapping`s, via `compose_mappings` — return it; `None` when they
+    /// can't be merged (different variants, or a `Mapping` pair whose merge isn't representable),
+    /// meaning `next` stays a separate step. The one place adjacent-step folding is decided;
+    /// `Sanitizer::from_steps` is the one caller, applying it once per incoming step.
+    fn compose(&self, next: &Step) -> Option<Step> {
+        match (self, next) {
+            (
+                Step::Mapping { mapping: map_a, on_miss: miss_a },
+                Step::Mapping { mapping: map_b, on_miss: miss_b },
+            ) => {
+                let (mapping, on_miss) =
+                    compose_mappings(map_a, miss_a.as_deref(), map_b, miss_b.as_deref())?;
+                Some(Step::Mapping { mapping, on_miss })
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Shared `on_miss` handling for `Mapping`: "keep" (passthrough), "drop"/absent (null), or any
@@ -223,6 +254,71 @@ fn apply_on_miss(on_miss: Option<&str>, v: &str) -> Option<Value> {
         Some("drop") | None => None,
         Some(constant) => Some(Value::String(constant.to_owned())),
     }
+}
+
+// ── Adjacent-Mapping composition ────────────────────────────────────────────────
+
+/// Compose `Mapping(map_a, miss_a)` then `Mapping(map_b, miss_b)` — matching `Sanitizer::eval`'s
+/// own step-chaining exactly, including its `cur.as_str()?` gate between steps (a non-string A
+/// output, e.g. a `mapping` producing a bool, aborts the chain right there rather than reaching
+/// B) — into one `(mapping, on_miss)` pair, or `None` when the result can't be represented as a
+/// single `Mapping` (its `on_miss` would have to encode a non-string constant, since `Step::Mapping`
+/// only supports "keep"/"drop"/a string default).
+fn compose_mappings(
+    map_a: &HashMap<String, Value>,
+    miss_a: Option<&str>,
+    map_b: &HashMap<String, Value>,
+    miss_b: Option<&str>,
+) -> Option<(HashMap<String, Value>, Option<String>)> {
+    // What every key *not* explicitly enumerated below resolves to. Only representable when A's
+    // own on_miss is "keep" (falls straight through to B's on_miss unchanged) or gives a fixed
+    // string/drop result for every such key (A's on_miss is itself "drop", or a string constant
+    // whose own lookup through B is a string or a drop) — anything else (a non-string A on_miss
+    // result feeding into B) has no single `on_miss` that can express it.
+    let on_miss = match miss_a {
+        None | Some("drop") => None,
+        Some("keep") => miss_b.map(str::to_owned),
+        Some(constant) => match map_b.get(constant) {
+            Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => return None,
+            None => match miss_b {
+                None | Some("drop") => None,
+                Some("keep") => Some(constant.to_owned()),
+                Some(c2) => Some(c2.to_owned()),
+            },
+        },
+    };
+
+    // Every key either table might branch on needs its own composed entry: A's own keys always
+    // (they're never covered by A's on_miss), plus B's keys too when an A-miss falls through to B
+    // unchanged (on_miss "keep") — otherwise a key present only in B is unreachable through A and
+    // irrelevant here.
+    let mut keys: std::collections::HashSet<&str> = map_a.keys().map(String::as_str).collect();
+    if miss_a == Some("keep") {
+        keys.extend(map_b.keys().map(String::as_str));
+    }
+
+    let mut mapping = HashMap::with_capacity(keys.len());
+    for k in keys {
+        let a_out = match map_a.get(k) {
+            Some(v) => v.clone(),
+            None => match apply_on_miss(miss_a, k) {
+                Some(v) => v,
+                None => { mapping.insert(k.to_owned(), Value::Null); continue; }
+            },
+        };
+        let composed = match a_out.as_str() {
+            None => None, // non-string A output: the next step's `cur.as_str()?` would abort here too
+            Some(s) => match map_b.get(s) {
+                Some(v) => Some(v.clone()),
+                None => apply_on_miss(miss_b, s),
+            },
+        };
+        mapping.insert(k.to_owned(), composed.unwrap_or(Value::Null));
+    }
+
+    Some((mapping, on_miss))
 }
 
 // ── Built-in registry ───────────────────────────────────────────────────
@@ -250,4 +346,146 @@ fn float_to_json(v: f32) -> serde_json::Number {
 /// (`<config_root>/units.json`); no unit-specific logic lives here.
 pub fn parse_length(raw: &str) -> Option<f32> {
     crate::units::parse_compound_unit(raw, crate::units::unit_table("length"))
+}
+
+#[cfg(test)]
+mod compose_tests {
+    use super::*;
+
+    fn sanitizer(json: &str) -> Sanitizer {
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// `bikelanes/sanitizers.json`'s `traffic_mode`: `cases` (on_miss keep) then `filter`
+    /// (on_miss drop) — the real two-step chain that motivated composing adjacent `Mapping`s.
+    #[test]
+    fn traffic_mode_collapses_to_one_step_and_matches_sequential_semantics() {
+        let s = sanitizer(r#"[
+            { "cases": { "foot": "foot;bicycle", "motor_vehicle": "motorized", "no": "none" }, "on_miss": "keep" },
+            { "filter": ["no", "motor_vehicle", "parking", "psv", "bicycle", "foot"] }
+        ]"#);
+        assert_eq!(s.steps().len(), 1, "adjacent Mapping steps should collapse into one");
+
+        // `cases` is an inverted lookup (`{output: input}`): "foot;bicycle" renames to "foot", and
+        // the renamed value survives `filter`'s allow-list.
+        assert_eq!(eval_sanitize(Some(&s), "foot;bicycle"), Some(Value::String("foot".to_owned())));
+        assert_eq!(eval_sanitize(Some(&s), "motorized"), Some(Value::String("motor_vehicle".to_owned())));
+        assert_eq!(eval_sanitize(Some(&s), "none"), Some(Value::String("no".to_owned())));
+        // Untouched by `cases` (on_miss keep, not a listed input) but present in `filter`'s
+        // allow-list as-is.
+        assert_eq!(eval_sanitize(Some(&s), "bicycle"), Some(Value::String("bicycle".to_owned())));
+        // Untouched by `cases`, and not in `filter`'s allow-list: dropped.
+        assert_eq!(eval_sanitize(Some(&s), "unknown_value"), None);
+    }
+
+    /// `bikelanes/sanitizers.json`'s `separation` chain — same shape, larger tables.
+    #[test]
+    fn separation_collapses_to_one_step_and_matches_sequential_semantics() {
+        let s = sanitizer(r#"[
+            { "cases": {
+                "bump": ["separation_kerb", "lane_separator"],
+                "no": ["surface"],
+                "kerb": ["kerb;greenery"]
+              }, "on_miss": "keep" },
+            { "filter": ["no", "bump", "kerb", "yes"] }
+        ]"#);
+        assert_eq!(s.steps().len(), 1);
+
+        assert_eq!(eval_sanitize(Some(&s), "separation_kerb"), Some(Value::String("bump".to_owned())));
+        assert_eq!(eval_sanitize(Some(&s), "surface"), Some(Value::String("no".to_owned())));
+        assert_eq!(eval_sanitize(Some(&s), "yes"), Some(Value::String("yes".to_owned()))); // passthrough, in filter's allow-list
+        assert_eq!(eval_sanitize(Some(&s), "solid_line"), None); // passthrough, not in allow-list: dropped
+    }
+
+    /// A mapping whose miss is a constant that itself gets rewritten by the next mapping —
+    /// exercises the `Some(constant)` branch of `compose_on_miss`.
+    #[test]
+    fn constant_on_miss_resolved_through_next_mapping() {
+        let s = sanitizer(r#"[
+            { "mapping": { "a": "x" }, "on_miss": "fallback" },
+            { "mapping": { "x": "X", "fallback": "FALLBACK" } }
+        ]"#);
+        assert_eq!(s.steps().len(), 1);
+        assert_eq!(eval_sanitize(Some(&s), "a"), Some(Value::String("X".to_owned())));
+        assert_eq!(eval_sanitize(Some(&s), "anything_else"), Some(Value::String("FALLBACK".to_owned())));
+    }
+
+    /// A mapping producing a non-string value (e.g. a bool) mid-chain aborts, same as
+    /// `Sanitizer::eval`'s own `cur.as_str()?` gate between steps — composition must preserve that.
+    #[test]
+    fn non_string_intermediate_output_still_aborts_the_chain() {
+        let s = sanitizer(r#"[
+            { "mapping": { "yes": true }, "on_miss": "keep" },
+            { "mapping": { "yes": "irrelevant" } }
+        ]"#);
+        assert_eq!(s.steps().len(), 1);
+        assert_eq!(eval_sanitize(Some(&s), "yes"), None);
+    }
+
+    /// Differential check: for a handful of representative `(mapping, on_miss)` pairs, the
+    /// composed single step must agree with manually chaining the two original steps (mirroring
+    /// `Sanitizer::eval`'s own `s.apply(cur.as_str()?)` loop) for every candidate input, including
+    /// inputs neither table mentions.
+    #[test]
+    fn composed_matches_manual_two_step_chaining() {
+        fn check(a: Step, b: Step) {
+            let candidates = [
+                "a", "b", "c", "x", "y", "z", "1", "2", "", "foo", "bar", "unmapped_anywhere",
+            ];
+            let composed = Sanitizer::from_steps(vec![a.clone(), b.clone()]);
+            assert_eq!(composed.steps().len(), 1, "expected these two Mapping steps to compose");
+            for input in candidates {
+                let manual = (|| -> Option<Value> {
+                    let mid = a.apply(input)?;
+                    b.apply(mid.as_str()?)
+                })();
+                let via_composed = eval_sanitize(Some(&composed), input);
+                assert_eq!(manual, via_composed, "mismatch for input {input:?}");
+            }
+        }
+
+        let mapping = |pairs: &[(&str, Value)], on_miss: Option<&str>| Step::Mapping {
+            mapping: pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            on_miss: on_miss.map(str::to_owned),
+        };
+
+        // on_miss keep -> on_miss drop (the real traffic_mode/separation shape).
+        check(
+            mapping(&[("a", Value::String("x".into())), ("b", Value::String("y".into()))], Some("keep")),
+            mapping(&[("x", Value::String("X".into()))], None),
+        );
+        // on_miss drop -> on_miss keep.
+        check(
+            mapping(&[("a", Value::String("x".into()))], None),
+            mapping(&[("x", Value::String("X".into()))], Some("keep")),
+        );
+        // on_miss constant -> on_miss constant, constant resolves through B to another constant.
+        check(
+            mapping(&[("a", Value::String("x".into()))], Some("fallback")),
+            mapping(&[("fallback", Value::String("F".into())), ("x", Value::String("X".into()))], Some("other")),
+        );
+        // Explicit `null` (drop sentinel) entries in both tables.
+        check(
+            mapping(&[("a", Value::Null), ("b", Value::String("x".into()))], Some("keep")),
+            mapping(&[("x", Value::Null), ("b", Value::String("kept_b".into()))], None),
+        );
+        // Non-string A output (mid-chain abort) mixed with string outputs.
+        check(
+            mapping(&[("a", Value::Bool(true)), ("b", Value::String("x".into()))], Some("keep")),
+            mapping(&[("x", Value::String("X".into()))], Some("keep")),
+        );
+    }
+
+    /// Three-in-a-row: composing greedily left-to-right should collapse a run of any length, not
+    /// just pairs.
+    #[test]
+    fn three_consecutive_mappings_collapse_to_one() {
+        let s = sanitizer(r#"[
+            { "mapping": { "a": "b" } },
+            { "mapping": { "b": "c" } },
+            { "mapping": { "c": "d" } }
+        ]"#);
+        assert_eq!(s.steps().len(), 1);
+        assert_eq!(eval_sanitize(Some(&s), "a"), Some(Value::String("d".to_owned())));
+    }
 }
