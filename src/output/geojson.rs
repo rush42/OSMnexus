@@ -12,7 +12,7 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, point_from_ewkb};
-use crate::geom::rows::{GEOM_COLUMNS, NODE_COLUMNS};
+use crate::geom::rows::{EDGE_COLUMNS, NODE_COLUMNS};
 use crate::output::rows::TAG_COLUMNS;
 
 struct EdgeGeom {
@@ -70,7 +70,7 @@ fn read_relation_members(path: &Path) -> anyhow::Result<HashMap<i64, Vec<i64>>> 
 }
 
 fn read_edges(path: &Path) -> anyhow::Result<HashMap<i64, Vec<EdgeGeom>>> {
-    debug_assert_eq!(GEOM_COLUMNS, "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m,cost,reverse_cost");
+    debug_assert_eq!(EDGE_COLUMNS, "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m,cost,reverse_cost");
     let mut reader = csv::Reader::from_path(path)?;
     let mut by_osm_id: HashMap<i64, Vec<EdgeGeom>> = HashMap::new();
     for result in reader.records() {
@@ -98,9 +98,14 @@ fn merge_properties(target: &mut Map<String, Value>, json_str: &str) {
 
 /// Reads `{table}.csv` (per `tables`) + `edges.csv` from `out_dir` and writes `{table}.geojson`
 /// alongside them: `{"type": "FeatureCollection", "features": [...], "cutPoints": {...}}`.
+/// `edges.csv`/`nodes.csv` only exist when some topic wants the routing graph (see
+/// `schema::EDGE_TABLE`'s own doc) — absent means no way/relation feature gets a geometry here
+/// (a topic with only `point`/`polygon` shapes would need its own `{table}_point`/`_polygon` CSVs
+/// joined in, not handled by this always-edges-shaped GeoJSON builder).
 pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
     debug_assert_eq!(TAG_COLUMNS, "osm_id,osm_type,id,category,produced,annotations,meta");
-    let edges = read_edges(&out_dir.join("edges.csv"))?;
+    let edges_path = out_dir.join("edges.csv");
+    let edges = if edges_path.exists() { read_edges(&edges_path)? } else { HashMap::new() };
     let nodes_path = out_dir.join("nodes.csv");
     let nodes = if nodes_path.exists() { read_nodes(&nodes_path)? } else { HashMap::new() };
     let members_path = out_dir.join("relation_members.csv");

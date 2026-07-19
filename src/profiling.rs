@@ -2,6 +2,7 @@
 //! relaxed atomic load per call site); enable with `TILDA_PROFILE=1` to accumulate per-stage
 //! nanosecond totals + call counts across every rayon worker, printed once at the end of the run
 //! via [`report`].
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -66,6 +67,47 @@ pub static TAG_ENGINE: Stage = Stage::new();
 pub static CATEGORIZE: Stage = Stage::new();
 pub static GEOMETRY: Stage = Stage::new();
 pub static ITERATION: Stage = Stage::new();
+
+/// Per-output-field breakdown of `TAG_ENGINE` (one producer per named output). Built *once*, up
+/// front, from every field name a topic's `default_outputs`/`category_outputs` can ever produce
+/// (all known at load time, before the PBF read starts) — so the hot loop only ever does a
+/// read-only map lookup plus the same lock-free atomic `Stage::record` the coarse stages use, never
+/// a write to the map itself. A `Mutex<HashMap>` written from every producer call (the first cut of
+/// this) serialized all 6 worker threads through one lock on every single field eval and blew up
+/// runtime several-fold on a full Germany import — this avoids that entirely.
+#[derive(Default)]
+pub struct FieldStages(HashMap<String, Stage>);
+
+impl FieldStages {
+    pub fn build<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut map = HashMap::new();
+        for name in names {
+            map.entry(name.to_owned()).or_insert_with(Stage::new);
+        }
+        Self(map)
+    }
+
+    /// Start timing `name`'s producer, or `None` when profiling is disabled or `name` wasn't
+    /// registered at `build` time (shouldn't happen — every field is known up front).
+    pub fn time(&self, name: &str) -> Option<Timer<'_>> {
+        enabled().then(|| self.0.get(name)).flatten().map(|stage| Timer { stage, start: Instant::now() })
+    }
+
+    pub fn report(&self) {
+        let mut rows: Vec<(&String, &Stage)> = self.0.iter().collect();
+        rows.sort_by(|a, b| b.1.nanos.load(Ordering::Relaxed).cmp(&a.1.nanos.load(Ordering::Relaxed)));
+        for (name, stage) in rows {
+            let (avg, count) = stage.avg_and_count();
+            if count == 0 {
+                continue;
+            }
+            tracing::info!(
+                "[profile] field {name}: {count} calls, avg {avg:.0}ns/call, total {:.2}s",
+                avg * count as f64 / 1e9
+            );
+        }
+    }
+}
 
 /// Log the accumulated per-stage averages, if profiling was enabled. A no-op otherwise.
 pub fn report() {

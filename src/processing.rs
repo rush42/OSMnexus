@@ -1,8 +1,8 @@
 use rustc_hash::FxHashMap;
 
-use crate::geom::builders::{build_geom_rows, build_way_geom_row};
+use crate::geom::builders::{build_edges, build_way};
 use crate::geom::primitives::{haversine_length_m, project_line};
-use crate::geom::rows::{GeomRow, WayGeomRow};
+use crate::geom::rows::{EdgeRow, WayRow};
 use crate::topic::TopicRunner;
 use crate::osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData, WayMeta};
 use crate::output::{rows::TopicRow, types::OsmMeta};
@@ -73,18 +73,18 @@ pub fn classify_node(runners: &[TopicRunner], nd: &NodeData) -> Vec<Vec<TopicRow
 /// Build the graph-edge rows for a resolved way (geometry pass): always emitted, one row per
 /// intersection segment. Projects the line + measures length once. Topic-independent. `node_ids` is
 /// the `osm node id -> internal id` map from `assign_node_ids`, used to resolve `start_id`/`end_id`.
-pub fn geom_rows_for(way: &OsmWay, node_ids: &FxHashMap<i64, i64>) -> Vec<GeomRow> {
+pub fn edges_for(way: &OsmWay, node_ids: &FxHashMap<i64, i64>) -> Vec<EdgeRow> {
     let _t = crate::profiling::time(&crate::profiling::GEOMETRY);
     let length_m = haversine_length_m(&way.coords);
     let geom = project_line(&way.coords);
-    build_geom_rows(way, &geom, length_m, node_ids)
+    build_edges(way, &geom, length_m, node_ids)
 }
 
 /// Build the whole-way linestring row for a resolved way. Only called when some topic declared
 /// `"geometry": { "way": ["linestring"] }` (see `main.rs`'s `build_geom_cb`).
-pub fn way_geom_row_for(way: &OsmWay) -> WayGeomRow {
+pub fn way_row_for(way: &OsmWay) -> WayRow {
     let _t = crate::profiling::time(&crate::profiling::GEOMETRY);
     let length_m = haversine_length_m(&way.coords);
     let geom = project_line(&way.coords);
-    build_way_geom_row(way, &geom, length_m)
+    build_way(way, &geom, length_m)
 }

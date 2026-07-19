@@ -1,6 +1,6 @@
 //! Non-geometry output row types (tag rows + relation-member links) and their CSV serialization,
 //! plus the shared `CsvRow` trait/`write_csv_row` helper both this module and `geom::rows` use.
-//! Geometry row types (`GeomRow`/`WayGeomRow`/`NodeRow`/`PointRow`/`PolygonRow`) live in
+//! Geometry row types (`EdgeRow`/`WayRow`/`NodeRow`/`PointRow`/`PolygonRow`) live in
 //! `geom::rows` instead — see `geom`'s own module doc for why geometry is split out.
 
 use serde_json::{Map, Value};
@@ -21,7 +21,7 @@ pub trait CsvRow {
 }
 
 /// A single tag row produced by the topic engine — one per (way, side, prefix), independent of
-/// how the geometry is later cut. Geometry lives in the paired geom table (see `GeomRow`), joined
+/// how the geometry is later cut. Geometry lives in the paired geom table (see `EdgeRow`), joined
 /// on `osm_id` at tile-materialization time.
 pub struct TopicRow {
     pub osm_id: i64,

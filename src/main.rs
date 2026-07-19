@@ -19,8 +19,8 @@ use db::{
 };
 use geom::builders::{build_node_point_row, build_node_row, build_way_point_row, build_way_polygon_row};
 use geom::rows::{
-    GeomRow, NodeRow, PointRow, PolygonRow, WayGeomRow, GEOM_COLUMNS, NODE_COLUMNS, POINT_COLUMNS,
-    POLYGON_COLUMNS, WAY_GEOM_COLUMNS,
+    EdgeRow, NodeRow, PointRow, PolygonRow, WayRow, EDGE_COLUMNS, NODE_COLUMNS, POINT_COLUMNS,
+    POLYGON_COLUMNS, WAY_COLUMNS,
 };
 use topic::spec::GeometryShape;
 use topic::TopicRunner;
@@ -28,7 +28,7 @@ use osm::reader::{stream_osm, Callbacks};
 use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};
 use output::rows::{CsvRow, MemberRow, TopicRow, MEMBER_COLUMNS, TAG_COLUMNS};
 use output::writers::{copy_writer, csv_writer};
-use processing::{classify_node, classify_relation, classify_way, geom_rows_for, way_geom_row_for};
+use processing::{classify_node, classify_relation, classify_way, edges_for, way_row_for};
 
 /// Round-robin a batch of per-topic tag rows to each topic's `w` writers. Returns whether any topic
 /// produced rows (i.e. the element was "kept" by some topic).
@@ -169,9 +169,16 @@ async fn main() -> anyhow::Result<()> {
     // Which passes are active: gated by whether any topic declares node/relation categories (a
     // `topics/<t>/{node,relation}/` subfolder). Selection is the decision-tree classifier itself —
     // there is no coarse element filter; an element is kept iff some topic categorizes it. Node
-    // coords are always collected regardless (needed for the always-on `nodes` table).
+    // coords are collected regardless of `has_nodes` (needed for way geometry resolution
+    // regardless), but the graph-vertex `nodes` table itself is now gated separately by
+    // `any_way_graph` below (see `schema::EDGE_TABLE`'s own doc).
     let has_relations = runners.iter().any(|r| r.has_kind(ElementKind::Relation));
     let has_nodes = runners.iter().any(|r| r.has_kind(ElementKind::Node));
+
+    // Whether *any* topic wants the routing graph — the shared `edges`/`nodes` tables exist solely
+    // to back `"geometry": { "way": ["graph"] }`, so when nothing declares it, neither table (nor
+    // the reader work that builds them) runs at all (see `schema::EDGE_TABLE`'s own doc).
+    let any_way_graph = runners.iter().any(|r| r.wants(ElementKind::Way, GeometryShape::Graph));
 
     // Topics opting into geometry outputs (see `TopicSpec::geometry`) — replaces the old global
     // `--emit-way-geometries`/`--emit-relation-geometries`/unconditional `--topic-edges` flags.
@@ -227,10 +234,15 @@ async fn main() -> anyhow::Result<()> {
     let relation_polygon_table_refs: Vec<&str> = relation_polygon_topics.iter().map(|&i| table_refs[i]).collect();
 
     let n = tables.len();
-    // Extra sharded-writer tables beyond the per-topic tag tables: edges + members + nodes, plus one
-    // per topic wanting a way-shaped geometry table (relation geometry writes separately, after the
-    // main streaming pass, so it isn't part of this pool-sizing count — see below).
-    let extra_tables = 3 + way_linestring_topics.len() + way_polygon_topics.len() + point_topics.len();
+    // Extra sharded-writer tables beyond the per-topic tag tables: members, plus edges+nodes when
+    // any topic wants the graph, plus one per topic wanting a way-shaped geometry table (relation
+    // geometry writes separately, after the main streaming pass, so it isn't part of this
+    // pool-sizing count — see below).
+    let extra_tables = 1
+        + if any_way_graph { 2 } else { 0 }
+        + way_linestring_topics.len()
+        + way_polygon_topics.len()
+        + point_topics.len();
 
     // Output backend. `w` = parallel writers per table: k sharded COPY connections for Postgres, a
     // single file writer for CSV. `pool` is `None` for CSV.
@@ -240,11 +252,11 @@ async fn main() -> anyhow::Result<()> {
             let pool = build_pool(&cfg)?;
             let client_setup = pool.get().await.context("getting DB connection")?;
             info!("Setting up schema...");
-            schema::create_tables(&client_setup, &table_refs, &geom_tables).await?;
+            schema::create_tables(&client_setup, &table_refs, &geom_tables, any_way_graph).await?;
             if cfg.truncate {
-                schema::truncate_tables(&client_setup, &table_refs, &geom_tables).await?;
+                schema::truncate_tables(&client_setup, &table_refs, &geom_tables, any_way_graph).await?;
             }
-            schema::drop_indexes(&client_setup, &table_refs, &geom_tables).await?;
+            schema::drop_indexes(&client_setup, &table_refs, &geom_tables, any_way_graph).await?;
             drop(client_setup);
             let k = cfg.db_writers.max(1);
             // Pool must supply every writer connection at once: k per tag table + k per extra table.
@@ -289,16 +301,22 @@ async fn main() -> anyhow::Result<()> {
         tag_senders.push(ts);
         tag_handles.push(th);
     }
-    let mut geom_senders: Vec<mpsc::Sender<Vec<GeomRow>>> = Vec::with_capacity(w);
-    let mut geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
-    for _ in 0..w {
-        let (tx, rx) = mpsc::channel::<Vec<GeomRow>>(WRITER_CHAN_CAP);
-        let h = match cfg.output {
-            Output::Pg => tokio::spawn(copy_writer::<GeomRow>(pool.clone().unwrap(), EDGE_TABLE.to_owned(), GEOM_COLUMNS, rx)),
-            Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<GeomRow>(out_dir.join(format!("{EDGE_TABLE}.csv")), GEOM_COLUMNS, rx)),
-        };
-        geom_handles.push(h);
-        geom_senders.push(tx);
+    // Shared graph tables (`edges`/`nodes`) — only spawned when some topic actually wants the
+    // routing graph (see `any_way_graph`'s own doc); otherwise both stay empty, so no table/file
+    // is created at all and the reader skips the corresponding work (see `build_geom_cb`/
+    // `build_nodes_cb` below).
+    let mut geom_senders: Vec<mpsc::Sender<Vec<EdgeRow>>> = Vec::with_capacity(if any_way_graph { w } else { 0 });
+    let mut geom_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(if any_way_graph { w } else { 0 });
+    if any_way_graph {
+        for _ in 0..w {
+            let (tx, rx) = mpsc::channel::<Vec<EdgeRow>>(WRITER_CHAN_CAP);
+            let h = match cfg.output {
+                Output::Pg => tokio::spawn(copy_writer::<EdgeRow>(pool.clone().unwrap(), EDGE_TABLE.to_owned(), EDGE_COLUMNS, rx)),
+                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<EdgeRow>(out_dir.join(format!("{EDGE_TABLE}.csv")), EDGE_COLUMNS, rx)),
+            };
+            geom_handles.push(h);
+            geom_senders.push(tx);
+        }
     }
     let mut member_senders: Vec<mpsc::Sender<Vec<MemberRow>>> = Vec::with_capacity(w);
     let mut member_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
@@ -312,16 +330,16 @@ async fn main() -> anyhow::Result<()> {
         member_senders.push(tx);
     }
     // One whole-way-linestring table per topic declaring `"geometry": { "way": ["linestring"] }`.
-    let mut way_geom_senders: Vec<Vec<mpsc::Sender<Vec<WayGeomRow>>>> = Vec::with_capacity(way_linestring_topics.len());
+    let mut way_geom_senders: Vec<Vec<mpsc::Sender<Vec<WayRow>>>> = Vec::with_capacity(way_linestring_topics.len());
     let mut way_geom_handles: Vec<Vec<tokio::task::JoinHandle<anyhow::Result<usize>>>> = Vec::with_capacity(way_linestring_topics.len());
     for &table_name in &way_geom_table_refs {
         let way_geom_table = schema::way_geom_table(table_name);
         let (mut ts, mut th) = (Vec::with_capacity(w), Vec::with_capacity(w));
         for _ in 0..w {
-            let (tx, rx) = mpsc::channel::<Vec<WayGeomRow>>(WRITER_CHAN_CAP);
+            let (tx, rx) = mpsc::channel::<Vec<WayRow>>(WRITER_CHAN_CAP);
             let h = match cfg.output {
-                Output::Pg => tokio::spawn(copy_writer::<WayGeomRow>(pool.clone().unwrap(), way_geom_table.clone(), WAY_GEOM_COLUMNS, rx)),
-                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<WayGeomRow>(out_dir.join(format!("{way_geom_table}.csv")), WAY_GEOM_COLUMNS, rx)),
+                Output::Pg => tokio::spawn(copy_writer::<WayRow>(pool.clone().unwrap(), way_geom_table.clone(), WAY_COLUMNS, rx)),
+                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<WayRow>(out_dir.join(format!("{way_geom_table}.csv")), WAY_COLUMNS, rx)),
             };
             th.push(h);
             ts.push(tx);
@@ -366,17 +384,20 @@ async fn main() -> anyhow::Result<()> {
         point_senders.push(ts);
         point_handles.push(th);
     }
-    // Graph-vertex table (always emitted — see `NODE_TABLE`).
-    let mut node_senders: Vec<mpsc::Sender<Vec<NodeRow>>> = Vec::with_capacity(w);
-    let mut node_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(w);
-    for _ in 0..w {
-        let (tx, rx) = mpsc::channel::<Vec<NodeRow>>(WRITER_CHAN_CAP);
-        let h = match cfg.output {
-            Output::Pg => tokio::spawn(copy_writer::<NodeRow>(pool.clone().unwrap(), NODE_TABLE.to_owned(), NODE_COLUMNS, rx)),
-            Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<NodeRow>(out_dir.join(format!("{NODE_TABLE}.csv")), NODE_COLUMNS, rx)),
-        };
-        node_handles.push(h);
-        node_senders.push(tx);
+    // Graph-vertex table — same `any_way_graph` gate as `edges` (see above); the two always exist
+    // or don't together.
+    let mut node_senders: Vec<mpsc::Sender<Vec<NodeRow>>> = Vec::with_capacity(if any_way_graph { w } else { 0 });
+    let mut node_handles: Vec<tokio::task::JoinHandle<anyhow::Result<usize>>> = Vec::with_capacity(if any_way_graph { w } else { 0 });
+    if any_way_graph {
+        for _ in 0..w {
+            let (tx, rx) = mpsc::channel::<Vec<NodeRow>>(WRITER_CHAN_CAP);
+            let h = match cfg.output {
+                Output::Pg => tokio::spawn(copy_writer::<NodeRow>(pool.clone().unwrap(), NODE_TABLE.to_owned(), NODE_COLUMNS, rx)),
+                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<NodeRow>(out_dir.join(format!("{NODE_TABLE}.csv")), NODE_COLUMNS, rx)),
+            };
+            node_handles.push(h);
+            node_senders.push(tx);
+        }
     }
 
     // Producer: the reader decodes the PBF once and drives the callbacks below. Runs on the blocking
@@ -500,10 +521,14 @@ async fn main() -> anyhow::Result<()> {
             }
         };
         // Graph-vertex pass: emit the `nodes` table rows, once, for every graph vertex (see
-        // `assign_node_ids`) — always runs, replacing the old `--emit-node-geometries` flag.
+        // `assign_node_ids`) — a no-op when no topic wants the graph (`node_senders` is empty then,
+        // see `any_way_graph`'s own doc).
         let build_nodes_cb = {
             let (node_senders, node_rr) = (node_senders.clone(), node_rr.clone());
             move |nodes: Vec<(i64, i64, f32, f32)>| {
+                if node_senders.is_empty() {
+                    return;
+                }
                 for chunk in nodes.chunks(4096) {
                     let rows: Vec<NodeRow> = chunk
                         .iter()
@@ -514,7 +539,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         };
-        // Geometry pass: write the resolved way's graph edges to the shared table, plus its
+        // Geometry pass: write the resolved way's graph edges to the shared table (skipped when no
+        // topic wants the graph — `geom_senders` empty, see `any_way_graph`'s own doc), plus its
         // whole-way linestring/polygon/centroid-point to every topic that both kept this way
         // (`mask`) and declared the matching shape.
         let build_geom_cb = {
@@ -526,12 +552,14 @@ async fn main() -> anyhow::Result<()> {
             let (point_senders, point_rr) = (point_senders.clone(), point_rr.clone());
             let (point_topics, way_point_eligible) = (point_topics.clone(), way_point_eligible.clone());
             move |way: &OsmWay, mask: u32, node_ids: &FxHashMap<i64, i64>| {
-                let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
-                let _ = geom_senders[kk].blocking_send(geom_rows_for(way, node_ids));
+                if !geom_senders.is_empty() {
+                    let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
+                    let _ = geom_senders[kk].blocking_send(edges_for(way, node_ids));
+                }
                 if !way_linestring_topics.is_empty() || !point_topics.is_empty() {
                     let geom = geom::primitives::project_line(&way.coords);
                     if !way_linestring_topics.is_empty() {
-                        let row = way_geom_row_for(way);
+                        let row = way_row_for(way);
                         route_shape_row(&row, mask, &way_linestring_topics, &way_geom_senders, &way_geom_rr, w);
                     }
                     if !point_topics.is_empty() {
@@ -615,9 +643,11 @@ async fn main() -> anyhow::Result<()> {
     for (i, table) in tables.iter().enumerate() {
         info!("Wrote {} tag rows → {}", tag_counts[i], table);
     }
-    info!("Wrote {geom_count} edge rows → {EDGE_TABLE}");
+    if any_way_graph {
+        info!("Wrote {geom_count} edge rows → {EDGE_TABLE}");
+        info!("Wrote {node_count} node rows → {NODE_TABLE}");
+    }
     info!("Wrote {member_count} relation-member links → {MEMBER_TABLE}");
-    info!("Wrote {node_count} node rows → {NODE_TABLE}");
     for (i, &table_name) in way_geom_table_refs.iter().enumerate() {
         info!("Wrote {} way rows → {}_geom", way_geom_counts[i], table_name);
     }
@@ -644,7 +674,7 @@ async fn main() -> anyhow::Result<()> {
         let t_rel = std::time::Instant::now();
         let way_coords = std::mem::take(&mut *rel_way_coords_outer.lock().unwrap());
 
-        let mut line_rows: Vec<Vec<WayGeomRow>> = vec![Vec::new(); relation_line_topics.len()];
+        let mut line_rows: Vec<Vec<WayRow>> = vec![Vec::new(); relation_line_topics.len()];
         let mut point_rows: Vec<Vec<PointRow>> = vec![Vec::new(); relation_point_topics.len()];
         let mut polygon_rows: Vec<Vec<PolygonRow>> = vec![Vec::new(); relation_polygon_topics.len()];
         for (rel_id, members, mask) in &rel_geom_requests {
@@ -690,7 +720,7 @@ async fn main() -> anyhow::Result<()> {
         for (i, &table_name) in relation_line_table_refs.iter().enumerate() {
             let out_table = schema::relation_geom_table(table_name);
             let rows = std::mem::take(&mut line_rows[i]);
-            let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, WAY_GEOM_COLUMNS, rows).await?;
+            let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, WAY_COLUMNS, rows).await?;
             info!("Wrote {count} rows → {out_table}");
         }
         for (i, &table_name) in relation_point_table_refs.iter().enumerate() {
@@ -712,7 +742,7 @@ async fn main() -> anyhow::Result<()> {
         (Output::Pg, true) => {
             info!("Creating indexes...");
             let t_idx = std::time::Instant::now();
-            schema::create_indexes(pool.as_ref().unwrap(), &table_refs, &geom_tables).await?;
+            schema::create_indexes(pool.as_ref().unwrap(), &table_refs, &geom_tables, any_way_graph).await?;
             info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
         }
         (Output::Pg, false) => info!("Skipping index creation (pass --create-index to enable)"),

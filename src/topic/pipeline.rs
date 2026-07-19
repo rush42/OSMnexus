@@ -20,9 +20,16 @@ use crate::output::{rows::TopicRow, types::OsmMeta};
 /// reaches `produced` only via a field whose own producer is a `Fallback` ending in that const
 /// (see `runner::merge_const_fields`), which is why no separate "did the const survive" tracking
 /// is needed here.
-fn eval_fields(fields: &[Field], ctx: &ExtractCtx, produced: &mut Map<String, Value>, annotations: &mut Map<String, Value>) {
+fn eval_fields(
+    fields: &[Field],
+    ctx: &ExtractCtx,
+    produced: &mut Map<String, Value>,
+    annotations: &mut Map<String, Value>,
+    field_stages: &crate::profiling::FieldStages,
+) {
     let _t = crate::profiling::time(&crate::profiling::TAG_ENGINE);
     for field in fields {
+        let _tf = field_stages.time(&field.output);
         if let Some(p) = field.source.eval(ctx) {
             produced.insert(field.output.clone(), p.value);
             // Companion annotate → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
@@ -105,7 +112,7 @@ pub fn build_topic_rows(
         // `ectx.parent_tags`).
         let mut produced = Map::new();
         let mut annotations = ectx.annotations.clone();
-        eval_fields(outputs, &ectx, &mut produced, &mut annotations);
+        eval_fields(outputs, &ectx, &mut produced, &mut annotations, &runner.field_stages);
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time. `ectx.id`

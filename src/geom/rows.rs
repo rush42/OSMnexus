@@ -6,8 +6,8 @@ use crate::output::rows::CsvRow;
 
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `csv_fields` implementation below.
-pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m,cost,reverse_cost";
-pub const WAY_GEOM_COLUMNS: &str = "osm_id,geom,length_m";
+pub const EDGE_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m,cost,reverse_cost";
+pub const WAY_COLUMNS: &str = "osm_id,geom,length_m";
 pub const NODE_COLUMNS: &str = "id,osm_id,geom";
 pub const POINT_COLUMNS: &str = "osm_id,geom";
 pub const POLYGON_COLUMNS: &str = "osm_id,geom";
@@ -17,7 +17,7 @@ pub const POLYGON_COLUMNS: &str = "osm_id,geom";
 /// (side-split is a tag-only operation), so keyed on `osm_id`. `start_id`/`end_id` are internal graph
 /// vertex ids (see `assign_node_ids`), not raw OSM node ids — they join `nodes.id`. `cost`/
 /// `reverse_cost` are always equal to `length_m` — see `create_edge_table_sql`'s doc comment for why.
-pub struct GeomRow {
+pub struct EdgeRow {
     pub osm_id: i64,
     pub seg_idx: usize,
     pub start_id: i64,
@@ -29,8 +29,8 @@ pub struct GeomRow {
     pub reverse_cost: f64,
 }
 
-impl CsvRow for GeomRow {
-    /// CSV field order matches `GEOM_COLUMNS`.
+impl CsvRow for EdgeRow {
+    /// CSV field order matches `EDGE_COLUMNS`.
     fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
         Ok(vec![
             self.osm_id.to_string(),
@@ -50,14 +50,14 @@ impl CsvRow for GeomRow {
 /// kept element declaring `"geometry": { "<kind>": ["line"] }` (see `TopicRunner::wants`).
 /// `Clone` since the same row can fan out to however many topics want it.
 #[derive(Clone)]
-pub struct WayGeomRow {
+pub struct WayRow {
     pub osm_id: i64,
     pub geom_ewkb: Vec<u8>,
     pub length_m: f64,
 }
 
-impl CsvRow for WayGeomRow {
-    /// CSV field order matches `WAY_GEOM_COLUMNS`.
+impl CsvRow for WayRow {
+    /// CSV field order matches `WAY_COLUMNS`.
     fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb), self.length_m.to_string()])
     }

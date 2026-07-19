@@ -51,6 +51,10 @@ pub struct TopicRunner {
     /// category's effective defaults can still differ from the topic's even with no `outputs`
     /// override).
     pub category_outputs: HashMap<String, Vec<Field>>,
+    /// Per-output-field timing buckets (`TILDA_PROFILE=1` only), pre-built once from every field
+    /// name this topic can ever produce — see `profiling::FieldStages`'s own doc for why it isn't
+    /// built lazily during the parallel run.
+    pub field_stages: crate::profiling::FieldStages,
 }
 
 /// Resolve one topic's or category's raw `outputs` map (already merged by key, category winning)
@@ -263,6 +267,12 @@ impl TopicRunner {
             }
         }
 
+        let field_stages = crate::profiling::FieldStages::build(
+            default_outputs.iter()
+                .chain(category_outputs.values().flatten())
+                .map(|f| f.output.as_str()),
+        );
+
         Ok(Self {
             spec,
             categories,
@@ -270,6 +280,7 @@ impl TopicRunner {
             exclude_condition,
             default_outputs,
             category_outputs,
+            field_stages,
         })
     }
 

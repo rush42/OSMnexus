@@ -20,7 +20,7 @@ const FLUSH_BYTES: usize = 512 * 1024;
 /// One COPY writer for `table`: owns its pooled connection for the whole COPY (so the deadpool
 /// `Object` can't be recycled mid-COPY — the pitfall that hangs the next `copy_in`), drains its
 /// channel into a `COPY {table} ({columns}) FROM STDIN (FORMAT CSV)` sink, and returns the row
-/// count. Generic over the row type: tag tables take `TopicRow`, the shared geom table `GeomRow`.
+/// count. Generic over the row type: tag tables take `TopicRow`, the shared geom table `EdgeRow`.
 pub async fn copy_writer<R: CsvRow>(
     pool: Pool,
     table: String,

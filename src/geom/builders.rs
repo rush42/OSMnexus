@@ -7,11 +7,11 @@ use crate::geom::primitives::{
     centroid_of_line, haversine_length_m, point_to_ewkb, polygon_to_ewkb, project_line, project_polygon,
     project_ring, to_ewkb, wgs84_to_3857,
 };
-use crate::geom::rows::{GeomRow, NodeRow, PointRow, PolygonRow, WayGeomRow};
+use crate::geom::rows::{EdgeRow, NodeRow, PointRow, PolygonRow, WayRow};
 use crate::osm::types::OsmWay;
 use rustc_hash::FxHashMap;
 
-/// Build the graph-edge rows for a way: one `GeomRow` per consecutive `cut_points` pair (the
+/// Build the graph-edge rows for a way: one `EdgeRow` per consecutive `cut_points` pair (the
 /// sub-linestring `geom.0[s..=e]`, inclusive so the shared node joins both neighbours), with
 /// per-segment `start_id`/`end_id`/`length_m`. A way with no interior cut-points yields a single
 /// edge spanning the whole way. Topic-independent (same for every topic and every side object), so
@@ -20,12 +20,12 @@ use rustc_hash::FxHashMap;
 /// `node_ids` is the `osm node id -> internal id` map built once by `assign_node_ids` before the
 /// geometry pass starts; every cut-point node is guaranteed a spot in it (shared, endpoint, or
 /// selected), so `start_id`/`end_id` are always resolvable.
-pub fn build_geom_rows(
+pub fn build_edges(
     way: &OsmWay,
     geom: &geo::LineString<f64>,
     length_m: f64,
     node_ids: &FxHashMap<i64, i64>,
-) -> Vec<GeomRow> {
+) -> Vec<EdgeRow> {
     let node_id = |osm_id: i64| -> i64 {
         *node_ids.get(&osm_id).expect("cut-point node missing from internal node id map")
     };
@@ -39,7 +39,7 @@ pub fn build_geom_rows(
             let (s, e) = (w[0].0 as usize, w[1].0 as usize);
             let seg_line = geo::LineString::new(geom.0[s..=e].to_vec());
             let seg_len = haversine_length_m(&way.coords[s..=e]);
-            rows.push(GeomRow {
+            rows.push(EdgeRow {
                 osm_id: way.id,
                 seg_idx: i,
                 start_id: node_id(w[0].1),
@@ -53,7 +53,7 @@ pub fn build_geom_rows(
         }
     } else {
         // No interior intersections: the whole way is a single edge.
-        rows.push(GeomRow {
+        rows.push(EdgeRow {
             osm_id: way.id,
             seg_idx: 0,
             start_id: first_node,
@@ -71,8 +71,8 @@ pub fn build_geom_rows(
 
 /// Build the whole-way linestring row for a way — routed (see `main.rs`'s `build_geom_cb`) to
 /// every topic that declares `"geometry": { "way": ["line"] }` and kept this way.
-pub fn build_way_geom_row(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> WayGeomRow {
-    WayGeomRow { osm_id: way.id, geom_ewkb: to_ewkb(geom), length_m }
+pub fn build_way(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> WayRow {
+    WayRow { osm_id: way.id, geom_ewkb: to_ewkb(geom), length_m }
 }
 
 /// Build a `nodes` table row for a graph vertex — always emitted (see `assign_node_ids`).
@@ -112,14 +112,14 @@ pub fn build_way_polygon_row(way: &OsmWay) -> PolygonRow {
 /// correct for the common case of an ordered route relation, but won't reorder out-of-sequence or
 /// reversed member ways. `None` if fewer than 2 points end up in the concatenation (e.g. every
 /// member way was missing/unresolvable).
-pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -> Option<WayGeomRow> {
+pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -> Option<WayRow> {
     let coords: Vec<(f64, f64)> = member_coords.iter().flatten().copied().collect();
     if coords.len() < 2 {
         return None;
     }
     let geom = project_line(&coords);
     let length_m = haversine_length_m(&coords);
-    Some(WayGeomRow { osm_id: rel_id, geom_ewkb: to_ewkb(&geom), length_m })
+    Some(WayRow { osm_id: rel_id, geom_ewkb: to_ewkb(&geom), length_m })
 }
 
 /// Build a relation's multipolygon row from its already-chained `outer`/`inner` rings (see

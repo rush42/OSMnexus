@@ -3,7 +3,7 @@
 //! ever consume this module's row types and builder functions:
 //! - `primitives`: WGS84↔Web Mercator projection, length/centroid, EWKB encode/decode — the raw
 //!   geometric math, no OSM/topic concepts.
-//! - `rows`: the geometry-specific output row types (`GeomRow`/`WayGeomRow`/`NodeRow`/`PointRow`/
+//! - `rows`: the geometry-specific output row types (`EdgeRow`/`WayRow`/`NodeRow`/`PointRow`/
 //!   `PolygonRow`) and their CSV column layouts. `TopicRow`/`MemberRow` (not geometry-specific)
 //!   stay in `output::rows`.
 //! - `builders`: turns a resolved `OsmWay` (or a relation's member-way coordinates) into the row
