@@ -31,7 +31,6 @@
   },
   "excludes": [
     "data_no",
-    "not_expected",
     "separate_geometry"
   ],
   "defaults": {

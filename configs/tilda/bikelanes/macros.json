@@ -44,15 +44,6 @@
     "tag": "cycleway",
     "eq": "separate"
   },
-  "not_expected": {
-    "and": [
-      { "annotation": "_prefix", "eq": "cycleway" },
-      { "annotation": "_infix", "eq": "" },
-      { "annotation": "_side", "eq": "left" },
-      { "parent": { "tag": "oneway", "eq": "yes" } },
-      { "not": { "parent": { "tag": "oneway:bicycle", "eq": "no" } } }
-    ]
-  },
   "is_crossing_pattern": {
     "or": [
       {

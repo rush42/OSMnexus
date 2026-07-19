@@ -12,9 +12,8 @@
     ]
   },
   "excludes": [
-    "cycleway_on_highway_protected",
-    "not_expected"
-  ],
+    "cycleway_on_highway_protected"
+      ],
   "defaults": {
     "oneway": {
       "value": "implicit_yes",

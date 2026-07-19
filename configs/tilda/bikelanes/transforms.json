@@ -193,6 +193,15 @@
             { "unnest": "cycleway", "infix": "both", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
             { "unnest": "cycleway", "infix": "left", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
             { "drop": { "tags_empty": true } },
+            {
+              "drop": {
+                "and": [
+                  { "annotation": "_infix", "eq": "" },
+                  { "parent": { "tag": "oneway", "eq": "yes" } },
+                  { "not": { "parent": { "tag": "oneway:bicycle", "eq": "no" } } }
+                ]
+              }
+            },
             { "output": "highway", "rules": [], "default": "cycleway" },
             { "output": "cycleway:lanes", "directed": { "key": "cycleway:lanes", "from": "parent" } },
             { "output": "bicycle:lanes", "directed": { "key": "bicycle:lanes", "from": "parent" } },
