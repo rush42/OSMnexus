@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use osmnexus::{config, db, osm, output, processing, topic};
+use osmnexus::{config, db, geom, osm, output, processing, topic};
 
 use anyhow::Context;
 use clap::Parser;
@@ -17,15 +17,16 @@ use db::{
     schema,
     schema::{EDGE_TABLE, MEMBER_TABLE, NODE_TABLE},
 };
-use topic::geom::{build_node_point_row, build_node_row, build_way_point_row, build_way_polygon_row};
+use geom::builders::{build_node_point_row, build_node_row, build_way_point_row, build_way_polygon_row};
+use geom::rows::{
+    GeomRow, NodeRow, PointRow, PolygonRow, WayGeomRow, GEOM_COLUMNS, NODE_COLUMNS, POINT_COLUMNS,
+    POLYGON_COLUMNS, WAY_GEOM_COLUMNS,
+};
 use topic::spec::GeometryShape;
 use topic::TopicRunner;
 use osm::reader::{stream_osm, Callbacks};
 use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};
-use output::rows::{
-    CsvRow, GeomRow, MemberRow, NodeRow, PointRow, PolygonRow, TopicRow, WayGeomRow, GEOM_COLUMNS,
-    MEMBER_COLUMNS, NODE_COLUMNS, POINT_COLUMNS, POLYGON_COLUMNS, TAG_COLUMNS, WAY_GEOM_COLUMNS,
-};
+use output::rows::{CsvRow, MemberRow, TopicRow, MEMBER_COLUMNS, TAG_COLUMNS};
 use output::writers::{copy_writer, csv_writer};
 use processing::{classify_node, classify_relation, classify_way, geom_rows_for, way_geom_row_for};
 
@@ -95,7 +96,7 @@ const WRITER_CHAN_CAP: usize = 256;
 
 /// Write an already-fully-built (small) batch of rows to `table` in one shot — used for relation
 /// geometry, which is resolved entirely in memory *after* the main streaming pass (see
-/// `osm::relation_geometry`), so it has no ongoing channel to shard across `w` writers like the
+/// `geom::relation`), so it has no ongoing channel to shard across `w` writers like the
 /// streaming tables above; one connection/file is plenty for what's typically a small dataset.
 async fn write_rows_once<R: CsvRow + Send + Sync + 'static>(
     output: Output,
@@ -191,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
         point_topics.iter().map(|&i| runners[i].wants(ElementKind::Way, GeometryShape::Point)).collect();
     let node_point_eligible: Vec<bool> =
         point_topics.iter().map(|&i| runners[i].wants(ElementKind::Node, GeometryShape::Point)).collect();
-    // Relation `line`/`point`: built in-process (see `osm::relation_geometry`), independent of the
+    // Relation `line`/`point`: built in-process (see `geom::relation`), independent of the
     // ways/geometry passes — no Pg-only restriction, unlike the old SQL post-processing step.
     let relation_line_topics: Vec<usize> =
         (0..runners.len()).filter(|&i| runners[i].wants(ElementKind::Relation, GeometryShape::Line)).collect();
@@ -408,7 +409,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new((0..point_senders.len()).map(|_| AtomicUsize::new(0)).collect());
     // Every kept relation wanting geometry, recorded independently by `classify_rel_cb` — `(rel_id,
     // member ways with role, per-topic keep mask)`. Consumed by the post-stream relation-geometry
-    // step below, which re-resolves the member ways from scratch (see `osm::relation_geometry`)
+    // step below, which re-resolves the member ways from scratch (see `geom::relation`)
     // rather than sharing any state with the ways/geometry passes.
     let rel_geom_requests: Arc<Mutex<Vec<(i64, Vec<(i64, osm::types::MemberRole)>, u32)>>> = Arc::new(Mutex::new(Vec::new()));
     // `runners`/`rel_geom_requests` are still needed after the producer for post-processing (graph
@@ -518,7 +519,7 @@ async fn main() -> anyhow::Result<()> {
                 let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
                 let _ = geom_senders[kk].blocking_send(geom_rows_for(way, node_ids));
                 if !way_linestring_topics.is_empty() || !point_topics.is_empty() {
-                    let geom = output::geometry::project_line(&way.coords);
+                    let geom = geom::primitives::project_line(&way.coords);
                     if !way_linestring_topics.is_empty() {
                         let row = way_geom_row_for(way);
                         route_shape_row(&row, mask, &way_linestring_topics, &way_geom_senders, &way_geom_rr, w);
@@ -611,7 +612,7 @@ async fn main() -> anyhow::Result<()> {
     // Relation geometry (line/point): built entirely independently of the streaming pass above —
     // `classify_rel_cb` only recorded which kept relations want geometry plus their raw member way
     // ids; here we re-resolve exactly those member ways from a fresh PBF scan (see
-    // `osm::relation_geometry`) and assemble each relation's geometry from the result. No shared
+    // `geom::relation`) and assemble each relation's geometry from the result. No shared
     // state with the ways/geometry passes, so this works the same for CSV/GeoJSON as for Postgres
     // (unlike the old SQL-post-processing approach, which needed a live database to merge from).
     let rel_geom_requests: Vec<(i64, Vec<(i64, osm::types::MemberRole)>, u32)> =
@@ -621,7 +622,7 @@ async fn main() -> anyhow::Result<()> {
         let t_rel = std::time::Instant::now();
         let needed: rustc_hash::FxHashSet<i64> =
             rel_geom_requests.iter().flat_map(|(_, members, _)| members.iter().map(|&(w, _)| w)).collect();
-        let way_coords = osm::relation_geometry::resolve_relation_ways(&cfg.pbf_file, &needed)?;
+        let way_coords = geom::relation::resolve_relation_ways(&cfg.pbf_file, &needed)?;
 
         let mut line_rows: Vec<Vec<WayGeomRow>> = vec![Vec::new(); relation_line_topics.len()];
         let mut point_rows: Vec<Vec<PointRow>> = vec![Vec::new(); relation_point_topics.len()];
@@ -629,14 +630,14 @@ async fn main() -> anyhow::Result<()> {
         for (rel_id, members, mask) in &rel_geom_requests {
             let member_coords: Vec<Vec<(f64, f64)>> =
                 members.iter().filter_map(|&(w, _)| way_coords.get(&w).cloned()).collect();
-            if let Some(row) = topic::geom::build_relation_line_row(*rel_id, &member_coords) {
+            if let Some(row) = geom::builders::build_relation_line_row(*rel_id, &member_coords) {
                 for (i, &topic_idx) in relation_line_topics.iter().enumerate() {
                     if mask & (1 << topic_idx) != 0 {
                         line_rows[i].push(row.clone());
                     }
                 }
             }
-            if let Some(row) = topic::geom::build_relation_point_row(*rel_id, &member_coords) {
+            if let Some(row) = geom::builders::build_relation_point_row(*rel_id, &member_coords) {
                 for (i, &topic_idx) in relation_point_topics.iter().enumerate() {
                     if mask & (1 << topic_idx) != 0 {
                         point_rows[i].push(row.clone());
@@ -655,9 +656,9 @@ async fn main() -> anyhow::Result<()> {
                     .filter(|&&(_, role)| role == MemberRole::Inner)
                     .filter_map(|&(w, _)| way_coords.get(&w).cloned())
                     .collect();
-                let outer_rings = osm::relation_geometry::assemble_rings(outer_coords);
-                let inner_rings = osm::relation_geometry::assemble_rings(inner_coords);
-                if let Some(row) = topic::geom::build_relation_polygon_row(*rel_id, &outer_rings, &inner_rings) {
+                let outer_rings = geom::relation::assemble_rings(outer_coords);
+                let inner_rings = geom::relation::assemble_rings(inner_coords);
+                if let Some(row) = geom::builders::build_relation_polygon_row(*rel_id, &outer_rings, &inner_rings) {
                     for (i, &topic_idx) in relation_polygon_topics.iter().enumerate() {
                         if mask & (1 << topic_idx) != 0 {
                             polygon_rows[i].push(row.clone());

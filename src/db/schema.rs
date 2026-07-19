@@ -54,7 +54,7 @@ pub fn way_geom_table(table: &str) -> String {
 
 /// This topic's merged relation-line table name (populated for topics declaring
 /// `"geometry": { "relation": ["line"] }` — built in-process from member ways' independently
-/// re-resolved coordinates, see `osm::relation_geometry` / `main.rs`'s post-stream step).
+/// re-resolved coordinates, see `geom::relation` / `main.rs`'s post-stream step).
 pub fn relation_geom_table(table: &str) -> String {
     format!("{table}_relation_geom")
 }
@@ -67,7 +67,7 @@ pub fn relation_point_table(table: &str) -> String {
 
 /// This topic's relation multipolygon table name (populated for topics declaring
 /// `"geometry": { "relation": ["polygon"] }` — assembled from member `outer`/`inner` ways, see
-/// `osm::relation_geometry`).
+/// `geom::relation`).
 pub fn relation_polygon_table(table: &str) -> String {
     format!("{table}_relation_polygon")
 }

@@ -1,13 +1,11 @@
 use rustc_hash::FxHashMap;
 
-use crate::topic::geom::{build_geom_rows, build_way_geom_row};
+use crate::geom::builders::{build_geom_rows, build_way_geom_row};
+use crate::geom::primitives::{haversine_length_m, project_line};
+use crate::geom::rows::{GeomRow, WayGeomRow};
 use crate::topic::TopicRunner;
 use crate::osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData, WayMeta};
-use crate::output::{
-    geometry::{haversine_length_m, project_line},
-    rows::{GeomRow, TopicRow, WayGeomRow},
-    types::OsmMeta,
-};
+use crate::output::{rows::TopicRow, types::OsmMeta};
 
 /// Build the `OsmMeta` (updated_at/by, changeset) from an element's raw metadata. Shared by the
 /// way/relation/node classification entry points.

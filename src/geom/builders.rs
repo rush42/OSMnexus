@@ -1,15 +1,14 @@
-//! Topic-independent geometry table rows: graph edges (`GeomRow`), whole-way linestrings
-//! (`WayGeomRow`), and graph vertices (`NodeRow`). Same for every topic and every side object —
-//! computed once per way/node, separate from `pipeline`'s per-topic, per-object tag/field rows.
+//! Topic-independent geometry row builders: turn a resolved `OsmWay` (or a relation's member-way
+//! coordinates) into one of `geom::rows`'s row types — one function per shape (`point`/`line`/
+//! `graph`/`polygon`) per kind. Same for every topic and every side object — computed once per
+//! way/node/relation, separate from `pipeline`'s per-topic, per-object tag/field rows.
 
-use crate::osm::types::OsmWay;
-use crate::output::{
-    geometry::{
-        centroid_of_line, haversine_length_m, point_to_ewkb, polygon_to_ewkb, project_line, project_polygon,
-        project_ring, to_ewkb, wgs84_to_3857,
-    },
-    rows::{GeomRow, NodeRow, PointRow, PolygonRow, WayGeomRow},
+use crate::geom::primitives::{
+    centroid_of_line, haversine_length_m, point_to_ewkb, polygon_to_ewkb, project_line, project_polygon,
+    project_ring, to_ewkb, wgs84_to_3857,
 };
+use crate::geom::rows::{GeomRow, NodeRow, PointRow, PolygonRow, WayGeomRow};
+use crate::osm::types::OsmWay;
 use rustc_hash::FxHashMap;
 
 /// Build the graph-edge rows for a way: one `GeomRow` per consecutive `cut_points` pair (the
@@ -71,7 +70,7 @@ pub fn build_geom_rows(
 }
 
 /// Build the whole-way linestring row for a way — routed (see `main.rs`'s `build_geom_cb`) to
-/// every topic that declares `"geometry": { "way": ["linestring"] }` and kept this way.
+/// every topic that declares `"geometry": { "way": ["line"] }` and kept this way.
 pub fn build_way_geom_row(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> WayGeomRow {
     WayGeomRow { osm_id: way.id, geom_ewkb: to_ewkb(geom), length_m }
 }
@@ -101,18 +100,18 @@ pub fn build_way_point_row(way: &OsmWay, geom: &geo::LineString<f64>) -> Option<
 
 /// Build a way's closed-ring polygon row — routed to every topic that both kept this way and
 /// declares `"geometry": { "way": ["polygon"] }` (see `main.rs`). Single ring only (no holes) —
-/// a way itself never has inner rings; that's a relation/multipolygon concept, not yet built here
-/// (see `topic::spec::GeometrySpec`'s own doc).
+/// a way itself never has inner rings; that's a relation/multipolygon concept (see
+/// `build_relation_polygon_row`).
 pub fn build_way_polygon_row(way: &OsmWay) -> PolygonRow {
     PolygonRow { osm_id: way.id, geom_ewkb: polygon_to_ewkb(&project_ring(&way.coords)) }
 }
 
 /// Build a relation's line row from its member ways' independently re-resolved coordinate
-/// sequences (see `osm::relation_geometry::resolve_relation_ways`), concatenated in member order.
-/// This is a simple concatenation, not a topological line-merge (`ST_LineMerge`'s old SQL
-/// behavior) — correct for the common case of an ordered route relation, but won't reorder
-/// out-of-sequence or reversed member ways. `None` if fewer than 2 points end up in the
-/// concatenation (e.g. every member way was missing/unresolvable).
+/// sequences (see `geom::relation::resolve_relation_ways`), concatenated in member order. This is
+/// a simple concatenation, not a topological line-merge (`ST_LineMerge`'s old SQL behavior) —
+/// correct for the common case of an ordered route relation, but won't reorder out-of-sequence or
+/// reversed member ways. `None` if fewer than 2 points end up in the concatenation (e.g. every
+/// member way was missing/unresolvable).
 pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -> Option<WayGeomRow> {
     let coords: Vec<(f64, f64)> = member_coords.iter().flatten().copied().collect();
     if coords.len() < 2 {
@@ -124,12 +123,12 @@ pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -
 }
 
 /// Build a relation's multipolygon row from its already-chained `outer`/`inner` rings (see
-/// `osm::relation_geometry::assemble_rings`). Takes the largest assembled outer ring as the
-/// exterior and every inner ring as a hole of it — doesn't spatially match holes to their actual
-/// enclosing shape when a relation has multiple disjoint outer rings (a true multi-outer
-/// multipolygon), which is rare for buildings but real for some admin/landuse relations; that
-/// case would need a point-in-ring test per hole, not implemented here. `None` if there's no outer
-/// ring at all (a malformed or role-less relation).
+/// `geom::relation::assemble_rings`). Takes the largest assembled outer ring as the exterior and
+/// every inner ring as a hole of it — doesn't spatially match holes to their actual enclosing
+/// shape when a relation has multiple disjoint outer rings (a true multi-outer multipolygon),
+/// which is rare for buildings but real for some admin/landuse relations; that case would need a
+/// point-in-ring test per hole, not implemented here. `None` if there's no outer ring at all (a
+/// malformed or role-less relation).
 pub fn build_relation_polygon_row(
     rel_id: i64,
     outer_rings: &[Vec<(f64, f64)>],

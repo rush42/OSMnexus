@@ -41,7 +41,7 @@ pub struct TopicSpec {
 }
 
 /// Per-kind geometry output declarations (`topic.json`'s `"geometry"`). Every shape is now built
-/// in-process (no Postgres post-import SQL step — see `topic::geometry_source`), so `node`/`way`/
+/// in-process (no Postgres post-import SQL step — see `geom`), so `node`/`way`/
 /// `relation` all share the same `GeometryShape` vocabulary; `GeometrySpec::validate` rejects
 /// combinations that don't make sense for a kind (e.g. a node can't have a `Line`).
 #[derive(Debug, Deserialize, Default)]
@@ -53,7 +53,7 @@ pub struct GeometrySpec {
     #[serde(default)]
     pub way: Vec<GeometryShape>,
     /// Geometry outputs for this topic's relations — built from its member ways' already-resolved
-    /// geometry (see `topic::geometry_source::GeometrySource`), no SQL post-processing needed.
+    /// geometry (see `geom::relation::resolve_relation_ways`), no SQL post-processing needed.
     #[serde(default)]
     pub relation: Vec<GeometryShape>,
 }

@@ -95,7 +95,7 @@ pub fn resolve_relation_ways(
 /// ring is done (closed or not; an unclosed ring still gets force-closed by the caller, same as a
 /// single-way polygon) and a new ring starts from whatever remains. Doesn't attempt to spatially
 /// assign which hole belongs to which outer shape when there are multiple disjoint outer rings —
-/// see `topic::geom::build_relation_polygon_row`'s own doc for that simplification.
+/// see `geom::builders::build_relation_polygon_row`'s own doc for that simplification.
 pub fn assemble_rings(mut segments: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
     let mut rings = Vec::new();
     while let Some(mut ring) = segments.pop() {

@@ -1,5 +1,7 @@
-//! Output row types and their CSV serialization — the single source of truth for the tag/geom
-//! column order, shared by the Postgres COPY path and the CSV file path (see `output::writers`).
+//! Non-geometry output row types (tag rows + relation-member links) and their CSV serialization,
+//! plus the shared `CsvRow` trait/`write_csv_row` helper both this module and `geom::rows` use.
+//! Geometry row types (`GeomRow`/`WayGeomRow`/`NodeRow`/`PointRow`/`PolygonRow`) live in
+//! `geom::rows` instead — see `geom`'s own module doc for why geometry is split out.
 
 use serde_json::{Map, Value};
 
@@ -8,15 +10,11 @@ use crate::output::types::OsmMeta;
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `csv_fields` implementation below.
 pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,category,produced,annotations,meta";
-pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,total_length_m,cost,reverse_cost";
 pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
-pub const WAY_GEOM_COLUMNS: &str = "osm_id,geom,length_m";
-pub const NODE_COLUMNS: &str = "id,osm_id,geom";
-pub const POINT_COLUMNS: &str = "osm_id,geom";
-pub const POLYGON_COLUMNS: &str = "osm_id,geom";
 
-/// A row that can be serialized into an ordered list of CSV fields. Implemented by both output row
-/// types so the writers (`output::writers`) can be generic over the row type.
+/// A row that can be serialized into an ordered list of CSV fields. Implemented by every output
+/// row type (here and in `geom::rows`) so the writers (`output::writers`) can be generic over the
+/// row type.
 pub trait CsvRow {
     /// The CSV fields in `*_COLUMNS` order. Fallible because tag rows serialize JSON maps.
     fn csv_fields(&self) -> anyhow::Result<Vec<String>>;
@@ -56,109 +54,6 @@ impl CsvRow for TopicRow {
             serde_json::to_string(&self.annotations)?,
             serde_json::to_string(&self.meta)?,
         ])
-    }
-}
-
-/// A single graph-edge row: one per intersection sub-linestring of a way (`edges` table, always
-/// emitted — this *is* the extracted graph). Shared across all topics and all side objects of a way
-/// (side-split is a tag-only operation), so keyed on `osm_id`. `start_id`/`end_id` are internal graph
-/// vertex ids (see `assign_node_ids`), not raw OSM node ids — they join `nodes.id`. `cost`/
-/// `reverse_cost` are always equal to `length_m` — see `create_edge_table_sql`'s doc comment for why.
-pub struct GeomRow {
-    pub osm_id: i64,
-    pub seg_idx: usize,
-    pub start_id: i64,
-    pub end_id: i64,
-    pub geom_ewkb: Vec<u8>,
-    pub length_m: f64,
-    pub total_length_m: f64,
-    pub cost: f64,
-    pub reverse_cost: f64,
-}
-
-impl CsvRow for GeomRow {
-    /// CSV field order matches `GEOM_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
-        Ok(vec![
-            self.osm_id.to_string(),
-            self.seg_idx.to_string(),
-            self.start_id.to_string(),
-            self.end_id.to_string(),
-            hex::encode(&self.geom_ewkb),
-            self.length_m.to_string(),
-            self.total_length_m.to_string(),
-            self.cost.to_string(),
-            self.reverse_cost.to_string(),
-        ])
-    }
-}
-
-/// A whole-way linestring row, routed to whichever topics kept the way and declared
-/// `"geometry": { "way": ["linestring"] }` (see `TopicRunner::wants_way_linestring`,
-/// `main.rs`'s `build_geom_cb`) — one `{table}_geom` table per such topic. `Clone` since the same
-/// row is fanned out to however many topics want it.
-#[derive(Clone)]
-pub struct WayGeomRow {
-    pub osm_id: i64,
-    pub geom_ewkb: Vec<u8>,
-    pub length_m: f64,
-}
-
-impl CsvRow for WayGeomRow {
-    /// CSV field order matches `WAY_GEOM_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
-        Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb), self.length_m.to_string()])
-    }
-}
-
-/// A graph-vertex row (`nodes` table, always emitted): every node referenced as a `start_id`/
-/// `end_id` in `edges` — shared between ≥2 ways, a way endpoint, or forced by a node classifier. `id`
-/// is the internal sequential id `edges.start_id`/`end_id` join against; `osm_id` is the original OSM
-/// node id, kept for lookups/debugging. Was `--emit-node-geometries`'s `node_geometries` table —
-/// that flag is gone since this mapping is now load-bearing (pgRouting-style `source`/`target`), not
-/// just an optional debugging aid.
-pub struct NodeRow {
-    pub id: i64,
-    pub osm_id: i64,
-    pub geom_ewkb: Vec<u8>,
-}
-
-impl CsvRow for NodeRow {
-    /// CSV field order matches `NODE_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
-        Ok(vec![self.id.to_string(), self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
-    }
-}
-
-/// A single-point row: a node's own coordinate, or a way's centroid — routed (see `main.rs`) to
-/// every topic that declares `"geometry": { "<kind>": ["point"] }` and kept the element. `Clone`
-/// since the same row can fan out to however many topics want it.
-#[derive(Clone)]
-pub struct PointRow {
-    pub osm_id: i64,
-    pub geom_ewkb: Vec<u8>,
-}
-
-impl CsvRow for PointRow {
-    /// CSV field order matches `POINT_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
-        Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
-    }
-}
-
-/// A single-ring polygon row: a closed way's own ring (e.g. a building or area). Routed (see
-/// `main.rs`) to every topic that declares `"geometry": { "way": ["polygon"] }` and kept the way.
-/// `Clone` since the same row can fan out to however many topics want it.
-#[derive(Clone)]
-pub struct PolygonRow {
-    pub osm_id: i64,
-    pub geom_ewkb: Vec<u8>,
-}
-
-impl CsvRow for PolygonRow {
-    /// CSV field order matches `POLYGON_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
-        Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
     }
 }
 

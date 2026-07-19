@@ -12,10 +12,10 @@
 //!   (`load`/`load_all`) plus a thin per-element dispatch (`process`).
 //! - `pipeline`: the actual per-element runtime pipeline (transform pipeline → `exclude_condition`
 //!   → side-split → categorize → field evaluation), which `TopicRunner::process` delegates to.
-//! - `geom`: topic-independent geometry table rows (graph edges, whole-way linestrings, graph
-//!   vertices) — same for every topic, so kept separate from `pipeline`'s per-topic tag rows.
+//!
+//! Geometry (row builders, primitives, relation resolution) lives in the top-level `geom` module,
+//! not here — it's topic-independent, so it's kept out of the topic-loading/running engine.
 
-pub mod geom;
 pub mod load;
 pub mod pipeline;
 pub mod runner;

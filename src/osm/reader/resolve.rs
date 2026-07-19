@@ -43,7 +43,7 @@ pub(super) fn way_data(way: &Way) -> WayData {
 }
 
 /// Extract a [`RelData`] from an osmpbf `Relation`, keeping only its **way** members (id + role —
-/// role is needed for `Polygon` assembly, see `osm::relation_geometry`).
+/// role is needed for `Polygon` assembly, see `geom::relation`).
 pub(super) fn rel_data(rel: &Relation) -> RelData {
     let tags: RawTags = rel.tags().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
     let member_ways: Vec<(i64, MemberRole)> = rel

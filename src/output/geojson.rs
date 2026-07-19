@@ -11,8 +11,9 @@ use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
-use crate::output::geometry::{linestring_from_ewkb, mercator_to_wgs84, point_from_ewkb};
-use crate::output::rows::{GEOM_COLUMNS, NODE_COLUMNS, TAG_COLUMNS};
+use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, point_from_ewkb};
+use crate::geom::rows::{GEOM_COLUMNS, NODE_COLUMNS};
+use crate::output::rows::TAG_COLUMNS;
 
 struct EdgeGeom {
     seg_idx: usize,

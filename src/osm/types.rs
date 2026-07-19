@@ -69,7 +69,7 @@ pub struct WayMeta {
 }
 
 /// A relation member way's role in the relation's geometry — `outer`/`inner` per the multipolygon
-/// convention (see `osm::relation_geometry`'s ring-assembly doc); any other role string (or a
+/// convention (see `geom::relation`'s ring-assembly doc); any other role string (or a
 /// role-less member, e.g. a plain route relation) is `Unknown` — geometrically just another
 /// segment to chain, no hole/outer distinction (relevant only for `Polygon` assembly).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
