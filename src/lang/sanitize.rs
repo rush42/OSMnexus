@@ -11,6 +11,7 @@
 //! `mapping`, only on the way in) is folded in by hand-written impls in `parser`, kept separate
 //! from the runtime types/eval logic defined here.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -83,8 +84,14 @@ impl Sanitizer {
     }
 
     fn eval(&self, raw: &str) -> Option<Value> {
-        let mut cur = Value::String(raw.to_owned());
-        for s in &self.0 {
+        // First step reads `raw` directly (no upfront `to_owned` just to hand a `&str` right back
+        // out) — only a step past the first needs a materialized `Value` to read `.as_str()` from.
+        let mut steps = self.0.iter();
+        let mut cur = match steps.next() {
+            Some(first) => first.apply(raw)?,
+            None => return Some(Value::String(raw.to_owned())),
+        };
+        for s in steps {
             cur = s.apply(cur.as_str()?)?;
         }
         Some(cur)
@@ -187,12 +194,17 @@ pub enum ReplaceAt {
 }
 
 impl ReplaceRule {
-    fn apply(&self, s: &str) -> String {
+    /// Borrows `s` back unchanged when this rule doesn't match — only a rule that actually fires
+    /// allocates, so a chain of mostly-inapplicable rules (the common case: a `replace` list
+    /// usually targets one or two specific spellings) costs one allocation total, not one per rule.
+    fn apply<'a>(&self, s: Cow<'a, str>) -> Cow<'a, str> {
         match self.at {
-            ReplaceAt::Anywhere => s.replace(&self.from, &self.to),
+            ReplaceAt::Anywhere => {
+                if s.contains(&self.from) { Cow::Owned(s.replace(&self.from, &self.to)) } else { s }
+            }
             ReplaceAt::Prefix => match s.strip_prefix(&self.from) {
-                Some(rest) => format!("{}{rest}", self.to),
-                None => s.to_owned(),
+                Some(rest) => Cow::Owned(format!("{}{rest}", self.to)),
+                None => s,
             },
         }
     }
@@ -207,8 +219,8 @@ impl Step {
                 None => apply_on_miss(on_miss.as_deref(), v),
             },
             Step::Replace { replace } => {
-                let out = replace.iter().fold(v.to_owned(), |s, r| r.apply(&s));
-                Some(Value::String(out))
+                let out = replace.iter().fold(Cow::Borrowed(v), |s, r| r.apply(s));
+                Some(Value::String(out.into_owned()))
             }
             Step::Builtin(name) => apply_builtin(name, v),
         }

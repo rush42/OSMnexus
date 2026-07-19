@@ -12,6 +12,8 @@ pub const GEOM_COLUMNS: &str = "osm_id,seg_idx,start_id,end_id,geom,length_m,tot
 pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
 pub const WAY_GEOM_COLUMNS: &str = "osm_id,geom,length_m";
 pub const NODE_COLUMNS: &str = "id,osm_id,geom";
+pub const POINT_COLUMNS: &str = "osm_id,geom";
+pub const POLYGON_COLUMNS: &str = "osm_id,geom";
 
 /// A row that can be serialized into an ordered list of CSV fields. Implemented by both output row
 /// types so the writers (`output::writers`) can be generic over the row type.
@@ -125,6 +127,38 @@ impl CsvRow for NodeRow {
     /// CSV field order matches `NODE_COLUMNS`.
     fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.id.to_string(), self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
+    }
+}
+
+/// A single-point row: a node's own coordinate, or a way's centroid — routed (see `main.rs`) to
+/// every topic that declares `"geometry": { "<kind>": ["point"] }` and kept the element. `Clone`
+/// since the same row can fan out to however many topics want it.
+#[derive(Clone)]
+pub struct PointRow {
+    pub osm_id: i64,
+    pub geom_ewkb: Vec<u8>,
+}
+
+impl CsvRow for PointRow {
+    /// CSV field order matches `POINT_COLUMNS`.
+    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
+    }
+}
+
+/// A single-ring polygon row: a closed way's own ring (e.g. a building or area). Routed (see
+/// `main.rs`) to every topic that declares `"geometry": { "way": ["polygon"] }` and kept the way.
+/// `Clone` since the same row can fan out to however many topics want it.
+#[derive(Clone)]
+pub struct PolygonRow {
+    pub osm_id: i64,
+    pub geom_ewkb: Vec<u8>,
+}
+
+impl CsvRow for PolygonRow {
+    /// CSV field order matches `POLYGON_COLUMNS`.
+    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
     }
 }
 

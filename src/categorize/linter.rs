@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::ops::Bound;
 use std::path::PathBuf;
 
 use crate::topic::load::{
@@ -138,10 +139,25 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
             "_infix" => Expr::Lit(Literal::Pos(Predicate::Infix(eq.clone()))),
             other => unreachable!("Filter::AnnotationEq only ever spelled for _side/_prefix/_infix, got {other}"),
         },
-        Filter::NumLt  { extract, lt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Lt,  lt.to_bits()))),
-        Filter::NumLte { extract, lte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Lte, lte.to_bits()))),
-        Filter::NumGt  { extract, gt,  .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Gt,  gt.to_bits()))),
-        Filter::NumGte { extract, gte, .. } => Expr::Lit(Literal::Pos(Predicate::Num(extract_key(extract), NumOp::Gte, gte.to_bits()))),
+        Filter::NumRange { extract, min, max } => {
+            let key = extract_key(extract);
+            let mut parts = Vec::with_capacity(2);
+            match min {
+                Bound::Included(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(key.clone(), NumOp::Gte, v.to_bits())))),
+                Bound::Excluded(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(key.clone(), NumOp::Gt, v.to_bits())))),
+                Bound::Unbounded => {}
+            }
+            match max {
+                Bound::Included(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(key.clone(), NumOp::Lte, v.to_bits())))),
+                Bound::Excluded(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(key, NumOp::Lt, v.to_bits())))),
+                Bound::Unbounded => {}
+            }
+            match parts.len() {
+                0 => Expr::True,
+                1 => parts.into_iter().next().unwrap(),
+                _ => Expr::And(parts),
+            }
+        }
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
         Filter::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
         Filter::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),

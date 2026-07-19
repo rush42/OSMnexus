@@ -76,6 +76,7 @@ pub fn classify_node(runners: &[TopicRunner], nd: &NodeData) -> Vec<Vec<TopicRow
 /// intersection segment. Projects the line + measures length once. Topic-independent. `node_ids` is
 /// the `osm node id -> internal id` map from `assign_node_ids`, used to resolve `start_id`/`end_id`.
 pub fn geom_rows_for(way: &OsmWay, node_ids: &FxHashMap<i64, i64>) -> Vec<GeomRow> {
+    let _t = crate::profiling::time(&crate::profiling::GEOMETRY);
     let length_m = haversine_length_m(&way.coords);
     let geom = project_line(&way.coords);
     build_geom_rows(way, &geom, length_m, node_ids)
@@ -84,6 +85,7 @@ pub fn geom_rows_for(way: &OsmWay, node_ids: &FxHashMap<i64, i64>) -> Vec<GeomRo
 /// Build the whole-way linestring row for a resolved way. Only called when some topic declared
 /// `"geometry": { "way": ["linestring"] }` (see `main.rs`'s `build_geom_cb`).
 pub fn way_geom_row_for(way: &OsmWay) -> WayGeomRow {
+    let _t = crate::profiling::time(&crate::profiling::GEOMETRY);
     let length_m = haversine_length_m(&way.coords);
     let geom = project_line(&way.coords);
     build_way_geom_row(way, &geom, length_m)

@@ -21,6 +21,7 @@ use crate::output::{rows::TopicRow, types::OsmMeta};
 /// (see `runner::merge_const_fields`), which is why no separate "did the const survive" tracking
 /// is needed here.
 fn eval_fields(fields: &[Field], ctx: &ExtractCtx, produced: &mut Map<String, Value>, annotations: &mut Map<String, Value>) {
+    let _t = crate::profiling::time(&crate::profiling::TAG_ENGINE);
     for field in fields {
         if let Some(p) = field.source.eval(ctx) {
             produced.insert(field.output.clone(), p.value);
@@ -78,9 +79,14 @@ pub fn build_topic_rows(
         return Vec::new();
     }
 
+    let _t_iter = crate::profiling::time(&crate::profiling::ITERATION);
     let mut rows = Vec::new();
     let mut emit = |ectx: ExtractCtx| {
-        let Some(category) = categorize(&ectx, categories) else {
+        let category = {
+            let _t = crate::profiling::time(&crate::profiling::CATEGORIZE);
+            categorize(&ectx, categories)
+        };
+        let Some(category) = category else {
             return;
         };
 

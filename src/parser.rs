@@ -17,6 +17,7 @@
 //! is even reached) — see `producer.rs`'s own doc for why.
 
 use std::collections::HashMap;
+use std::ops::Bound;
 
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
@@ -252,10 +253,14 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix },
             FilterJson::HasParent { has_parent } => Filter::HasParent { has_parent },
             FilterJson::TagsEmpty { tags_empty } => Filter::TagsEmpty { tags_empty },
-            FilterJson::NumLt { extract, lt } => Filter::NumLt { extract, lt },
-            FilterJson::NumLte { extract, lte } => Filter::NumLte { extract, lte },
-            FilterJson::NumGt { extract, gt } => Filter::NumGt { extract, gt },
-            FilterJson::NumGte { extract, gte } => Filter::NumGte { extract, gte },
+            FilterJson::NumLt { extract, lt } =>
+                Filter::NumRange { extract, min: Bound::Unbounded, max: Bound::Excluded(lt) },
+            FilterJson::NumLte { extract, lte } =>
+                Filter::NumRange { extract, min: Bound::Unbounded, max: Bound::Included(lte) },
+            FilterJson::NumGt { extract, gt } =>
+                Filter::NumRange { extract, min: Bound::Excluded(gt), max: Bound::Unbounded },
+            FilterJson::NumGte { extract, gte } =>
+                Filter::NumRange { extract, min: Bound::Included(gte), max: Bound::Unbounded },
         })
     }
 }

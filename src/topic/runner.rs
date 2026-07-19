@@ -191,6 +191,7 @@ impl TopicRunner {
                 .with_context(|| format!("resolving topics/{name}/topic.json"))?,
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
+        spec.geometry.validate().with_context(|| format!("topics/{name}/topic.json: geometry"))?;
         let exclude_condition = spec.exclude_condition.take();
 
         // Load the named producer library. Optional: a topic with no named producers (e.g.
@@ -280,20 +281,22 @@ impl TopicRunner {
     pub fn has_kind(&self, kind: ElementKind) -> bool {
         self.categories.contains_key(&kind)
     }
-    /// This topic wants a per-topic `{table}_edge` pgRouting table (see `db::topic_edges`).
+    /// Whether this topic declared `shape` for `kind` (`topic.json`'s `"geometry"` — see
+    /// `GeometrySpec`). Replaces the old per-(kind,shape) accessors (`wants_way_graph`/
+    /// `wants_way_linestring`/`wants_relation_linestring`) with one generalized lookup, now that
+    /// `node`/`way`/`relation` all share the same `GeometryShape` vocabulary.
+    pub fn wants(&self, kind: ElementKind, shape: GeometryShape) -> bool {
+        match kind {
+            ElementKind::Node => self.spec.geometry.node.contains(&shape),
+            ElementKind::Way => self.spec.geometry.way.contains(&shape),
+            ElementKind::Relation => self.spec.geometry.relation.contains(&shape),
+        }
+    }
+
+    /// This topic wants a per-topic `{table}_edge` pgRouting table (see `db::topic_edges`) —
+    /// shorthand for `wants(Way, Graph)`, the one shape lookup common enough to keep a name.
     pub fn wants_way_graph(&self) -> bool {
-        self.spec.geometry.way.contains(&GeometryShape::Graph)
-    }
-
-    /// This topic wants whole-way linestrings, routed per-way during streaming (see
-    /// `db::topic_geometries` / `main.rs`'s `build_geom_cb`).
-    pub fn wants_way_linestring(&self) -> bool {
-        self.spec.geometry.way.contains(&GeometryShape::Linestring)
-    }
-
-    /// This topic wants merged relation linestrings (see `db::topic_geometries`).
-    pub fn wants_relation_linestring(&self) -> bool {
-        self.spec.geometry.relation.contains(&GeometryShape::Linestring)
+        self.wants(ElementKind::Way, GeometryShape::Graph)
     }
 
     /// Run the topic's pipeline for one element of `kind`: clone its raw tags, then hand off to

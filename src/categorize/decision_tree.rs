@@ -160,7 +160,7 @@ fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
             .obj_tags
             .get(k)
             .and_then(|v| v.trim().parse::<f64>().ok())
-            .is_some_and(|n| num_cmp(n, op, f64::from_bits(*bits))),
+            .is_some_and(|n| num_matches(op, *bits, n)),
         Predicate::HasKeyPrefix(p) => ctx.obj_tags.keys().any(|k| k.starts_with(p.as_str())),
         _ => unreachable!("AtomBranch only built for Contains/StartsWith/EndsWith/Exists/Num/HasKeyPrefix"),
     }
@@ -180,12 +180,15 @@ fn branch_key<'a>(ctx: &'a ExtractCtx, tag: &str) -> Option<&'a str> {
     }
 }
 
-pub(crate) fn num_cmp(n: f64, op: &NumOp, thr: f64) -> bool {
+/// True iff `n` satisfies the single-bound comparison encoded by a `Predicate::Num`'s op + bit
+/// pattern threshold.
+pub(crate) fn num_matches(op: &NumOp, threshold_bits: u64, n: f64) -> bool {
+    let t = f64::from_bits(threshold_bits);
     match op {
-        NumOp::Lt => n < thr,
-        NumOp::Lte => n <= thr,
-        NumOp::Gt => n > thr,
-        NumOp::Gte => n >= thr,
+        NumOp::Lt => n < t,
+        NumOp::Lte => n <= t,
+        NumOp::Gt => n > t,
+        NumOp::Gte => n >= t,
     }
 }
 
@@ -555,7 +558,7 @@ fn decide_value(p: &Predicate, tag: &str, v: &str) -> K {
         Predicate::StartsWith(k, s) if k == tag => b(v.starts_with(s.as_str())),
         Predicate::EndsWith(k, s) if k == tag => b(v.ends_with(s.as_str())),
         Predicate::Num(k, op, bits) if k == tag => match v.trim().parse::<f64>() {
-            Ok(n) => b(num_cmp(n, op, f64::from_bits(*bits))),
+            Ok(n) => b(num_matches(op, *bits, n)),
             Err(_) => K::F,
         },
         _ => K::U,
@@ -652,10 +655,7 @@ fn collect_sanitized_tags(f: &Filter, out: &mut FxHashSet<String>) {
         Filter::Not { not } => collect_sanitized_tags(not, out),
         Filter::Eq { extract, .. }
         | Filter::In { extract, .. }
-        | Filter::NumLt { extract, .. }
-        | Filter::NumLte { extract, .. }
-        | Filter::NumGt { extract, .. }
-        | Filter::NumGte { extract, .. } => {
+        | Filter::NumRange { extract, .. } => {
             if extract.sanitize().is_some() {
                 if let crate::lang::extract::Extract::Value { key, .. } = extract {
                     out.insert(key.clone());

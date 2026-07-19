@@ -11,6 +11,8 @@
 //! is just another "object state → output" evaluator, output `bool` instead of `Option<Value>`. The
 //! category *data model* and the priority-order compiler live in `categories`.
 
+use std::ops::{Bound, RangeBounds};
+
 use serde_json::Value;
 
 use crate::lang::extract::Extract;
@@ -64,12 +66,14 @@ pub enum Filter {
     /// specific key.
     TagsEmpty { tags_empty: bool },
 
-    // Numeric comparisons — same `Extract` shape the tag predicates use (its `sanitize` chain may
-    // yield a JSON number, e.g. `parse_length`) before parsing to f64.
-    NumLt  { extract: Extract, lt:  f64 },
-    NumLte { extract: Extract, lte: f64 },
-    NumGt  { extract: Extract, gt:  f64 },
-    NumGte { extract: Extract, gte: f64 },
+    // Numeric comparison — same `Extract` shape the tag predicates use (its `sanitize` chain may
+    // yield a JSON number, e.g. `parse_length`) before parsing to f64. On-disk `lt`/`lte`/`gt`/`gte`
+    // are sugar over this one interval shape (`parser`'s hand-written `Deserialize`) — each sets
+    // just one bound, the other staying `Unbounded`. Internal only: no JSON shape spells `min`/`max`
+    // directly. Represented as bounds (rather than four separate variants) so two numeric atoms on
+    // the same key can be intersected directly (`categorize::linter`'s overlap lint) instead of
+    // being treated as independent, opaque literals.
+    NumRange { extract: Extract, min: Bound<f64>, max: Bound<f64> },
 }
 
 impl Filter {
@@ -115,10 +119,17 @@ impl Filter {
             Filter::HasKeyPrefix { has_key_prefix } => format!("has_key_prefix({has_key_prefix:?})"),
             Filter::HasParent { has_parent } => if *has_parent { "has_parent".to_owned() } else { "!has_parent".to_owned() },
             Filter::TagsEmpty { tags_empty } => if *tags_empty { "tags_empty".to_owned() } else { "!tags_empty".to_owned() },
-            Filter::NumLt { extract, lt } => format!("{} < {lt}", key(extract)),
-            Filter::NumLte { extract, lte } => format!("{} <= {lte}", key(extract)),
-            Filter::NumGt { extract, gt } => format!("{} > {gt}", key(extract)),
-            Filter::NumGte { extract, gte } => format!("{} >= {gte}", key(extract)),
+            Filter::NumRange { extract, min, max } => {
+                let k = key(extract);
+                match (min, max) {
+                    (Bound::Unbounded, Bound::Unbounded) => k,
+                    (Bound::Included(a), Bound::Unbounded) => format!("{k} >= {a}"),
+                    (Bound::Excluded(a), Bound::Unbounded) => format!("{k} > {a}"),
+                    (Bound::Unbounded, Bound::Included(b)) => format!("{k} <= {b}"),
+                    (Bound::Unbounded, Bound::Excluded(b)) => format!("{k} < {b}"),
+                    _ => format!("{k} in {min:?}..{max:?}"),
+                }
+            }
         }
     }
 }
@@ -173,10 +184,8 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
         Filter::TagsEmpty { tags_empty } => ctx.obj_tags.is_empty() == *tags_empty,
 
-        Filter::NumLt  { extract, lt  } => read_num(extract, ctx).is_some_and(|n| n <  *lt),
-        Filter::NumLte { extract, lte } => read_num(extract, ctx).is_some_and(|n| n <= *lte),
-        Filter::NumGt  { extract, gt  } => read_num(extract, ctx).is_some_and(|n| n >  *gt),
-        Filter::NumGte { extract, gte } => read_num(extract, ctx).is_some_and(|n| n >= *gte),
+        Filter::NumRange { extract, min, max } =>
+            read_num(extract, ctx).is_some_and(|n| (*min, *max).contains(&n)),
     }
 }
 

@@ -51,10 +51,11 @@ pub struct Callbacks<CR, CW, CN, G, BN> {
     /// Whether any topic declares relation categories — gates the relations pass entirely.
     pub has_relations: bool,
     /// Relations pass: emit relation tag rows + `relation_members`; return `true` if the relation
-    /// was kept (its member ways then join the keep set).
+    /// was kept. Fully independent of the ways/geometry passes — relation geometry, if any topic
+    /// wants it, is resolved separately after streaming completes (see `main.rs`).
     pub classify_rel: CR,
-    /// Ways pass: emit tag rows; return `Some(payload)` for a kept way (produced ≥1 row **or** the
-    /// `bool` — relation membership — is true), `None` for a fully pruned way.
+    /// Ways pass: emit tag rows; return `Some(payload)` for a kept way (produced ≥1 row for some
+    /// topic), `None` for a fully pruned way. Relation membership has no bearing on this.
     pub classify_way: CW,
     /// Whether any topic declares node categories — gates node tag decoding in Pass B.
     pub has_nodes: bool,
@@ -73,10 +74,10 @@ pub struct Callbacks<CR, CW, CN, G, BN> {
 /// Stream an OSM PBF, classifying relations, ways, and nodes and resolving way geometry.
 ///
 /// Fast path (sorted `node → way → relation` files) runs, in logical order:
-///   * Relations pass — decode the relation region once: classify relations, collect the member-way
-///     keep set.
-///   * Pass A — decode the way region once: classify ways (keeping relation members too), tally
-///     per-node use counts, index each kept way's node ids.
+///   * Relations pass — decode the relation region once: classify relations, emit relation rows.
+///     Fully independent of the passes below (see `Callbacks::classify_rel`'s own doc).
+///   * Pass A — decode the way region once: classify ways purely by their own tags, tally per-node
+///     use counts, index each kept way's node ids.
 ///   * Pass B — decode the node region once: collect coords for needed nodes and (if node topics
 ///     exist) classify node tags, collecting the selected-node set.
 ///   * Geometry pass — resolve each indexed way, selected nodes forced as cut points.
@@ -88,7 +89,7 @@ pub fn stream_osm<CR, CW, CN, G, BN, M>(
 ) -> anyhow::Result<()>
 where
     CR: Fn(&RelData) -> bool + Sync + Send,
-    CW: Fn(&WayData, bool) -> Option<M> + Sync + Send,
+    CW: Fn(&WayData) -> Option<M> + Sync + Send,
     CN: Fn(&NodeData) -> bool + Sync + Send,
     G: Fn(&OsmWay, M, &FxHashMap<i64, i64>) + Sync + Send,
     BN: FnOnce(Vec<(i64, i64, f32, f32)>),
@@ -126,26 +127,19 @@ where
                     rel_offsets.len()
                 );
 
-                // Relations pass — collect the member-way keep set (+ emit relation rows).
-                let keep_set = if cb.has_relations && !rel_offsets.is_empty() {
+                // Relations pass — classify + emit relation rows. Fully independent of the
+                // ways/geometry passes below: relation membership no longer forces a way to
+                // survive Pass A (see `classify_and_index`'s own doc).
+                if cb.has_relations && !rel_offsets.is_empty() {
                     let t = std::time::Instant::now();
-                    let ks = classify_relations(path, rel_offsets, &cb.classify_rel)?;
-                    info!(
-                        "[phase] Relations pass (classify + emit): {:.1}s ({} member ways kept)",
-                        t.elapsed().as_secs_f32(),
-                        ks.len()
-                    );
-                    ks
-                } else {
-                    rustc_hash::FxHashSet::default()
-                };
+                    classify_relations(path, rel_offsets, &cb.classify_rel)?;
+                    info!("[phase] Relations pass (classify + emit): {:.1}s", t.elapsed().as_secs_f32());
+                }
 
                 // Pass A — way region (decoded once): classify + counts + endpoints + index.
                 let t = std::time::Instant::now();
-                let (use_counts, endpoints, index) =
-                    classify_and_index(path, way_offsets, &keep_set, &cb.classify_way)?;
+                let (use_counts, endpoints, index) = classify_and_index(path, way_offsets, &cb.classify_way)?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
-                drop(keep_set);
 
                 // Pass B — node region: coords for needed nodes (+ classify nodes).
                 let t = std::time::Instant::now();

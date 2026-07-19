@@ -64,50 +64,41 @@ fn merge_acc<M>(
 
 /// Relations pass — decode the relation region once (parallel). For every relation, extract its
 /// `RelData` and run `classify_rel` (side effect: emit relation tag rows + `relation_members`
-/// links). When `classify_rel` returns `true` (the relation was kept), its member way ids are added
-/// to the keep set so those ways survive Pass A even if their own tags classify to nothing.
+/// links, and — independently of the ways/geometry passes below — whatever relation-geometry
+/// bookkeeping the caller wants to do, see `main.rs`'s `classify_rel_cb`). Relation membership no
+/// longer forces a way to survive Pass A — a way is kept purely by its own tag classification;
+/// relation geometry re-resolves its own member ways independently after streaming completes.
 pub(super) fn classify_relations<CR>(
     path: &str,
     rel_offsets: &[ByteOffset],
     classify_rel: &CR,
-) -> anyhow::Result<FxHashSet<i64>>
+) -> anyhow::Result<()>
 where
     CR: Fn(&RelData) -> bool + Sync,
 {
-    rel_offsets
-        .par_iter()
-        .map(|&off| -> anyhow::Result<FxHashSet<i64>> {
-            let block = decode_block(path, off)?;
-            let mut keep: FxHashSet<i64> = FxHashSet::default();
-            for group in block.groups() {
-                for rel in group.relations() {
-                    let rd = rel_data(&rel);
-                    if classify_rel(&rd) {
-                        keep.extend(rd.member_ways.iter().copied());
-                    }
-                }
+    rel_offsets.par_iter().try_for_each(|&off| -> anyhow::Result<()> {
+        let block = decode_block(path, off)?;
+        for group in block.groups() {
+            for rel in group.relations() {
+                classify_rel(&rel_data(&rel));
             }
-            Ok(keep)
-        })
-        .try_reduce(FxHashSet::default, |mut a, b| {
-            a.extend(b);
-            Ok(a)
-        })
+        }
+        Ok(())
+    })
 }
 
 /// Pass A — decode the way-region blobs once (parallel). For every way, extract its `WayData` and
-/// classify it (side effect: emit tag rows); a way is *kept* when `classify` returns `Some` — it
-/// produced ≥1 topic row **or** is a relation member (`keep_set`). Kept ways have their node refs
+/// classify it (side effect: emit tag rows); a way is *kept* when `classify` returns `Some` — purely
+/// its own tag classification, independent of relation membership. Kept ways have their node refs
 /// tallied into the use-count map (intersection detection) and their node ids recorded in the
 /// `WayIndex` for the geometry pass. Tags/meta drop after classify.
 pub(super) fn classify_and_index<C, M>(
     path: &str,
     way_offsets: &[ByteOffset],
-    keep_set: &FxHashSet<i64>,
     classify: &C,
 ) -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>)>
 where
-    C: Fn(&WayData, bool) -> Option<M> + Sync,
+    C: Fn(&WayData) -> Option<M> + Sync,
     M: Copy + Send + Sync,
 {
     way_offsets
@@ -120,8 +111,7 @@ where
             for group in block.groups() {
                 for way in group.ways() {
                     let wd = way_data(&way);
-                    let in_keep = keep_set.contains(&wd.id);
-                    if let Some(m) = classify(&wd, in_keep) {
+                    if let Some(m) = classify(&wd) {
                         for &id in &wd.node_refs {
                             *counts.entry(id).or_insert(0) += 1;
                         }

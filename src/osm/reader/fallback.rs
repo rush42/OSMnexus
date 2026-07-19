@@ -1,7 +1,8 @@
 //! Fallback: full parallel scans for unsorted / non-seekable-ordered files, or when the boundary
 //! check fails. Rare and slower, but behaviorally identical to the sorted path. Runs the relations
-//! scan first (to build the member-way keep set), then classifies ways (holding kept ways' node ids
-//! in memory), then collects node coords + classifies nodes, then resolves geometry.
+//! scan first (classify + emit only — independent of the passes below), then classifies ways
+//! (holding kept ways' node ids in memory), then collects node coords + classifies nodes, then
+//! resolves geometry.
 
 use anyhow::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -21,41 +22,29 @@ pub(super) fn stream_osm_fallback<CR, CW, CN, G, BN, M>(
 ) -> anyhow::Result<()>
 where
     CR: Fn(&RelData) -> bool + Sync + Send,
-    CW: Fn(&WayData, bool) -> Option<M> + Sync + Send,
+    CW: Fn(&WayData) -> Option<M> + Sync + Send,
     CN: Fn(&NodeData) -> bool + Sync + Send,
     G: Fn(&OsmWay, M, &FxHashMap<i64, i64>) + Sync + Send,
     BN: FnOnce(Vec<(i64, i64, f32, f32)>),
     M: Copy + Send + Sync,
 {
-    // Scan R — relations: emit rows + collect the member-way keep set.
-    let keep_set: FxHashSet<i64> = if cb.has_relations {
-        info!("Fallback scan R (parallel): classify relations...");
+    // Scan R — relations: classify + emit rows. Independent of the passes below. Sequential (the
+    // relation region is small relative to ways/nodes; not worth a `par_map_reduce` for a scan with
+    // no keep-set to accumulate).
+    if cb.has_relations {
+        info!("Fallback scan R: classify relations...");
         ElementReader::from_path(path)
             .context("opening PBF for relation scan")?
-            .par_map_reduce(
-                |element| {
-                    let mut keep = FxHashSet::default();
-                    if let Element::Relation(rel) = element {
-                        let rd = rel_data(&rel);
-                        if (cb.classify_rel)(&rd) {
-                            keep.extend(rd.member_ways.iter().copied());
-                        }
-                    }
-                    keep
-                },
-                FxHashSet::default,
-                |mut a, b: FxHashSet<i64>| {
-                    a.extend(b);
-                    a
-                },
-            )
-            .context("relation scan parallel read")?
-    } else {
-        FxHashSet::default()
-    };
+            .for_each(|element| {
+                if let Element::Relation(rel) = element {
+                    (cb.classify_rel)(&rel_data(&rel));
+                }
+            })
+            .context("relation scan read")?;
+    }
 
     // Scan 1 — ways: classify (emit tag rows), keep kept ways' (id, refs, payload) + tally use counts
-    // + endpoints.
+    // + endpoints. A way is kept purely by its own tag classification.
     info!("Fallback scan 1 (parallel): classify ways...");
     let (use_counts, endpoints, kept_ways): (FxHashMap<i64, u32>, FxHashSet<i64>, Vec<(i64, Vec<i64>, M)>) =
         ElementReader::from_path(path)
@@ -67,8 +56,7 @@ where
                     let mut ways: Vec<(i64, Vec<i64>, M)> = Vec::new();
                     if let Element::Way(way) = element {
                         let wd = way_data(&way);
-                        let in_keep = keep_set.contains(&wd.id);
-                        if let Some(m) = (cb.classify_way)(&wd, in_keep) {
+                        if let Some(m) = (cb.classify_way)(&wd) {
                             for &id in &wd.node_refs {
                                 *counts.entry(id).or_insert(0) += 1;
                             }
@@ -95,7 +83,6 @@ where
                 },
             )
             .context("way scan parallel read")?;
-    drop(keep_set);
 
     // Scan 2 — nodes: coords for needed nodes (+ classify nodes → selected set).
     info!("Fallback scan 2 (parallel): collect node coords{}...", if cb.has_nodes { " + classify nodes" } else { "" });

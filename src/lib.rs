@@ -8,6 +8,7 @@ pub mod output;
 mod parser;
 pub mod paths;
 pub mod processing;
+pub mod profiling;
 pub mod topic;
 pub mod traffic;
 pub mod units;

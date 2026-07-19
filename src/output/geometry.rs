@@ -1,4 +1,4 @@
-use geo::{Length, LineString, Haversine};
+use geo::{Centroid, Length, LineString, Polygon, Haversine};
 
 const R: f64 = 6_378_137.0;
 
@@ -29,6 +29,25 @@ pub fn haversine_length_m(coords: &[(f64, f64)]) -> f64 {
         .map(|&(lon, lat)| geo::coord! { x: lon, y: lat })
         .collect();
     ls.length::<Haversine>()
+}
+
+/// Centroid of an already-projected line (its vertices' centroid — the "line" reading of
+/// `geo::Centroid`, not an area-weighted polygon centroid). `None` only for a degenerate
+/// (empty) line, which never occurs for a resolved way (`resolve_geometry` requires ≥2 points).
+pub fn centroid_of_line(geom: &LineString<f64>) -> Option<(f64, f64)> {
+    geom.centroid().map(|p| (p.x(), p.y()))
+}
+
+/// Close a WGS84 coordinate ring (repeat the first point at the end if not already closed) and
+/// project it to EPSG:3857 as a single-ring `Polygon` — the `way` reading of `Polygon` (a closed
+/// way, e.g. a building or area, with no inner rings). Multipolygon/inner-ring assembly from
+/// relation member roles isn't implemented yet (see `topic::geometry_source`'s own doc).
+pub fn project_ring(coords: &[(f64, f64)]) -> Polygon<f64> {
+    let mut ring = coords.to_vec();
+    if ring.first() != ring.last() {
+        ring.push(ring[0]);
+    }
+    Polygon::new(project_line(&ring), vec![])
 }
 
 /// Inverse of `wgs84_to_3857`.
@@ -85,6 +104,31 @@ pub fn point_to_ewkb(x: f64, y: f64) -> Vec<u8> {
     buf.write_all(&srid.to_le_bytes()).unwrap();
     buf.write_all(&x.to_le_bytes()).unwrap();
     buf.write_all(&y.to_le_bytes()).unwrap();
+    buf
+}
+
+/// Encode a projected (EPSG:3857) single-ring Polygon (no inner rings) as PostGIS EWKB with SRID.
+pub fn polygon_to_ewkb(polygon: &Polygon<f64>) -> Vec<u8> {
+    use std::io::Write;
+
+    let exterior: Vec<_> = polygon.exterior().coords().collect();
+    let num_rings: u32 = 1;
+    let num_points = exterior.len() as u32;
+
+    // WKB type for Polygon with SRID flag: 0x20000003
+    let wkb_type: u32 = 0x2000_0003;
+    let srid: i32 = 3857;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(13 + 4 + 16 * exterior.len());
+    buf.write_all(&[1u8]).unwrap();
+    buf.write_all(&wkb_type.to_le_bytes()).unwrap();
+    buf.write_all(&srid.to_le_bytes()).unwrap();
+    buf.write_all(&num_rings.to_le_bytes()).unwrap();
+    buf.write_all(&num_points.to_le_bytes()).unwrap();
+    for c in &exterior {
+        buf.write_all(&c.x.to_le_bytes()).unwrap();
+        buf.write_all(&c.y.to_le_bytes()).unwrap();
+    }
     buf
 }
 

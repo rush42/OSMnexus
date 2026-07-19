@@ -40,32 +40,63 @@ pub struct TopicSpec {
     pub geometry: GeometrySpec,
 }
 
-/// Per-kind geometry output declarations (`topic.json`'s `"geometry"`). Node geometry (raw point)
-/// isn't wired up yet — only `way`/`relation` shapes exist today.
+/// Per-kind geometry output declarations (`topic.json`'s `"geometry"`). Every shape is now built
+/// in-process (no Postgres post-import SQL step — see `topic::geometry_source`), so `node`/`way`/
+/// `relation` all share the same `GeometryShape` vocabulary; `GeometrySpec::validate` rejects
+/// combinations that don't make sense for a kind (e.g. a node can't have a `Line`).
 #[derive(Debug, Deserialize, Default)]
 pub struct GeometrySpec {
+    /// Geometry outputs for this topic's nodes. Only `Point` is meaningful here.
+    #[serde(default)]
+    pub node: Vec<GeometryShape>,
     /// Geometry outputs for this topic's ways.
     #[serde(default)]
     pub way: Vec<GeometryShape>,
-    /// Geometry outputs for this topic's relations. Always a post-processing SQL step (Postgres
-    /// output only) — a relation is classified before any member way's geometry is resolved (see
-    /// `db::topic_geometries`), unlike `way`'s shapes, which are computed during streaming.
+    /// Geometry outputs for this topic's relations — built from its member ways' already-resolved
+    /// geometry (see `topic::geometry_source::GeometrySource`), no SQL post-processing needed.
     #[serde(default)]
     pub relation: Vec<GeometryShape>,
+}
+
+impl GeometrySpec {
+    /// Reject shapes that are meaningless for their kind: `node` only ever supports `Point`
+    /// (a bare point has no line/graph/polygon reading); `relation` never supports `Graph` (the
+    /// routing/edge table is way-only — a relation has no natural directed-cost reading).
+    pub fn validate(&self) -> anyhow::Result<()> {
+        for shape in &self.node {
+            anyhow::ensure!(
+                *shape == GeometryShape::Point,
+                "geometry.node only supports \"point\", got {shape:?}"
+            );
+        }
+        for shape in &self.relation {
+            anyhow::ensure!(
+                *shape != GeometryShape::Graph,
+                "geometry.relation does not support \"graph\" (routing/edge tables are way-only)"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// One geometry output a topic can opt into for a given element kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GeometryShape {
+    /// A single point: a node's own coordinate, or a way's/relation's centroid.
+    Point,
+    /// The whole (unsplit) linestring per kept way, or one merged multi-linestring per kept
+    /// relation (its member ways' geometries collected + line-merged). `"linestring"` is accepted
+    /// as a JSON alias for the old spelling.
+    #[serde(alias = "linestring")]
+    Line,
     /// Ways only: this topic's kept ways feed into a per-topic `{table}_edge` pgRouting-shaped
     /// table (intersection-split, `cost`/`reverse_cost` from the topic's own `cost`/`is_directed`
     /// fields — see `db::topic_edges`). Requires the topic to define a `cost` field.
     Graph,
-    /// The whole (unsplit) linestring per kept way, or one merged multi-linestring per kept
-    /// relation (its member ways' geometries collected + line-merged) — see
-    /// `db::topic_geometries`.
-    Linestring,
+    /// A closed ring (way) or assembled multipolygon (relation, from `outer`/`inner` member
+    /// roles).
+    Polygon,
 }
 
 /// One produced field: `{ output, source: Producer }`. The resolved form every `outputs` map

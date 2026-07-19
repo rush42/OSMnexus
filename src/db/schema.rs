@@ -7,8 +7,10 @@ use tokio_postgres::Client;
 /// attribute layers over it.
 pub const EDGE_TABLE: &str = "edges";
 
-/// Relation → member-way link table. Relations have no materialized geometry; a relation's tag row
-/// joins here to reach its member ways' rows in `EDGE_TABLE` (or a topic's own `{table}_geom`).
+/// Relation → member-way link table. Relations have no materialized geometry of their own; a
+/// relation's tag row joins here to reach its member ways' rows in `EDGE_TABLE`, or a topic can
+/// build its own relation geometry directly (see `GeomTableShape`/`main.rs`'s relation-geometry
+/// step).
 pub const MEMBER_TABLE: &str = "relation_members";
 
 /// Graph-vertex table: one row per node referenced as a `start_id`/`end_id` in `EDGE_TABLE` — shared
@@ -17,16 +19,63 @@ pub const MEMBER_TABLE: &str = "relation_members";
 /// internal sequential id `edges` joins on; `osm_id` is the original OSM node id.
 pub const NODE_TABLE: &str = "nodes";
 
-/// This topic's whole-way linestring table name (populated only for topics declaring
-/// `"geometry": { "way": ["linestring"] }` — see `TopicRunner::wants_way_linestring`).
+/// One non-tag, non-tag-table geometry output a topic can have: a `(osm_id, geom[, length_m])`
+/// table, one row per kept element (way, node, or relation) — everything except the always-on
+/// shared `edges`/`nodes` tables and the per-topic tag tables. Every such table shares the same
+/// column shape modulo `length_m` (`LineString` only); `create`/`drop_indexes`/`index_stmts` below
+/// dispatch on this one enum rather than needing a separate function (and a separate parallel
+/// `&[&str]` parameter to every schema function) per shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeomTableShape {
+    LineString,
+    Point,
+    Polygon,
+}
+
+impl GeomTableShape {
+    fn pg_type(self) -> &'static str {
+        match self {
+            GeomTableShape::LineString => "LineString",
+            GeomTableShape::Point => "Point",
+            GeomTableShape::Polygon => "Polygon",
+        }
+    }
+
+    fn has_length(self) -> bool {
+        self == GeomTableShape::LineString
+    }
+}
+
+/// This topic's whole-way linestring table name (populated for topics declaring
+/// `"geometry": { "way": ["line"] }`).
 pub fn way_geom_table(table: &str) -> String {
     format!("{table}_geom")
 }
 
-/// This topic's merged relation-linestring table name (populated only for topics declaring
-/// `"geometry": { "relation": ["linestring"] }` — see `db::topic_geometries`).
+/// This topic's merged relation-line table name (populated for topics declaring
+/// `"geometry": { "relation": ["line"] }` — built in-process from member ways' independently
+/// re-resolved coordinates, see `osm::relation_geometry` / `main.rs`'s post-stream step).
 pub fn relation_geom_table(table: &str) -> String {
     format!("{table}_relation_geom")
+}
+
+/// This topic's relation centroid-point table name (populated for topics declaring
+/// `"geometry": { "relation": ["point"] }`).
+pub fn relation_point_table(table: &str) -> String {
+    format!("{table}_relation_point")
+}
+
+/// This topic's point table name (populated for topics declaring `"geometry": { "node": ["point"] }`
+/// or `"geometry": { "way": ["point"] }` — a node's own coordinate or a way's centroid, see
+/// `TopicRunner::wants`).
+pub fn point_table(table: &str) -> String {
+    format!("{table}_point")
+}
+
+/// This topic's polygon table name (populated for topics declaring `"geometry": { "way": ["polygon"] }`
+/// — a closed way's own ring, see `TopicRunner::wants`).
+pub fn polygon_table(table: &str) -> String {
+    format!("{table}_polygon")
 }
 
 fn create_member_table_sql() -> String {
@@ -86,16 +135,6 @@ CREATE TABLE IF NOT EXISTS {EDGE_TABLE} (
 )"#)
 }
 
-fn create_way_geom_table_sql(table: &str) -> String {
-    let way_geom = way_geom_table(table);
-    format!(r#"
-CREATE TABLE IF NOT EXISTS {way_geom} (
-  osm_id   bigint,
-  geom     geometry(LineString, 3857),
-  length_m double precision
-)"#)
-}
-
 fn create_node_table_sql() -> String {
     format!(r#"
 CREATE TABLE IF NOT EXISTS {NODE_TABLE} (
@@ -103,6 +142,28 @@ CREATE TABLE IF NOT EXISTS {NODE_TABLE} (
   osm_id bigint,
   geom   geometry(Point, 3857)
 )"#)
+}
+
+/// One `(osm_id, geom[, length_m])` geometry table, per `GeomTableShape`'s own doc.
+fn create_geom_table_sql(name: &str, shape: GeomTableShape) -> String {
+    let ty = shape.pg_type();
+    let length_col = if shape.has_length() { ",\n  length_m double precision" } else { "" };
+    format!(r#"
+CREATE TABLE IF NOT EXISTS {name} (
+  osm_id bigint,
+  geom   geometry({ty}, 3857){length_col}
+)"#)
+}
+
+fn drop_geom_indexes_sql(name: &str) -> String {
+    format!("DROP INDEX IF EXISTS {name}_geom_idx;\nDROP INDEX IF EXISTS {name}_osm_id_idx")
+}
+
+fn geom_index_stmts(name: &str) -> [String; 2] {
+    [
+        format!("CREATE INDEX IF NOT EXISTS {name}_geom_idx ON {name} USING GIST (geom)"),
+        format!("CREATE INDEX IF NOT EXISTS {name}_osm_id_idx ON {name} (osm_id)"),
+    ]
 }
 
 fn drop_tag_indexes_sql(table: &str) -> String {
@@ -116,14 +177,6 @@ fn drop_edge_indexes_sql() -> String {
     format!(
         "DROP INDEX IF EXISTS {EDGE_TABLE}_geom_idx;\n\
          DROP INDEX IF EXISTS {EDGE_TABLE}_osm_id_idx"
-    )
-}
-
-fn drop_way_geom_indexes_sql(table: &str) -> String {
-    let way_geom = way_geom_table(table);
-    format!(
-        "DROP INDEX IF EXISTS {way_geom}_geom_idx;\n\
-         DROP INDEX IF EXISTS {way_geom}_osm_id_idx"
     )
 }
 
@@ -151,14 +204,6 @@ fn edge_index_stmts() -> [String; 2] {
     ]
 }
 
-fn way_geom_index_stmts(table: &str) -> [String; 2] {
-    let way_geom = way_geom_table(table);
-    [
-        format!("CREATE INDEX IF NOT EXISTS {way_geom}_geom_idx ON {way_geom} USING GIST (geom)"),
-        format!("CREATE INDEX IF NOT EXISTS {way_geom}_osm_id_idx ON {way_geom} (osm_id)"),
-    ]
-}
-
 fn node_index_stmts() -> [String; 3] {
     [
         format!("CREATE INDEX IF NOT EXISTS {NODE_TABLE}_geom_idx ON {NODE_TABLE} USING GIST (geom)"),
@@ -167,43 +212,55 @@ fn node_index_stmts() -> [String; 3] {
     ]
 }
 
-/// `way_geom_tables`: the (topic) table names whose `{table}_geom` whole-way-linestring table
-/// should exist — i.e. topics declaring `"geometry": { "way": ["linestring"] }` (see
-/// `TopicRunner::wants_way_linestring`). Threaded through `create_tables`/`truncate_tables`/
-/// `drop_indexes`/`create_indexes` alongside the always-present `EDGE_TABLE` + `MEMBER_TABLE` +
-/// `NODE_TABLE`, replacing the old global `Config::emit_way_geometries` flag.
-pub async fn create_tables(client: &Client, tables: &[&str], way_geom_tables: &[&str]) -> anyhow::Result<()> {
+/// `geom_tables`: every non-tag-table geometry table that should exist this run — one entry per
+/// (already-fully-formatted table name, shape), covering way `line`/`point`/`polygon` and relation
+/// `line`/`point` alike (see `GeomTableShape`'s own doc). Threaded through `create_tables`/
+/// `truncate_tables`/`drop_indexes`/`create_indexes` alongside the always-present `EDGE_TABLE` +
+/// `MEMBER_TABLE` + `NODE_TABLE`.
+pub async fn create_tables(
+    client: &Client,
+    tables: &[&str],
+    geom_tables: &[(String, GeomTableShape)],
+) -> anyhow::Result<()> {
     for table in tables {
         client.batch_execute(&create_tag_table_sql(table)).await?;
     }
     client.batch_execute(&create_edge_table_sql()).await?;
     client.batch_execute(&create_member_table_sql()).await?;
     client.batch_execute(&create_node_table_sql()).await?;
-    for table in way_geom_tables {
-        client.batch_execute(&create_way_geom_table_sql(table)).await?;
+    for (name, shape) in geom_tables {
+        client.batch_execute(&create_geom_table_sql(name, *shape)).await?;
     }
     Ok(())
 }
 
-pub async fn truncate_tables(client: &Client, tables: &[&str], way_geom_tables: &[&str]) -> anyhow::Result<()> {
+pub async fn truncate_tables(
+    client: &Client,
+    tables: &[&str],
+    geom_tables: &[(String, GeomTableShape)],
+) -> anyhow::Result<()> {
     let mut all: Vec<String> = tables.iter().map(|t| t.to_string()).collect();
     all.push(EDGE_TABLE.to_string());
     all.push(MEMBER_TABLE.to_string());
     all.push(NODE_TABLE.to_string());
-    all.extend(way_geom_tables.iter().map(|t| way_geom_table(t)));
+    all.extend(geom_tables.iter().map(|(name, _)| name.clone()));
     client.batch_execute(&format!("TRUNCATE TABLE {}", all.join(", "))).await?;
     Ok(())
 }
 
-pub async fn drop_indexes(client: &Client, tables: &[&str], way_geom_tables: &[&str]) -> anyhow::Result<()> {
+pub async fn drop_indexes(
+    client: &Client,
+    tables: &[&str],
+    geom_tables: &[(String, GeomTableShape)],
+) -> anyhow::Result<()> {
     for table in tables {
         client.batch_execute(&drop_tag_indexes_sql(table)).await?;
     }
     client.batch_execute(&drop_edge_indexes_sql()).await?;
     client.batch_execute(&drop_member_indexes_sql()).await?;
     client.batch_execute(&drop_node_indexes_sql()).await?;
-    for table in way_geom_tables {
-        client.batch_execute(&drop_way_geom_indexes_sql(table)).await?;
+    for (name, _) in geom_tables {
+        client.batch_execute(&drop_geom_indexes_sql(name)).await?;
     }
     Ok(())
 }
@@ -215,14 +272,18 @@ pub async fn drop_indexes(client: &Client, tables: &[&str], way_geom_tables: &[&
 /// Two levers, both measured on a Germany import (8 cores): each session raises
 /// `maintenance_work_mem` + `max_parallel_maintenance_workers` (parallel sort / GiST build), and
 /// the units build in parallel so the small tables hide under the dominant edge-table GiST.
-pub async fn create_indexes(pool: &Pool, tables: &[&str], way_geom_tables: &[&str]) -> anyhow::Result<()> {
+pub async fn create_indexes(
+    pool: &Pool,
+    tables: &[&str],
+    geom_tables: &[(String, GeomTableShape)],
+) -> anyhow::Result<()> {
     // One build unit per tag table, plus the shared edge table.
     let mut units: Vec<Vec<String>> = tables.iter().map(|t| tag_index_stmts(t).to_vec()).collect();
     units.push(edge_index_stmts().to_vec());
     units.push(member_index_stmts().to_vec());
     units.push(node_index_stmts().to_vec());
-    for table in way_geom_tables {
-        units.push(way_geom_index_stmts(table).to_vec());
+    for (name, _) in geom_tables {
+        units.push(geom_index_stmts(name).to_vec());
     }
 
     let handles: Vec<_> = units
