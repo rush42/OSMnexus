@@ -313,7 +313,7 @@ impl TopicRunner {
     /// Run the topic's pipeline for one element of `kind`: clone its raw tags, then hand off to
     /// `build_topic_rows`, which applies `kind`'s own transform pipeline (if any), `exclude_condition`,
     /// side-split, categorize/extract into tag rows against the kind's category set. `raw_tags` are
-    /// the element's untouched tags. Geometry is produced separately (way-only) via `build_geom_rows`.
+    /// the element's untouched tags. Geometry is produced separately (way-only) via `build_edges`.
     pub fn process(
         &self,
         kind: ElementKind,

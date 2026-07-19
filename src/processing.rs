@@ -1,10 +1,10 @@
-use rustc_hash::FxHashMap;
+//! The "select" half of the select/materialize split: tag-only classification for one element at
+//! a time (way/relation/node), each producing its per-topic tag rows plus (for ways) a keep mask.
+//! Purely tag-driven — no coordinates, no geometry decisions; those live in `geom::materialize`,
+//! called separately (from `main.rs`) once a way/relation is resolved.
 
-use crate::geom::builders::{build_edges, build_way};
-use crate::geom::primitives::{haversine_length_m, project_line};
-use crate::geom::rows::{EdgeRow, WayRow};
 use crate::topic::TopicRunner;
-use crate::osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData, WayMeta};
+use crate::osm::types::{ElementKind, NodeData, RelData, WayData, WayMeta};
 use crate::output::{rows::TopicRow, types::OsmMeta};
 
 /// Build the `OsmMeta` (updated_at/by, changeset) from an element's raw metadata. Shared by the
@@ -68,23 +68,4 @@ pub fn classify_relation(runners: &[TopicRunner], rd: &RelData) -> Vec<Vec<Topic
 pub fn classify_node(runners: &[TopicRunner], nd: &NodeData) -> Vec<Vec<TopicRow>> {
     let meta = meta_from(&nd.meta);
     classify_element(runners, ElementKind::Node, nd.id, &nd.tags, &meta)
-}
-
-/// Build the graph-edge rows for a resolved way (geometry pass): always emitted, one row per
-/// intersection segment. Projects the line + measures length once. Topic-independent. `node_ids` is
-/// the `osm node id -> internal id` map from `assign_node_ids`, used to resolve `start_id`/`end_id`.
-pub fn edges_for(way: &OsmWay, node_ids: &FxHashMap<i64, i64>) -> Vec<EdgeRow> {
-    let _t = crate::profiling::time(&crate::profiling::GEOMETRY);
-    let length_m = haversine_length_m(&way.coords);
-    let geom = project_line(&way.coords);
-    build_edges(way, &geom, length_m, node_ids)
-}
-
-/// Build the whole-way linestring row for a resolved way. Only called when some topic declared
-/// `"geometry": { "way": ["linestring"] }` (see `main.rs`'s `build_geom_cb`).
-pub fn way_row_for(way: &OsmWay) -> WayRow {
-    let _t = crate::profiling::time(&crate::profiling::GEOMETRY);
-    let length_m = haversine_length_m(&way.coords);
-    let geom = project_line(&way.coords);
-    build_way(way, &geom, length_m)
 }

@@ -115,7 +115,7 @@ pub fn build_topic_rows(
         eval_fields(outputs, &ectx, &mut produced, &mut annotations, &runner.field_stages);
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
-        // geom table (see `build_geom_rows`), joined on `osm_id` at materialization time. `ectx.id`
+        // geom table (see `build_edges`), joined on `osm_id` at materialization time. `ectx.id`
         // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
         // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
         rows.push(TopicRow {
