@@ -65,6 +65,13 @@ pub fn relation_point_table(table: &str) -> String {
     format!("{table}_relation_point")
 }
 
+/// This topic's relation multipolygon table name (populated for topics declaring
+/// `"geometry": { "relation": ["polygon"] }` — assembled from member `outer`/`inner` ways, see
+/// `osm::relation_geometry`).
+pub fn relation_polygon_table(table: &str) -> String {
+    format!("{table}_relation_polygon")
+}
+
 /// This topic's point table name (populated for topics declaring `"geometry": { "node": ["point"] }`
 /// or `"geometry": { "way": ["point"] }` — a node's own coordinate or a way's centroid, see
 /// `TopicRunner::wants`).

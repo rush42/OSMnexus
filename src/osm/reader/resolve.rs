@@ -5,7 +5,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use osmpbf::{DenseNode, Node, Relation, RelMemberType, Way};
 use tracing::info;
 
-use crate::osm::types::{NodeData, OsmWay, RawTags, RelData, WayData, WayMeta};
+use crate::osm::types::{MemberRole, NodeData, OsmWay, RawTags, RelData, WayData, WayMeta};
 
 /// Node coordinate map for the geometry pass: `id → (lon, lat, shared)` where `shared` = the node
 /// is used by ≥2 filter-passing ways (an intersection cut-point). Folding the shared flag in here
@@ -42,13 +42,14 @@ pub(super) fn way_data(way: &Way) -> WayData {
     WayData { id: way.id(), tags, node_refs: refs, meta: extract_meta(way.info()) }
 }
 
-/// Extract a [`RelData`] from an osmpbf `Relation`, keeping only its **way** member ids.
+/// Extract a [`RelData`] from an osmpbf `Relation`, keeping only its **way** members (id + role —
+/// role is needed for `Polygon` assembly, see `osm::relation_geometry`).
 pub(super) fn rel_data(rel: &Relation) -> RelData {
     let tags: RawTags = rel.tags().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
-    let member_ways: Vec<i64> = rel
+    let member_ways: Vec<(i64, MemberRole)> = rel
         .members()
         .filter(|m| m.member_type == RelMemberType::Way)
-        .map(|m| m.member_id)
+        .map(|m| (m.member_id, MemberRole::from_str(m.role().unwrap_or(""))))
         .collect();
     RelData { id: rel.id(), tags, member_ways, meta: extract_meta(rel.info()) }
 }

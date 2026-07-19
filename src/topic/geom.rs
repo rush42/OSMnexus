@@ -4,7 +4,10 @@
 
 use crate::osm::types::OsmWay;
 use crate::output::{
-    geometry::{centroid_of_line, haversine_length_m, point_to_ewkb, polygon_to_ewkb, project_line, project_ring, to_ewkb, wgs84_to_3857},
+    geometry::{
+        centroid_of_line, haversine_length_m, point_to_ewkb, polygon_to_ewkb, project_line, project_polygon,
+        project_ring, to_ewkb, wgs84_to_3857,
+    },
     rows::{GeomRow, NodeRow, PointRow, PolygonRow, WayGeomRow},
 };
 use rustc_hash::FxHashMap;
@@ -118,6 +121,23 @@ pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -
     let geom = project_line(&coords);
     let length_m = haversine_length_m(&coords);
     Some(WayGeomRow { osm_id: rel_id, geom_ewkb: to_ewkb(&geom), length_m })
+}
+
+/// Build a relation's multipolygon row from its already-chained `outer`/`inner` rings (see
+/// `osm::relation_geometry::assemble_rings`). Takes the largest assembled outer ring as the
+/// exterior and every inner ring as a hole of it — doesn't spatially match holes to their actual
+/// enclosing shape when a relation has multiple disjoint outer rings (a true multi-outer
+/// multipolygon), which is rare for buildings but real for some admin/landuse relations; that
+/// case would need a point-in-ring test per hole, not implemented here. `None` if there's no outer
+/// ring at all (a malformed or role-less relation).
+pub fn build_relation_polygon_row(
+    rel_id: i64,
+    outer_rings: &[Vec<(f64, f64)>],
+    inner_rings: &[Vec<(f64, f64)>],
+) -> Option<PolygonRow> {
+    let exterior = outer_rings.iter().max_by_key(|r| r.len())?;
+    let polygon = project_polygon(exterior, inner_rings);
+    Some(PolygonRow { osm_id: rel_id, geom_ewkb: polygon_to_ewkb(&polygon) })
 }
 
 /// Build a relation's centroid point row from its member ways' coordinates (all points pooled

@@ -197,9 +197,15 @@ async fn main() -> anyhow::Result<()> {
         (0..runners.len()).filter(|&i| runners[i].wants(ElementKind::Relation, GeometryShape::Line)).collect();
     let relation_point_topics: Vec<usize> =
         (0..runners.len()).filter(|&i| runners[i].wants(ElementKind::Relation, GeometryShape::Point)).collect();
+    let relation_polygon_topics: Vec<usize> =
+        (0..runners.len()).filter(|&i| runners[i].wants(ElementKind::Relation, GeometryShape::Polygon)).collect();
     // Bitmask of every topic wanting *any* relation geometry — `classify_rel_cb`'s cheap gate for
     // whether a kept relation is even worth recording for the post-stream relation-geometry step.
-    let rel_geom_mask: u32 = relation_line_topics.iter().chain(&relation_point_topics).fold(0u32, |m, &i| m | (1 << i));
+    let rel_geom_mask: u32 = relation_line_topics
+        .iter()
+        .chain(&relation_point_topics)
+        .chain(&relation_polygon_topics)
+        .fold(0u32, |m, &i| m | (1 << i));
 
     // Every non-tag-table geometry table this run needs (see `schema::GeomTableShape`'s own doc) —
     // one consolidated list instead of a parallel `&[&str]` per shape.
@@ -210,12 +216,14 @@ async fn main() -> anyhow::Result<()> {
         .chain(point_topics.iter().map(|&i| (schema::point_table(table_refs[i]), schema::GeomTableShape::Point)))
         .chain(relation_line_topics.iter().map(|&i| (schema::relation_geom_table(table_refs[i]), schema::GeomTableShape::LineString)))
         .chain(relation_point_topics.iter().map(|&i| (schema::relation_point_table(table_refs[i]), schema::GeomTableShape::Point)))
+        .chain(relation_polygon_topics.iter().map(|&i| (schema::relation_polygon_table(table_refs[i]), schema::GeomTableShape::Polygon)))
         .collect();
     let way_geom_table_refs: Vec<&str> = way_linestring_topics.iter().map(|&i| table_refs[i]).collect();
     let polygon_table_refs: Vec<&str> = way_polygon_topics.iter().map(|&i| table_refs[i]).collect();
     let point_table_refs: Vec<&str> = point_topics.iter().map(|&i| table_refs[i]).collect();
     let relation_line_table_refs: Vec<&str> = relation_line_topics.iter().map(|&i| table_refs[i]).collect();
     let relation_point_table_refs: Vec<&str> = relation_point_topics.iter().map(|&i| table_refs[i]).collect();
+    let relation_polygon_table_refs: Vec<&str> = relation_polygon_topics.iter().map(|&i| table_refs[i]).collect();
 
     let n = tables.len();
     // Extra sharded-writer tables beyond the per-topic tag tables: edges + members + nodes, plus one
@@ -399,10 +407,10 @@ async fn main() -> anyhow::Result<()> {
     let point_rr: Arc<Vec<AtomicUsize>> =
         Arc::new((0..point_senders.len()).map(|_| AtomicUsize::new(0)).collect());
     // Every kept relation wanting geometry, recorded independently by `classify_rel_cb` — `(rel_id,
-    // member way ids, per-topic keep mask)`. Consumed by the post-stream relation-geometry step
-    // below, which re-resolves the member ways from scratch (see `osm::relation_geometry`) rather
-    // than sharing any state with the ways/geometry passes.
-    let rel_geom_requests: Arc<Mutex<Vec<(i64, Vec<i64>, u32)>>> = Arc::new(Mutex::new(Vec::new()));
+    // member ways with role, per-topic keep mask)`. Consumed by the post-stream relation-geometry
+    // step below, which re-resolves the member ways from scratch (see `osm::relation_geometry`)
+    // rather than sharing any state with the ways/geometry passes.
+    let rel_geom_requests: Arc<Mutex<Vec<(i64, Vec<(i64, osm::types::MemberRole)>, u32)>>> = Arc::new(Mutex::new(Vec::new()));
     // `runners`/`rel_geom_requests` are still needed after the producer for post-processing (graph
     // materialization, relation geometry), so the producer closure gets its own clones rather than
     // moving the originals.
@@ -444,7 +452,7 @@ async fn main() -> anyhow::Result<()> {
                     let links: Vec<MemberRow> = rd
                         .member_ways
                         .iter()
-                        .map(|&wid| MemberRow { relation_osm_id: rd.id, way_osm_id: wid })
+                        .map(|&(wid, _)| MemberRow { relation_osm_id: rd.id, way_osm_id: wid })
                         .collect();
                     let kk = member_rr.fetch_add(1, Ordering::Relaxed) % w;
                     let _ = member_senders[kk].blocking_send(links);
@@ -606,19 +614,21 @@ async fn main() -> anyhow::Result<()> {
     // `osm::relation_geometry`) and assemble each relation's geometry from the result. No shared
     // state with the ways/geometry passes, so this works the same for CSV/GeoJSON as for Postgres
     // (unlike the old SQL-post-processing approach, which needed a live database to merge from).
-    let rel_geom_requests: Vec<(i64, Vec<i64>, u32)> = std::mem::take(&mut *rel_geom_requests_outer.lock().unwrap());
+    let rel_geom_requests: Vec<(i64, Vec<(i64, osm::types::MemberRole)>, u32)> =
+        std::mem::take(&mut *rel_geom_requests_outer.lock().unwrap());
     if !rel_geom_requests.is_empty() {
         info!("Resolving relation geometry ({} relations)...", rel_geom_requests.len());
         let t_rel = std::time::Instant::now();
         let needed: rustc_hash::FxHashSet<i64> =
-            rel_geom_requests.iter().flat_map(|(_, members, _)| members.iter().copied()).collect();
+            rel_geom_requests.iter().flat_map(|(_, members, _)| members.iter().map(|&(w, _)| w)).collect();
         let way_coords = osm::relation_geometry::resolve_relation_ways(&cfg.pbf_file, &needed)?;
 
         let mut line_rows: Vec<Vec<WayGeomRow>> = vec![Vec::new(); relation_line_topics.len()];
         let mut point_rows: Vec<Vec<PointRow>> = vec![Vec::new(); relation_point_topics.len()];
+        let mut polygon_rows: Vec<Vec<PolygonRow>> = vec![Vec::new(); relation_polygon_topics.len()];
         for (rel_id, members, mask) in &rel_geom_requests {
             let member_coords: Vec<Vec<(f64, f64)>> =
-                members.iter().filter_map(|w| way_coords.get(w).cloned()).collect();
+                members.iter().filter_map(|&(w, _)| way_coords.get(&w).cloned()).collect();
             if let Some(row) = topic::geom::build_relation_line_row(*rel_id, &member_coords) {
                 for (i, &topic_idx) in relation_line_topics.iter().enumerate() {
                     if mask & (1 << topic_idx) != 0 {
@@ -633,6 +643,28 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            if !relation_polygon_topics.is_empty() {
+                use osm::types::MemberRole;
+                let outer_coords: Vec<Vec<(f64, f64)>> = members
+                    .iter()
+                    .filter(|&&(_, role)| role != MemberRole::Inner)
+                    .filter_map(|&(w, _)| way_coords.get(&w).cloned())
+                    .collect();
+                let inner_coords: Vec<Vec<(f64, f64)>> = members
+                    .iter()
+                    .filter(|&&(_, role)| role == MemberRole::Inner)
+                    .filter_map(|&(w, _)| way_coords.get(&w).cloned())
+                    .collect();
+                let outer_rings = osm::relation_geometry::assemble_rings(outer_coords);
+                let inner_rings = osm::relation_geometry::assemble_rings(inner_coords);
+                if let Some(row) = topic::geom::build_relation_polygon_row(*rel_id, &outer_rings, &inner_rings) {
+                    for (i, &topic_idx) in relation_polygon_topics.iter().enumerate() {
+                        if mask & (1 << topic_idx) != 0 {
+                            polygon_rows[i].push(row.clone());
+                        }
+                    }
+                }
+            }
         }
         for (i, &table_name) in relation_line_table_refs.iter().enumerate() {
             let out_table = schema::relation_geom_table(table_name);
@@ -644,6 +676,12 @@ async fn main() -> anyhow::Result<()> {
             let out_table = schema::relation_point_table(table_name);
             let rows = std::mem::take(&mut point_rows[i]);
             let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POINT_COLUMNS, rows).await?;
+            info!("Wrote {count} rows → {out_table}");
+        }
+        for (i, &table_name) in relation_polygon_table_refs.iter().enumerate() {
+            let out_table = schema::relation_polygon_table(table_name);
+            let rows = std::mem::take(&mut polygon_rows[i]);
+            let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POLYGON_COLUMNS, rows).await?;
             info!("Wrote {count} rows → {out_table}");
         }
         info!("Relation geometry resolution: {:.1}s", t_rel.elapsed().as_secs_f32());

@@ -40,14 +40,28 @@ pub fn centroid_of_line(geom: &LineString<f64>) -> Option<(f64, f64)> {
 
 /// Close a WGS84 coordinate ring (repeat the first point at the end if not already closed) and
 /// project it to EPSG:3857 as a single-ring `Polygon` — the `way` reading of `Polygon` (a closed
-/// way, e.g. a building or area, with no inner rings). Multipolygon/inner-ring assembly from
-/// relation member roles isn't implemented yet (see `topic::geometry_source`'s own doc).
+/// way, e.g. a building or area, with no inner rings).
 pub fn project_ring(coords: &[(f64, f64)]) -> Polygon<f64> {
     let mut ring = coords.to_vec();
     if ring.first() != ring.last() {
         ring.push(ring[0]);
     }
     Polygon::new(project_line(&ring), vec![])
+}
+
+/// Close + project an exterior ring plus zero or more interior (hole) rings — the `relation`
+/// reading of `Polygon` (multipolygon assembly from member `outer`/`inner` ways, see
+/// `osm::relation_geometry`). Each ring is independently closed the same way `project_ring` closes
+/// a single one.
+pub fn project_polygon(exterior: &[(f64, f64)], interiors: &[Vec<(f64, f64)>]) -> Polygon<f64> {
+    let close = |coords: &[(f64, f64)]| -> LineString<f64> {
+        let mut ring = coords.to_vec();
+        if ring.first() != ring.last() {
+            ring.push(ring[0]);
+        }
+        project_line(&ring)
+    };
+    Polygon::new(close(exterior), interiors.iter().map(|r| close(r)).collect())
 }
 
 /// Inverse of `wgs84_to_3857`.
@@ -107,27 +121,34 @@ pub fn point_to_ewkb(x: f64, y: f64) -> Vec<u8> {
     buf
 }
 
-/// Encode a projected (EPSG:3857) single-ring Polygon (no inner rings) as PostGIS EWKB with SRID.
+/// Encode a projected (EPSG:3857) Polygon — exterior ring plus any interior (hole) rings — as
+/// PostGIS EWKB with SRID. A single-ring `Polygon` (e.g. from `project_ring`) is just the
+/// zero-interior-rings case.
 pub fn polygon_to_ewkb(polygon: &Polygon<f64>) -> Vec<u8> {
     use std::io::Write;
 
-    let exterior: Vec<_> = polygon.exterior().coords().collect();
-    let num_rings: u32 = 1;
-    let num_points = exterior.len() as u32;
+    let rings: Vec<Vec<_>> = std::iter::once(polygon.exterior())
+        .chain(polygon.interiors())
+        .map(|r| r.coords().collect())
+        .collect();
+    let num_rings = rings.len() as u32;
 
     // WKB type for Polygon with SRID flag: 0x20000003
     let wkb_type: u32 = 0x2000_0003;
     let srid: i32 = 3857;
 
-    let mut buf: Vec<u8> = Vec::with_capacity(13 + 4 + 16 * exterior.len());
+    let total_points: usize = rings.iter().map(Vec::len).sum();
+    let mut buf: Vec<u8> = Vec::with_capacity(13 + 4 * rings.len() + 16 * total_points);
     buf.write_all(&[1u8]).unwrap();
     buf.write_all(&wkb_type.to_le_bytes()).unwrap();
     buf.write_all(&srid.to_le_bytes()).unwrap();
     buf.write_all(&num_rings.to_le_bytes()).unwrap();
-    buf.write_all(&num_points.to_le_bytes()).unwrap();
-    for c in &exterior {
-        buf.write_all(&c.x.to_le_bytes()).unwrap();
-        buf.write_all(&c.y.to_le_bytes()).unwrap();
+    for ring in &rings {
+        buf.write_all(&(ring.len() as u32).to_le_bytes()).unwrap();
+        for c in ring {
+            buf.write_all(&c.x.to_le_bytes()).unwrap();
+            buf.write_all(&c.y.to_le_bytes()).unwrap();
+        }
     }
     buf
 }

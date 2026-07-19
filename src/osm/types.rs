@@ -68,14 +68,35 @@ pub struct WayMeta {
     pub changeset: Option<i64>,
 }
 
-/// A relation's tags + metadata + member **way** ids, produced by the relations pass. Node/relation
-/// members are ignored — only way members are pulled into the graph. Classification is tag-only;
-/// the member ids feed the reader's relation-member keep set (member ways are kept even if their own
-/// tags match nothing) and the `relation_members` link output.
+/// A relation member way's role in the relation's geometry — `outer`/`inner` per the multipolygon
+/// convention (see `osm::relation_geometry`'s ring-assembly doc); any other role string (or a
+/// role-less member, e.g. a plain route relation) is `Unknown` — geometrically just another
+/// segment to chain, no hole/outer distinction (relevant only for `Polygon` assembly).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberRole {
+    Outer,
+    Inner,
+    Unknown,
+}
+
+impl MemberRole {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "outer" => MemberRole::Outer,
+            "inner" => MemberRole::Inner,
+            _ => MemberRole::Unknown,
+        }
+    }
+}
+
+/// A relation's tags + metadata + member **way** ids (with role), produced by the relations pass.
+/// Node/relation members are ignored — only way members are pulled into the graph. Classification
+/// is tag-only; the member ids feed the `relation_members` link output and (independently, see
+/// `main.rs`) relation geometry construction.
 pub struct RelData {
     pub id: i64,
     pub tags: RawTags,
-    pub member_ways: Vec<i64>,
+    pub member_ways: Vec<(i64, MemberRole)>,
     pub meta: WayMeta,
 }
 

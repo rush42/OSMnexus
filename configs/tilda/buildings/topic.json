@@ -1,0 +1,19 @@
+{
+  "table": "buildings",
+  "outputs": {
+    "building": true,
+    "name": true,
+    "addr:housenumber": true,
+    "addr:street": true
+  },
+  "exclude_condition": {
+    "or": [
+      { "tag": "building", "exists": false },
+      { "tag": "building", "eq": "no" }
+    ]
+  },
+  "geometry": {
+    "way": ["polygon"],
+    "relation": ["polygon"]
+  }
+}
