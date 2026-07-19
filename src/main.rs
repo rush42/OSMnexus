@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use osmnexus::{config, db, geom, osm, output, processing, topic};
 
 use anyhow::Context;
 use clap::Parser;
 use deadpool_postgres::Pool;
-use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -17,14 +16,12 @@ use db::{
     schema,
     schema::{EDGE_TABLE, MEMBER_TABLE, NODE_TABLE},
 };
-use geom::builders::build_node_row;
 use geom::rows::{
     EdgeRow, NodeRow, PointRow, PolygonRow, WayRow, EDGE_COLUMNS, NODE_COLUMNS, POINT_COLUMNS,
     POLYGON_COLUMNS, WAY_COLUMNS,
 };
 use topic::TopicRunner;
-use osm::reader::{stream_osm, Callbacks};
-use osm::types::{ElementKind, NodeData, OsmWay, RelData, WayData};
+use osm::types::{ElementKind, NodeData, RelData, WayData};
 use output::rows::{CsvRow, MemberRow, TopicRow, MEMBER_COLUMNS, TAG_COLUMNS};
 use output::writers::{copy_writer, csv_writer};
 use processing::{classify_node, classify_relation, classify_way};
@@ -365,55 +362,33 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Producer: the reader decodes the PBF once and drives the callbacks below. Runs on the blocking
-    // pool (CPU-bound rayon work). Dropping the producer drops all senders, closing the writer
-    // channels.
+    // Select phase: the reader decodes the PBF once and drives the classify callbacks below,
+    // streaming tag rows out as it goes (side effect — see `osm::reader`'s own doc for why that
+    // can't wait), and returns a `SelectionContext` once finished. Runs on the blocking pool
+    // (CPU-bound rayon work).
     let pbf_file = cfg.pbf_file.clone();
     let plan = Arc::new(plan);
     // Shared, thread-safe state captured by the reader's callbacks (called from rayon workers).
     let runners = Arc::new(runners);
     let tag_senders = Arc::new(tag_senders);
-    let geom_senders = Arc::new(geom_senders);
     let member_senders = Arc::new(member_senders);
-    let way_geom_senders = Arc::new(way_geom_senders);
-    let polygon_senders = Arc::new(polygon_senders);
     let point_senders = Arc::new(point_senders);
-    let node_senders = Arc::new(node_senders);
     let tag_rr: Arc<Vec<AtomicUsize>> = Arc::new((0..n).map(|_| AtomicUsize::new(0)).collect());
-    let geom_rr = Arc::new(AtomicUsize::new(0));
     let member_rr = Arc::new(AtomicUsize::new(0));
-    let node_rr = Arc::new(AtomicUsize::new(0));
-    let way_geom_rr: Arc<Vec<AtomicUsize>> =
-        Arc::new((0..way_geom_senders.len()).map(|_| AtomicUsize::new(0)).collect());
-    let polygon_rr: Arc<Vec<AtomicUsize>> =
-        Arc::new((0..polygon_senders.len()).map(|_| AtomicUsize::new(0)).collect());
-    let point_rr: Arc<Vec<AtomicUsize>> =
-        Arc::new((0..point_senders.len()).map(|_| AtomicUsize::new(0)).collect());
-    // Every kept relation wanting geometry, recorded independently by `classify_rel_cb` — `(rel_id,
-    // member ways with role, per-topic keep mask)`. Consumed by the post-stream relation-geometry
-    // step below, alongside `rel_way_coords` (see next).
-    let rel_geom_requests: Arc<Mutex<Vec<(i64, Vec<(i64, osm::types::MemberRole)>, u32)>>> = Arc::new(Mutex::new(Vec::new()));
-    // The reader's side channel (see `Callbacks::extra_way_ids`'s own doc): `classify_rel_cb` below
-    // extends this with every geometry-wanting relation's member way ids — the *same* ids as
-    // `rel_geom_requests`, just flattened — so the reader's own Pass A/B decode resolves their
-    // coordinates as it goes, no second PBF scan needed for relation geometry.
-    let extra_way_ids: Arc<Mutex<FxHashSet<i64>>> = Arc::new(Mutex::new(FxHashSet::default()));
-    // Filled once, by `build_extra_geom_cb`, after the reader's Pass B/Scan 2 resolves coordinates.
-    let rel_way_coords: Arc<Mutex<FxHashMap<i64, Vec<(f64, f64)>>>> = Arc::new(Mutex::new(FxHashMap::default()));
-    // `runners`/`plan`/`rel_geom_requests`/`rel_way_coords` are still needed after the producer for
-    // post-processing (graph materialization, relation geometry), so the producer closure gets its
-    // own clones rather than moving the originals.
+    let point_rr: Arc<Vec<AtomicUsize>> = Arc::new((0..point_senders.len()).map(|_| AtomicUsize::new(0)).collect());
     let producer_runners = runners.clone();
     let producer_plan = plan.clone();
-    let rel_geom_requests_outer = rel_geom_requests.clone();
-    let rel_way_coords_outer = rel_way_coords.clone();
-    let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    // Needed again in the materialize phase below (way points share the same point channels/
+    // counters node points already used), so keep our own clones rather than letting the select
+    // closure consume the only reference.
+    let point_senders_outer = point_senders.clone();
+    let point_rr_outer = point_rr.clone();
+    let select_task = tokio::task::spawn_blocking(move || -> anyhow::Result<osm::reader::SelectionContext> {
         let runners = producer_runners;
         let plan = producer_plan;
         // Ways pass: emit tag rows; a way is kept purely by its own tag classification — relation
-        // membership has no bearing here (see `Callbacks::classify_way`'s own doc). Payload is the
-        // per-topic keep bitmask (see `ClassifyOutput`), used by `build_geom_cb` to route
-        // way-shaped rows to just the topics that both kept the way and want one.
+        // membership has no bearing here (see `osm::reader::Callbacks::classify_way`'s own doc).
+        // The returned mask becomes `SelectionContext::way_refs`' per-way keep mask.
         let classify_way_cb = {
             let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
             move |wd: &WayData| -> Option<u32> {
@@ -422,19 +397,15 @@ async fn main() -> anyhow::Result<()> {
                 kept_by_topic.then_some(out.mask)
             }
         };
-        // Relations pass: emit relation tag rows + `relation_members` links; kept iff some topic
-        // categorized the relation. Fully independent of the ways/geometry passes for
-        // classification purposes — a kept relation wanting geometry (line/point/polygon) records
-        // its member way ids into both `rel_geom_requests` (own bookkeeping) and `extra_way_ids`
-        // (the reader's side channel, see `Callbacks::extra_way_ids`), so the reader's Pass A/B
-        // resolves their coordinates as part of its normal decode, no second scan needed.
+        // Relations pass: emit relation tag rows + `relation_members` links; return the keep mask.
+        // Fully independent of the ways pass for classification purposes — a kept relation's
+        // member ways are recorded into `SelectionContext::rel_members` by the reader itself
+        // (regardless of whether any topic wants relation *geometry*; that decision is
+        // `geom::materialize`'s, using `plan`, not made here).
         let classify_rel_cb = {
             let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
             let (member_senders, member_rr) = (member_senders.clone(), member_rr.clone());
-            let rel_geom_requests = rel_geom_requests.clone();
-            let extra_way_ids = extra_way_ids.clone();
-            let plan = plan.clone();
-            move |rd: &RelData| -> bool {
+            move |rd: &RelData| -> Option<u32> {
                 let rows = classify_relation(&runners, rd);
                 let mut mask = 0u32;
                 for (i, r) in rows.iter().enumerate() {
@@ -451,19 +422,14 @@ async fn main() -> anyhow::Result<()> {
                         .collect();
                     let kk = member_rr.fetch_add(1, Ordering::Relaxed) % w;
                     let _ = member_senders[kk].blocking_send(links);
-
-                    let wants_geom = mask & plan.relation_geom_mask != 0;
-                    if wants_geom {
-                        extra_way_ids.lock().unwrap().extend(rd.member_ways.iter().map(|&(wid, _)| wid));
-                        rel_geom_requests.lock().unwrap().push((rd.id, rd.member_ways.clone(), mask));
-                    }
                 }
-                kept
+                kept.then_some(mask)
             }
         };
         // Nodes pass: emit node tag rows; a node is "selected" (forced cut point) iff some topic
-        // categorized it. Also routes this node's own point row to every topic that both kept it
-        // and declared `"geometry": { "node": ["point"] }`.
+        // categorized it. Also builds + routes this node's own point row right here — a node is a
+        // leaf, its point shape needs nothing `SelectionContext` provides, so there's no reason to
+        // defer it to the materialize phase the way way/relation geometry is deferred.
         let classify_node_cb = {
             let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
             let (point_senders, point_rr) = (point_senders.clone(), point_rr.clone());
@@ -485,81 +451,23 @@ async fn main() -> anyhow::Result<()> {
                 kept
             }
         };
-        // Graph-vertex pass: emit the `nodes` table rows, once, for every graph vertex (see
-        // `assign_node_ids`) — a no-op when no topic wants the graph (`node_senders` is empty then,
-        // see `plan.any_way_graph`'s own doc).
-        let build_nodes_cb = {
-            let (node_senders, node_rr) = (node_senders.clone(), node_rr.clone());
-            move |nodes: Vec<(i64, i64, f32, f32)>| {
-                if node_senders.is_empty() {
-                    return;
-                }
-                for chunk in nodes.chunks(4096) {
-                    let rows: Vec<NodeRow> = chunk
-                        .iter()
-                        .map(|&(id, osm_id, lon, lat)| build_node_row(id, osm_id, lon as f64, lat as f64))
-                        .collect();
-                    let kk = node_rr.fetch_add(1, Ordering::Relaxed) % w;
-                    let _ = node_senders[kk].blocking_send(rows);
-                }
-            }
-        };
-        // Geometry pass: write the resolved way's graph edges to the shared table (skipped when no
-        // topic wants the graph — `geom_senders` empty, see `plan.any_way_graph`'s own doc), plus its
-        // whole-way linestring/polygon/centroid-point to every topic that both kept this way
-        // (`mask`) and declared the matching shape.
-        let build_geom_cb = {
-            let (geom_senders, geom_rr) = (geom_senders.clone(), geom_rr.clone());
-            let way_geom_senders = way_geom_senders.clone();
-            let way_geom_rr = way_geom_rr.clone();
-            let (polygon_senders, polygon_rr) = (polygon_senders.clone(), polygon_rr.clone());
-            let (point_senders, point_rr) = (point_senders.clone(), point_rr.clone());
-            let plan = plan.clone();
-            move |way: &OsmWay, mask: u32, node_ids: &FxHashMap<i64, i64>| {
-                let g = geom::materialize::way(way, node_ids, &plan);
-                if let Some(rows) = g.edges {
-                    let kk = geom_rr.fetch_add(1, Ordering::Relaxed) % w;
-                    let _ = geom_senders[kk].blocking_send(rows);
-                }
-                if let Some(row) = g.line {
-                    route_shape_row(&row, mask, &plan.way_line_topics, &way_geom_senders, &way_geom_rr, w);
-                }
-                if let Some(row) = g.point {
-                    route_point_row(&row, mask, &plan.point_topics, &plan.way_point_eligible, &point_senders, &point_rr, w);
-                }
-                if let Some(row) = g.polygon {
-                    route_shape_row(&row, mask, &plan.way_polygon_topics, &polygon_senders, &polygon_rr, w);
-                }
-            }
-        };
-        // Relation-geometry coordinate resolution: called once, after Pass B/Scan 2, with every
-        // `extra_way_ids` member way's resolved coordinate sequence — stashed for the post-stream
-        // relation-geometry assembly step below.
-        let build_extra_geom_cb = {
-            let rel_way_coords = rel_way_coords.clone();
-            move |resolved: FxHashMap<i64, Vec<(f64, f64)>>| {
-                *rel_way_coords.lock().unwrap() = resolved;
-            }
-        };
-        stream_osm(
+        osm::reader::stream_osm(
             &pbf_file,
-            Callbacks {
+            osm::reader::Callbacks {
                 has_relations,
                 classify_rel: classify_rel_cb,
                 classify_way: classify_way_cb,
                 has_nodes,
                 classify_node: classify_node_cb,
-                build_geom: build_geom_cb,
-                build_nodes: build_nodes_cb,
-                extra_way_ids,
-                build_extra_geom: build_extra_geom_cb,
             },
         )
     });
 
-    // Await the producer first: it drops the senders, closing every writer channel so the writer
-    // tasks drain their tails, finish the COPY, and return their counts.
-    producer.await.context("reader/processing task panicked")??;
+    // Await the select phase: it drops the tag/member/point senders, closing those writer channels
+    // so their writer tasks drain their tails, finish the COPY, and return their counts. The
+    // geometry-table writers (edges/nodes/way-line/polygon) are still open — they're only fed
+    // during the materialize phase below.
+    let ctx = select_task.await.context("select-phase task panicked")??;
 
     let mut tag_counts = vec![0usize; n];
     for (i, handles) in tag_handles.into_iter().enumerate() {
@@ -567,13 +475,81 @@ async fn main() -> anyhow::Result<()> {
             tag_counts[i] += h.await.context("tag writer panicked")??;
         }
     }
-    let mut geom_count = 0usize;
-    for h in geom_handles {
-        geom_count += h.await.context("geom writer panicked")??;
-    }
     let mut member_count = 0usize;
     for h in member_handles {
         member_count += h.await.context("member writer panicked")??;
+    }
+    let mut point_counts = vec![0usize; point_handles.len()];
+    // Point-table writers only get node-point rows so far (way points come from the materialize
+    // phase below, into the *same* channels) — don't await/close them yet.
+
+    for (i, table) in tables.iter().enumerate() {
+        info!("Wrote {} tag rows → {}", tag_counts[i], table);
+    }
+    info!("Wrote {member_count} relation-member links → {MEMBER_TABLE}");
+    info!("Select phase time: {:.1}s", t0.elapsed().as_secs_f32());
+
+    // Materialize phase: resolve way/relation geometry from `ctx` and route every row to its
+    // writer channel — see `geom::materialize::run`'s own doc. Runs on the blocking pool (rayon
+    // work inside); routing itself is sequential (one thread), unlike the old design where it was
+    // naturally parallelized by running per-way inside the reader's own parallel geometry pass —
+    // a possible future optimization if routing throughput ever becomes the bottleneck.
+    let t_mat = std::time::Instant::now();
+    let materialize_plan = plan.clone();
+    // Round-robin counters for this phase's routing. `way_geom_rr`/`polygon_rr` are per-table (one
+    // counter per topic wanting that shape, matching `route_shape_row`'s expectations); `geom_rr`/
+    // `node_rr` are single counters for the one shared edges/nodes table. Plain (not `Arc`) since
+    // routing here is sequential, unlike the select phase's genuinely concurrent rayon workers —
+    // `point_rr`/`point_senders` are the one exception, still the same `Arc` the select phase used,
+    // continuing its round-robin rather than resetting it.
+    let way_geom_rr: Vec<AtomicUsize> = (0..way_geom_senders.len()).map(|_| AtomicUsize::new(0)).collect();
+    let polygon_rr: Vec<AtomicUsize> = (0..polygon_senders.len()).map(|_| AtomicUsize::new(0)).collect();
+    let point_senders_mat = point_senders_outer.clone();
+    let point_rr_mat = point_rr_outer.clone();
+    let relations_batch = tokio::task::spawn_blocking(move || {
+        let (point_senders, point_rr) = (point_senders_mat, point_rr_mat);
+        let (mut geom_rr, mut node_rr) = (0usize, 0usize);
+        let m = geom::materialize::run(&ctx, &materialize_plan);
+
+        if !node_senders.is_empty() {
+            let mut rows = m.node_rows;
+            while !rows.is_empty() {
+                let take = rows.len().min(4096);
+                let chunk: Vec<NodeRow> = rows.drain(..take).collect();
+                let kk = node_rr % w;
+                node_rr += 1;
+                let _ = node_senders[kk].blocking_send(chunk);
+            }
+        }
+        for (_way_id, mask, g) in m.ways {
+            if let Some(rows) = g.edges {
+                let kk = geom_rr % w;
+                geom_rr += 1;
+                let _ = geom_senders[kk].blocking_send(rows);
+            }
+            if let Some(row) = g.line {
+                route_shape_row(&row, mask, &materialize_plan.way_line_topics, &way_geom_senders, &way_geom_rr, w);
+            }
+            if let Some(row) = g.point {
+                route_point_row(&row, mask, &materialize_plan.point_topics, &materialize_plan.way_point_eligible, &point_senders, &point_rr, w);
+            }
+            if let Some(row) = g.polygon {
+                route_shape_row(&row, mask, &materialize_plan.way_polygon_topics, &polygon_senders, &polygon_rr, w);
+            }
+        }
+        m.relations
+    })
+    .await
+    .context("materialize-phase task panicked")?;
+    info!("Materialize phase time: {:.1}s", t_mat.elapsed().as_secs_f32());
+    // The select phase's clone of `point_senders` already dropped when `select_task` finished;
+    // this was the only other clone, so dropping it now closes the point-table channels, letting
+    // the point writers below finish draining.
+    drop(point_senders_outer);
+
+    let mut geom_count = 0usize;
+    for h in geom_handles {
+        geom_count += h.await.context("geom writer panicked")??;
     }
     let mut way_geom_counts = vec![0usize; way_geom_handles.len()];
     for (i, handles) in way_geom_handles.into_iter().enumerate() {
@@ -591,21 +567,16 @@ async fn main() -> anyhow::Result<()> {
             polygon_counts[i] += h.await.context("polygon writer panicked")??;
         }
     }
-    let mut point_counts = vec![0usize; point_handles.len()];
     for (i, handles) in point_handles.into_iter().enumerate() {
         for h in handles {
             point_counts[i] += h.await.context("point writer panicked")??;
         }
     }
 
-    for (i, table) in tables.iter().enumerate() {
-        info!("Wrote {} tag rows → {}", tag_counts[i], table);
-    }
     if plan.any_way_graph {
         info!("Wrote {geom_count} edge rows → {EDGE_TABLE}");
         info!("Wrote {node_count} node rows → {NODE_TABLE}");
     }
-    info!("Wrote {member_count} relation-member links → {MEMBER_TABLE}");
     for (i, &table_name) in way_geom_table_refs.iter().enumerate() {
         info!("Wrote {} way rows → {}_geom", way_geom_counts[i], table_name);
     }
@@ -615,46 +586,32 @@ async fn main() -> anyhow::Result<()> {
     for (i, &table_name) in point_table_refs.iter().enumerate() {
         info!("Wrote {} rows → {}_point", point_counts[i], table_name);
     }
-    info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
     osmnexus::profiling::report();
     for r in runners.iter() {
         r.field_stages.report();
     }
 
-    // Relation geometry (line/point/polygon): `classify_rel_cb` recorded which kept relations want
-    // geometry plus their raw member way ids, both into `rel_geom_requests` and into the reader's
-    // `extra_way_ids` side channel — the reader's own Pass A/B decode resolved those member ways'
-    // coordinates as it went (no second PBF scan; see `Callbacks::extra_way_ids`'s own doc), handed
-    // back here via `build_extra_geom_cb` into `rel_way_coords`. This still works the same for
-    // CSV/GeoJSON as for Postgres (unlike the old SQL-post-processing approach, which needed a live
-    // database to merge from).
-    let rel_geom_requests: Vec<(i64, Vec<(i64, osm::types::MemberRole)>, u32)> =
-        std::mem::take(&mut *rel_geom_requests_outer.lock().unwrap());
-    if !rel_geom_requests.is_empty() {
-        info!("Resolving relation geometry ({} relations)...", rel_geom_requests.len());
-        let t_rel = std::time::Instant::now();
-        let way_coords = std::mem::take(&mut *rel_way_coords_outer.lock().unwrap());
-        let mut batch = geom::materialize::relations(&rel_geom_requests, &way_coords, &plan);
-
-        for (i, &table_name) in relation_line_table_refs.iter().enumerate() {
-            let out_table = schema::relation_geom_table(table_name);
-            let rows = std::mem::take(&mut batch.line_rows[i]);
-            let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, WAY_COLUMNS, rows).await?;
-            info!("Wrote {count} rows → {out_table}");
-        }
-        for (i, &table_name) in relation_point_table_refs.iter().enumerate() {
-            let out_table = schema::relation_point_table(table_name);
-            let rows = std::mem::take(&mut batch.point_rows[i]);
-            let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POINT_COLUMNS, rows).await?;
-            info!("Wrote {count} rows → {out_table}");
-        }
-        for (i, &table_name) in relation_polygon_table_refs.iter().enumerate() {
-            let out_table = schema::relation_polygon_table(table_name);
-            let rows = std::mem::take(&mut batch.polygon_rows[i]);
-            let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POLYGON_COLUMNS, rows).await?;
-            info!("Wrote {count} rows → {out_table}");
-        }
-        info!("Relation geometry resolution: {:.1}s", t_rel.elapsed().as_secs_f32());
+    // Relation geometry (line/point/polygon): already built by the materialize phase above, from
+    // `ctx.rel_members` — just write it out. Works the same for CSV/GeoJSON as for Postgres
+    // (unlike the old SQL-post-processing approach, which needed a live database to merge from).
+    let mut batch = relations_batch;
+    for (i, &table_name) in relation_line_table_refs.iter().enumerate() {
+        let out_table = schema::relation_geom_table(table_name);
+        let rows = std::mem::take(&mut batch.line_rows[i]);
+        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, WAY_COLUMNS, rows).await?;
+        info!("Wrote {count} rows → {out_table}");
+    }
+    for (i, &table_name) in relation_point_table_refs.iter().enumerate() {
+        let out_table = schema::relation_point_table(table_name);
+        let rows = std::mem::take(&mut batch.point_rows[i]);
+        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POINT_COLUMNS, rows).await?;
+        info!("Wrote {count} rows → {out_table}");
+    }
+    for (i, &table_name) in relation_polygon_table_refs.iter().enumerate() {
+        let out_table = schema::relation_polygon_table(table_name);
+        let rows = std::mem::take(&mut batch.polygon_rows[i]);
+        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POLYGON_COLUMNS, rows).await?;
+        info!("Wrote {count} rows → {out_table}");
     }
 
     match (cfg.output, cfg.create_index) {
