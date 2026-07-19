@@ -7,7 +7,7 @@ use osmnexus::{config, db, geom, osm, output, processing, topic};
 use anyhow::Context;
 use clap::Parser;
 use deadpool_postgres::Pool;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -409,14 +409,21 @@ async fn main() -> anyhow::Result<()> {
         Arc::new((0..point_senders.len()).map(|_| AtomicUsize::new(0)).collect());
     // Every kept relation wanting geometry, recorded independently by `classify_rel_cb` — `(rel_id,
     // member ways with role, per-topic keep mask)`. Consumed by the post-stream relation-geometry
-    // step below, which re-resolves the member ways from scratch (see `geom::relation`)
-    // rather than sharing any state with the ways/geometry passes.
+    // step below, alongside `rel_way_coords` (see next).
     let rel_geom_requests: Arc<Mutex<Vec<(i64, Vec<(i64, osm::types::MemberRole)>, u32)>>> = Arc::new(Mutex::new(Vec::new()));
-    // `runners`/`rel_geom_requests` are still needed after the producer for post-processing (graph
-    // materialization, relation geometry), so the producer closure gets its own clones rather than
-    // moving the originals.
+    // The reader's side channel (see `Callbacks::extra_way_ids`'s own doc): `classify_rel_cb` below
+    // extends this with every geometry-wanting relation's member way ids — the *same* ids as
+    // `rel_geom_requests`, just flattened — so the reader's own Pass A/B decode resolves their
+    // coordinates as it goes, no second PBF scan needed for relation geometry.
+    let extra_way_ids: Arc<Mutex<FxHashSet<i64>>> = Arc::new(Mutex::new(FxHashSet::default()));
+    // Filled once, by `build_extra_geom_cb`, after the reader's Pass B/Scan 2 resolves coordinates.
+    let rel_way_coords: Arc<Mutex<FxHashMap<i64, Vec<(f64, f64)>>>> = Arc::new(Mutex::new(FxHashMap::default()));
+    // `runners`/`rel_geom_requests`/`rel_way_coords` are still needed after the producer for
+    // post-processing (graph materialization, relation geometry), so the producer closure gets its
+    // own clones rather than moving the originals.
     let producer_runners = runners.clone();
     let rel_geom_requests_outer = rel_geom_requests.clone();
+    let rel_way_coords_outer = rel_way_coords.clone();
     let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let runners = producer_runners;
         // Ways pass: emit tag rows; a way is kept purely by its own tag classification — relation
@@ -432,14 +439,16 @@ async fn main() -> anyhow::Result<()> {
             }
         };
         // Relations pass: emit relation tag rows + `relation_members` links; kept iff some topic
-        // categorized the relation. Fully independent of the ways/geometry passes — a kept
-        // relation wanting geometry (line/point) just records its own member way ids here; those
-        // member ways are re-resolved from scratch in the separate post-stream relation-geometry
-        // step below, regardless of whether the ways pass itself happened to keep them.
+        // categorized the relation. Fully independent of the ways/geometry passes for
+        // classification purposes — a kept relation wanting geometry (line/point/polygon) records
+        // its member way ids into both `rel_geom_requests` (own bookkeeping) and `extra_way_ids`
+        // (the reader's side channel, see `Callbacks::extra_way_ids`), so the reader's Pass A/B
+        // resolves their coordinates as part of its normal decode, no second scan needed.
         let classify_rel_cb = {
             let (runners, tag_senders, tag_rr) = (runners.clone(), tag_senders.clone(), tag_rr.clone());
             let (member_senders, member_rr) = (member_senders.clone(), member_rr.clone());
             let rel_geom_requests = rel_geom_requests.clone();
+            let extra_way_ids = extra_way_ids.clone();
             move |rd: &RelData| -> bool {
                 let rows = classify_relation(&runners, rd);
                 let mut mask = 0u32;
@@ -460,6 +469,7 @@ async fn main() -> anyhow::Result<()> {
 
                     let wants_geom = mask & rel_geom_mask != 0;
                     if wants_geom {
+                        extra_way_ids.lock().unwrap().extend(rd.member_ways.iter().map(|&(wid, _)| wid));
                         rel_geom_requests.lock().unwrap().push((rd.id, rd.member_ways.clone(), mask));
                     }
                 }
@@ -536,6 +546,15 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         };
+        // Relation-geometry coordinate resolution: called once, after Pass B/Scan 2, with every
+        // `extra_way_ids` member way's resolved coordinate sequence — stashed for the post-stream
+        // relation-geometry assembly step below.
+        let build_extra_geom_cb = {
+            let rel_way_coords = rel_way_coords.clone();
+            move |resolved: FxHashMap<i64, Vec<(f64, f64)>>| {
+                *rel_way_coords.lock().unwrap() = resolved;
+            }
+        };
         stream_osm(
             &pbf_file,
             Callbacks {
@@ -546,6 +565,8 @@ async fn main() -> anyhow::Result<()> {
                 classify_node: classify_node_cb,
                 build_geom: build_geom_cb,
                 build_nodes: build_nodes_cb,
+                extra_way_ids,
+                build_extra_geom: build_extra_geom_cb,
             },
         )
     });
@@ -609,20 +630,19 @@ async fn main() -> anyhow::Result<()> {
     info!("Read + process time: {:.1}s", t0.elapsed().as_secs_f32());
     osmnexus::profiling::report();
 
-    // Relation geometry (line/point): built entirely independently of the streaming pass above —
-    // `classify_rel_cb` only recorded which kept relations want geometry plus their raw member way
-    // ids; here we re-resolve exactly those member ways from a fresh PBF scan (see
-    // `geom::relation`) and assemble each relation's geometry from the result. No shared
-    // state with the ways/geometry passes, so this works the same for CSV/GeoJSON as for Postgres
-    // (unlike the old SQL-post-processing approach, which needed a live database to merge from).
+    // Relation geometry (line/point/polygon): `classify_rel_cb` recorded which kept relations want
+    // geometry plus their raw member way ids, both into `rel_geom_requests` and into the reader's
+    // `extra_way_ids` side channel — the reader's own Pass A/B decode resolved those member ways'
+    // coordinates as it went (no second PBF scan; see `Callbacks::extra_way_ids`'s own doc), handed
+    // back here via `build_extra_geom_cb` into `rel_way_coords`. This still works the same for
+    // CSV/GeoJSON as for Postgres (unlike the old SQL-post-processing approach, which needed a live
+    // database to merge from).
     let rel_geom_requests: Vec<(i64, Vec<(i64, osm::types::MemberRole)>, u32)> =
         std::mem::take(&mut *rel_geom_requests_outer.lock().unwrap());
     if !rel_geom_requests.is_empty() {
         info!("Resolving relation geometry ({} relations)...", rel_geom_requests.len());
         let t_rel = std::time::Instant::now();
-        let needed: rustc_hash::FxHashSet<i64> =
-            rel_geom_requests.iter().flat_map(|(_, members, _)| members.iter().map(|&(w, _)| w)).collect();
-        let way_coords = geom::relation::resolve_relation_ways(&cfg.pbf_file, &needed)?;
+        let way_coords = std::mem::take(&mut *rel_way_coords_outer.lock().unwrap());
 
         let mut line_rows: Vec<Vec<WayGeomRow>> = vec![Vec::new(); relation_line_topics.len()];
         let mut point_rows: Vec<Vec<PointRow>> = vec![Vec::new(); relation_point_topics.len()];

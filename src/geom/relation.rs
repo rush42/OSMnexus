@@ -1,93 +1,16 @@
-//! Independent relation-geometry resolution: given a set of way ids needed by kept relations
-//! wanting `point`/`line` geometry, re-scans the PBF from scratch for exactly those ways' node
-//! refs, then for exactly the node coords they reference — no shared state with the main
-//! classify/geometry streaming pass (`osm::reader`). Deliberately a second, self-contained scan
-//! rather than piggybacking on the main pass's per-way callback: relation geometry is a small
-//! minority of ways in practice, and keeping it fully decoupled means the main pass never needs to
-//! know or care whether a way happens to be a relation member.
-
-use anyhow::Context;
-use osmpbf::{Element, ElementReader};
-use rustc_hash::{FxHashMap, FxHashSet};
-
-/// Re-resolve exactly `needed` ways' coordinate sequences (WGS84 lon/lat), from a fresh scan of
-/// the PBF. Unlike `osm::reader::resolve::resolve_geometry`, this has no cut-point/graph concept —
-/// relation geometry only needs a plain coordinate sequence per way, not intersection splitting.
-/// A way missing from `needed`, or with fewer than 2 resolvable coordinates, is simply absent from
-/// the result (mirroring `resolve_geometry`'s own "too short to be a line" behavior).
-pub fn resolve_relation_ways(
-    path: &str,
-    needed: &FxHashSet<i64>,
-) -> anyhow::Result<FxHashMap<i64, Vec<(f64, f64)>>> {
-    if needed.is_empty() {
-        return Ok(FxHashMap::default());
-    }
-
-    // Scan 1 — ways: node refs for exactly the needed way ids.
-    let way_refs: FxHashMap<i64, Vec<i64>> = ElementReader::from_path(path)
-        .context("opening PBF for relation-geometry way scan")?
-        .par_map_reduce(
-            |element| {
-                let mut out: FxHashMap<i64, Vec<i64>> = FxHashMap::default();
-                if let Element::Way(way) = element {
-                    if needed.contains(&way.id()) {
-                        out.insert(way.id(), way.refs().collect());
-                    }
-                }
-                out
-            },
-            FxHashMap::default,
-            |mut a, b| {
-                a.extend(b);
-                a
-            },
-        )
-        .context("relation-geometry way scan")?;
-
-    // Scan 2 — nodes: coords for exactly the node ids those ways reference.
-    let node_ids: FxHashSet<i64> = way_refs.values().flatten().copied().collect();
-    let coords: FxHashMap<i64, (f64, f64)> = ElementReader::from_path(path)
-        .context("opening PBF for relation-geometry node scan")?
-        .par_map_reduce(
-            |element| {
-                let mut out: FxHashMap<i64, (f64, f64)> = FxHashMap::default();
-                match element {
-                    Element::DenseNode(n) if node_ids.contains(&n.id()) => {
-                        out.insert(n.id(), (n.lon(), n.lat()));
-                    }
-                    Element::Node(n) if node_ids.contains(&n.id()) => {
-                        out.insert(n.id(), (n.lon(), n.lat()));
-                    }
-                    _ => {}
-                }
-                out
-            },
-            FxHashMap::default,
-            |mut a, b| {
-                a.extend(b);
-                a
-            },
-        )
-        .context("relation-geometry node scan")?;
-
-    // Resolve each needed way's node refs into a coordinate sequence, dropping any node missing a
-    // coord (matching `resolve_geometry`'s own "skip unresolvable nodes" behavior).
-    let mut resolved: FxHashMap<i64, Vec<(f64, f64)>> = FxHashMap::default();
-    for (&way_id, refs) in &way_refs {
-        let pts: Vec<(f64, f64)> = refs.iter().filter_map(|nid| coords.get(nid).copied()).collect();
-        if pts.len() >= 2 {
-            resolved.insert(way_id, pts);
-        }
-    }
-    Ok(resolved)
-}
+//! Relation-geometry assembly. Resolving a relation's member ways' coordinates is *not* done here
+//! — it's `osm::reader`'s `extra_way_ids`/`build_extra_geom` side channel (see `Callbacks`'s own
+//! doc): the reader's Pass A/B (or fallback scans 1/2) already decode every way and every needed
+//! node once, so relation-geometry member ways just ride along in that same decode, needing no
+//! second PBF scan. What's left here is purely the geometric assembly from the resolved
+//! coordinates: chaining member ways into rings for `Polygon`.
 
 /// Chain a set of way coordinate sequences end-to-end into one or more closed rings — the
 /// multipolygon convention's `outer`/`inner` member ways are frequently split across several ways
 /// (e.g. a building outline shared with neighbors), so `Polygon` assembly needs to reconnect them
 /// by matching endpoints before a ring exists at all. Endpoint matching is exact-coordinate
-/// equality: a shared OSM node id always resolves to the identical `(f64,f64)` from the same
-/// `coords` map lookup in `resolve_relation_ways`, so no epsilon tolerance is needed.
+/// equality: a shared OSM node id always resolves to the identical `(f64,f64)` (same map lookup in
+/// `osm::reader::resolve_extra_way_coords`), so no epsilon tolerance is needed.
 ///
 /// Greedy: starts a ring from an arbitrary remaining segment, repeatedly extends it by any
 /// remaining segment whose start or end matches the ring's current end (reversing the segment if

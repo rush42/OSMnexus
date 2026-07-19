@@ -1,6 +1,7 @@
-//! The sorted fast path: the relations pass (classify + collect member-way keep set), Pass A
-//! (classify ways + index), Pass B (collect node coords + classify nodes), and the geometry pass
-//! (resolve indexed ways) — each decoding its blob region once.
+//! The sorted fast path: the relations pass (classify + emit), Pass A (classify ways + index, plus
+//! a side channel for any `extra_way_ids`), Pass B (collect node coords + classify nodes, widened
+//! for `extra_way_ids`' node ids), and the geometry pass (resolve indexed ways) — each decoding its
+//! blob region once.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use osmpbf::ByteOffset;
@@ -32,16 +33,17 @@ impl<M> WayIndex<M> {
     }
 }
 
-/// Merge two `(use_counts, endpoints, WayIndex)` accumulators: sum the count maps (folding the
-/// smaller into the larger to minimise inserts), union the endpoint sets, and concatenate the index
-/// segments (rebasing `b`'s ref offsets onto the end of `a`'s ref buffer). Used as the `try_reduce`
-/// combiner in Pass A.
+/// Merge two `(use_counts, endpoints, WayIndex, extra_way_refs)` accumulators: sum the count maps
+/// (folding the smaller into the larger to minimise inserts), union the endpoint sets, concatenate
+/// the index segments (rebasing `b`'s ref offsets onto the end of `a`'s ref buffer), and merge the
+/// `extra_way_refs` maps (see `classify_and_index`'s own doc). Used as the `try_reduce` combiner in
+/// Pass A.
 fn merge_acc<M>(
-    a: (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>),
-    b: (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>),
-) -> (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>) {
-    let (ca, ea, ia) = a;
-    let (cb, eb, ib) = b;
+    a: (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>, FxHashMap<i64, Vec<i64>>),
+    b: (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>, FxHashMap<i64, Vec<i64>>),
+) -> (FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>, FxHashMap<i64, Vec<i64>>) {
+    let (ca, ea, ia, ra) = a;
+    let (cb, eb, ib, rb) = b;
 
     let mut counts = if ca.len() >= cb.len() { (ca, cb) } else { (cb, ca) };
     let (big, small) = (&mut counts.0, counts.1);
@@ -59,7 +61,11 @@ fn merge_acc<M>(
     for (id, start, len, m) in ib.ways {
         index.ways.push((id, base + start, len, m));
     }
-    (counts, endpoints, index)
+
+    let mut extra_way_refs = ra;
+    extra_way_refs.extend(rb);
+
+    (counts, endpoints, index, extra_way_refs)
 }
 
 /// Relations pass — decode the relation region once (parallel). For every relation, extract its
@@ -92,25 +98,36 @@ where
 /// its own tag classification, independent of relation membership. Kept ways have their node refs
 /// tallied into the use-count map (intersection detection) and their node ids recorded in the
 /// `WayIndex` for the geometry pass. Tags/meta drop after classify.
+///
+/// `extra_way_ids` is a side channel, entirely independent of `classify`'s tag-keep decision: any
+/// way (kept or not) whose id is in this set has its raw node refs recorded into the returned
+/// `extra_way_refs` map too — this is how a caller (e.g. relation-geometry assembly, see
+/// `Callbacks::extra_way_ids`) gets member ways' node refs from this same decode pass, without a
+/// second scan, while never affecting `counts`/`endpoints`/`index` (the main graph's inputs).
 pub(super) fn classify_and_index<C, M>(
     path: &str,
     way_offsets: &[ByteOffset],
     classify: &C,
-) -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>)>
+    extra_way_ids: &FxHashSet<i64>,
+) -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>, FxHashMap<i64, Vec<i64>>)>
 where
     C: Fn(&WayData) -> Option<M> + Sync,
     M: Copy + Send + Sync,
 {
     way_offsets
         .par_iter()
-        .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>)> {
+        .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, WayIndex<M>, FxHashMap<i64, Vec<i64>>)> {
             let block = decode_block(path, off)?;
             let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
             let mut endpoints: FxHashSet<i64> = FxHashSet::default();
             let mut seg = WayIndex::new();
+            let mut extra_way_refs: FxHashMap<i64, Vec<i64>> = FxHashMap::default();
             for group in block.groups() {
                 for way in group.ways() {
                     let wd = way_data(&way);
+                    if !extra_way_ids.is_empty() && extra_way_ids.contains(&wd.id) {
+                        extra_way_refs.insert(wd.id, wd.node_refs.clone());
+                    }
                     if let Some(m) = classify(&wd) {
                         for &id in &wd.node_refs {
                             *counts.entry(id).or_insert(0) += 1;
@@ -123,10 +140,10 @@ where
                     }
                 }
             }
-            Ok((counts, endpoints, seg))
+            Ok((counts, endpoints, seg, extra_way_refs))
         })
         .try_reduce(
-            || (FxHashMap::default(), FxHashSet::default(), WayIndex::new()),
+            || (FxHashMap::default(), FxHashSet::default(), WayIndex::new(), FxHashMap::default()),
             |a, b| Ok(merge_acc(a, b)),
         )
 }
@@ -139,12 +156,19 @@ where
 /// `classify_node` (side effect: emit node tag rows); a node it returns `true` for is *selected*
 /// and its id is accumulated into the returned set (forced graph-vertex cut points). When unset,
 /// node tags are not decoded at all — preserving the way-only performance profile.
+///
+/// `extra_node_ids` widens which nodes get a coordinate fetched (a side channel's node ids — see
+/// `classify_and_index`'s `extra_way_ids`), but never affects `shared` (always computed from
+/// `use_counts` alone, `false` for an extra-only node) or node-topic classification (only run for
+/// `use_counts` members) — pure coordinate lookup, no side effects on the main graph's
+/// intersection/cut-point logic.
 pub(super) fn collect_coords<CN>(
     path: &str,
     node_offsets: &[ByteOffset],
     use_counts: &FxHashMap<i64, u32>,
     classify_nodes: bool,
     classify_node: &CN,
+    extra_node_ids: &FxHashSet<i64>,
 ) -> anyhow::Result<(NodeCoords, FxHashSet<i64>)>
 where
     CN: Fn(&NodeData) -> bool + Sync,
@@ -162,6 +186,8 @@ where
                         if classify_nodes && classify_node(&dense_node_data(&n)) {
                             selected.insert(n.id());
                         }
+                    } else if extra_node_ids.contains(&n.id()) {
+                        out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
                     }
                 }
                 for n in group.nodes() {
@@ -170,6 +196,8 @@ where
                         if classify_nodes && classify_node(&node_data(&n)) {
                             selected.insert(n.id());
                         }
+                    } else if extra_node_ids.contains(&n.id()) {
+                        out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
                     }
                 }
             }

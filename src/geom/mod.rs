@@ -8,9 +8,10 @@
 //!   stay in `output::rows`.
 //! - `builders`: turns a resolved `OsmWay` (or a relation's member-way coordinates) into the row
 //!   types above — one function per shape (`point`/`line`/`graph`/`polygon`) per kind.
-//! - `relation`: the independent post-stream relation-geometry resolution (re-scans the PBF for
-//!   exactly the member ways a kept, geometry-wanting relation needs) plus ring assembly for
-//!   `Polygon`/multipolygon.
+//! - `relation`: ring assembly for `Polygon`/multipolygon from a relation's member ways' resolved
+//!   coordinates. Resolving those coordinates isn't here — it rides along in `osm::reader`'s own
+//!   Pass A/B decode as a side channel (`Callbacks::extra_way_ids`/`build_extra_geom`), so relation
+//!   geometry costs no second PBF scan.
 
 pub mod builders;
 pub mod primitives;
