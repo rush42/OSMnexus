@@ -69,13 +69,21 @@ One extracted graph; each topic is a disjoint attribute layer over it.
   `end_id` in `edges` (shared by ≥2 ways, a way endpoint, or forced by a node classifier). Columns:
   `id, osm_id, geom(Point,3857)`. `id` is the internal sequential vertex id; `osm_id` is the
   original OSM node id, kept for lookups/debugging.
-- **`{topic}_geom`** — for a topic declaring `"geometry": { "way": ["linestring"] }`: one
-  whole-way linestring per way that topic kept, uncut.
-- **`{topic}_relation_geom`** — for a topic declaring `"geometry": { "relation": ["linestring"] }`
-  (Postgres output only): one merged linestring per relation that topic kept, built as a post-load
-  SQL step from its member ways' geometries.
+- **`{topic}_geom`** / **`{topic}_point`** / **`{topic}_polygon`** — for a topic declaring
+  `"geometry": { "way": [...] }` or `{ "node": [...] }`: one row per kept way/node in the shape(s)
+  it asked for — `"line"` (whole, uncut way linestring), `"point"` (a node's own coordinate, or a
+  way's centroid), `"polygon"` (a closed way's own ring).
+- **`{topic}_relation_geom`** / **`{topic}_relation_point`** / **`{topic}_relation_polygon`** — the
+  same shapes for a topic declaring `"geometry": { "relation": [...] }`: a merged multi-linestring,
+  centroid, or assembled multipolygon (from member `outer`/`inner` roles) per kept relation.
 - **`relation_members`** — link table, `relation_id` ↔ member `way_id`, for joining relation rows
   back to their constituent ways' geometry.
+
+All of the above are built **in-process** during the streaming pass (or, for relations, from a
+second lightweight resolution of their member ways' coordinates) — there's no Postgres post-import
+SQL step for geometry, so every output backend (`pg`, `csv`, `geojson`) produces the same tables.
+The one exception is the routing graph (`"geometry": { "way": ["graph"] }`), which is still built as
+a post-load SQL step against the already-loaded shared `edges` table — see below.
 
 Materialize tiles/features by joining on `osm_id`:
 
@@ -89,35 +97,50 @@ filtering belongs to a downstream geometry/graph stage, not to tag classificatio
 
 ### Per-topic geometry outputs (`topic.json`'s `"geometry"`)
 
-Which geometry tables a topic gets is declared in its own `topic.json`, not a global CLI flag:
+Which geometry tables a topic gets — and in which shape — is fully declared in its own
+`topic.json`, not a global CLI flag. Every element kind (`node`, `way`, `relation`) takes a list of
+**shapes**, and any combination a topic wants is opted into independently:
 
 ```json
 "geometry": {
-  "way": ["graph", "linestring"],
-  "relation": ["linestring"]
+  "node": ["point"],
+  "way": ["graph", "line", "polygon"],
+  "relation": ["line", "point", "polygon"]
 }
 ```
 
-- **`way: ["graph"]`** — a `{topic}_edge` pgRouting table. Requires the topic to define two extra
-  fields, using the same field/filter machinery as everything else — no bespoke expression
-  language:
+Shapes (`GeometryShape`, `src/topic/spec.rs`):
+
+- **`"point"`** — a node's own coordinate, or a way's/relation's centroid. Only shape valid for
+  `node`. → `{topic}_point` (way) / `{topic}_relation_point` (relation) / no separate table for
+  node (nodes route straight to `{topic}_point`).
+- **`"line"`** (alias `"linestring"`) — the whole, uncut linestring per kept way, or one merged
+  multi-linestring per kept relation (member ways' geometries collected + line-merged). →
+  `{topic}_geom` (way) / `{topic}_relation_geom` (relation).
+- **`"polygon"`** — a closed ring (way) or assembled multipolygon (relation, from `outer`/`inner`
+  member roles). → `{topic}_polygon` (way) / `{topic}_relation_polygon` (relation).
+- **`"graph"`** — ways only (never valid for `relation`, rejected at config load): this topic's
+  kept ways feed into a per-topic `{topic}_edge` pgRouting-shaped table. Requires the topic to
+  define two extra fields, using the same field/filter machinery as everything else — no bespoke
+  expression language:
   - **`cost`** — a numeric field (an `osm_fields`/`sanitizers` entry, or a topic/category `consts`
     value), e.g. `{ "tag": "cost", "name": "parse_length", "in": ["width"] }`.
   - **`is_directed`** — a boolean field driven by a `Filter` condition (a `Classify` producer with
     a single rule + `default`), e.g. `{ "output": "is_directed", "source": { "rules": [{ "when":
     { "tag": "oneway", "in": ["yes", "-1"] }, "value": true }], "default": false } }`.
 
-  Built as a post-load SQL step: `cost`/`reverse_cost` (pgRouting convention — `-1` means unusable
-  in that direction) computed from the topic's `cost`/`is_directed` fields and split
-  proportionally by segment share (`length_m / total_length_m`) of the shared `edges` table.
-  `--topic-edges <pgrouting|all>` picks the table shape globally for every topic that opted in:
-  `all` additionally joins in the topic's own tag columns (`osm`/`derived`/`private`/`meta`);
-  `pgrouting` (the default) emits only the routing columns. Indexes on `{topic}_edge` respect
-  `--create-index` like every other table.
-- **`way: ["linestring"]`** — a `{topic}_geom` table, computed during streaming (Postgres, CSV,
-  and GeoJSON output all support this).
-- **`relation: ["linestring"]`** — a `{topic}_relation_geom` table, built as a post-load SQL step
-  (Postgres output only — a relation is classified before any member way's geometry is resolved).
+  Built as a post-load SQL step (the only geometry shape that is): `cost`/`reverse_cost`
+  (pgRouting convention — `-1` means unusable in that direction) computed from the topic's
+  `cost`/`is_directed` fields and split proportionally by segment share (`length_m /
+  total_length_m`) of the shared `edges` table. `--topic-edges <pgrouting|all>` picks the table
+  shape globally for every topic that opted in: `all` additionally joins in the topic's own tag
+  columns (`osm`/`derived`/`private`/`meta`); `pgrouting` (the default) emits only the routing
+  columns. Indexes on `{topic}_edge` respect `--create-index` like every other table.
+
+`point`/`line`/`polygon` are all built **in-process** during the streaming pass and are backend-
+agnostic — Postgres, CSV, and GeoJSON output all get them the same way. `GeometrySpec::validate`
+rejects combinations that don't make sense for a kind at config-load time (e.g. `node: ["line"]`,
+or `relation: ["graph"]`).
 
 ## Quick start
 
@@ -207,7 +230,8 @@ the pipeline reruns (`--output geojson`) and the map re-renders — no manual CL
 ## Layout
 
 ```
-src/          engine (classify, transforms, geometry, DB writers), reader, main
+src/          engine (classify, transforms, DB/output writers), reader, main
+src/geom/     geometry output: per-topic GeometryPlan + in-process materialization (point/line/polygon rows)
 configs/      data-defined config directories (tilda, osmnx, ...), each with its own topics
 editor/       live editor — local web app for iterating on topic/category JSON against a map
 BACKLOG.md    deferred ideas / performance notes

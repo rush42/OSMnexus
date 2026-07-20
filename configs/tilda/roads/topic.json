@@ -31,19 +31,23 @@
         "macro": "standard_exclude"
       },
       {
-        "tag": "access",
-        "in": [
-          "private",
-          "no",
-          "delivery",
-          "permit"
+        "and": [
+          {
+            "tag": "access",
+            "in": [
+              "private",
+              "no",
+              "delivery",
+              "permit"
+            ]
+          },
+          { "not": { "macro": "is_construction_or_blocked_raw" } }
         ]
       },
       {
         "and": [
           {
-            "tag": "highway",
-            "eq": "footway"
+            "macro": "effective_highway_eq_footway"
           },
           {
             "tag": "foot",
@@ -53,14 +57,14 @@
               "delivery",
               "permit"
             ]
-          }
+          },
+          { "not": { "macro": "is_construction_or_blocked_raw" } }
         ]
       },
       {
         "and": [
           {
-            "tag": "highway",
-            "eq": "cycleway"
+            "macro": "effective_highway_eq_cycleway"
           },
           {
             "tag": "bicycle",
@@ -70,14 +74,14 @@
               "delivery",
               "permit"
             ]
-          }
+          },
+          { "not": { "macro": "is_construction_or_blocked_raw" } }
         ]
       },
       {
         "and": [
           {
-            "tag": "highway",
-            "eq": "service"
+            "macro": "effective_highway_eq_service"
           },
           {
             "not": {

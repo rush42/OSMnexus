@@ -1,5 +1,16 @@
 {
-  "is_allowed_highway": { "tag": "highway", "in_set": "allowed_highway" },
+  "is_construction_highway": {
+    "and": [
+      { "tag": "highway", "exists": true },
+      { "tag": "construction", "in_set": "allowed_highway" }
+    ]
+  },
+  "is_allowed_highway": {
+    "or": [
+      { "macro": "is_construction_highway" },
+      { "tag": "highway", "in_set": "allowed_highway" }
+    ]
+  },
   "standard_exclude": {
     "or": [
       { "not": { "macro": "is_allowed_highway" } },

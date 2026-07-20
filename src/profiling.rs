@@ -67,6 +67,21 @@ pub static TAG_ENGINE: Stage = Stage::new();
 pub static CATEGORIZE: Stage = Stage::new();
 pub static GEOMETRY: Stage = Stage::new();
 pub static ITERATION: Stage = Stage::new();
+/// The two `run_transform_steps` calls (in-place tag rewrites + `Clone`/side-split synthesis),
+/// excluding the `exclude_condition` check sandwiched between them (see `EXCLUDE_CHECK`). Runs
+/// *before* `ITERATION`'s timer starts (either can reject the element before there's anything to
+/// categorize), so today it's invisible in any other stage total. One call per `build_topic_rows`
+/// invocation, same granularity as `ITERATION` (not per emitted row).
+pub static TRANSFORM_STEPS: Stage = Stage::new();
+/// The topic's `exclude_condition` `Filter::eval` call, sandwiched between the two
+/// `run_transform_steps` calls timed by `TRANSFORM_STEPS`. Split out separately to tell whether the
+/// transform pipeline or the exclude filter is the expensive half of that combined region.
+pub static EXCLUDE_CHECK: Stage = Stage::new();
+/// Everything `ITERATION` covers *besides* `CATEGORIZE`/`TAG_ENGINE`: per-category outputs lookup,
+/// `annotations.clone()`, and final `TopicRow` construction/push. One call per emitted row (self +
+/// each side-split clone), like `CATEGORIZE`/`TAG_ENGINE` — unlike `ITERATION`, which is one call
+/// per `build_topic_rows` invocation and so aggregates all of a way's emitted rows under one timer.
+pub static ROW_OVERHEAD: Stage = Stage::new();
 
 /// Per-output-field breakdown of `TAG_ENGINE` (one producer per named output). Built *once*, up
 /// front, from every field name a topic's `default_outputs`/`category_outputs` can ever produce
@@ -115,8 +130,11 @@ pub fn report() {
         return;
     }
     for (name, stage) in [
+        ("transform steps (rewrites + clone/side-split)", &TRANSFORM_STEPS),
+        ("exclude_condition check", &EXCLUDE_CHECK),
         ("tag engine (producer eval)", &TAG_ENGINE),
         ("categorize", &CATEGORIZE),
+        ("row overhead (outputs lookup/clone/TopicRow build)", &ROW_OVERHEAD),
         ("geometry creation", &GEOMETRY),
         ("iteration (build_topic_rows)", &ITERATION),
     ] {

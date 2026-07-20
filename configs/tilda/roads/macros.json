@@ -1,1 +1,63 @@
-{}
+{
+  "effective_highway_eq_footway": {
+    "or": [
+      { "and": [ { "macro": "is_construction_highway" }, { "tag": "construction", "eq": "footway" } ] },
+      { "tag": "highway", "eq": "footway" }
+    ]
+  },
+  "effective_highway_eq_cycleway": {
+    "or": [
+      { "and": [ { "macro": "is_construction_highway" }, { "tag": "construction", "eq": "cycleway" } ] },
+      { "tag": "highway", "eq": "cycleway" }
+    ]
+  },
+  "effective_highway_eq_service": {
+    "or": [
+      { "and": [ { "macro": "is_construction_highway" }, { "tag": "construction", "eq": "service" } ] },
+      { "tag": "highway", "eq": "service" }
+    ]
+  },
+  "access_denied_raw": {
+    "or": [
+      { "tag": "access", "eq": "no" },
+      { "and": [ { "macro": "effective_highway_eq_cycleway" }, { "tag": "bicycle", "eq": "no" } ] },
+      { "and": [ { "macro": "effective_highway_eq_footway" }, { "tag": "foot", "eq": "no" } ] }
+    ]
+  },
+  "is_construction_or_blocked_raw": {
+    "and": [
+      { "not": { "macro": "is_construction_highway" } },
+      { "macro": "access_denied_raw" },
+      {
+        "or": [
+          {
+            "or": [
+              { "tag": "access:reason", "contains": "construction", "case_insensitive": true },
+              { "tag": "access:reason", "contains": "baustelle", "case_insensitive": true },
+              { "tag": "description", "contains": "construction", "case_insensitive": true },
+              { "tag": "description", "contains": "baustelle", "case_insensitive": true },
+              { "tag": "note", "contains": "construction", "case_insensitive": true },
+              { "tag": "note", "contains": "baustelle", "case_insensitive": true }
+            ]
+          },
+          {
+            "or": [
+              { "tag": "description", "contains": "sperrung", "case_insensitive": true },
+              { "tag": "description", "contains": "gesperrt", "case_insensitive": true },
+              { "tag": "description", "contains": "blockiert", "case_insensitive": true },
+              { "tag": "description", "contains": "blocked", "case_insensitive": true },
+              { "tag": "description", "contains": "closure", "case_insensitive": true },
+              { "tag": "description", "contains": "closed", "case_insensitive": true },
+              { "tag": "note", "contains": "sperrung", "case_insensitive": true },
+              { "tag": "note", "contains": "gesperrt", "case_insensitive": true },
+              { "tag": "note", "contains": "blockiert", "case_insensitive": true },
+              { "tag": "note", "contains": "blocked", "case_insensitive": true },
+              { "tag": "note", "contains": "closure", "case_insensitive": true },
+              { "tag": "note", "contains": "closed", "case_insensitive": true }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

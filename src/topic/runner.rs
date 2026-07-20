@@ -24,15 +24,16 @@ pub struct TopicRunner {
     /// that exists. Each pass (relations → ways → nodes) classifies with its kind's set; a topic
     /// with only a `way/` folder has just the `Way` entry. `categorize` is the same function for all.
     pub categories: HashMap<ElementKind, CategoriesFile>,
-    /// Each kind's full transform pipeline, in declared order, split around `exclude_condition` at
-    /// its own `exclude_check_at` — a mix of ordinary in-place `InputTransform`s and `Clone`s (from
-    /// `split_sides`, always synthesized after every `InputTransform`, one per side). Unlike an
-    /// output's producer, these can influence which category an element matches (or whether
-    /// `exclude_condition` excludes it at all) — see `categorize::transform::run_transform_steps`,
-    /// which drives the whole thing. Keyed by `ElementKind`; a kind with no `transforms.json`
-    /// entry (or no `transforms.json` at all) simply has no entry here — see
-    /// `topic::spec::TransformsSpec::into_pipelines`.
-    pub pipelines: HashMap<ElementKind, (Vec<TransformStep>, usize)>,
+    /// Each kind's full transform pipeline, in declared order, always run *after*
+    /// `exclude_condition` is checked (see `topic::pipeline::build_topic_rows` and
+    /// `topic::spec::KindTransformsSpec`'s own doc on why no phase split is needed) — a mix of
+    /// ordinary in-place `InputTransform`s and `Clone`s (from `split_sides`, always synthesized
+    /// after every `InputTransform`, one per side). Unlike an output's producer, these can
+    /// influence which category an element matches — see
+    /// `categorize::transform::run_transform_steps`, which drives the whole thing. Keyed by
+    /// `ElementKind`; a kind with no `transforms.json` entry (or no `transforms.json` at all)
+    /// simply has no entry here — see `topic::spec::TransformsSpec::into_pipelines`.
+    pub pipelines: HashMap<ElementKind, Vec<TransformStep>>,
     /// The topic's `exclude_condition` (`topic.json`), already macro/sanitizer-resolved by the time
     /// `TopicSpec` deserializes it (see `TopicRunner::load`). Held here (taken out of `spec`, not
     /// duplicated) so the runtime pipeline (`topic::pipeline::build_topic_rows`) reads it directly.

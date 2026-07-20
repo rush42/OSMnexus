@@ -60,30 +60,30 @@ pub fn build_topic_rows(
     annotations.insert("_side".to_owned(), Value::String("self".to_owned()));
     let mut clones = Vec::new();
 
-    // This kind's own transform pipeline (in-place `InputTransform`s + `Clone`s from
-    // `split_sides`), if `transforms.json` defines one — a kind with none simply has an empty
-    // slice, a no-op. Split around `exclude_check_at`: tag rewrites (e.g. lifecycle's
-    // construction→real-highway swap) run first, so `exclude_condition`'s `is_allowed_highway`
-    // check sees the un-construction'd highway — but sidepath-unnest (and every `Clone`, i.e.
-    // side-splitting) runs *after* `exclude_condition`, since promoting a `cycleway:access=no`-style
-    // tag onto bare `access` must not retroactively trigger `exclude_condition`'s own direct
-    // `access`/`bicycle`/`foot` checks (which only ever saw the pre-unnest tags in the original
-    // pipeline).
-    static EMPTY_PIPELINE: (Vec<TransformStep>, usize) = (Vec::new(), 0);
-    let (pipeline, exclude_check_at) = runner.pipelines.get(&kind).unwrap_or(&EMPTY_PIPELINE);
-
-    if !run_transform_steps(&mut tags, &mut annotations, &pipeline[..*exclude_check_at], &default_id, &mut clones) {
-        return Vec::new();
-    }
-
+    // `exclude_condition` is checked first, against raw tags — see `topic::spec::KindTransformsSpec`'s
+    // own doc on why it no longer needs anything from the transform pipeline pre-computed for it
+    // (a construction-highway rewrite dependency used to force a `before_exclude`/`after_exclude`
+    // split; that dependency now lives directly in `exclude_condition` itself, e.g.
+    // `configs/tilda/macros.json`'s `is_allowed_highway`). Checking first also means an excluded
+    // element never pays for the transform pipeline at all.
     if let Some(cond) = &runner.exclude_condition {
+        let _t = crate::profiling::time(&crate::profiling::EXCLUDE_CHECK);
         if eval_filter(cond, &tags) {
             return Vec::new();
         }
     }
 
-    if !run_transform_steps(&mut tags, &mut annotations, &pipeline[*exclude_check_at..], &default_id, &mut clones) {
-        return Vec::new();
+    // This kind's own transform pipeline (in-place `InputTransform`s + `Clone`s from
+    // `split_sides`), if `transforms.json` defines one — a kind with none simply has an empty
+    // slice, a no-op.
+    static EMPTY_PIPELINE: Vec<TransformStep> = Vec::new();
+    let pipeline = runner.pipelines.get(&kind).unwrap_or(&EMPTY_PIPELINE);
+
+    {
+        let _t = crate::profiling::time(&crate::profiling::TRANSFORM_STEPS);
+        if !run_transform_steps(&mut tags, &mut annotations, pipeline, &default_id, &mut clones) {
+            return Vec::new();
+        }
     }
 
     let _t_iter = crate::profiling::time(&crate::profiling::ITERATION);
@@ -101,32 +101,36 @@ pub fn build_topic_rows(
         // `TopicSpec::outputs`), plus this category's effective `defaults` (folded in as each
         // default's lowest-priority `Fallback` branch — see `runner::merge_default_fields`), share
         // one column and one eval pass.
-        let outputs = runner
-            .category_outputs
-            .get(&category.id)
-            .unwrap_or(&runner.default_outputs);
-        // `ectx.annotations` already carries `_side`, plus `_prefix`/`_infix` for a side object
-        // (stamped above / by each `Clone`); clone it as this row's base annotations map, then
-        // let `eval_fields` add each output's own `annotate` provenance on top. `_parent_highway`
-        // is gone (redundant with the parent's own `highway` tag, already reachable through
-        // `ectx.parent_tags`).
         let mut produced = Map::new();
-        let mut annotations = ectx.annotations.clone();
+        let mut annotations;
+        let outputs = {
+            let _t = crate::profiling::time(&crate::profiling::ROW_OVERHEAD);
+            // `ectx.annotations` already carries `_side`, plus `_prefix`/`_infix` for a side object
+            // (stamped above / by each `Clone`); clone it as this row's base annotations map, then
+            // let `eval_fields` add each output's own `annotate` provenance on top. `_parent_highway`
+            // is gone (redundant with the parent's own `highway` tag, already reachable through
+            // `ectx.parent_tags`).
+            annotations = ectx.annotations.clone();
+            runner.category_outputs.get(&category.id).unwrap_or(&runner.default_outputs)
+        };
         eval_fields(outputs, &ectx, &mut produced, &mut annotations, &runner.field_stages);
 
-        // One tag row per transformed object; geometry (and its per-segment length) lives in the
-        // geom table (see `build_edges`), joined on `osm_id` at materialization time. `ectx.id`
-        // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
-        // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
-        rows.push(TopicRow {
-            osm_id,
-            osm_type: kind.osm_type(),
-            id: ectx.id.to_owned(),
-            category: category.id.clone(),
-            produced,
-            annotations,
-            meta: meta.clone(),
-        });
+        {
+            let _t = crate::profiling::time(&crate::profiling::ROW_OVERHEAD);
+            // One tag row per transformed object; geometry (and its per-segment length) lives in the
+            // geom table (see `build_edges`), joined on `osm_id` at materialization time. `ectx.id`
+            // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
+            // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
+            rows.push(TopicRow {
+                osm_id,
+                osm_type: kind.osm_type(),
+                id: ectx.id.to_owned(),
+                category: category.id.clone(),
+                produced,
+                annotations,
+                meta: meta.clone(),
+            });
+        }
     };
 
     emit(ExtractCtx { obj_tags: &tags, parent_tags: None, id: &default_id, annotations: &annotations });
