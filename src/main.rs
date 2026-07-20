@@ -9,7 +9,7 @@ use deadpool_postgres::Pool;
 use tracing::info;
 
 use config::{Config, Output};
-use db::{pool::build_pool, schema};
+use db::schema;
 use geom::rows::{POINT_COLUMNS, POLYGON_COLUMNS, WAY_COLUMNS};
 use topic::TopicRunner;
 use osm::types::{ElementKind, NodeData, RelData, WayData};
@@ -110,20 +110,7 @@ async fn main() -> anyhow::Result<()> {
     // single file writer for CSV. `pool` is `None` for CSV.
     let (pool, w): (Option<Pool>, usize) = match cfg.output {
         Output::Pg => {
-            info!("Connecting to database {}@{}/{}", cfg.db_user, cfg.db_host, cfg.db_name);
-            let pool = build_pool(&cfg)?;
-            let client_setup = pool.get().await.context("getting DB connection")?;
-            info!("Setting up schema...");
-            schema::create_tables(&client_setup, &table_refs, &geom_tables, plan.any_way_graph).await?;
-            if cfg.truncate {
-                schema::truncate_tables(&client_setup, &table_refs, &geom_tables, plan.any_way_graph).await?;
-            }
-            schema::drop_indexes(&client_setup, &table_refs, &geom_tables, plan.any_way_graph).await?;
-            drop(client_setup);
-            let k = cfg.db_writers.max(1);
-            // Pool must supply every writer connection at once: k per tag table + k per extra table.
-            pool.resize((n + extra_tables) * k + 2);
-            info!("Postgres output · {k} COPY connection(s) per table");
+            let (pool, k) = db::backend::setup(&cfg, &table_refs, &geom_tables, plan.any_way_graph, n, extra_tables).await?;
             (Some(pool), k)
         }
         Output::Csv => {
@@ -301,23 +288,8 @@ async fn main() -> anyhow::Result<()> {
         info!("Wrote {count} rows → {out_table}");
     }
 
-    match (cfg.output, cfg.create_index) {
-        (Output::Pg, true) => {
-            info!("Creating indexes...");
-            let t_idx = std::time::Instant::now();
-            schema::create_indexes(pool.as_ref().unwrap(), &table_refs, &geom_tables, plan.any_way_graph).await?;
-            info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
-        }
-        (Output::Pg, false) => info!("Skipping index creation (pass --create-index to enable)"),
-        (Output::Csv, _) | (Output::GeoJson, _) => {}
-    }
-
     if cfg.output == Output::Pg {
-        let client = pool.as_ref().unwrap().get().await?;
-        for r in runners.iter().filter(|r| r.wants_way_graph()) {
-            info!("Materializing graph edges → {}_edge", r.table());
-            db::topic_edges::materialize(&client, r.table(), cfg.topic_edges, cfg.create_index).await?;
-        }
+        db::backend::finalize(&cfg, pool.as_ref().unwrap(), &table_refs, &geom_tables, plan.any_way_graph, &runners).await?;
     }
 
     if cfg.output == Output::GeoJson {
