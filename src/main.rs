@@ -50,7 +50,6 @@ use processing::{classify_node, classify_relation, classify_way};
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
-    osmnexus::profiling::init_from_env();
 
     #[cfg(feature = "dhat")]
     let _dhat_profiler = dhat::Profiler::new_heap();
@@ -295,11 +294,6 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| unreachable!("materialize task's writers clone is dropped by the time it returns"));
     writers.finish_materialize(plan.any_way_graph).await?;
     mem_snapshot("materialize");
-
-    osmnexus::profiling::report();
-    for r in runners.iter() {
-        r.field_stages.report();
-    }
 
     // Relation geometry (line/point/polygon): already built by the materialize phase above, from
     // `ctx.rel_members` — just write it out. Works the same for CSV/GeoJSON as for Postgres

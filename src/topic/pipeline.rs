@@ -27,11 +27,8 @@ fn eval_fields(
     ctx: &ExtractCtx,
     produced: &mut Map<String, Value>,
     annotations: &mut Map<String, Value>,
-    field_stages: &crate::profiling::FieldStages,
 ) {
-    let _t = crate::profiling::time(&crate::profiling::TAG_ENGINE);
     for field in fields {
-        let _tf = field_stages.time(&field.output);
         if let Some(p) = field.source.eval(ctx) {
             produced.insert(field.output.clone(), p.value);
             // Companion annotate → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
@@ -64,7 +61,6 @@ pub fn build_topic_rows(
     // `configs/tilda/macros.json`'s `is_allowed_highway`). Checking first — against the still-borrowed
     // `raw_tags` — also means an excluded element never pays for a tags clone at all.
     if let Some(cond) = &runner.exclude_condition {
-        let _t = crate::profiling::time(&crate::profiling::EXCLUDE_CHECK);
         if eval_filter(cond, raw_tags) {
             return Vec::new();
         }
@@ -89,20 +85,14 @@ pub fn build_topic_rows(
     };
 
     if !pipeline.is_empty() {
-        let _t = crate::profiling::time(&crate::profiling::TRANSFORM_STEPS);
         if !run_transform_steps(tags.to_mut(), &mut annotations, pipeline, &default_id, &mut clones) {
             return Vec::new();
         }
     }
 
-    let _t_iter = crate::profiling::time(&crate::profiling::ITERATION);
     let mut rows = Vec::new();
     let mut emit = |ectx: ExtractCtx| {
-        let category = {
-            let _t = crate::profiling::time(&crate::profiling::CATEGORIZE);
-            categorize(&ectx, categories)
-        };
-        let Some(category) = category else {
+        let Some(category) = categorize(&ectx, categories) else {
             return;
         };
 
@@ -111,35 +101,28 @@ pub fn build_topic_rows(
         // default's lowest-priority `Fallback` branch — see `runner::merge_default_fields`), share
         // one column and one eval pass.
         let mut produced = Map::new();
-        let mut annotations;
-        let outputs = {
-            let _t = crate::profiling::time(&crate::profiling::ROW_OVERHEAD);
-            // `ectx.annotations` already carries `_side`, plus `_prefix`/`_infix` for a side object
-            // (stamped above / by each `Clone`); clone it as this row's base annotations map, then
-            // let `eval_fields` add each output's own `annotate` provenance on top. `_parent_highway`
-            // is gone (redundant with the parent's own `highway` tag, already reachable through
-            // `ectx.parent_tags`).
-            annotations = ectx.annotations.clone();
-            runner.category_outputs.get(&category.id).unwrap_or(&runner.default_outputs)
-        };
-        eval_fields(outputs, &ectx, &mut produced, &mut annotations, &runner.field_stages);
+        // `ectx.annotations` already carries `_side`, plus `_prefix`/`_infix` for a side object
+        // (stamped above / by each `Clone`); clone it as this row's base annotations map, then
+        // let `eval_fields` add each output's own `annotate` provenance on top. `_parent_highway`
+        // is gone (redundant with the parent's own `highway` tag, already reachable through
+        // `ectx.parent_tags`).
+        let mut annotations = ectx.annotations.clone();
+        let outputs = runner.category_outputs.get(&category.id).unwrap_or(&runner.default_outputs);
+        eval_fields(outputs, &ectx, &mut produced, &mut annotations);
 
-        {
-            let _t = crate::profiling::time(&crate::profiling::ROW_OVERHEAD);
-            // One tag row per transformed object; geometry (and its per-segment length) lives in the
-            // geom table (see `build_edges`), joined on `osm_id` at materialization time. `ectx.id`
-            // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
-            // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
-            rows.push(TopicRow {
-                osm_id,
-                osm_type: kind.osm_type(),
-                id: ectx.id.to_owned(),
-                category: category.id.clone(),
-                produced,
-                annotations,
-                meta: meta.clone(),
-            });
-        }
+        // One tag row per transformed object; geometry (and its per-segment length) lives in the
+        // geom table (see `build_edges`), joined on `osm_id` at materialization time. `ectx.id`
+        // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
+        // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
+        rows.push(TopicRow {
+            osm_id,
+            osm_type: kind.osm_type(),
+            id: ectx.id.to_owned(),
+            category: category.id.clone(),
+            produced,
+            annotations,
+            meta: meta.clone(),
+        });
     };
 
     emit(ExtractCtx { obj_tags: &*tags, parent_tags: None, id: &default_id, annotations: &annotations });

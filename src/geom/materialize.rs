@@ -30,12 +30,8 @@ pub struct WayGeometry {
 
 /// Build every shape a resolved way needs, per `plan`. `node_ids` is only consulted when
 /// `plan.any_way_graph` (edges need internal vertex ids); the line/point projection is computed at
-/// most once and shared between the `line` and `point` shapes when both are wanted. One `GEOMETRY`
-/// profiling span per way regardless of how many shapes it produces (the old per-shape
-/// `edges_for`/`way_row_for` helpers each opened their own span, double-counting a way that wanted
-/// both).
+/// most once and shared between the `line` and `point` shapes when both are wanted.
 pub fn way(way: &OsmWay, node_ids: &FxHashMap<i64, i64>, plan: &GeometryPlan) -> WayGeometry {
-    let _t = crate::profiling::time(&crate::profiling::GEOMETRY);
     let edges = plan.any_way_graph.then(|| {
         let geom = project_line(&way.coords);
         let length_m = haversine_length_m(&way.coords);

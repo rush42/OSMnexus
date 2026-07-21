@@ -26,6 +26,9 @@ rustc-hash = "2"
 csv = "1"
 dhat = { version = "0.3.3", optional = true }
 
+[dev-dependencies]
+criterion = "0.5"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
@@ -33,3 +36,7 @@ opt-level = 3
 
 [features]
 dhat = ["dep:dhat"]
+
+[[bench]]
+name = "topic_pipeline"
+harness = false
