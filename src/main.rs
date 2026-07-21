@@ -1,6 +1,35 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "dhat")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
+/// Print a heap snapshot labeled `phase`: current live bytes/blocks, plus the delta in
+/// cumulative total allocated since the *previous* call (dhat's own totals only reset at process
+/// start, so this tracks the last-seen totals itself to report per-phase deltas). No-op without
+/// the `dhat` feature.
+#[cfg(feature = "dhat")]
+fn mem_snapshot(phase: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PREV_BLOCKS: AtomicU64 = AtomicU64::new(0);
+    static PREV_BYTES: AtomicU64 = AtomicU64::new(0);
+    let s = dhat::HeapStats::get();
+    let prev_blocks = PREV_BLOCKS.swap(s.total_blocks as u64, Ordering::Relaxed);
+    let prev_bytes = PREV_BYTES.swap(s.total_bytes as u64, Ordering::Relaxed);
+    tracing::info!(
+        "[mem] {phase}: curr_blocks={} curr_bytes={} total_blocks Δ={} total_bytes Δ={} max_blocks={} max_bytes={}",
+        s.curr_blocks,
+        s.curr_bytes,
+        s.total_blocks as u64 - prev_blocks,
+        s.total_bytes as u64 - prev_bytes,
+        s.max_blocks,
+        s.max_bytes,
+    );
+}
+#[cfg(not(feature = "dhat"))]
+fn mem_snapshot(_phase: &str) {}
+
 use osmnexus::{config, db, geom, osm, output, processing, topic};
 
 use anyhow::Context;
@@ -22,6 +51,10 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
     osmnexus::profiling::init_from_env();
+
+    #[cfg(feature = "dhat")]
+    let _dhat_profiler = dhat::Profiler::new_heap();
+    mem_snapshot("startup");
 
     let cfg = Config::parse();
 
@@ -135,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
     // so one buffered-file writer per table.
     let out_dir = PathBuf::from(&cfg.out_dir);
     let writers = Arc::new(TableWriters::spawn(cfg.output, &pool, &out_dir, w, &tables, &table_refs, &plan));
+    mem_snapshot("config+writers");
 
     // Select phase: the reader decodes the PBF once and drives the classify callbacks below,
     // streaming tag rows out as it goes (side effect — see `osm::reader`'s own doc for why that
@@ -233,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| unreachable!("select_task's writers clone is dropped by the time it returns"));
     let (writers, _select_counts) = writers.finish_select().await?;
     info!("Select phase time: {:.1}s", t0.elapsed().as_secs_f32());
+    mem_snapshot("select");
 
     // Materialize phase: resolve way/relation geometry from `ctx` and route every row to its
     // writer channel — see `geom::materialize::run`'s own doc. Runs on the blocking pool (rayon
@@ -259,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
     let writers = Arc::try_unwrap(writers)
         .unwrap_or_else(|_| unreachable!("materialize task's writers clone is dropped by the time it returns"));
     writers.finish_materialize(plan.any_way_graph).await?;
+    mem_snapshot("materialize");
 
     osmnexus::profiling::report();
     for r in runners.iter() {
@@ -300,6 +336,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    mem_snapshot("relation-geom+finalize");
     info!("Done. Total: {:.1}s", t0.elapsed().as_secs_f32());
     Ok(())
 }
