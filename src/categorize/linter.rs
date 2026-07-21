@@ -358,10 +358,10 @@ pub fn find_overlaps(cats: &CategoriesFile) -> Vec<Overlap> {
     for cat in &cats.categories {
         let dnf = to_dnf(to_nnf(filter_to_expr(&cat.condition)));
         let consistent: Vec<_> = dnf.into_iter().filter(|t| check_term_consistency(t).0).collect();
-        category_dnfs.insert(cat.id.to_string(), consistent);
+        category_dnfs.insert(cat.id.clone(), consistent);
     }
 
-    let names: Vec<&str> = cats.categories.iter().map(|c| c.id.as_ref()).collect();
+    let names: Vec<&str> = cats.categories.iter().map(|c| c.id.as_str()).collect();
     let mut overlaps = Vec::new();
 
     for i in 0..names.len() {

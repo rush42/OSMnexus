@@ -271,7 +271,7 @@ impl TopicRunner {
                     &format!("topics/{name}: category '{}' outputs", cat.id),
                 )?;
                 let defaults = merge(&spec.defaults, &cat.defaults);
-                category_outputs.insert(cat.id.to_string(), merge_default_fields(fields, &defaults));
+                category_outputs.insert(cat.id.clone(), merge_default_fields(fields, &defaults));
             }
         }
 

@@ -4,7 +4,6 @@
 //! pruning index (`decision_tree::build`).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -20,11 +19,7 @@ use crate::lang::producer::ExtractCtx;
 /// JSON before `serde_json::from_value` — see `load_categories_dir`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CategoryDef {
-    /// `Arc<str>` rather than `String`: every emitted row clones its category's id onto
-    /// `TopicRow::category` (see `topic::pipeline::build_topic_rows`) — a refcount bump instead of
-    /// a fresh heap allocation per row, since `CategoryDef`s themselves are long-lived (loaded once
-    /// per topic, shared across every element processed).
-    pub id: Arc<str>,
+    pub id: String,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
     /// Per-category output overrides: merged over the topic's `outputs` map by key (category
@@ -142,7 +137,7 @@ impl CategoriesFile {
     pub fn build_order(&mut self, tree_max_depth: usize) -> anyhow::Result<()> {
         use std::collections::{BTreeMap, BTreeSet};
 
-        let catset: BTreeSet<&str> = self.categories.iter().map(|c| c.id.as_ref()).collect();
+        let catset: BTreeSet<&str> = self.categories.iter().map(|c| c.id.as_str()).collect();
         let mut nodes: BTreeSet<String> = catset.iter().map(|s| s.to_string()).collect();
         let mut succ: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut indeg: BTreeMap<String, usize> = nodes.iter().map(|n| (n.clone(), 0)).collect();
@@ -152,8 +147,8 @@ impl CategoriesFile {
                 nodes.insert(y.clone());
                 indeg.entry(y.clone()).or_insert(0);
                 // Edge y -> c.id (y precedes the category that excludes it).
-                if succ.entry(y.clone()).or_default().insert(c.id.to_string()) {
-                    *indeg.get_mut(c.id.as_ref()).expect("category has indeg entry") += 1;
+                if succ.entry(y.clone()).or_default().insert(c.id.clone()) {
+                    *indeg.get_mut(&c.id).expect("category has indeg entry") += 1;
                 }
             }
         }
@@ -184,7 +179,7 @@ impl CategoriesFile {
         );
 
         let idx_of: BTreeMap<&str, usize> =
-            self.categories.iter().enumerate().map(|(i, c)| (c.id.as_ref(), i)).collect();
+            self.categories.iter().enumerate().map(|(i, c)| (c.id.as_str(), i)).collect();
         let mut order = Vec::with_capacity(order_names.len());
         for name in &order_names {
             match idx_of.get(name.as_str()) {
