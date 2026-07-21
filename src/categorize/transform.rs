@@ -134,9 +134,15 @@ impl InputTransform {
                     // write into `tags`.
                     Some(source) => unnest_prefixed_tags(source, prefix, infix, meta_prefixes, tags),
                     // Self-unnest (e.g. `SidepathSelf`): scan-and-mutate the same object, so the
-                    // scan needs its own snapshot to avoid borrowing `tags` both ways at once.
+                    // scan needs its own snapshot to avoid borrowing `tags` both ways at once. Only
+                    // the entries `unnest_prefixed_tags` could possibly touch — keys under `prefix`
+                    // plus their meta companions — need to be in that snapshot, not the whole map
+                    // (a way's tags routinely outnumber matches here by an order of magnitude).
                     None => {
-                        let source = tags.clone();
+                        let source: RawTags = tags.iter()
+                            .filter(|(k, _)| k.starts_with(*prefix) || meta_prefixes.iter().any(|m| k.starts_with(*m)))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
                         unnest_prefixed_tags(&source, prefix, infix, meta_prefixes, tags);
                     }
                 }
