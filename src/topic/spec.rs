@@ -10,7 +10,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
-use crate::lang::producer::{Producer, TagSet};
+use crate::lang::producer::Producer;
+use crate::parser::TagSet;
 use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer, StrOrVec};
 use crate::categorize::transform::{CloneStep, DirectedFrom, InputTransform, TransformStep};
 
@@ -158,7 +159,7 @@ pub fn resolve_output_entry(
         match r.from {
             TagSet::Obj => extract,
             TagSet::Parent => Producer::Parent(Box::new(extract)),
-            TagSet::ParentOrObj => Producer::parent_or_obj(extract),
+            TagSet::ParentOrObj => crate::parser::parent_or_obj(extract),
         }
     } else {
         match value {
