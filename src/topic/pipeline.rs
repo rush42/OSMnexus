@@ -120,7 +120,7 @@ pub fn build_topic_rows(
             // is gone (redundant with the parent's own `highway` tag, already reachable through
             // `ectx.parent_tags`).
             annotations = ectx.annotations.clone();
-            runner.category_outputs.get(&category.id).unwrap_or(&runner.default_outputs)
+            runner.category_outputs.get(category.id.as_ref()).unwrap_or(&runner.default_outputs)
         };
         eval_fields(outputs, &ectx, &mut produced, &mut annotations, &runner.field_stages);
 

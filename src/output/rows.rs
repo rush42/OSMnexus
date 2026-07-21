@@ -3,6 +3,8 @@
 //! Geometry row types (`EdgeRow`/`WayRow`/`NodeRow`/`PointRow`/`PolygonRow`) live in
 //! `geom::rows` instead — see `geom`'s own module doc for why geometry is split out.
 
+use std::sync::Arc;
+
 use serde_json::{Map, Value};
 
 use crate::output::types::OsmMeta;
@@ -28,8 +30,10 @@ pub struct TopicRow {
     pub osm_type: &'static str,
     pub id: String,
     /// The matched category's id — a dedicated column rather than a `produced` key, since every
-    /// row has exactly one and it's not itself a `Producer`-evaluated output.
-    pub category: String,
+    /// row has exactly one and it's not itself a `Producer`-evaluated output. `Arc<str>`, shared
+    /// with the long-lived `CategoryDef` it came from, so building this row is a refcount bump
+    /// rather than a fresh allocation (see `CategoryDef::id`).
+    pub category: Arc<str>,
     /// Every non-underscore-prefixed output (the former separate `osm`/`sanitized`/`derived`
     /// columns — all three were always the same `Producer`-evaluation mechanism, just different
     /// JSON shorthands for declaring one entry in one `outputs` map; see `TopicSpec::outputs`).
@@ -49,7 +53,7 @@ impl CsvRow for TopicRow {
             self.osm_id.to_string(),
             self.osm_type.to_owned(),
             self.id.clone(),
-            self.category.clone(),
+            self.category.to_string(),
             serde_json::to_string(&self.produced)?,
             serde_json::to_string(&self.annotations)?,
             serde_json::to_string(&self.meta)?,
