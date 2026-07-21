@@ -322,6 +322,10 @@ pub(crate) fn unnest_prefixed_tags(
         format!("{prefix}:{infix}")
     };
 
+    // Reused across meta-companion lookups below instead of a fresh `format!` allocation per
+    // (matched key × meta prefix) pair — cleared and rewritten in place each time.
+    let mut meta_key_buf = String::new();
+
     for (key, val) in tags {
         if !key.starts_with(&full_prefix) {
             continue;
@@ -348,7 +352,10 @@ pub(crate) fn unnest_prefixed_tags(
         dest.insert(suffix.unwrap_or(prefix).to_owned(), val.clone());
 
         for meta in meta_prefixes {
-            let Some(meta_val) = tags.get(&format!("{meta}{key}")) else { continue };
+            meta_key_buf.clear();
+            meta_key_buf.push_str(meta);
+            meta_key_buf.push_str(key);
+            let Some(meta_val) = tags.get(meta_key_buf.as_str()) else { continue };
             let meta_key = meta.trim_end_matches(':');
             let dest_key = match suffix {
                 Some(s) => format!("{meta_key}:{s}"),
