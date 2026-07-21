@@ -273,7 +273,7 @@ fn render_decision_tree(g: &mut DagGraph, tree: &DecisionTree, cats: &Categories
                 "leaf\n(no candidates)".to_owned()
             } else {
                 let mut lines = vec![format!("leaf\n{} candidate(s)", idxs.len())];
-                lines.extend(idxs.iter().map(|&i| format!("priority {}: {}", i + 1, order_label(cats, i))));
+                lines.extend(idxs.iter().map(|(i, _)| format!("priority {}: {}", i + 1, order_label(cats, *i))));
                 truncate(&lines.join("\n"), 200)
             };
             g.node(label, "const")

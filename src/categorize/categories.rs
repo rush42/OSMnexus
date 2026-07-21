@@ -79,12 +79,16 @@ pub enum OrderedNode {
 /// a `Skip` (disqualifier-macro) node means the object has no category. No `excludes` are
 /// evaluated at runtime; the ordering already encodes them (see `build_order`).
 pub fn categorize<'a>(ctx: &ExtractCtx, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
-    // The discrimination net prunes the priority list to a small, order-preserving candidate set;
-    // first-match `eval` over it is identical to the full walk (the tree only drops provably-false
-    // nodes — see `decision_tree`).
-    for &i in cats.tree.candidates(ctx) {
-        if let Some(hit) = eval_node(&cats.order[i], ctx, cats) {
-            return hit;
+    // The discrimination net prunes the priority list to a small, order-preserving candidate set,
+    // each paired with its condition as already simplified by every branch fact proven along the way
+    // to it — `eval_expr` decides the rest without re-reading/re-comparing what the tree already
+    // knows (unlike `eval_node`, which would re-derive everything from the original `Filter`).
+    for (i, expr) in cats.tree.candidates(ctx) {
+        if crate::categorize::decision_tree::eval_expr(expr, ctx) {
+            return match &cats.order[*i] {
+                OrderedNode::Category { idx } => Some(&cats.categories[*idx]),
+                OrderedNode::Skip { .. } => None,
+            };
         }
     }
     None

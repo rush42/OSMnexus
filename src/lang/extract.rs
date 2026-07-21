@@ -111,6 +111,19 @@ impl Extract {
             },
         }
     }
+
+    /// Inverse of `prefixed` — strips `prefix` back off every key (a key without it is left as-is),
+    /// same `sanitize` chain. `categorize::decision_tree`'s leaf-time evaluator uses this to recover
+    /// the real tag name(s) before reading a parent-scoped predicate against `ExtractCtx::parent_tags`.
+    pub fn strip_prefix(&self, prefix: &str) -> Extract {
+        let strip = |k: &String| k.strip_prefix(prefix).map(str::to_owned).unwrap_or_else(|| k.clone());
+        match self {
+            Extract::Value { key, sanitize } => Extract::Value { key: strip(key), sanitize: sanitize.clone() },
+            Extract::Candidates { keys, sanitize } => {
+                Extract::Candidates { keys: keys.iter().map(strip).collect(), sanitize: sanitize.clone() }
+            }
+        }
+    }
 }
 
 /// The first-present fallback over an ordered list of candidate keys — the single primitive

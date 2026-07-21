@@ -83,8 +83,11 @@ impl std::fmt::Display for BranchKey {
 
 #[derive(Debug, Clone)]
 pub enum DecisionTree {
-    /// Order-node indices (ascending = priority order) to first-match `eval` over.
-    Leaf(Vec<usize>),
+    /// Order-node index, paired with its condition as simplified along the path to this leaf (see
+    /// `Candidate`'s own doc), in ascending (= priority) order. Each pair's `Expr` already has every
+    /// fact the branches above proved baked in — `eval_expr` (not the original `Filter`) is what a
+    /// leaf walk should evaluate, so it never re-reads/re-compares a tag the tree already decided.
+    Leaf(Vec<(usize, Expr)>),
     Branch {
         tag: BranchKey,
         /// Child per enumerated exact-eq value of `tag`.
@@ -162,8 +165,8 @@ impl DecisionTree {
         }
     }
 
-    /// Descend to the leaf's candidate node-index slice for this object.
-    pub fn candidates<'a>(&'a self, ctx: &ExtractCtx) -> &'a [usize] {
+    /// Descend to the leaf's candidate (order-node index, residual condition) slice for this object.
+    pub fn candidates<'a>(&'a self, ctx: &ExtractCtx) -> &'a [(usize, Expr)] {
         let mut node = self;
         loop {
             match node {
@@ -192,6 +195,71 @@ fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
         Predicate::Num(e, op, bits) => read_num(e, ctx).is_some_and(|n| num_matches(op, *bits, n)),
         Predicate::HasKeyPrefix(p) => ctx.obj_tags.keys().any(|k| k.starts_with(p.as_str())),
         _ => unreachable!("AtomBranch only built for Contains/StartsWith/EndsWith/Exists/Num/HasKeyPrefix"),
+    }
+}
+
+/// Read `extract` against `ctx`, transparently switching to `ctx.parent_tags` for a parent-scoped
+/// `Extract` (see `parent_scoped`). The leaf-time evaluator (`eval_expr`) works from the flattened
+/// `Expr` — no `Filter::Parent` wrapper survives into it, just every key renamed `parent_<key>` by
+/// `categorize::linter::prefix_expr_tags` — so this is what replays `Filter::Parent`'s own
+/// `None => false, Some(parent_tags) => eval(parent, parent_tags)` semantics for a single predicate.
+fn read_extract<'a>(extract: &Extract, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
+    if parent_scoped(extract) {
+        let parent_tags = ctx.parent_tags?;
+        let parent_ctx = ExtractCtx { obj_tags: parent_tags, parent_tags: ctx.parent_tags, id: ctx.id, annotations: ctx.annotations };
+        extract.strip_prefix("parent_").read_str(&parent_ctx)
+    } else {
+        extract.read_str(ctx)
+    }
+}
+
+/// `read_num`'s counterpart to `read_extract` — same parent-scope switch, for `Predicate::Num`.
+fn read_extract_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
+    if parent_scoped(extract) {
+        let parent_tags = ctx.parent_tags?;
+        let parent_ctx = ExtractCtx { obj_tags: parent_tags, parent_tags: ctx.parent_tags, id: ctx.id, annotations: ctx.annotations };
+        read_num(&extract.strip_prefix("parent_"), &parent_ctx)
+    } else {
+        read_num(extract, ctx)
+    }
+}
+
+/// Fully decide one predicate against a concrete object — unlike `decide_value`/`decide_wildcard`
+/// (partial, build-time, three-valued under one known fact), every predicate is decidable here since
+/// `ctx` is a real object. Mirrors `lang::filter::eval`'s per-`Filter`-variant semantics exactly (see
+/// each arm), since this is what stands in for a full `Filter` re-eval at leaf time.
+fn decide_concrete(p: &Predicate, ctx: &ExtractCtx) -> bool {
+    match p {
+        Predicate::Eq(e, v) => read_extract(e, ctx).is_some_and(|s| s.as_ref() == v.as_str()),
+        Predicate::Contains(e, s) => read_extract(e, ctx).is_some_and(|v| v.contains(s.as_str())),
+        Predicate::StartsWith(e, s) => read_extract(e, ctx).is_some_and(|v| v.starts_with(s.as_str())),
+        Predicate::EndsWith(e, s) => read_extract(e, ctx).is_some_and(|v| v.ends_with(s.as_str())),
+        Predicate::Exists(e) => read_extract(e, ctx).is_some(),
+        Predicate::FirstTagIn(e, vals) => read_extract(e, ctx).is_some_and(|v| vals.iter().any(|x| x == v.as_ref())),
+        Predicate::Num(e, op, bits) => read_extract_num(e, ctx).is_some_and(|n| num_matches(op, *bits, n)),
+        Predicate::HasKeyPrefix(prefix) => ctx.obj_tags.keys().any(|k| k.starts_with(prefix.as_str())),
+        Predicate::HasParent => ctx.parent_tags.is_some(),
+        // Same lookup `Filter::AnnotationEq` uses — no "self"/"absent" default (unlike `branch_key`'s
+        // own `SIDE_KEY` handling, a tree-descent safety net, not `eval`'s real semantics).
+        Predicate::Side(v) => ctx.annotations.get("_side").and_then(Value::as_str) == Some(v.as_str()),
+        Predicate::Prefix(v) => ctx.annotations.get("_prefix").and_then(Value::as_str) == Some(v.as_str()),
+        Predicate::Infix(v) => ctx.annotations.get("_infix").and_then(Value::as_str) == Some(v.as_str()),
+        Predicate::TagsEmpty => ctx.obj_tags.is_empty(),
+    }
+}
+
+/// Fully evaluate a leaf's residual `Expr` against a concrete object — the leaf-time counterpart to
+/// `kleene`/`simplify` (which only ever partially decide, under one just-branched fact). Every
+/// `Predicate` is decidable here, so this collapses straight to a `bool`, no `Unknown` case.
+pub(crate) fn eval_expr(e: &Expr, ctx: &ExtractCtx) -> bool {
+    match e {
+        Expr::True => true,
+        Expr::False => false,
+        Expr::Lit(Literal::Pos(p)) => decide_concrete(p, ctx),
+        Expr::Lit(Literal::Neg(p)) => !decide_concrete(p, ctx),
+        Expr::Not(x) => !eval_expr(x, ctx),
+        Expr::And(xs) => xs.iter().all(|x| eval_expr(x, ctx)),
+        Expr::Or(xs) => xs.iter().any(|x| eval_expr(x, ctx)),
     }
 }
 
@@ -326,10 +394,10 @@ fn build_rec(
     max_depth: usize,
 ) -> DecisionTree {
     if candidates.len() <= LEAF_MAX || depth >= max_depth {
-        return DecisionTree::Leaf(candidates.into_iter().map(|(i, _)| i).collect());
+        return DecisionTree::Leaf(candidates);
     }
     let Some(choice) = choose_branch(&candidates, used, used_atoms) else {
-        return DecisionTree::Leaf(candidates.into_iter().map(|(i, _)| i).collect());
+        return DecisionTree::Leaf(candidates);
     };
 
     match choice {
