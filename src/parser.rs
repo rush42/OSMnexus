@@ -61,6 +61,7 @@ pub fn parent_or_obj(p: Producer) -> Producer {
         default: None,
         annotate: Map::new(),
         origin: MatchOrigin::ParentOrObj,
+        tree: None,
     }
 }
 
@@ -126,6 +127,7 @@ impl<'de> Deserialize<'de> for Producer {
                 default: None,
                 annotate: Map::new(),
                 origin: MatchOrigin::Fallback,
+                tree: None,
             },
             ProducerJson::Tag { tag, or: None } => {
                 Producer::Extract { extract: Extract::Value { key: tag, sanitize: None }, annotate: Map::new() }
@@ -138,9 +140,10 @@ impl<'de> Deserialize<'de> for Producer {
                 default: Some(or),
                 annotate: Map::new(),
                 origin: MatchOrigin::TagOr,
+                tree: None,
             },
             ProducerJson::Match { rules, default, annotate } => {
-                Producer::Match { rules, default, annotate, origin: MatchOrigin::Rules }
+                Producer::Match { rules, default, annotate, origin: MatchOrigin::Rules, tree: None }
             }
             ProducerJson::Extract { key, keys, sanitize, annotate } => {
                 let extract = match (key, keys) {

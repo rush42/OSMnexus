@@ -93,7 +93,13 @@ fn default_value_producer(v: &Value) -> Producer {
         }
         _ => (v.clone(), Map::new()),
     };
-    Producer::Match { rules: Vec::new(), default: Some(value), annotate, origin: crate::lang::producer::MatchOrigin::Default }
+    Producer::Match {
+        rules: Vec::new(),
+        default: Some(value),
+        annotate,
+        origin: crate::lang::producer::MatchOrigin::Default,
+        tree: None,
+    }
 }
 
 /// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the
@@ -108,6 +114,7 @@ fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
         default: None,
         annotate: Map::new(),
         origin: crate::lang::producer::MatchOrigin::Fallback,
+        tree: None,
     }
 }
 
@@ -241,7 +248,7 @@ impl TopicRunner {
 
         // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
-        let default_outputs = merge_default_fields(
+        let mut default_outputs = merge_default_fields(
             resolve_outputs(
                 spec.outputs.clone(), &producer_lib, &sanitizers,
                 &format!("topics/{name}/topic.json: outputs"),
@@ -266,6 +273,13 @@ impl TopicRunner {
                 let defaults = merge(&spec.defaults, &cat.defaults);
                 category_outputs.insert(cat.id.clone(), merge_default_fields(fields, &defaults));
             }
+        }
+
+        // Compile a discrimination net into any `Producer::Match` with enough rules to be worth it
+        // (see `Producer::compile_trees`/`MATCH_TREE_MIN_RULES`) — every field's producer is fully
+        // macro/sanitizer/shared-reference-resolved by now, so this is safe to run once, here.
+        for field in default_outputs.iter_mut().chain(category_outputs.values_mut().flatten()) {
+            field.source.compile_trees(tree_max_depth);
         }
 
         let field_stages = crate::profiling::FieldStages::build(
@@ -326,5 +340,128 @@ impl TopicRunner {
             return Vec::new();
         }
         build_topic_rows(self, kind, osm_id, raw_tags.clone(), meta)
+    }
+}
+
+#[cfg(test)]
+mod producer_tree_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use serde_json::Map;
+
+    use crate::categorize::linter::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
+    use crate::lang::producer::{ExtractCtx, Producer, Rule};
+    use crate::osm::types::RawTags;
+    use crate::topic::TopicRunner;
+
+    /// Positive `Eq` atoms in `e` → tag → observed values (mirrors
+    /// `decision_tree::tests::collect_pairs`, duplicated here to avoid depending on that module's
+    /// private test helper).
+    fn collect_pairs(e: &Expr, out: &mut BTreeMap<String, BTreeSet<String>>) {
+        match e {
+            Expr::Lit(Literal::Pos(Predicate::Eq(extract, v))) => {
+                for k in extract.tag_names() {
+                    out.entry(k).or_default().insert(v.clone());
+                }
+            }
+            Expr::Lit(_) | Expr::True | Expr::False => {}
+            Expr::Not(x) => collect_pairs(x, out),
+            Expr::And(xs) | Expr::Or(xs) => xs.iter().for_each(|x| collect_pairs(x, out)),
+        }
+    }
+
+    /// Every `Match`'s `rules` that got a compiled tree, anywhere inside `p` (a rule's own `value`,
+    /// or `Parent`'s inner producer, can itself be a further `Match`).
+    fn find_compiled_matches<'a>(p: &'a Producer, out: &mut Vec<&'a [Rule]>) {
+        match p {
+            Producer::Match { rules, tree, .. } => {
+                if tree.is_some() {
+                    out.push(rules);
+                }
+                for r in rules {
+                    find_compiled_matches(&r.value, out);
+                }
+            }
+            Producer::Parent(inner) => find_compiled_matches(inner, out),
+            Producer::Extract { .. } | Producer::Const { .. } => {}
+        }
+    }
+
+    /// A compiled `Producer::Match` tree must produce the exact same `Produced` (value + annotate)
+    /// as a plain linear scan over the same rules, for every object — the tree only prunes
+    /// candidates it can prove don't apply (see `decision_tree::build`'s own doc on why
+    /// `Producer::Match` needs `assume_match_is_final: false`).
+    #[test]
+    fn producer_tree_matches_linear() {
+        let runner = TopicRunner::load("roads", crate::config::DEFAULT_TREE_MAX_DEPTH)
+            .expect("load roads topic");
+
+        let mut checked_any_field = false;
+        for field in runner.default_outputs.iter().chain(runner.category_outputs.values().flatten()) {
+            let mut compiled = Vec::new();
+            find_compiled_matches(&field.source, &mut compiled);
+            if compiled.is_empty() {
+                continue;
+            }
+            checked_any_field = true;
+
+            let mut refs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for rules in &compiled {
+                for r in rules.iter() {
+                    collect_pairs(&to_nnf(filter_to_expr(&r.when)), &mut refs);
+                }
+            }
+
+            let mut linear = field.source.clone();
+            linear.clear_trees();
+
+            // Cartesian product over every referenced tag's observed values plus "absent" — small
+            // per-tag domains here (a handful of values each), so this stays bounded.
+            let keys: Vec<&String> = refs.keys().collect();
+            let mut combos: Vec<Vec<Option<&str>>> = vec![vec![]];
+            for k in &keys {
+                let mut vals: Vec<Option<&str>> = refs[*k].iter().map(|v| Some(v.as_str())).collect();
+                vals.push(None);
+                let mut next = Vec::with_capacity(combos.len() * vals.len());
+                for combo in &combos {
+                    for v in &vals {
+                        let mut c = combo.clone();
+                        c.push(*v);
+                        next.push(c);
+                    }
+                }
+                combos = next;
+            }
+
+            let mut checked = 0usize;
+            for has_parent in [false, true] {
+                for combo in &combos {
+                    let mut tags: RawTags = RawTags::default();
+                    for (k, v) in keys.iter().zip(combo.iter()) {
+                        if let Some(v) = v {
+                            tags.insert((*k).clone(), v.to_string());
+                        }
+                    }
+                    let parent_tags = if has_parent { Some(tags.clone()) } else { None };
+                    let annotations = Map::new();
+                    let ctx = ExtractCtx {
+                        obj_tags: &tags,
+                        parent_tags: parent_tags.as_ref(),
+                        id: "",
+                        annotations: &annotations,
+                    };
+                    let a = field.source.eval(&ctx).map(|p| (p.value, p.annotate));
+                    let b = linear.eval(&ctx).map(|p| (p.value, p.annotate));
+                    assert_eq!(
+                        a, b,
+                        "[{}] tree≠linear for tags={tags:?} has_parent={has_parent}",
+                        field.output
+                    );
+                    checked += 1;
+                }
+            }
+            assert!(checked > 0, "[{}] no test cases generated", field.output);
+        }
+        assert!(checked_any_field, "no compiled Producer::Match trees found to test against");
     }
 }

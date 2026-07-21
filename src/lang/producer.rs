@@ -17,6 +17,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::categorize::decision_tree::{self, DecisionTree};
 use crate::lang::extract::Extract;
 use crate::lang::filter::{self, Filter};
 use crate::osm::types::RawTags;
@@ -44,20 +45,37 @@ pub struct Rule {
 /// Evaluated against a full `ExtractCtx` — same predicate evaluator (`filter::eval`) and same
 /// context shape category matching uses, so a rule's `when` can see side/prefix/infix/parent, not
 /// just raw tags. Does not apply a `default` — callers needing one (`Producer::Match`) apply it
-/// themselves.
-pub fn match_rules(rules: &[Rule], ctx: &ExtractCtx, own_consts: &Map<String, Value>) -> Option<Produced> {
-    for rule in rules {
-        if !filter::eval(&rule.when, ctx) {
-            continue;
+/// themselves. When `tree` is `Some` (a large enough rule table — see `Producer::Match::tree`'s own
+/// doc), uses it to skip straight to the surviving candidates instead of scanning every rule; falls
+/// back to a plain linear scan otherwise. Same result either way — `resolve_first`'s "keep going if
+/// this candidate produced nothing" walk is exactly this function's own loop, just restricted to a
+/// pre-pruned, still-in-order subset.
+pub fn match_rules(
+    rules: &[Rule],
+    tree: Option<&DecisionTree>,
+    ctx: &ExtractCtx,
+    own_consts: &Map<String, Value>,
+) -> Option<Produced> {
+    let finish = |mut produced: Produced| {
+        if produced.annotate.is_empty() {
+            produced.annotate = own_consts.clone();
         }
-        if let Some(mut produced) = rule.value.eval(ctx) {
-            if produced.annotate.is_empty() {
-                produced.annotate = own_consts.clone();
+        produced
+    };
+    match tree {
+        Some(tree) => decision_tree::resolve_first(tree, ctx, |i| rules[i].value.eval(ctx)).map(finish),
+        None => {
+            for rule in rules {
+                if !filter::eval(&rule.when, ctx) {
+                    continue;
+                }
+                if let Some(produced) = rule.value.eval(ctx) {
+                    return Some(finish(produced));
+                }
             }
-            return Some(produced);
+            None
         }
     }
-    None
 }
 
 /// A produced value plus optional provenance. The `annotate` are arbitrary key/value pairs the
@@ -153,6 +171,15 @@ pub enum Producer {
         annotate: Map<String, Value>,
         /// Display-only provenance — see `MatchOrigin`'s own doc.
         origin: MatchOrigin,
+        /// A discrimination net over `rules`' own `when` conditions (`decision_tree::build` with
+        /// `assume_match_is_final: false` — see its own doc for why `Producer::Match` needs that
+        /// mode, not `categorize`'s), or `None` for a rule table too small to be worth it. Always
+        /// starts `None` at parse time — no JSON shape ever sets it — and is filled in by a
+        /// post-load compile pass (`topic::runner::compile_producer_trees`) once every rule's
+        /// `when`/`value` is fully macro/sanitizer-resolved. `match_rules` uses it when present,
+        /// falls back to a plain linear scan otherwise; same answers either way (see
+        /// `producer_tree_matches_linear`).
+        tree: Option<DecisionTree>,
     },
     /// Plain tag read — always against `ctx.obj_tags` (wrap in `Parent`, or use
     /// `parser::parent_or_obj`, for the parent's tags). `extract` carries its own `sanitize` (see
@@ -188,11 +215,58 @@ pub enum Producer {
     Parent(Box<Producer>),
 }
 
+/// Below this many rules, a `Match`'s linear scan is already cheap enough that a compiled tree
+/// isn't worth it — same threshold philosophy as `decision_tree::LOOKAHEAD_MIN_CANDIDATES`. Today
+/// only the shared `road` classifier (16 rules) clears it; every other producer in the repo tops out
+/// at 5.
+const MATCH_TREE_MIN_RULES: usize = 6;
+
 impl Producer {
+    /// Post-load pass: for any `Match` whose `rules` are numerous enough to be worth it (see
+    /// `MATCH_TREE_MIN_RULES`), compile a discrimination net over their `when` conditions (see
+    /// `Match::tree`'s own doc) and stash it in `tree`. Recurses into every rule's `value` and into
+    /// `Parent`'s inner producer first — a large `Match` can be nested arbitrarily deep (e.g. a rule
+    /// whose own value is a further `Match`). Call once per topic load
+    /// (`topic::runner::TopicRunner::load`), after every macro/sanitizer/shared-producer reference is
+    /// already resolved — a `Rule`'s `when`/`value` built straight from resolved JSON needs nothing
+    /// further before this can run.
+    pub fn compile_trees(&mut self, max_depth: usize) {
+        match self {
+            Producer::Match { rules, tree, .. } => {
+                for rule in rules.iter_mut() {
+                    rule.value.compile_trees(max_depth);
+                }
+                if rules.len() > MATCH_TREE_MIN_RULES {
+                    let conditions: Vec<Filter> = rules.iter().map(|r| r.when.clone()).collect();
+                    *tree = Some(decision_tree::build(&conditions, max_depth, false));
+                }
+            }
+            Producer::Parent(inner) => inner.compile_trees(max_depth),
+            Producer::Extract { .. } | Producer::Const { .. } => {}
+        }
+    }
+
+    /// Inverse of `compile_trees` — strip every compiled tree back out, recursively. Used by the
+    /// tree/linear differential test (`producer_tree_matches_linear`) to get a guaranteed-linear
+    /// reference copy from an already-compiled producer, without needing a second load pass.
+    #[cfg(test)]
+    pub fn clear_trees(&mut self) {
+        match self {
+            Producer::Match { rules, tree, .. } => {
+                *tree = None;
+                for rule in rules.iter_mut() {
+                    rule.value.clear_trees();
+                }
+            }
+            Producer::Parent(inner) => inner.clear_trees(),
+            Producer::Extract { .. } | Producer::Const { .. } => {}
+        }
+    }
+
     pub fn eval(&self, ctx: &ExtractCtx) -> Option<Produced> {
         match self {
-            Producer::Match { rules, default, annotate, .. } => {
-                match_rules(rules, ctx, annotate)
+            Producer::Match { rules, default, annotate, tree, .. } => {
+                match_rules(rules, tree.as_ref(), ctx, annotate)
                     .or_else(|| default.clone().map(|value| Produced { value, annotate: annotate.clone() }))
             }
 
@@ -232,6 +306,7 @@ mod classify_bool_tests {
             default: Some(Value::Bool(false)),
             annotate: Map::new(),
             origin: MatchOrigin::Rules,
+            tree: None,
         };
         match from {
             TagSet::Obj => base,

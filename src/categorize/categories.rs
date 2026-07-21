@@ -81,17 +81,18 @@ pub enum OrderedNode {
 pub fn categorize<'a>(ctx: &ExtractCtx, cats: &'a CategoriesFile) -> Option<&'a CategoryDef> {
     // The discrimination net prunes the priority list to a small, order-preserving candidate set,
     // each paired with its condition as already simplified by every branch fact proven along the way
-    // to it — `eval_expr` decides the rest without re-reading/re-comparing what the tree already
-    // knows (unlike `eval_node`, which would re-derive everything from the original `Filter`).
-    for (i, expr) in cats.tree.candidates(ctx) {
-        if crate::categorize::decision_tree::eval_expr(expr, ctx) {
-            return match &cats.order[*i] {
-                OrderedNode::Category { idx } => Some(&cats.categories[*idx]),
-                OrderedNode::Skip { .. } => None,
-            };
-        }
-    }
-    None
+    // to it — `resolve_first`/`eval_expr` decide the rest without re-reading/re-comparing what the
+    // tree already knows (unlike `eval_node`, which would re-derive everything from the original
+    // `Filter`). `on_match` always returns `Some(_)`: this tree was built with
+    // `assume_match_is_final: true`, so the first true candidate is unconditionally the answer —
+    // never "keep going" the way `Producer::Match`'s tree walk can.
+    decision_tree::resolve_first(&cats.tree, ctx, |i| {
+        Some(match &cats.order[i] {
+            OrderedNode::Category { idx } => Some(&cats.categories[*idx]),
+            OrderedNode::Skip { .. } => None,
+        })
+    })
+    .flatten()
 }
 
 /// Full first-match walk over the whole `order`, bypassing the tree. Kept as the reference
@@ -191,8 +192,15 @@ impl CategoriesFile {
                 }
             }
         }
+        let conditions: Vec<Filter> = order
+            .iter()
+            .map(|n| match n {
+                OrderedNode::Category { idx } => self.categories[*idx].condition.clone(),
+                OrderedNode::Skip { condition } => condition.clone(),
+            })
+            .collect();
         self.order = order;
-        self.tree = decision_tree::build(self, tree_max_depth);
+        self.tree = decision_tree::build(&conditions, tree_max_depth, true);
         Ok(())
     }
 }

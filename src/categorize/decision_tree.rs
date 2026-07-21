@@ -1,7 +1,9 @@
-//! Discrimination net over the compiled category `order`, to prune `categorize`'s first-match walk
-//! — both the runtime tree shape/walk (`DecisionTree`, `candidates()`) and the load-time compiler
-//! that builds one from a `CategoriesFile`'s compiled `order` (`build()`; nothing in that half runs
-//! per-object).
+//! Discrimination net over an ordered list of `Filter` conditions, to prune a first-match walk —
+//! both the runtime tree shape/walk (`DecisionTree`, `candidates()`/`resolve_first()`) and the
+//! load-time compiler (`build()`; nothing in that half runs per-object). Two callers share this:
+//! `categorize` (over a `CategoriesFile`'s excludes-compiled `order`) and `Producer::Match` (over its
+//! own `rules`, already in final priority order as authored) — see `build`'s own doc for the one
+//! real difference between them (`assume_match_is_final`).
 //!
 //! The tree branches on discriminating equality-tags (chiefly `highway`) and on a handful of
 //! context fields that are *always* fully known and small-domain — `side`, `has_parent`, `prefix`,
@@ -37,7 +39,6 @@ use std::borrow::Cow;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
-use crate::categorize::categories::{CategoriesFile, OrderedNode};
 use crate::lang::extract::Extract;
 use crate::lang::filter::{read_num, Filter};
 use crate::lang::producer::ExtractCtx;
@@ -265,6 +266,31 @@ pub(crate) fn eval_expr(e: &Expr, ctx: &ExtractCtx) -> bool {
     }
 }
 
+/// Walk `tree`'s surviving candidates in order (ascending = priority), calling `on_match(i)` for
+/// each whose condition is actually true; the first `Some(t)` `on_match` returns wins. Shared by
+/// both callers of a compiled tree:
+/// - `categorize` (`assume_match_is_final: true` trees): `on_match` always returns `Some(_)` for a
+///   true condition — the first true candidate is unconditionally the answer, matching this module's
+///   original single-purpose walk.
+/// - `Producer::Match` (`assume_match_is_final: false` trees): `on_match` runs the rule's `value`
+///   producer and returns `None` if it produces nothing, so the walk keeps trying later candidates —
+///   replicating `match_rules`'s "matched but produced nothing, keep going" exactly, just restricted
+///   to the (already-pruned, still-in-order) candidates the tree kept.
+pub(crate) fn resolve_first<T>(
+    tree: &DecisionTree,
+    ctx: &ExtractCtx,
+    mut on_match: impl FnMut(usize) -> Option<T>,
+) -> Option<T> {
+    for (i, expr) in tree.candidates(ctx) {
+        if eval_expr(expr, ctx) {
+            if let Some(t) = on_match(*i) {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
 /// Resolve a branch key against the object's context. `None` means "no matching enumerated child"
 /// → fall through to the wildcard. `BranchKey::Tag` reads through `read_extract` (not
 /// `Extract::read_str` directly) so a parent-scoped branch key redirects to `ctx.parent_tags`, same
@@ -319,30 +345,42 @@ const LEAF_MAX: usize = 2;
 /// exactly as reduced as `residual` — just without the redundant-at-eval-time prior negations.
 type Candidate = (usize, Expr, Expr);
 
-/// Build the discrimination net from a topic's compiled `order` (+ categories/macros for
-/// conditions). `max_depth` caps how many tags deep a branch chain may go (see `build_rec`).
-pub fn build(cats: &CategoriesFile, max_depth: usize) -> DecisionTree {
-    // NNF condition per order node (index-aligned with `cats.order`).
-    let exprs: Vec<Expr> = cats
-        .order
-        .iter()
-        .map(|n| to_nnf(filter_to_expr(node_condition(cats, n))))
-        .collect();
+/// Build a discrimination net over an already-ordered list of `Filter` conditions — `categorize`'s
+/// compiled category/skip `order` (excludes-topo-sorted first) and a `Producer::Match`'s own `rules`
+/// (already in final priority order as authored, no reordering needed) are both just "first-match
+/// over an ordered `Filter` list" once you're at this level; `max_depth` caps how many tags deep a
+/// branch chain may go (see `build_rec`).
+///
+/// `assume_match_is_final` controls whether a node's *own* condition being true is enough to prove
+/// it's the answer:
+/// - `true` (categorize): matching is always decisive, so node `i`'s effective condition folds in
+///   every earlier node's negation (`cond_i ∧ ¬cond_1 ∧ … ∧ ¬cond_{i-1}`) — this both hands the tree
+///   builder a smaller residual to branch on and, when it collapses to `Expr::False` outright,
+///   proves node `i` is fully shadowed (dead) before the tree is even built.
+/// - `false` (`Producer::Match`): a matching rule can still produce nothing and fall through to the
+///   next one (`match_rules`'s own doc) — whether rule `j` "wins" depends on more than its `when`
+///   being true, so assuming `¬cond_j` for every `j < i` would be unsound (it could wrongly prune `i`
+///   for an object where `j` matched but didn't produce). Residual falls back to just `cond_i` alone
+///   — weaker pruning (no cross-rule dead-code elimination), but the only sound option — and the
+///   runtime walk (`resolve_first`) tries every surviving candidate in order, not just the first
+///   match, to replicate `match_rules`'s "keep going if it produced nothing" exactly.
+pub fn build(conditions: &[Filter], max_depth: usize, assume_match_is_final: bool) -> DecisionTree {
+    let exprs: Vec<Expr> = conditions.iter().map(|f| to_nnf(filter_to_expr(f))).collect();
 
-    // First-match semantics mean node `i` only ever decides anything once every earlier node has
-    // failed, so its *effective* condition is `cond_i ∧ ¬cond_1 ∧ … ∧ ¬cond_{i-1}` — fold that in
-    // once, here, at load time. This both hands the tree builder a smaller residual to branch on
-    // and, when a node's residual collapses to `Expr::False` outright, proves it's fully shadowed
-    // (dead) before the tree is even built.
-    let neg_exprs: Vec<Expr> =
-        exprs.iter().map(|e| to_nnf(Expr::Not(Box::new(e.clone())))).collect();
-    let mut residuals: Vec<Expr> = Vec::with_capacity(exprs.len());
-    for i in 0..exprs.len() {
-        let mut parts = Vec::with_capacity(i + 1);
-        parts.push(exprs[i].clone());
-        parts.extend(neg_exprs[..i].iter().cloned());
-        residuals.push(conjoin(parts));
-    }
+    let residuals: Vec<Expr> = if assume_match_is_final {
+        let neg_exprs: Vec<Expr> =
+            exprs.iter().map(|e| to_nnf(Expr::Not(Box::new(e.clone())))).collect();
+        let mut residuals: Vec<Expr> = Vec::with_capacity(exprs.len());
+        for i in 0..exprs.len() {
+            let mut parts = Vec::with_capacity(i + 1);
+            parts.push(exprs[i].clone());
+            parts.extend(neg_exprs[..i].iter().cloned());
+            residuals.push(conjoin(parts));
+        }
+        residuals
+    } else {
+        exprs.clone()
+    };
 
     let all: Vec<Candidate> = residuals.into_iter().zip(exprs).enumerate()
         .map(|(i, (residual, own))| (i, residual, own))
@@ -391,12 +429,6 @@ fn conjoin(parts: Vec<Expr>) -> Expr {
     }
 }
 
-fn node_condition<'a>(cats: &'a CategoriesFile, n: &'a OrderedNode) -> &'a Filter {
-    match n {
-        OrderedNode::Category { idx } => &cats.categories[*idx].condition,
-        OrderedNode::Skip { condition } => condition,
-    }
-}
 
 fn build_rec(
     candidates: Vec<Candidate>,

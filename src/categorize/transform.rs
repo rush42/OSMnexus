@@ -629,6 +629,7 @@ mod run_transform_steps_tests {
                         default: Some(Value::String("cycleway".to_owned())),
                         annotate: Map::new(),
                         origin: crate::lang::producer::MatchOrigin::Default,
+                        tree: None,
                     },
                 },
             ]).collect();

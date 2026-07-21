@@ -87,7 +87,7 @@ pub fn producer_dag(producer: &Producer) -> DagGraph {
 /// it falls back to the producer's own node.
 fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) -> String {
     match p {
-        Producer::Match { rules: _, default, annotate, origin: MatchOrigin::Default } => {
+        Producer::Match { rules: _, default, annotate, origin: MatchOrigin::Default, tree: _ } => {
             // No real branching — a `defaults` JSON entry bundled straight into a producer
             // (`topic::runner::default_value_producer`), always empty `rules`. Shown as a plain
             // literal, not a one-branch "match" wrapper around nothing.
@@ -97,7 +97,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) ->
             annotate_node(g, annotate_to.unwrap_or(&node), annotate);
             node
         }
-        Producer::Match { rules, default, annotate, origin } => {
+        Producer::Match { rules, default, annotate, origin, tree: _ } => {
             // `Fallback`/`TagOr` matches always have `when: true` on every rule by construction
             // (see `MatchOrigin`'s own doc) — describing a condition that's always "true" is noise,
             // so those show priority order instead of the (uninformative) condition text.
