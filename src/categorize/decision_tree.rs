@@ -413,7 +413,7 @@ fn build_rec(
                     build_rec(kept, used, used_atoms, depth + 1, max_depth),
                 );
             }
-            let wild = fold_candidates(&candidates, &|p| decide_wildcard(p, &tag));
+            let wild = fold_candidates(&candidates, &|p| decide_wildcard(p, &tag, &values));
             let wildcard = Box::new(build_rec(wild, used, used_atoms, depth + 1, max_depth));
 
             used.remove(&tag);
@@ -486,7 +486,7 @@ fn choose_branch(
     for key in tags {
         let values = eligible_values(candidates, &key);
         let mut worst =
-            candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_wildcard(p, &key))).count();
+            candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_wildcard(p, &key, &values))).count();
         for v in &values {
             let c = candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_value(p, &key, v))).count();
             worst = worst.max(c);
@@ -672,22 +672,30 @@ fn decide_value(p: &Predicate, key: &BranchKey, v: &str) -> K {
     }
 }
 
-/// Decide a predicate under "`key`'s read value is absent or not among the enumerated eq-values".
-/// Every positive Eq/FirstTagIn on `key`'s `Extract` in the candidate set uses an enumerated value,
-/// so all are false here; existence and value-shape atoms stay unknown (the object could carry an
-/// un-enumerated value).
-fn decide_wildcard(p: &Predicate, key: &BranchKey) -> K {
+/// Decide a predicate under "`key`'s read value is absent, or present but not among `values`
+/// (`eligible_values`'s result for this same branch)". Only a target value that's actually in
+/// `values` can be folded to `False` here — `values` is collected from *positive* Eq/FirstTagIn/
+/// Prefix/Infix occurrences only (`collect_eq_values`), so a negative-only literal naming some other
+/// value was never enumerated as a child, and the wildcard object could still carry exactly that
+/// value; folding it to `False` regardless (as if every nameable value were enumerated) is unsound —
+/// it doesn't just miss a prune, it can make the leaf's residual `Expr` claim a fact that isn't true
+/// (`eval_expr` would then trust it). Existence/value-shape atoms stay `Unknown` either way (the
+/// object could still carry an un-enumerated value with that shape).
+fn decide_wildcard(p: &Predicate, key: &BranchKey, values: &[String]) -> K {
+    let enumerated = |v: &str| if values.iter().any(|x| x == v) { K::F } else { K::U };
     let extract = match key {
         BranchKey::Sentinel(SIDE_KEY) => return match p { Predicate::Side(_) => K::F, _ => K::U },
         BranchKey::Sentinel(HAS_PARENT_KEY) => return match p { Predicate::HasParent => K::F, _ => K::U },
-        BranchKey::Sentinel(PREFIX_KEY) => return match p { Predicate::Prefix(_) => K::F, _ => K::U },
-        BranchKey::Sentinel(INFIX_KEY) => return match p { Predicate::Infix(_) => K::F, _ => K::U },
+        BranchKey::Sentinel(PREFIX_KEY) => return match p { Predicate::Prefix(v) => enumerated(v), _ => K::U },
+        BranchKey::Sentinel(INFIX_KEY) => return match p { Predicate::Infix(v) => enumerated(v), _ => K::U },
         BranchKey::Sentinel(other) => unreachable!("unknown branch-key sentinel {other:?}"),
         BranchKey::Tag(extract) => extract,
     };
     match p {
-        Predicate::Eq(e, _) if e == extract => K::F,
-        Predicate::FirstTagIn(e, _) if e == extract => K::F,
+        Predicate::Eq(e, v) if e == extract => enumerated(v),
+        Predicate::FirstTagIn(e, vals) if e == extract => {
+            if vals.iter().all(|v| values.iter().any(|x| x == v)) { K::F } else { K::U }
+        }
         _ => K::U,
     }
 }
