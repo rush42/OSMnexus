@@ -325,10 +325,11 @@ impl TopicRunner {
         self.wants(ElementKind::Way, GeometryShape::Graph)
     }
 
-    /// Run the topic's pipeline for one element of `kind`: clone its raw tags, then hand off to
-    /// `build_topic_rows`, which applies `kind`'s own transform pipeline (if any), `exclude_condition`,
-    /// side-split, categorize/extract into tag rows against the kind's category set. `raw_tags` are
-    /// the element's untouched tags. Geometry is produced separately (way-only) via `build_edges`.
+    /// Run the topic's pipeline for one element of `kind`, handing off to `build_topic_rows`, which
+    /// applies `kind`'s own transform pipeline (if any), `exclude_condition`, side-split,
+    /// categorize/extract into tag rows against the kind's category set. `raw_tags` are the
+    /// element's untouched tags — `build_topic_rows` only clones them if it actually needs to
+    /// mutate a copy (an excluded element, or one with no transform pipeline, never pays for it).
     pub fn process(
         &self,
         kind: ElementKind,
@@ -339,7 +340,7 @@ impl TopicRunner {
         if !self.has_kind(kind) {
             return Vec::new();
         }
-        build_topic_rows(self, kind, osm_id, raw_tags.clone(), meta)
+        build_topic_rows(self, kind, osm_id, raw_tags, meta)
     }
 }
 

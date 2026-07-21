@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde_json::{Map, Value};
 
 use crate::categorize::categories::categorize;
@@ -46,7 +48,7 @@ pub fn build_topic_rows(
     runner: &TopicRunner,
     kind: ElementKind,
     osm_id: i64,
-    mut tags: RawTags,
+    raw_tags: &RawTags,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
     // The category set for this element kind. Absent → the topic has no categories for this kind.
@@ -55,33 +57,40 @@ pub fn build_topic_rows(
         None => return Vec::new(),
     };
 
+    // `exclude_condition` is checked first, against raw tags — see `topic::spec::KindTransformsSpec`'s
+    // own doc on why it no longer needs anything from the transform pipeline pre-computed for it
+    // (a construction-highway rewrite dependency used to force a `before_exclude`/`after_exclude`
+    // split; that dependency now lives directly in `exclude_condition` itself, e.g.
+    // `configs/tilda/macros.json`'s `is_allowed_highway`). Checking first — against the still-borrowed
+    // `raw_tags` — also means an excluded element never pays for a tags clone at all.
+    if let Some(cond) = &runner.exclude_condition {
+        let _t = crate::profiling::time(&crate::profiling::EXCLUDE_CHECK);
+        if eval_filter(cond, raw_tags) {
+            return Vec::new();
+        }
+    }
+
     let default_id = format!("{}/{}", kind.id_prefix(), osm_id);
     let mut annotations = Map::new();
     annotations.insert("_side".to_owned(), Value::String("self".to_owned()));
     let mut clones = Vec::new();
 
-    // `exclude_condition` is checked first, against raw tags — see `topic::spec::KindTransformsSpec`'s
-    // own doc on why it no longer needs anything from the transform pipeline pre-computed for it
-    // (a construction-highway rewrite dependency used to force a `before_exclude`/`after_exclude`
-    // split; that dependency now lives directly in `exclude_condition` itself, e.g.
-    // `configs/tilda/macros.json`'s `is_allowed_highway`). Checking first also means an excluded
-    // element never pays for the transform pipeline at all.
-    if let Some(cond) = &runner.exclude_condition {
-        let _t = crate::profiling::time(&crate::profiling::EXCLUDE_CHECK);
-        if eval_filter(cond, &tags) {
-            return Vec::new();
-        }
-    }
-
     // This kind's own transform pipeline (in-place `InputTransform`s + `Clone`s from
     // `split_sides`), if `transforms.json` defines one — a kind with none simply has an empty
-    // slice, a no-op.
+    // slice, a no-op. Only clone `raw_tags` into an owned, mutable copy when there's actually a
+    // pipeline to run against it — a kind with no transforms just borrows `raw_tags` as-is.
     static EMPTY_PIPELINE: Vec<TransformStep> = Vec::new();
     let pipeline = runner.pipelines.get(&kind).unwrap_or(&EMPTY_PIPELINE);
 
-    {
+    let mut tags: Cow<RawTags> = if pipeline.is_empty() {
+        Cow::Borrowed(raw_tags)
+    } else {
+        Cow::Owned(raw_tags.clone())
+    };
+
+    if !pipeline.is_empty() {
         let _t = crate::profiling::time(&crate::profiling::TRANSFORM_STEPS);
-        if !run_transform_steps(&mut tags, &mut annotations, pipeline, &default_id, &mut clones) {
+        if !run_transform_steps(tags.to_mut(), &mut annotations, pipeline, &default_id, &mut clones) {
             return Vec::new();
         }
     }
@@ -133,9 +142,9 @@ pub fn build_topic_rows(
         }
     };
 
-    emit(ExtractCtx { obj_tags: &tags, parent_tags: None, id: &default_id, annotations: &annotations });
+    emit(ExtractCtx { obj_tags: &*tags, parent_tags: None, id: &default_id, annotations: &annotations });
     for (clone_tags, clone_annotations, id) in &clones {
-        emit(ExtractCtx { obj_tags: clone_tags, parent_tags: Some(&tags), id, annotations: clone_annotations });
+        emit(ExtractCtx { obj_tags: clone_tags, parent_tags: Some(&*tags), id, annotations: clone_annotations });
     }
 
     rows
