@@ -195,7 +195,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
 /// f64. Returns None when the tag is absent or the value is unparseable — so every numeric
 /// comparison is false on missing/garbage input. No geometry-derived values (length, …) are
 /// available: classification is tag-only.
-fn read_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
+pub(crate) fn read_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
     match extract.sanitize() {
         Some(_) => num_from_value(&extract.read(ctx)?),
         None => extract.read_raw(ctx)?.trim().parse().ok(),

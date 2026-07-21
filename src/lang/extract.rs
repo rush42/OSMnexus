@@ -32,7 +32,7 @@ use crate::osm::types::RawTags;
 /// so it never participates in that disambiguation. `Extract` is always `#[serde(flatten)]`ed into
 /// its embedding struct, so `sanitize` living here rather than as a sibling field changes nothing
 /// about the on-disk JSON shape.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 #[serde(untagged)]
 pub enum Extract {
     /// First-present fallback over an ordered candidate list.
@@ -82,6 +82,32 @@ impl Extract {
             Some(sanitize) => match eval_sanitize(Some(sanitize), raw)? {
                 Value::String(s) => Some(Cow::Owned(s)),
                 other => other.as_str().map(|s| Cow::Owned(s.to_owned())),
+            },
+        }
+    }
+
+    /// The plain OSM key(s) this extract reads from — one for `Value`, the ordered candidate list
+    /// for `Candidates`. Used by `categorize::linter`'s overlap grouping and
+    /// `categorize::decision_tree`'s branch-key eligibility check (both only care about *which*
+    /// tag(s) are read, not the `sanitize` chain).
+    pub fn tag_names(&self) -> Vec<String> {
+        match self {
+            Extract::Value { key, .. } => vec![key.clone()],
+            Extract::Candidates { keys, .. } => keys.clone(),
+        }
+    }
+
+    /// This extract with every key prefixed (e.g. `"parent_"`), same `sanitize` chain — the
+    /// `Filter::Parent` case: `categorize::linter::prefix_expr_tags` models a parent-scoped
+    /// condition as an ordinary predicate on a synthetic `parent_<key>` name.
+    pub fn prefixed(&self, prefix: &str) -> Extract {
+        match self {
+            Extract::Value { key, sanitize } => {
+                Extract::Value { key: format!("{prefix}{key}"), sanitize: sanitize.clone() }
+            }
+            Extract::Candidates { keys, sanitize } => Extract::Candidates {
+                keys: keys.iter().map(|k| format!("{prefix}{k}")).collect(),
+                sanitize: sanitize.clone(),
             },
         }
     }

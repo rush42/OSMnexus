@@ -10,19 +10,30 @@ use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::osm::types::ElementKind;
 
+/// An atom's tag-bearing variants carry the full `Extract` (key(s) + `sanitize` chain) rather than
+/// a plain key string — a sanitized comparison tests a *derived* value, and both the overlap lint
+/// and `categorize::decision_tree`'s branch-key eligibility need to know that (the lint still
+/// groups purely by `Extract::tag_names()`, ignoring `sanitize`, same conservative approximation as
+/// before; the decision tree now uses the whole `Extract` — `Extract::read_str` already applies
+/// `sanitize` uniformly, so it's no longer unsound to branch on one). Two `Extract`s with the same
+/// key(s) but a different `sanitize` chain are different atoms, by design.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Predicate {
-    Eq(String, String),
-    Contains(String, String),
-    StartsWith(String, String),
-    EndsWith(String, String),
-    Exists(String),
-    FirstTagIn(Vec<String>, Vec<String>),
-    /// Numeric comparison atom: `(value key, op, threshold bits)`. The threshold is stored as the
-    /// f64 bit pattern so the atom stays `Hash`/`Eq`/`Ord`; identity is exact-literal, which is all
-    /// the overlap lint needs (it won't *prove* e.g. `lte 0.08 ⟹ lte 0.13`, only treats atoms as
+    Eq(Extract, String),
+    Contains(Extract, String),
+    StartsWith(Extract, String),
+    EndsWith(Extract, String),
+    Exists(Extract),
+    /// "First-present key among `Extract::Candidates`'s list has one of these values" — kept as its
+    /// own atom (rather than expanded into an `Or` of per-key `Eq`s the way `Extract::Value` + `In`
+    /// is) because first-present-wins semantics aren't expressible that way: a later key's value
+    /// only matters when every earlier one is absent, not merely unequal.
+    FirstTagIn(Extract, Vec<String>),
+    /// Numeric comparison atom: `(value extract, op, threshold bits)`. The threshold is stored as
+    /// the f64 bit pattern so the atom stays `Hash`/`Eq`/`Ord`; identity is exact-literal, which is
+    /// all the overlap lint needs (it won't *prove* e.g. `lte 0.08 ⟹ lte 0.13`, only treats atoms as
     /// independent — sound but conservative).
-    Num(String, NumOp, u64),
+    Num(Extract, NumOp, u64),
     HasKeyPrefix(String),
     HasParent,
     Prefix(String),
@@ -40,13 +51,13 @@ pub enum NumOp { Lt, Lte, Gt, Gte }
 impl Predicate {
     pub fn tags_involved(&self) -> Vec<String> {
         match self {
-            Predicate::Eq(k, _) => vec![k.clone()],
-            Predicate::Contains(k, _) => vec![k.clone()],
-            Predicate::StartsWith(k, _) => vec![k.clone()],
-            Predicate::EndsWith(k, _) => vec![k.clone()],
-            Predicate::Exists(k) => vec![k.clone()],
-            Predicate::FirstTagIn(ks, _) => ks.clone(),
-            Predicate::Num(k, _, _) => vec![k.clone()],
+            Predicate::Eq(e, _) => e.tag_names(),
+            Predicate::Contains(e, _) => e.tag_names(),
+            Predicate::StartsWith(e, _) => e.tag_names(),
+            Predicate::EndsWith(e, _) => e.tag_names(),
+            Predicate::Exists(e) => e.tag_names(),
+            Predicate::FirstTagIn(e, _) => e.tag_names(),
+            Predicate::Num(e, _, _) => e.tag_names(),
             Predicate::HasKeyPrefix(p) => vec![format!("prefix({})", p)],
             Predicate::HasParent => vec!["[parent]".to_string()],
             Predicate::Prefix(_) => vec!["[prefix]".to_string()],
@@ -73,25 +84,15 @@ pub enum Expr {
     Or(Vec<Expr>),
 }
 
-/// `extract`'s key if `Value`, else the first candidate of `Candidates` — the representative key
-/// used for `Predicate` atoms that can only name one plain key (see `filter_to_expr`'s doc on why
-/// that's an approximation for the `Candidates`/`first_tag` case).
-fn extract_key(extract: &crate::lang::extract::Extract) -> String {
-    use crate::lang::extract::Extract;
-    match extract {
-        Extract::Value { key, .. } => key.clone(),
-        Extract::Candidates { keys, .. } => keys.first().cloned()
-            .expect("Extract::Candidates needs a non-empty `keys`/`first_tag`"),
-    }
-}
-
 /// Convert a resolved `Filter` (no macro/named-sanitizer reference left — see `Filter`'s own doc)
 /// to an overlap-analysis `Expr`. Used by both `decision_tree::build` (an already-resolved
 /// `CategoriesFile`, built earlier in `topic::runner::TopicRunner::load` for unrelated reasons) and
 /// the standalone overlap lint (`find_all_topic_overlaps`, which builds its own resolved
-/// `CategoriesFile` via the same `topic::load` pipeline `TopicRunner` uses). `sanitize` is ignored
-/// either way: the overlap lint is a conservative heuristic and treats a sanitized comparison like
-/// a raw one (atoms are independent, which keeps it sound enough).
+/// `CategoriesFile` via the same `topic::load` pipeline `TopicRunner` uses). Every tag-bearing
+/// `Predicate` now carries the full `Extract` (see `Predicate`'s own doc) — the overlap lint keeps
+/// grouping by `tags_involved()` (still `sanitize`-blind, same conservative approximation as
+/// before), while `decision_tree::build` uses the `Extract` itself to evaluate branches correctly
+/// (`Extract::read_str` applies `sanitize`).
 pub fn filter_to_expr(filter: &Filter) -> Expr {
     match filter {
         Filter::Bool(true) => Expr::True,
@@ -100,34 +101,31 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::Or { or } => Expr::Or(or.iter().map(filter_to_expr).collect()),
         Filter::Not { not } => Expr::Not(Box::new(filter_to_expr(not))),
 
-        Filter::Eq { extract, eq, .. } => match extract {
-            Extract::Value { key, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), eq.clone()))),
-            Extract::Candidates { keys, .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vec![eq.clone()]))),
-        },
-        Filter::Exists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract_key(extract)))),
-        Filter::Exists { extract, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(extract_key(extract)))),
-        Filter::Contains { extract, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(extract_key(extract), contains.clone()))),
-        Filter::StartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract_key(extract), starts_with.clone()))),
-        Filter::EndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract_key(extract), ends_with.clone()))),
+        Filter::Eq { extract, eq, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), eq.clone()))),
+        Filter::Exists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract.clone()))),
+        Filter::Exists { extract, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(extract.clone()))),
+        Filter::Contains { extract, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(extract.clone(), contains.clone()))),
+        Filter::StartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract.clone(), starts_with.clone()))),
+        Filter::EndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract.clone(), ends_with.clone()))),
         Filter::In { extract, r#in, .. } => match extract {
-            Extract::Value { key, .. } => {
-                let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone())))).collect();
+            Extract::Value { .. } => {
+                let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone())))).collect();
                 Expr::Or(exprs)
             }
-            Extract::Candidates { keys, .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), r#in.clone()))),
+            Extract::Candidates { .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(extract.clone(), r#in.clone()))),
         },
         Filter::InSet { extract, in_set, .. } => match extract {
-            Extract::Value { key, .. } => {
+            Extract::Value { .. } => {
                 let exprs: Vec<_> = crate::value_sets::value_set(in_set)
                     .iter()
-                    .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(key.clone(), v.clone()))))
+                    .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone()))))
                     .collect();
                 Expr::Or(exprs)
             }
-            Extract::Candidates { keys, .. } => {
+            Extract::Candidates { .. } => {
                 let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
                 vals.sort();
-                Expr::Lit(Literal::Pos(Predicate::FirstTagIn(keys.clone(), vals)))
+                Expr::Lit(Literal::Pos(Predicate::FirstTagIn(extract.clone(), vals)))
             }
         },
 
@@ -140,16 +138,15 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
             other => unreachable!("Filter::AnnotationEq only ever spelled for _side/_prefix/_infix, got {other}"),
         },
         Filter::NumRange { extract, min, max } => {
-            let key = extract_key(extract);
             let mut parts = Vec::with_capacity(2);
             match min {
-                Bound::Included(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(key.clone(), NumOp::Gte, v.to_bits())))),
-                Bound::Excluded(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(key.clone(), NumOp::Gt, v.to_bits())))),
+                Bound::Included(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(extract.clone(), NumOp::Gte, v.to_bits())))),
+                Bound::Excluded(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(extract.clone(), NumOp::Gt, v.to_bits())))),
                 Bound::Unbounded => {}
             }
             match max {
-                Bound::Included(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(key.clone(), NumOp::Lte, v.to_bits())))),
-                Bound::Excluded(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(key, NumOp::Lt, v.to_bits())))),
+                Bound::Included(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(extract.clone(), NumOp::Lte, v.to_bits())))),
+                Bound::Excluded(v) => parts.push(Expr::Lit(Literal::Pos(Predicate::Num(extract.clone(), NumOp::Lt, v.to_bits())))),
                 Bound::Unbounded => {}
             }
             match parts.len() {
@@ -183,15 +180,13 @@ fn prefix_expr_tags(e: Expr) -> Expr {
 
 fn prefix_predicate(p: Predicate) -> Predicate {
     match p {
-        Predicate::Eq(k, v) => Predicate::Eq(format!("parent_{k}"), v),
-        Predicate::Contains(k, v) => Predicate::Contains(format!("parent_{k}"), v),
-        Predicate::StartsWith(k, v) => Predicate::StartsWith(format!("parent_{k}"), v),
-        Predicate::EndsWith(k, v) => Predicate::EndsWith(format!("parent_{k}"), v),
-        Predicate::Exists(k) => Predicate::Exists(format!("parent_{k}")),
-        Predicate::FirstTagIn(ks, vs) => {
-            Predicate::FirstTagIn(ks.into_iter().map(|k| format!("parent_{k}")).collect(), vs)
-        }
-        Predicate::Num(k, op, bits) => Predicate::Num(format!("parent_{k}"), op, bits),
+        Predicate::Eq(e, v) => Predicate::Eq(e.prefixed("parent_"), v),
+        Predicate::Contains(e, v) => Predicate::Contains(e.prefixed("parent_"), v),
+        Predicate::StartsWith(e, v) => Predicate::StartsWith(e.prefixed("parent_"), v),
+        Predicate::EndsWith(e, v) => Predicate::EndsWith(e.prefixed("parent_"), v),
+        Predicate::Exists(e) => Predicate::Exists(e.prefixed("parent_")),
+        Predicate::FirstTagIn(e, vs) => Predicate::FirstTagIn(e.prefixed("parent_"), vs),
+        Predicate::Num(e, op, bits) => Predicate::Num(e.prefixed("parent_"), op, bits),
         p @ (Predicate::HasKeyPrefix(_)
         | Predicate::HasParent
         | Predicate::Prefix(_)

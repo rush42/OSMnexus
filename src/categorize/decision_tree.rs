@@ -16,8 +16,11 @@
 //! `Unknown`. If the whole expression evaluates to `False`, the node cannot match → prune it. Worst
 //! case the tree prunes nothing and matches the full walk; it never changes results.
 //!
-//! Only sanitize-free tags are branch keys: a sanitized comparison tests a *derived* value, so
-//! branching on the raw tag value would be unsound (and `filter_to_expr` drops the sanitize flag).
+//! A branch key is a `BranchKey`: either a sentinel (`side`/`has_parent`/`prefix`/`infix`, reading
+//! `ExtractCtx` fields rather than a tag) or a `Tag(Extract)` wrapping the same `Extract` its
+//! candidate `Predicate`s carry — `Extract::read_str` already applies `sanitize` uniformly (see its
+//! own doc), so branching on a sanitized comparison is exactly as sound as an unsanitized one; no
+//! separate ban is needed.
 //!
 //! `side`/`has_parent`/`prefix`/`infix` branch on `ExtractCtx` fields rather than `ctx.obj_tags`,
 //! using sentinel keys (`SIDE_KEY` etc. — a leading NUL byte no real OSM tag can contain) so they
@@ -29,11 +32,14 @@
 //! so a single literal atom (e.g. `traffic_sign contains "237"`) can be used as its own two-way
 //! branch with no wildcard/unknown case, decided by evaluating that one atom against the object.
 
+use std::borrow::Cow;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 use crate::categorize::categories::{CategoriesFile, OrderedNode};
-use crate::lang::filter::Filter;
+use crate::lang::extract::Extract;
+use crate::lang::filter::{read_num, Filter};
 use crate::lang::producer::ExtractCtx;
 use crate::categorize::linter::{filter_to_expr, to_nnf, Expr, Literal, NumOp, Predicate};
 
@@ -48,12 +54,39 @@ pub(crate) const PREFIX_KEY: &str = "\0prefix";
 /// Sentinel branch key for `Predicate::Infix`. Same shape as `PREFIX_KEY`.
 pub(crate) const INFIX_KEY: &str = "\0infix";
 
+/// What a `DecisionTree::Branch` reads to decide which child to descend into: one of the four
+/// fixed-domain `ExtractCtx` sentinels, or a real tag read (`Extract::read_str`, `sanitize` and
+/// all — see this module's own doc).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BranchKey {
+    Sentinel(&'static str),
+    Tag(Extract),
+}
+
+impl std::fmt::Display for BranchKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BranchKey::Sentinel(s) => write!(f, "{s}"),
+            BranchKey::Tag(Extract::Value { key, sanitize }) => {
+                write!(f, "{key}")?;
+                if sanitize.is_some() { write!(f, " (sanitized)")?; }
+                Ok(())
+            }
+            BranchKey::Tag(Extract::Candidates { keys, sanitize }) => {
+                write!(f, "{}", keys.join("/"))?;
+                if sanitize.is_some() { write!(f, " (sanitized)")?; }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum DecisionTree {
     /// Order-node indices (ascending = priority order) to first-match `eval` over.
     Leaf(Vec<usize>),
     Branch {
-        tag: String,
+        tag: BranchKey,
         /// Child per enumerated exact-eq value of `tag`.
         children: FxHashMap<String, DecisionTree>,
         /// Object's `tag` absent or not among the enumerated values.
@@ -136,7 +169,7 @@ impl DecisionTree {
             match node {
                 DecisionTree::Leaf(idxs) => return idxs,
                 DecisionTree::Branch { tag, children, wildcard } => {
-                    node = branch_key(ctx, tag).and_then(|v| children.get(v)).unwrap_or(wildcard);
+                    node = branch_key(ctx, tag).and_then(|v| children.get(v.as_ref())).unwrap_or(wildcard);
                 }
                 DecisionTree::AtomBranch { atom, on_true, on_false } => {
                     node = if eval_atom(atom, ctx) { on_true } else { on_false };
@@ -152,31 +185,32 @@ impl DecisionTree {
 /// for a missing tag (false, not unknown).
 fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
     match atom {
-        Predicate::Contains(k, s) => ctx.obj_tags.get(k).is_some_and(|v| v.contains(s.as_str())),
-        Predicate::StartsWith(k, s) => ctx.obj_tags.get(k).is_some_and(|v| v.starts_with(s.as_str())),
-        Predicate::EndsWith(k, s) => ctx.obj_tags.get(k).is_some_and(|v| v.ends_with(s.as_str())),
-        Predicate::Exists(k) => ctx.obj_tags.contains_key(k),
-        Predicate::Num(k, op, bits) => ctx
-            .obj_tags
-            .get(k)
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .is_some_and(|n| num_matches(op, *bits, n)),
+        Predicate::Contains(e, s) => e.read_str(ctx).is_some_and(|v| v.contains(s.as_str())),
+        Predicate::StartsWith(e, s) => e.read_str(ctx).is_some_and(|v| v.starts_with(s.as_str())),
+        Predicate::EndsWith(e, s) => e.read_str(ctx).is_some_and(|v| v.ends_with(s.as_str())),
+        Predicate::Exists(e) => e.read_str(ctx).is_some(),
+        Predicate::Num(e, op, bits) => read_num(e, ctx).is_some_and(|n| num_matches(op, *bits, n)),
         Predicate::HasKeyPrefix(p) => ctx.obj_tags.keys().any(|k| k.starts_with(p.as_str())),
         _ => unreachable!("AtomBranch only built for Contains/StartsWith/EndsWith/Exists/Num/HasKeyPrefix"),
     }
 }
 
-/// Resolve a branch key (a raw tag name, or one of the `*_KEY` sentinels) against the object's
-/// context. `None` means "no matching enumerated child" → fall through to the wildcard.
-fn branch_key<'a>(ctx: &'a ExtractCtx, tag: &str) -> Option<&'a str> {
-    match tag {
+/// Resolve a branch key against the object's context. `None` means "no matching enumerated child"
+/// → fall through to the wildcard.
+fn branch_key<'a>(ctx: &'a ExtractCtx, key: &BranchKey) -> Option<Cow<'a, str>> {
+    match key {
         // `_side` is always stamped by `topic::pipeline::build_topic_rows`/each `Clone` (self
         // included) — defaulting to "self" here is a safety net, not the normal path.
-        SIDE_KEY => Some(ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self")),
-        HAS_PARENT_KEY => Some(if ctx.parent_tags.is_some() { "true" } else { "false" }),
-        PREFIX_KEY => ctx.annotations.get("_prefix").and_then(Value::as_str),
-        INFIX_KEY => ctx.annotations.get("_infix").and_then(Value::as_str),
-        _ => ctx.obj_tags.get(tag).map(String::as_str),
+        BranchKey::Sentinel(SIDE_KEY) => {
+            Some(Cow::Borrowed(ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self")))
+        }
+        BranchKey::Sentinel(HAS_PARENT_KEY) => {
+            Some(Cow::Borrowed(if ctx.parent_tags.is_some() { "true" } else { "false" }))
+        }
+        BranchKey::Sentinel(PREFIX_KEY) => ctx.annotations.get("_prefix").and_then(Value::as_str).map(Cow::Borrowed),
+        BranchKey::Sentinel(INFIX_KEY) => ctx.annotations.get("_infix").and_then(Value::as_str).map(Cow::Borrowed),
+        BranchKey::Sentinel(other) => unreachable!("unknown branch-key sentinel {other:?}"),
+        BranchKey::Tag(extract) => extract.read_str(ctx),
     }
 }
 
@@ -232,14 +266,8 @@ pub fn build(cats: &CategoriesFile, max_depth: usize) -> DecisionTree {
         residuals.push(conjoin(parts));
     }
 
-    // Tags used anywhere with a `sanitize` chain are ineligible as branch keys.
-    let mut banned: FxHashSet<String> = FxHashSet::default();
-    for n in &cats.order {
-        collect_sanitized_tags(node_condition(cats, n), &mut banned);
-    }
-
     let all: Vec<Candidate> = residuals.into_iter().enumerate().collect();
-    build_rec(&banned, all, &mut FxHashSet::default(), &mut FxHashSet::default(), 0, max_depth)
+    build_rec(all, &mut FxHashSet::default(), &mut FxHashSet::default(), 0, max_depth)
 }
 
 /// Build an `And` of `parts` (each already NNF), flattening nested `And`s and collapsing to
@@ -291,9 +319,8 @@ fn node_condition<'a>(cats: &'a CategoriesFile, n: &'a OrderedNode) -> &'a Filte
 }
 
 fn build_rec(
-    banned: &FxHashSet<String>,
     candidates: Vec<Candidate>,
-    used: &mut FxHashSet<String>,
+    used: &mut FxHashSet<BranchKey>,
     used_atoms: &mut FxHashSet<Predicate>,
     depth: usize,
     max_depth: usize,
@@ -301,7 +328,7 @@ fn build_rec(
     if candidates.len() <= LEAF_MAX || depth >= max_depth {
         return DecisionTree::Leaf(candidates.into_iter().map(|(i, _)| i).collect());
     }
-    let Some(choice) = choose_branch(banned, &candidates, used, used_atoms) else {
+    let Some(choice) = choose_branch(&candidates, used, used_atoms) else {
         return DecisionTree::Leaf(candidates.into_iter().map(|(i, _)| i).collect());
     };
 
@@ -315,11 +342,11 @@ fn build_rec(
                 let kept = fold_candidates(&candidates, &|p| decide_value(p, &tag, v));
                 children.insert(
                     v.clone(),
-                    build_rec(banned, kept, used, used_atoms, depth + 1, max_depth),
+                    build_rec(kept, used, used_atoms, depth + 1, max_depth),
                 );
             }
             let wild = fold_candidates(&candidates, &|p| decide_wildcard(p, &tag));
-            let wildcard = Box::new(build_rec(banned, wild, used, used_atoms, depth + 1, max_depth));
+            let wildcard = Box::new(build_rec(wild, used, used_atoms, depth + 1, max_depth));
 
             used.remove(&tag);
             DecisionTree::Branch { tag, children, wildcard }
@@ -330,9 +357,8 @@ fn build_rec(
             let b = |cond: bool| if cond { K::T } else { K::F };
             let on_true = fold_candidates(&candidates, &|p| if p == &atom { b(true) } else { K::U });
             let on_false = fold_candidates(&candidates, &|p| if p == &atom { b(false) } else { K::U });
-            let on_true = Box::new(build_rec(banned, on_true, used, used_atoms, depth + 1, max_depth));
-            let on_false =
-                Box::new(build_rec(banned, on_false, used, used_atoms, depth + 1, max_depth));
+            let on_true = Box::new(build_rec(on_true, used, used_atoms, depth + 1, max_depth));
+            let on_false = Box::new(build_rec(on_false, used, used_atoms, depth + 1, max_depth));
 
             used_atoms.remove(&atom);
             DecisionTree::AtomBranch { atom, on_true, on_false }
@@ -353,51 +379,62 @@ fn fold_candidates(candidates: &[Candidate], decide: &impl Fn(&Predicate) -> K) 
 }
 
 enum BranchChoice {
-    Key(String),
+    Key(BranchKey),
     Atom(Predicate),
+}
+
+/// A branch key naming a plain (non-parent-scoped) tag isn't eligible if any of its `Extract`'s own
+/// key(s) is itself parent-scoped (the synthetic `parent_<key>` name `prefix_expr_tags` stamps for
+/// a `Filter::Parent` condition) — there's no such tag in `ctx.obj_tags` to read.
+fn parent_scoped(extract: &Extract) -> bool {
+    extract.tag_names().iter().any(|k| k.starts_with("parent_"))
 }
 
 /// Pick the branch (tag/context key, or single atom) whose worst-case child is smallest, provided
 /// it prunes at all. `None` if nothing reduces the candidate set.
 fn choose_branch(
-    banned: &FxHashSet<String>,
     candidates: &[Candidate],
-    used: &FxHashSet<String>,
+    used: &FxHashSet<BranchKey>,
     used_atoms: &FxHashSet<Predicate>,
 ) -> Option<BranchChoice> {
     let mut best: Option<BranchChoice> = None;
     let mut best_worst = candidates.len(); // require strictly smaller than the full set
 
-    // Candidate branch keys: plain (non-parent) tags appearing in a positive Eq atom, plus the
-    // `side`/`has_parent`/`prefix`/`infix` sentinels wherever those predicates appear at all.
-    let mut tags: FxHashSet<String> = FxHashSet::default();
+    // Candidate branch keys: tags (plain or sanitized) appearing in a positive Eq/FirstTagIn atom,
+    // plus the `side`/`has_parent`/`prefix`/`infix` sentinels wherever those predicates appear at
+    // all.
+    let mut tags: FxHashSet<BranchKey> = FxHashSet::default();
     for (_, e) in candidates {
         collect_branch_keys(e, &mut |k| {
-            if !k.starts_with("parent_") && !banned.contains(k) && !used.contains(k) {
-                tags.insert(k.to_string());
+            let parent_scoped = match &k {
+                BranchKey::Tag(extract) => parent_scoped(extract),
+                BranchKey::Sentinel(_) => false,
+            };
+            if !parent_scoped && !used.contains(&k) {
+                tags.insert(k);
             }
         });
     }
-    for tag in tags {
-        let values = eligible_values(candidates, &tag);
+    for key in tags {
+        let values = eligible_values(candidates, &key);
         let mut worst =
-            candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_wildcard(p, &tag))).count();
+            candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_wildcard(p, &key))).count();
         for v in &values {
-            let c = candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_value(p, &tag, v))).count();
+            let c = candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_value(p, &key, v))).count();
             worst = worst.max(c);
         }
         if worst < best_worst {
             best_worst = worst;
-            best = Some(BranchChoice::Key(tag));
+            best = Some(BranchChoice::Key(key));
         }
     }
 
-    // Candidate atoms: total (non-Eq) predicates on a plain, unsanitized tag — `Contains`,
+    // Candidate atoms: total (non-Eq) predicates on a plain, non-parent-scoped tag — `Contains`,
     // `StartsWith`, `EndsWith`, `Num`, `Exists`, `HasKeyPrefix` — either polarity, since a missing
     // tag decides them outright (false) rather than leaving them unknown.
     let mut atoms: FxHashSet<Predicate> = FxHashSet::default();
     for (_, e) in candidates {
-        collect_atom_candidates(e, banned, &mut |p| {
+        collect_atom_candidates(e, &mut |p| {
             if !used_atoms.contains(p) {
                 atoms.insert(p.clone());
             }
@@ -423,17 +460,17 @@ fn choose_branch(
     best
 }
 
-/// All exact-eq values of `tag` across the candidate conditions. For the `side`/`has_parent`
+/// All exact-eq values of `key` across the candidate conditions. For the `side`/`has_parent`
 /// sentinels the domain is fixed and known up front (no need to scan conditions for it).
-fn eligible_values(candidates: &[Candidate], tag: &str) -> Vec<String> {
-    match tag {
-        SIDE_KEY => return vec!["left".to_string(), "right".to_string(), "self".to_string()],
-        HAS_PARENT_KEY => return vec!["false".to_string(), "true".to_string()],
+fn eligible_values(candidates: &[Candidate], key: &BranchKey) -> Vec<String> {
+    match key {
+        BranchKey::Sentinel(SIDE_KEY) => return vec!["left".to_string(), "right".to_string(), "self".to_string()],
+        BranchKey::Sentinel(HAS_PARENT_KEY) => return vec!["false".to_string(), "true".to_string()],
         _ => {}
     }
     let mut vals: FxHashSet<String> = FxHashSet::default();
     for (_, e) in candidates {
-        collect_eq_values(e, tag, &mut |v| {
+        collect_eq_values(e, key, &mut |v| {
             vals.insert(v.to_string());
         });
     }
@@ -540,24 +577,26 @@ fn simplify(e: &Expr, decide: &impl Fn(&Predicate) -> K) -> Expr {
     }
 }
 
-/// Decide a predicate under "object's `tag` == `v`, everything else unknown". Atoms on `tag` are
-/// fully decidable (we know the value); all others are `Unknown`.
-fn decide_value(p: &Predicate, tag: &str, v: &str) -> K {
+/// Decide a predicate under "`key`'s read value == `v`, everything else unknown". Atoms reading the
+/// same `Extract` as `key` are fully decidable (we know the value); all others are `Unknown`.
+fn decide_value(p: &Predicate, key: &BranchKey, v: &str) -> K {
     let b = |cond: bool| if cond { K::T } else { K::F };
-    match tag {
-        SIDE_KEY => return match p { Predicate::Side(s) => b(s == v), _ => K::U },
-        HAS_PARENT_KEY => return match p { Predicate::HasParent => b(v == "true"), _ => K::U },
-        PREFIX_KEY => return match p { Predicate::Prefix(s) => b(s == v), _ => K::U },
-        INFIX_KEY => return match p { Predicate::Infix(s) => b(s == v), _ => K::U },
-        _ => {}
-    }
+    let extract = match key {
+        BranchKey::Sentinel(SIDE_KEY) => return match p { Predicate::Side(s) => b(s == v), _ => K::U },
+        BranchKey::Sentinel(HAS_PARENT_KEY) => return match p { Predicate::HasParent => b(v == "true"), _ => K::U },
+        BranchKey::Sentinel(PREFIX_KEY) => return match p { Predicate::Prefix(s) => b(s == v), _ => K::U },
+        BranchKey::Sentinel(INFIX_KEY) => return match p { Predicate::Infix(s) => b(s == v), _ => K::U },
+        BranchKey::Sentinel(other) => unreachable!("unknown branch-key sentinel {other:?}"),
+        BranchKey::Tag(extract) => extract,
+    };
     match p {
-        Predicate::Eq(k, w) if k == tag => b(w == v),
-        Predicate::Exists(k) if k == tag => K::T,
-        Predicate::Contains(k, s) if k == tag => b(v.contains(s.as_str())),
-        Predicate::StartsWith(k, s) if k == tag => b(v.starts_with(s.as_str())),
-        Predicate::EndsWith(k, s) if k == tag => b(v.ends_with(s.as_str())),
-        Predicate::Num(k, op, bits) if k == tag => match v.trim().parse::<f64>() {
+        Predicate::Eq(e, w) if e == extract => b(w == v),
+        Predicate::FirstTagIn(e, vals) if e == extract => b(vals.iter().any(|x| x == v)),
+        Predicate::Exists(e) if e == extract => K::T,
+        Predicate::Contains(e, s) if e == extract => b(v.contains(s.as_str())),
+        Predicate::StartsWith(e, s) if e == extract => b(v.starts_with(s.as_str())),
+        Predicate::EndsWith(e, s) if e == extract => b(v.ends_with(s.as_str())),
+        Predicate::Num(e, op, bits) if e == extract => match v.trim().parse::<f64>() {
             Ok(n) => b(num_matches(op, *bits, n)),
             Err(_) => K::F,
         },
@@ -565,40 +604,47 @@ fn decide_value(p: &Predicate, tag: &str, v: &str) -> K {
     }
 }
 
-/// Decide a predicate under "object's `tag` is absent or not among the enumerated eq-values".
-/// Every positive Eq on `tag` in the candidate set uses an enumerated value, so all are false here;
-/// existence and value-shape atoms stay unknown (the object could carry an un-enumerated value).
-fn decide_wildcard(p: &Predicate, tag: &str) -> K {
-    match tag {
-        SIDE_KEY => return match p { Predicate::Side(_) => K::F, _ => K::U },
-        HAS_PARENT_KEY => return match p { Predicate::HasParent => K::F, _ => K::U },
-        PREFIX_KEY => return match p { Predicate::Prefix(_) => K::F, _ => K::U },
-        INFIX_KEY => return match p { Predicate::Infix(_) => K::F, _ => K::U },
-        _ => {}
-    }
+/// Decide a predicate under "`key`'s read value is absent or not among the enumerated eq-values".
+/// Every positive Eq/FirstTagIn on `key`'s `Extract` in the candidate set uses an enumerated value,
+/// so all are false here; existence and value-shape atoms stay unknown (the object could carry an
+/// un-enumerated value).
+fn decide_wildcard(p: &Predicate, key: &BranchKey) -> K {
+    let extract = match key {
+        BranchKey::Sentinel(SIDE_KEY) => return match p { Predicate::Side(_) => K::F, _ => K::U },
+        BranchKey::Sentinel(HAS_PARENT_KEY) => return match p { Predicate::HasParent => K::F, _ => K::U },
+        BranchKey::Sentinel(PREFIX_KEY) => return match p { Predicate::Prefix(_) => K::F, _ => K::U },
+        BranchKey::Sentinel(INFIX_KEY) => return match p { Predicate::Infix(_) => K::F, _ => K::U },
+        BranchKey::Sentinel(other) => unreachable!("unknown branch-key sentinel {other:?}"),
+        BranchKey::Tag(extract) => extract,
+    };
     match p {
-        Predicate::Eq(k, _) if k == tag => K::F,
+        Predicate::Eq(e, _) if e == extract => K::F,
+        Predicate::FirstTagIn(e, _) if e == extract => K::F,
         _ => K::U,
     }
 }
 
 // ── Expr walkers ─────────────────────────────────────────────────────────────────
 
-/// Invoke `f` on the key of every positive `Eq` atom, and on the relevant sentinel key for every
-/// `Side`/`HasParent`/`Prefix`/`Infix` atom (either polarity — their fixed, small domain makes them
-/// decidable regardless of sign, unlike an arbitrary-string tag `Eq`/`Neq`).
-fn collect_branch_keys(e: &Expr, f: &mut impl FnMut(&str)) {
+/// Invoke `f` on the `Extract` of every positive `Eq`/`FirstTagIn` atom, and on the relevant
+/// sentinel key for every `Side`/`HasParent`/`Prefix`/`Infix` atom (either polarity — their fixed,
+/// small domain makes them decidable regardless of sign, unlike an arbitrary-string tag `Eq`/`Neq`).
+fn collect_branch_keys(e: &Expr, f: &mut impl FnMut(BranchKey)) {
     match e {
-        Expr::Lit(Literal::Pos(Predicate::Eq(k, _))) => f(k),
-        Expr::Lit(Literal::Pos(Predicate::Side(_)) | Literal::Neg(Predicate::Side(_))) => f(SIDE_KEY),
+        Expr::Lit(Literal::Pos(Predicate::Eq(extract, _) | Predicate::FirstTagIn(extract, _))) => {
+            f(BranchKey::Tag(extract.clone()))
+        }
+        Expr::Lit(Literal::Pos(Predicate::Side(_)) | Literal::Neg(Predicate::Side(_))) => {
+            f(BranchKey::Sentinel(SIDE_KEY))
+        }
         Expr::Lit(Literal::Pos(Predicate::HasParent) | Literal::Neg(Predicate::HasParent)) => {
-            f(HAS_PARENT_KEY)
+            f(BranchKey::Sentinel(HAS_PARENT_KEY))
         }
         Expr::Lit(Literal::Pos(Predicate::Prefix(_)) | Literal::Neg(Predicate::Prefix(_))) => {
-            f(PREFIX_KEY)
+            f(BranchKey::Sentinel(PREFIX_KEY))
         }
         Expr::Lit(Literal::Pos(Predicate::Infix(_)) | Literal::Neg(Predicate::Infix(_))) => {
-            f(INFIX_KEY)
+            f(BranchKey::Sentinel(INFIX_KEY))
         }
         Expr::Lit(_) | Expr::True | Expr::False => {}
         Expr::Not(x) => collect_branch_keys(x, f),
@@ -607,62 +653,46 @@ fn collect_branch_keys(e: &Expr, f: &mut impl FnMut(&str)) {
 }
 
 /// Invoke `f` on every `Contains`/`StartsWith`/`EndsWith`/`Num`/`Exists`/`HasKeyPrefix` atom (either
-/// polarity) whose tag (if any) is plain and unsanitized — the atom kinds `AtomBranch` can use.
-fn collect_atom_candidates(e: &Expr, banned: &FxHashSet<String>, f: &mut impl FnMut(&Predicate)) {
+/// polarity) whose tag (if any) isn't parent-scoped — the atom kinds `AtomBranch` can use.
+fn collect_atom_candidates(e: &Expr, f: &mut impl FnMut(&Predicate)) {
     match e {
         Expr::Lit(Literal::Pos(p) | Literal::Neg(p)) => {
-            let tag = match p {
-                Predicate::Contains(k, _)
-                | Predicate::StartsWith(k, _)
-                | Predicate::EndsWith(k, _)
-                | Predicate::Exists(k)
-                | Predicate::Num(k, _, _) => Some(k.as_str()),
+            let extract = match p {
+                Predicate::Contains(e, _)
+                | Predicate::StartsWith(e, _)
+                | Predicate::EndsWith(e, _)
+                | Predicate::Exists(e)
+                | Predicate::Num(e, _, _) => Some(e),
                 Predicate::HasKeyPrefix(_) => None,
                 _ => return,
             };
-            if let Some(tag) = tag {
-                if tag.starts_with("parent_") || banned.contains(tag) {
+            if let Some(extract) = extract {
+                if parent_scoped(extract) {
                     return;
                 }
             }
             f(p);
         }
         Expr::True | Expr::False => {}
-        Expr::Not(x) => collect_atom_candidates(x, banned, f),
-        Expr::And(xs) | Expr::Or(xs) => xs.iter().for_each(|x| collect_atom_candidates(x, banned, f)),
+        Expr::Not(x) => collect_atom_candidates(x, f),
+        Expr::And(xs) | Expr::Or(xs) => xs.iter().for_each(|x| collect_atom_candidates(x, f)),
     }
 }
 
-/// Invoke `f` on the value of every positive `Eq` atom on `tag` (or, for `PREFIX_KEY`/`INFIX_KEY`,
-/// every positive `Prefix`/`Infix` atom's literal value).
-fn collect_eq_values(e: &Expr, tag: &str, f: &mut impl FnMut(&str)) {
+/// Invoke `f` on the value(s) of every positive `Eq`/`FirstTagIn` atom on `key`'s `Extract` (or, for
+/// `PREFIX_KEY`/`INFIX_KEY`, every positive `Prefix`/`Infix` atom's literal value).
+fn collect_eq_values(e: &Expr, key: &BranchKey, f: &mut impl FnMut(&str)) {
+    let matches_extract = |e: &Extract| matches!(key, BranchKey::Tag(k) if k == e);
     match e {
-        Expr::Lit(Literal::Pos(Predicate::Eq(k, v))) if k == tag => f(v),
-        Expr::Lit(Literal::Pos(Predicate::Prefix(v))) if tag == PREFIX_KEY => f(v),
-        Expr::Lit(Literal::Pos(Predicate::Infix(v))) if tag == INFIX_KEY => f(v),
-        Expr::Lit(_) | Expr::True | Expr::False => {}
-        Expr::Not(x) => collect_eq_values(x, tag, f),
-        Expr::And(xs) | Expr::Or(xs) => xs.iter().for_each(|x| collect_eq_values(x, tag, f)),
-    }
-}
-
-/// Collect plain tag names compared through a `sanitize` chain (recursing into macros). Such tags
-/// are ineligible as branch keys — the comparison tests a derived value, not the raw tag.
-fn collect_sanitized_tags(f: &Filter, out: &mut FxHashSet<String>) {
-    match f {
-        Filter::And { and } => and.iter().for_each(|c| collect_sanitized_tags(c, out)),
-        Filter::Or { or } => or.iter().for_each(|c| collect_sanitized_tags(c, out)),
-        Filter::Not { not } => collect_sanitized_tags(not, out),
-        Filter::Eq { extract, .. }
-        | Filter::In { extract, .. }
-        | Filter::NumRange { extract, .. } => {
-            if extract.sanitize().is_some() {
-                if let crate::lang::extract::Extract::Value { key, .. } = extract {
-                    out.insert(key.clone());
-                }
-            }
+        Expr::Lit(Literal::Pos(Predicate::Eq(extract, v))) if matches_extract(extract) => f(v),
+        Expr::Lit(Literal::Pos(Predicate::FirstTagIn(extract, vs))) if matches_extract(extract) => {
+            vs.iter().for_each(|v| f(v))
         }
-        _ => {}
+        Expr::Lit(Literal::Pos(Predicate::Prefix(v))) if matches!(key, BranchKey::Sentinel(PREFIX_KEY)) => f(v),
+        Expr::Lit(Literal::Pos(Predicate::Infix(v))) if matches!(key, BranchKey::Sentinel(INFIX_KEY)) => f(v),
+        Expr::Lit(_) | Expr::True | Expr::False => {}
+        Expr::Not(x) => collect_eq_values(x, key, f),
+        Expr::And(xs) | Expr::Or(xs) => xs.iter().for_each(|x| collect_eq_values(x, key, f)),
     }
 }
 
@@ -696,8 +726,10 @@ mod tests {
 
     fn collect_pairs(e: &Expr, out: &mut BTreeMap<String, BTreeSet<String>>) {
         match e {
-            Expr::Lit(Literal::Pos(Predicate::Eq(k, v))) if !k.starts_with("parent_") => {
-                out.entry(k.clone()).or_default().insert(v.clone());
+            Expr::Lit(Literal::Pos(Predicate::Eq(extract, v))) => {
+                for k in extract.tag_names().into_iter().filter(|k| !k.starts_with("parent_")) {
+                    out.entry(k).or_default().insert(v.clone());
+                }
             }
             Expr::Lit(_) | Expr::True | Expr::False => {}
             Expr::Not(x) => collect_pairs(x, out),

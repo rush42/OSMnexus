@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer, Rule};
-use crate::lang::sanitize::{ReplaceRule, Sanitizer, Step, StrOrVec};
+use crate::lang::sanitize::{AtomicJson, ReplaceRule, Sanitizer, Step, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
 
@@ -170,27 +170,43 @@ enum StepJson {
     Builtin(String),
 }
 
+/// Convert one JSON-side mapping value to its canonical `Step::Mapping` entry: `Value::Null` is the
+/// "found, but drop anyway" sentinel (`None`); any other atomic (string/bool/number) becomes
+/// `Some`; a nested array/object is rejected — `Step::Mapping` entries are never anything else (see
+/// `Step`'s own doc).
+fn mapping_entry<E: serde::de::Error>(v: Value) -> Result<Option<AtomicJson>, E> {
+    match &v {
+        Value::Null => Ok(None),
+        _ => AtomicJson::from_value(&v)
+            .map(Some)
+            .ok_or_else(|| E::custom(format!("mapping entry must be a string/bool/number or null, got {v}"))),
+    }
+}
+
 impl<'de> Deserialize<'de> for Step {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         Ok(match StepJson::deserialize(deserializer)? {
-            StepJson::Mapping { mapping, on_miss } => Step::Mapping { mapping, on_miss },
+            StepJson::Mapping { mapping, on_miss } => Step::Mapping {
+                mapping: mapping.into_iter().map(|(k, v)| Ok((k, mapping_entry(v)?))).collect::<Result<_, D::Error>>()?,
+                on_miss,
+            },
             StepJson::Cases { cases, on_miss } => Step::Mapping {
                 mapping: cases.into_iter()
                     .flat_map(|(output, inputs)| {
-                        inputs.into_vec().into_iter().map(move |input| (input, Value::String(output.clone())))
+                        inputs.into_vec().into_iter().map(move |input| (input, Some(AtomicJson::Str(output.clone()))))
                     })
                     .collect(),
                 on_miss,
             },
             StepJson::Filter { filter } => Step::Mapping {
-                mapping: filter.into_iter().map(|v| (v.clone(), Value::String(v))).collect(),
+                mapping: filter.into_iter().map(|v| (v.clone(), Some(AtomicJson::Str(v)))).collect(),
                 on_miss: None,
             },
             StepJson::Drop { drop } => Step::Mapping {
-                mapping: drop.into_iter().map(|v| (v, Value::Null)).collect(),
+                mapping: drop.into_iter().map(|v| (v, None)).collect(),
                 on_miss: Some("keep".to_owned()),
             },
             StepJson::Replace { replace } => Step::Replace { replace },

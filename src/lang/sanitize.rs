@@ -12,7 +12,7 @@
 //! from the runtime types/eval logic defined here.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,7 +57,7 @@ pub fn eval_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value> {
 /// of one" is never a distinct concept downstream (same treatment `Producer` gives its `fallback`
 /// sugar). The field is private; `parser` builds a `Sanitizer` through `from_steps` rather than
 /// reaching into it directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Sanitizer(Vec<Step>);
 
 /// Serializes as the canonical array-of-steps shape — `parser`'s `Deserialize` impl accepts that
@@ -117,6 +117,44 @@ impl StrOrVec {
     }
 }
 
+/// A `Step::Mapping` entry's value, restricted to what a mapping step ever actually produces —
+/// string/bool/number, never a nested array/object. Exists (instead of the raw `serde_json::Value`
+/// the JSON side still uses) purely so `Step`/`Sanitizer` can derive `Eq`/`Hash`/`Ord`: `Value` isn't
+/// `Eq`/`Hash` (its `Number` can hold a `NaN`-capable `f64`), the same problem
+/// `Predicate::Num` already solves by bit-casting its threshold to `u64` — same trick here.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AtomicJson {
+    Str(String),
+    Bool(bool),
+    /// An `f64`'s raw bit pattern (`to_bits`/`from_bits`) — see this type's own doc.
+    Num(u64),
+}
+
+impl AtomicJson {
+    /// `None` for anything not atomic (array/object) — a `Step::Mapping` entry may only ever be
+    /// string/bool/number (see `Step::Mapping`'s own doc); `Value::Null` is handled by the caller
+    /// (it's the drop sentinel, not a value `AtomicJson` represents). `pub(crate)`: `parser`'s
+    /// hand-written `Step` `Deserialize` impl needs it to convert the JSON-side raw `Value` map.
+    pub(crate) fn from_value(v: &Value) -> Option<Self> {
+        match v {
+            Value::String(s) => Some(AtomicJson::Str(s.clone())),
+            Value::Bool(b) => Some(AtomicJson::Bool(*b)),
+            Value::Number(n) => Some(AtomicJson::Num(n.as_f64()?.to_bits())),
+            Value::Null | Value::Array(_) | Value::Object(_) => None,
+        }
+    }
+
+    fn into_value(self) -> Value {
+        match self {
+            AtomicJson::Str(s) => Value::String(s),
+            AtomicJson::Bool(b) => Value::Bool(b),
+            AtomicJson::Num(bits) => Value::Number(
+                serde_json::Number::from_f64(f64::from_bits(bits)).unwrap_or_else(|| serde_json::Number::from(0)),
+            ),
+        }
+    }
+}
+
 /// One transform step: a table lookup (`Mapping`), literal rewrites (`Replace`), or a built-in
 /// (`Builtin`) — see `parser`'s hand-written `Deserialize` impl for the JSON sugar
 /// (`cases`/`filter`/`drop`) that folds into `Mapping` at parse time, so a `Step` value is only
@@ -128,15 +166,16 @@ impl StrOrVec {
 /// - `drop` (drop iff a member, else keep unchanged) becomes a `mapping` where each listed value
 ///   maps to JSON `null` — the sentinel meaning "found, but drop anyway" (see `Mapping`'s own doc)
 ///   — with `on_miss: "keep"` so anything else passes through.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Step {
     /// Table lookup. A mapped value is any atomic JSON (string/bool/number) so a step can produce
-    /// e.g. a boolean (`{ "yes": true }`) — except JSON `null`, reserved as the "found this key,
-    /// but drop the value anyway" sentinel (distinct from `on_miss`'s own drop-on-absence; see
-    /// `Step`'s own doc for why `drop` needs it). On a miss, `on_miss` decides: "keep"
-    /// (passthrough), "drop"/absent (null), or any other string (a constant default).
+    /// e.g. a boolean (`{ "yes": true }`) — except a missing (`None`) entry value, reserved as the
+    /// "found this key, but drop the value anyway" sentinel (distinct from `on_miss`'s own
+    /// drop-on-absence; see `Step`'s own doc for why `drop` needs it). On a miss, `on_miss`
+    /// decides: "keep" (passthrough), "drop"/absent (null), or any other string (a constant
+    /// default). `BTreeMap` (not `HashMap`) so the whole chain stays `Hash`/`Ord`.
     Mapping {
-        mapping: HashMap<String, Value>,
+        mapping: BTreeMap<String, Option<AtomicJson>>,
         on_miss: Option<String>,
     },
     /// Literal string rewrites, applied in order (each transforms the running value, then the
@@ -158,7 +197,11 @@ impl serde::Serialize for Step {
         match self {
             Step::Mapping { mapping, on_miss } => {
                 let mut m = serializer.serialize_map(Some(if on_miss.is_some() { 2 } else { 1 }))?;
-                m.serialize_entry("mapping", mapping)?;
+                let mapping: std::collections::BTreeMap<&str, Value> = mapping
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.clone().map(AtomicJson::into_value).unwrap_or(Value::Null)))
+                    .collect();
+                m.serialize_entry("mapping", &mapping)?;
                 if let Some(on_miss) = on_miss {
                     m.serialize_entry("on_miss", on_miss)?;
                 }
@@ -175,7 +218,7 @@ impl serde::Serialize for Step {
 }
 
 /// One literal rewrite for a `replace` step.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct ReplaceRule {
     from: String,
     to: String,
@@ -185,7 +228,7 @@ pub struct ReplaceRule {
 
 /// Where a `ReplaceRule` matches: anywhere (replace every occurrence) or only as a prefix
 /// (rewrite the leading `from`, keep the suffix; no-op when absent).
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplaceAt {
     #[default]
@@ -214,8 +257,8 @@ impl Step {
     fn apply(&self, v: &str) -> Option<Value> {
         match self {
             Step::Mapping { mapping, on_miss } => match mapping.get(v) {
-                Some(Value::Null) => None, // found, but marked "drop" (see `Step`'s own doc)
-                Some(mapped) => Some(mapped.clone()),
+                Some(None) => None, // found, but marked "drop" (see `Step`'s own doc)
+                Some(Some(mapped)) => Some(mapped.clone().into_value()),
                 None => apply_on_miss(on_miss.as_deref(), v),
             },
             Step::Replace { replace } => {
