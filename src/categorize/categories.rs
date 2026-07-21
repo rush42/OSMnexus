@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::categorize::decision_tree::{self, DecisionTree};
+use crate::decision_tree::{self, DecisionTree};
 use crate::lang::filter::{eval, Filter};
 use crate::lang::producer::ExtractCtx;
 

@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::categorize::decision_tree::{self, DecisionTree};
+use crate::decision_tree::{self, DecisionTree};
 use crate::lang::extract::Extract;
 use crate::lang::filter::{self, Filter};
 use crate::osm::types::RawTags;

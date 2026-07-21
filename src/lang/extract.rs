@@ -88,7 +88,7 @@ impl Extract {
 
     /// The plain OSM key(s) this extract reads from — one for `Value`, the ordered candidate list
     /// for `Candidates`. Used by `categorize::linter`'s overlap grouping and
-    /// `categorize::decision_tree`'s branch-key eligibility check (both only care about *which*
+    /// `decision_tree`'s branch-key eligibility check (both only care about *which*
     /// tag(s) are read, not the `sanitize` chain).
     pub fn tag_names(&self) -> Vec<String> {
         match self {
@@ -113,7 +113,7 @@ impl Extract {
     }
 
     /// Inverse of `prefixed` — strips `prefix` back off every key (a key without it is left as-is),
-    /// same `sanitize` chain. `categorize::decision_tree`'s leaf-time evaluator uses this to recover
+    /// same `sanitize` chain. `decision_tree`'s leaf-time evaluator uses this to recover
     /// the real tag name(s) before reading a parent-scoped predicate against `ExtractCtx::parent_tags`.
     pub fn strip_prefix(&self, prefix: &str) -> Extract {
         let strip = |k: &String| k.strip_prefix(prefix).map(str::to_owned).unwrap_or_else(|| k.clone());

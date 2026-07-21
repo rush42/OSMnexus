@@ -12,7 +12,7 @@ use crate::osm::types::ElementKind;
 
 /// An atom's tag-bearing variants carry the full `Extract` (key(s) + `sanitize` chain) rather than
 /// a plain key string — a sanitized comparison tests a *derived* value, and both the overlap lint
-/// and `categorize::decision_tree`'s branch-key eligibility need to know that (the lint still
+/// and `decision_tree`'s branch-key eligibility need to know that (the lint still
 /// groups purely by `Extract::tag_names()`, ignoring `sanitize`, same conservative approximation as
 /// before; the decision tree now uses the whole `Extract` — `Extract::read_str` already applies
 /// `sanitize` uniformly, so it's no longer unsound to branch on one). Two `Extract`s with the same

@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::categorize::categories::{CategoriesFile, OrderedNode};
-use crate::categorize::decision_tree::DecisionTree;
+use crate::decision_tree::DecisionTree;
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer};
@@ -247,7 +247,7 @@ fn render_filter(g: &mut DagGraph, f: &Filter) -> String {
     }
 }
 
-/// The compiled discrimination net (`categorize::decision_tree::DecisionTree`) that prunes
+/// The compiled discrimination net (`decision_tree::DecisionTree`) that prunes
 /// `categorize`'s first-match walk for one `ElementKind` — unlike `category_order_dag`'s flat
 /// priority list, this shows the actual branch-on-tag/atom structure the tree walks per object,
 /// with each leaf naming the (small, order-preserving) subset of categories/skips it still has to

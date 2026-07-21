@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// Default max branch depth of the `categorize` discrimination net (`categorize::decision_tree`).
+/// Default max branch depth of the `categorize` discrimination net (`decision_tree`).
 /// The single source of truth for this default — also read by `decision_tree` as the fallback for
 /// callers (e.g. tests) that build a tree without going through CLI parsing.
 pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
@@ -74,7 +74,7 @@ pub struct Config {
     #[arg(long, default_value = "out")]
     pub out_dir: String,
 
-    /// Max branch depth of the `categorize` discrimination net (see `categorize::decision_tree`).
+    /// Max branch depth of the `categorize` discrimination net (see `decision_tree`).
     /// Deeper trees prune more aggressively at the cost of build time; shallower trees fall back to
     /// larger leaves sooner.
     #[arg(long, default_value_t = DEFAULT_TREE_MAX_DEPTH)]

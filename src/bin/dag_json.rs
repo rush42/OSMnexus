@@ -9,7 +9,7 @@
 //! categorization trees (the flat, human-readable priority order which category an object is
 //! assigned) instead of the default per-field deriver trees (how an already-classified object's
 //! output values are computed); pass `decision-tree` to instead get the *compiled* discrimination
-//! net (`categorize::decision_tree::DecisionTree`) that actually prunes the runtime walk.
+//! net (`decision_tree::DecisionTree`) that actually prunes the runtime walk.
 
 use std::collections::HashMap;
 

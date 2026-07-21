@@ -9,9 +9,9 @@
 //! Each module owns one concept end-to-end, both its load-time reference resolution and its runtime
 //! evaluation, rather than splitting those across separate directories:
 //! - `categories`: the category data model, its runtime first-match evaluator, and the load-time
-//!   compiler (`build_order`) of a category set's `excludes` relation into a priority order.
-//! - `decision_tree`: the discrimination net that prunes `categorize`'s first-match walk, plus its
-//!   load-time compiler.
+//!   compiler (`build_order`) of a category set's `excludes` relation into a priority order — uses
+//!   `crate::decision_tree` (a top-level module, not nested here: `lang::producer::Producer::Match`
+//!   uses the same discrimination-net engine, so it isn't category-specific).
 //! - `transform`: `InputTransform` (one in-place tag-mutation step), `TransformStep`/`CloneStep`
 //!   (the object-cardinality-changing wrapper around it — side-splitting today), and the two
 //!   dynamic-key-iteration helpers (`unnest_prefixed_tags`, `strip_prefix`) a single `Producer`
@@ -20,6 +20,5 @@
 //!   (`filter_to_expr`/`to_nnf`) and checks same-priority categories for satisfiable overlap.
 
 pub mod categories;
-pub mod decision_tree;
 pub mod linter;
 pub mod transform;
