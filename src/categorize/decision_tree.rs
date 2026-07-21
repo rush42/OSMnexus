@@ -303,11 +303,17 @@ pub(crate) fn num_matches(op: &NumOp, threshold_bits: u64, n: f64) -> bool {
 /// walk is already cheap, so a further branch's overhead isn't worth the diminishing prune.
 const LEAF_MAX: usize = 2;
 
-/// An order-node index paired with its condition *as simplified so far* along this build path —
-/// each branch constant-folds the just-decided fact into every surviving candidate's expression
-/// (see `simplify`), so later branches (and the leaf) see a strictly smaller residual, and several
-/// branches can jointly resolve an `Or` that no single one of them could decide alone.
-type Candidate = (usize, Expr);
+/// An order-node index paired with two expressions, both simplified so far along this build path
+/// (see `simplify`): `residual` is `cond_i ∧ ¬cond_1 ∧ … ∧ ¬cond_{i-1}` (first-match's own effective
+/// condition — see `build`'s doc) and is what pruning/branch-choice reasons about, so a node
+/// deducible-dead *relative to earlier nodes* still gets eliminated; `own` is just `cond_i` alone,
+/// with the same branch facts folded in, and is what a surviving leaf candidate actually needs at
+/// eval time — first-match is already handled for free by a leaf's own (index-ascending, first-hit-
+/// wins) candidate order, the same way `categorize_linear`'s loop gets it from iteration order alone,
+/// so `own` never needs the `¬cond_1…` conjuncts `residual` carries only for *this* build's pruning.
+/// Both fold in lockstep off the same just-decided fact (see `fold_candidates`), so `own` stays
+/// exactly as reduced as `residual` — just without the redundant-at-eval-time prior negations.
+type Candidate = (usize, Expr, Expr);
 
 /// Build the discrimination net from a topic's compiled `order` (+ categories/macros for
 /// conditions). `max_depth` caps how many tags deep a branch chain may go (see `build_rec`).
@@ -334,7 +340,9 @@ pub fn build(cats: &CategoriesFile, max_depth: usize) -> DecisionTree {
         residuals.push(conjoin(parts));
     }
 
-    let all: Vec<Candidate> = residuals.into_iter().enumerate().collect();
+    let all: Vec<Candidate> = residuals.into_iter().zip(exprs).enumerate()
+        .map(|(i, (residual, own))| (i, residual, own))
+        .collect();
     build_rec(all, &mut FxHashSet::default(), &mut FxHashSet::default(), 0, max_depth)
 }
 
@@ -394,10 +402,10 @@ fn build_rec(
     max_depth: usize,
 ) -> DecisionTree {
     if candidates.len() <= LEAF_MAX || depth >= max_depth {
-        return DecisionTree::Leaf(candidates);
+        return DecisionTree::Leaf(into_leaf(candidates));
     }
     let Some(choice) = choose_branch(&candidates, used, used_atoms) else {
-        return DecisionTree::Leaf(candidates);
+        return DecisionTree::Leaf(into_leaf(candidates));
     };
 
     match choice {
@@ -434,16 +442,24 @@ fn build_rec(
     }
 }
 
-/// Constant-fold every candidate's current expression under `decide`, dropping any that collapse
-/// to `Expr::False` and keeping the (possibly smaller) simplified expression for the survivors.
+/// Constant-fold every candidate's `residual` (and, in lockstep, its `own`) under `decide`, dropping
+/// any whose `residual` collapses to `Expr::False` — `residual` alone decides survival (see
+/// `Candidate`'s own doc); `own` is folded purely to stay just as reduced for whenever this candidate
+/// does survive to a leaf.
 fn fold_candidates(candidates: &[Candidate], decide: &impl Fn(&Predicate) -> K) -> Vec<Candidate> {
     candidates
         .iter()
-        .filter_map(|(i, e)| {
-            let simplified = simplify(e, decide);
-            (simplified != Expr::False).then_some((*i, simplified))
+        .filter_map(|(i, residual, own)| {
+            let residual = simplify(residual, decide);
+            (residual != Expr::False).then(|| (*i, residual, simplify(own, decide)))
         })
         .collect()
+}
+
+/// Drop each surviving candidate's `residual` (pruning is done, only `own` matters from here on —
+/// see `Candidate`'s own doc).
+fn into_leaf(candidates: Vec<Candidate>) -> Vec<(usize, Expr)> {
+    candidates.into_iter().map(|(i, _residual, own)| (i, own)).collect()
 }
 
 enum BranchChoice {
@@ -453,9 +469,15 @@ enum BranchChoice {
 
 /// A branch key naming a plain (non-parent-scoped) tag isn't eligible if any of its `Extract`'s own
 /// key(s) is itself parent-scoped (the synthetic `parent_<key>` name `prefix_expr_tags` stamps for
-/// a `Filter::Parent` condition) — there's no such tag in `ctx.obj_tags` to read.
+/// a `Filter::Parent` condition) — there's no such tag in `ctx.obj_tags` to read. Matches directly
+/// on `Extract` rather than going through `tag_names()` — this runs on every predicate decision in
+/// `eval_expr`'s per-object hot path (via `read_extract`/`read_extract_num`), so it can't afford
+/// `tag_names()`'s `Vec<String>` allocation for what's almost always a `false` answer.
 fn parent_scoped(extract: &Extract) -> bool {
-    extract.tag_names().iter().any(|k| k.starts_with("parent_"))
+    match extract {
+        Extract::Value { key, .. } => key.starts_with("parent_"),
+        Extract::Candidates { keys, .. } => keys.iter().any(|k| k.starts_with("parent_")),
+    }
 }
 
 /// Pick the branch (tag/context key, or single atom) whose worst-case child is smallest, provided
@@ -472,7 +494,7 @@ fn choose_branch(
     // plus the `side`/`has_parent`/`prefix`/`infix` sentinels wherever those predicates appear at
     // all.
     let mut tags: FxHashSet<BranchKey> = FxHashSet::default();
-    for (_, e) in candidates {
+    for (_, e, _) in candidates {
         collect_branch_keys(e, &mut |k| {
             let parent_scoped = match &k {
                 BranchKey::Tag(extract) => parent_scoped(extract),
@@ -486,9 +508,9 @@ fn choose_branch(
     for key in tags {
         let values = eligible_values(candidates, &key);
         let mut worst =
-            candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_wildcard(p, &key, &values))).count();
+            candidates.iter().filter(|(_, e, _)| keep_for(e, &|p| decide_wildcard(p, &key, &values))).count();
         for v in &values {
-            let c = candidates.iter().filter(|(_, e)| keep_for(e, &|p| decide_value(p, &key, v))).count();
+            let c = candidates.iter().filter(|(_, e, _)| keep_for(e, &|p| decide_value(p, &key, v))).count();
             worst = worst.max(c);
         }
         if worst < best_worst {
@@ -501,7 +523,7 @@ fn choose_branch(
     // `StartsWith`, `EndsWith`, `Num`, `Exists`, `HasKeyPrefix` — either polarity, since a missing
     // tag decides them outright (false) rather than leaving them unknown.
     let mut atoms: FxHashSet<Predicate> = FxHashSet::default();
-    for (_, e) in candidates {
+    for (_, e, _) in candidates {
         collect_atom_candidates(e, &mut |p| {
             if !used_atoms.contains(p) {
                 atoms.insert(p.clone());
@@ -512,11 +534,11 @@ fn choose_branch(
         let b = |cond: bool| if cond { K::T } else { K::F };
         let t = candidates
             .iter()
-            .filter(|(_, e)| keep_for(e, &|p| if p == &atom { b(true) } else { K::U }))
+            .filter(|(_, e, _)| keep_for(e, &|p| if p == &atom { b(true) } else { K::U }))
             .count();
         let f = candidates
             .iter()
-            .filter(|(_, e)| keep_for(e, &|p| if p == &atom { b(false) } else { K::U }))
+            .filter(|(_, e, _)| keep_for(e, &|p| if p == &atom { b(false) } else { K::U }))
             .count();
         let worst = t.max(f);
         if worst < best_worst {
@@ -537,7 +559,7 @@ fn eligible_values(candidates: &[Candidate], key: &BranchKey) -> Vec<String> {
         _ => {}
     }
     let mut vals: FxHashSet<String> = FxHashSet::default();
-    for (_, e) in candidates {
+    for (_, e, _) in candidates {
         collect_eq_values(e, key, &mut |v| {
             vals.insert(v.to_string());
         });
