@@ -373,16 +373,18 @@ pub fn strip_prefix(
     stamp_value: &str,
     stamp_nested_under: &[String],
 ) {
-    let matched: Vec<(String, String)> = tags
+    // Only the keys need cloning here (can't mutate `tags` while iterating it) — each matched
+    // value is moved out via `remove` below instead of being cloned up front.
+    let matched: Vec<String> = tags
         .iter()
         .filter(|(k, _)| k.starts_with(prefix))
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, _)| k.clone())
         .collect();
 
-    for (key, value) in matched {
+    for key in matched {
+        let value = tags.remove(&key).expect("key just collected from tags");
         let base = key[prefix.len()..].to_owned();
         tags.insert(base.clone(), value);
-        tags.remove(&key);
 
         let marker = if stamp_nested_under.iter().any(|p| base.starts_with(p.as_str())) {
             format!("{base}:{stamp_key}")
