@@ -88,13 +88,13 @@ export default function DagView({
 }: {
   topic: string;
   category?: string | null;
-  mode?: "deriver" | "category";
+  mode?: "deriver" | "category" | "decision-tree";
 }) {
   const [response, setResponse] = useState<DagResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<string>("");
   const [variantIdx, setVariantIdx] = useState(0);
-  const fieldLabel = mode === "category" ? "kind" : "field";
+  const fieldLabel = mode === "deriver" ? "field" : "kind";
 
   useEffect(() => {
     setResponse(null);
@@ -102,7 +102,8 @@ export default function DagView({
     setField("");
     setVariantIdx(0);
     if (!topic) return;
-    const endpoint = mode === "category" ? "/api/categorize-dag/" : "/api/dag/";
+    const endpoint =
+      mode === "category" ? "/api/categorize-dag/" : mode === "decision-tree" ? "/api/decision-tree-dag/" : "/api/dag/";
     fetch(`${endpoint}${encodeURIComponent(topic)}`)
       .then((r) => r.json())
       .then((d: DagResponse | { error: string }) => {

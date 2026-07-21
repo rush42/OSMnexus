@@ -3,18 +3,20 @@
 //! views. Same field/variant grouping as `bin/plot_dag` (which emits Graphviz DOT instead, deriver
 //! trees only), just JSON on stdout rather than one `.dot` file per variant.
 //!
-//! Usage: `dag_json <config-dir> <topic-name> [category]`, e.g. `dag_json configs/tilda
-//! tilda/bikelanes`. `<topic-name>` is the same string `TopicRunner::load` takes —
+//! Usage: `dag_json <config-dir> <topic-name> [category|decision-tree]`, e.g. `dag_json
+//! configs/tilda tilda/bikelanes`. `<topic-name>` is the same string `TopicRunner::load` takes —
 //! `<config-dir>/<topic-name>/`. Pass `category` as the third argument to get the per-`ElementKind`
-//! categorization trees (which category an object is assigned) instead of the default per-field
-//! deriver trees (how an already-classified object's output values are computed).
+//! categorization trees (the flat, human-readable priority order which category an object is
+//! assigned) instead of the default per-field deriver trees (how an already-classified object's
+//! output values are computed); pass `decision-tree` to instead get the *compiled* discrimination
+//! net (`categorize::decision_tree::DecisionTree`) that actually prunes the runtime walk.
 
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use osmnexus::dag::{category_order_dag, producer_dag, DagGraph};
+use osmnexus::dag::{category_order_dag, decision_tree_dag, producer_dag, DagGraph};
 use osmnexus::lang::producer::Producer;
 use osmnexus::topic::runner::TopicRunner;
 
@@ -33,15 +35,26 @@ struct Response {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let config_dir = args.next().context("usage: dag_json <config-dir> <topic-name> [category]")?;
-    let topic_name = args.next().context("usage: dag_json <config-dir> <topic-name> [category]")?;
-    let category_mode = args.next().as_deref() == Some("category");
+    let config_dir = args.next().context("usage: dag_json <config-dir> <topic-name> [category|decision-tree]")?;
+    let topic_name = args.next().context("usage: dag_json <config-dir> <topic-name> [category|decision-tree]")?;
+    let mode = args.next();
+    let category_mode = mode.as_deref() == Some("category");
+    let decision_tree_mode = mode.as_deref() == Some("decision-tree");
 
     osmnexus::paths::set_config_root(config_dir);
     let runner = TopicRunner::load(&topic_name, 64)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
-    let fields = if category_mode {
+    let fields = if decision_tree_mode {
+        // Same per-kind, single-variant shape as `category_mode` below, just the compiled tree
+        // instead of the flat priority list.
+        runner.categories.iter()
+            .map(|(kind, cats)| {
+                let variant = Variant { labels: vec![kind.id_prefix().to_owned()], graph: decision_tree_dag(cats) };
+                (kind.id_prefix().to_owned(), vec![variant])
+            })
+            .collect()
+    } else if category_mode {
         // "field" here is the element kind ("node"/"way"/"relation") — one tree per kind the topic
         // has any categories for, single variant each (a categorization tree has no per-category
         // dedup the way a field's producer does).

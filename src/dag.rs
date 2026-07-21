@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::categorize::categories::{CategoriesFile, OrderedNode};
+use crate::categorize::decision_tree::DecisionTree;
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer};
@@ -243,5 +244,59 @@ fn render_filter(g: &mut DagGraph, f: &Filter) -> String {
             node
         }
         other => g.node(truncate(&other.describe(), 120), "extract"),
+    }
+}
+
+/// The compiled discrimination net (`categorize::decision_tree::DecisionTree`) that prunes
+/// `categorize`'s first-match walk for one `ElementKind` — unlike `category_order_dag`'s flat
+/// priority list, this shows the actual branch-on-tag/atom structure the tree walks per object,
+/// with each leaf naming the (small, order-preserving) subset of categories/skips it still has to
+/// try. Node/edge shape mirrors `producer_dag`: reuses the "match"/"rule" kinds for branches so the
+/// frontend styles them consistently, with leaves rendered as their own kind.
+pub fn decision_tree_dag(cats: &CategoriesFile) -> DagGraph {
+    let mut g = DagGraph::default();
+    render_decision_tree(&mut g, &cats.tree, cats);
+    g
+}
+
+fn order_label(cats: &CategoriesFile, idx: usize) -> String {
+    match &cats.order[idx] {
+        OrderedNode::Category { idx } => format!("category: {}", cats.categories[*idx].id),
+        OrderedNode::Skip { .. } => "(no category)".to_owned(),
+    }
+}
+
+fn render_decision_tree(g: &mut DagGraph, tree: &DecisionTree, cats: &CategoriesFile) -> String {
+    match tree {
+        DecisionTree::Leaf(idxs) => {
+            let label = if idxs.is_empty() {
+                "leaf\n(no candidates)".to_owned()
+            } else {
+                let mut lines = vec![format!("leaf\n{} candidate(s)", idxs.len())];
+                lines.extend(idxs.iter().map(|&i| format!("priority {}: {}", i + 1, order_label(cats, i))));
+                truncate(&lines.join("\n"), 200)
+            };
+            g.node(label, "const")
+        }
+        DecisionTree::Branch { tag, children, wildcard } => {
+            let node = g.node(format!("branch\ntag: {tag}"), "match");
+            let mut keys: Vec<&String> = children.keys().collect();
+            keys.sort();
+            for k in keys {
+                let child = render_decision_tree(g, &children[k], cats);
+                g.edge(&node, &child, k);
+            }
+            let wild = render_decision_tree(g, wildcard, cats);
+            g.edge(&node, &wild, "*");
+            node
+        }
+        DecisionTree::AtomBranch { atom, on_true, on_false } => {
+            let node = g.node(format!("branch\natom: {}", truncate(&format!("{atom:?}"), 80)), "match");
+            let t = render_decision_tree(g, on_true, cats);
+            g.edge(&node, &t, "true");
+            let f = render_decision_tree(g, on_false, cats);
+            g.edge(&node, &f, "false");
+            node
+        }
     }
 }

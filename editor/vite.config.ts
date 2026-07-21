@@ -336,6 +336,22 @@ function liveEditorApi(): Plugin {
           }
         }
 
+        const decisionTreeDagMatch = url.pathname.match(/^\/api\/decision-tree-dag\/([^/]+)$/);
+        if (decisionTreeDagMatch && req.method === "GET") {
+          const topic = decodeURIComponent(decisionTreeDagMatch[1]);
+          if (!(await listTopics()).includes(topic)) {
+            return sendJson(res, 400, { error: `unknown topic '${topic}'` });
+          }
+          const configDir = await ensureConfigSelected();
+          const result = await run(DAG_JSON_BIN, [configDir, topic, "decision-tree"]);
+          if (!result.ok) return sendJson(res, 500, { error: result.message });
+          try {
+            return sendJson(res, 200, JSON.parse(result.stdout));
+          } catch (err) {
+            return sendJson(res, 500, { error: `dag_json produced invalid JSON: ${String(err)}` });
+          }
+        }
+
         const categoriesMatch = url.pathname.match(/^\/api\/categories\/([^/]+)$/);
         if (categoriesMatch && req.method === "GET") {
           const topic = decodeURIComponent(categoriesMatch[1]);
