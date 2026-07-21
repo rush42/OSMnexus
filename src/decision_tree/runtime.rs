@@ -13,22 +13,12 @@ use crate::lang::extract::Extract;
 use crate::lang::filter::read_num;
 use crate::lang::producer::ExtractCtx;
 
-/// Evaluate a single atom directly against the object's context. Only called for the atom kinds
-/// `AtomBranch` is ever built from (`Contains`/`StartsWith`/`EndsWith`/`Num`/`Exists`/`HasKeyPrefix`)
-/// — all total functions of `ctx`, mirroring `eval`'s semantics for a missing tag (false, not
-/// unknown). Reads through `read_extract`/`read_extract_num` (not `Extract::read_str`/`read_num`
-/// directly), same as `decide_concrete` — a parent-scoped atom needs the same `ctx.parent_tags`
-/// redirect leaf eval already gets.
+/// Evaluate a single atom directly against the object's context — `AtomBranch`'s own entry point
+/// into `decide_concrete` (every atom kind `AtomBranch` is ever built from —
+/// `Contains`/`StartsWith`/`EndsWith`/`Num`/`Exists`/`HasKeyPrefix` — is one `decide_concrete` already
+/// handles identically; a separate match here would just duplicate those arms verbatim).
 pub(crate) fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
-    match atom {
-        Predicate::Contains(e, s) => read_extract(e, ctx).is_some_and(|v| v.contains(s.as_str())),
-        Predicate::StartsWith(e, s) => read_extract(e, ctx).is_some_and(|v| v.starts_with(s.as_str())),
-        Predicate::EndsWith(e, s) => read_extract(e, ctx).is_some_and(|v| v.ends_with(s.as_str())),
-        Predicate::Exists(e) => read_extract(e, ctx).is_some(),
-        Predicate::Num(e, op, bits) => read_extract_num(e, ctx).is_some_and(|n| num_matches(op, *bits, n)),
-        Predicate::HasKeyPrefix(p) => ctx.obj_tags.keys().any(|k| k.starts_with(p.as_str())),
-        _ => unreachable!("AtomBranch only built for Contains/StartsWith/EndsWith/Exists/Num/HasKeyPrefix"),
-    }
+    decide_concrete(atom, ctx)
 }
 
 /// `Extract` naming a synthetic `parent_<key>` tag (the name `prefix_expr_tags` stamps for a
