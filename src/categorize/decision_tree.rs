@@ -183,16 +183,18 @@ impl DecisionTree {
 }
 
 /// Evaluate a single atom directly against the object's context. Only called for the atom kinds
-/// `AtomBranch` is ever built from (`Contains`/`StartsWith`/`EndsWith`/`Num`/`Exists`/`HasKeyPrefix`
-/// on a plain, non-parent tag) — all total functions of `ctx.tags`, mirroring `eval`'s semantics
-/// for a missing tag (false, not unknown).
+/// `AtomBranch` is ever built from (`Contains`/`StartsWith`/`EndsWith`/`Num`/`Exists`/`HasKeyPrefix`)
+/// — all total functions of `ctx`, mirroring `eval`'s semantics for a missing tag (false, not
+/// unknown). Reads through `read_extract`/`read_extract_num` (not `Extract::read_str`/`read_num`
+/// directly), same as `decide_concrete` — a parent-scoped atom needs the same `ctx.parent_tags`
+/// redirect leaf eval already gets.
 fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
     match atom {
-        Predicate::Contains(e, s) => e.read_str(ctx).is_some_and(|v| v.contains(s.as_str())),
-        Predicate::StartsWith(e, s) => e.read_str(ctx).is_some_and(|v| v.starts_with(s.as_str())),
-        Predicate::EndsWith(e, s) => e.read_str(ctx).is_some_and(|v| v.ends_with(s.as_str())),
-        Predicate::Exists(e) => e.read_str(ctx).is_some(),
-        Predicate::Num(e, op, bits) => read_num(e, ctx).is_some_and(|n| num_matches(op, *bits, n)),
+        Predicate::Contains(e, s) => read_extract(e, ctx).is_some_and(|v| v.contains(s.as_str())),
+        Predicate::StartsWith(e, s) => read_extract(e, ctx).is_some_and(|v| v.starts_with(s.as_str())),
+        Predicate::EndsWith(e, s) => read_extract(e, ctx).is_some_and(|v| v.ends_with(s.as_str())),
+        Predicate::Exists(e) => read_extract(e, ctx).is_some(),
+        Predicate::Num(e, op, bits) => read_extract_num(e, ctx).is_some_and(|n| num_matches(op, *bits, n)),
         Predicate::HasKeyPrefix(p) => ctx.obj_tags.keys().any(|k| k.starts_with(p.as_str())),
         _ => unreachable!("AtomBranch only built for Contains/StartsWith/EndsWith/Exists/Num/HasKeyPrefix"),
     }
@@ -264,8 +266,10 @@ pub(crate) fn eval_expr(e: &Expr, ctx: &ExtractCtx) -> bool {
 }
 
 /// Resolve a branch key against the object's context. `None` means "no matching enumerated child"
-/// → fall through to the wildcard.
-fn branch_key<'a>(ctx: &'a ExtractCtx, key: &BranchKey) -> Option<Cow<'a, str>> {
+/// → fall through to the wildcard. `BranchKey::Tag` reads through `read_extract` (not
+/// `Extract::read_str` directly) so a parent-scoped branch key redirects to `ctx.parent_tags`, same
+/// as `eval_atom`/`decide_concrete`.
+fn branch_key<'a>(ctx: &ExtractCtx<'a>, key: &BranchKey) -> Option<Cow<'a, str>> {
     match key {
         // `_side` is always stamped by `topic::pipeline::build_topic_rows`/each `Clone` (self
         // included) — defaulting to "self" here is a safety net, not the normal path.
@@ -278,7 +282,7 @@ fn branch_key<'a>(ctx: &'a ExtractCtx, key: &BranchKey) -> Option<Cow<'a, str>> 
         BranchKey::Sentinel(PREFIX_KEY) => ctx.annotations.get("_prefix").and_then(Value::as_str).map(Cow::Borrowed),
         BranchKey::Sentinel(INFIX_KEY) => ctx.annotations.get("_infix").and_then(Value::as_str).map(Cow::Borrowed),
         BranchKey::Sentinel(other) => unreachable!("unknown branch-key sentinel {other:?}"),
-        BranchKey::Tag(extract) => extract.read_str(ctx),
+        BranchKey::Tag(extract) => read_extract(extract, ctx),
     }
 }
 
@@ -467,12 +471,12 @@ enum BranchChoice {
     Atom(Predicate),
 }
 
-/// A branch key naming a plain (non-parent-scoped) tag isn't eligible if any of its `Extract`'s own
-/// key(s) is itself parent-scoped (the synthetic `parent_<key>` name `prefix_expr_tags` stamps for
-/// a `Filter::Parent` condition) — there's no such tag in `ctx.obj_tags` to read. Matches directly
-/// on `Extract` rather than going through `tag_names()` — this runs on every predicate decision in
-/// `eval_expr`'s per-object hot path (via `read_extract`/`read_extract_num`), so it can't afford
-/// `tag_names()`'s `Vec<String>` allocation for what's almost always a `false` answer.
+/// `Extract` naming a synthetic `parent_<key>` tag (the name `prefix_expr_tags` stamps for a
+/// `Filter::Parent` condition) — `read_extract`/`read_extract_num` redirect these to
+/// `ctx.parent_tags` instead of `ctx.obj_tags`. Matches directly on `Extract` rather than going
+/// through `tag_names()` — this runs on every predicate decision in `eval_expr`'s per-object hot
+/// path, so it can't afford `tag_names()`'s `Vec<String>` allocation for what's almost always a
+/// `false` answer.
 fn parent_scoped(extract: &Extract) -> bool {
     match extract {
         Extract::Value { key, .. } => key.starts_with("parent_"),
@@ -480,31 +484,100 @@ fn parent_scoped(extract: &Extract) -> bool {
     }
 }
 
+/// Below this many candidates, a leaf's own `eval_expr` walk is already cheap enough that
+/// `lookahead_branch`'s extra build-time search isn't worth it (see its own doc) — matches the
+/// threshold `bin/dump_leaves`-style inspection used to call a leaf "large" in practice.
+const LOOKAHEAD_MIN_CANDIDATES: usize = 6;
+
 /// Pick the branch (tag/context key, or single atom) whose worst-case child is smallest, provided
-/// it prunes at all. `None` if nothing reduces the candidate set.
+/// it prunes at all; falls back to `lookahead_branch` for a still-large candidate set no single
+/// branch improves. `None` if nothing helps.
 fn choose_branch(
     candidates: &[Candidate],
     used: &FxHashSet<BranchKey>,
     used_atoms: &FxHashSet<Predicate>,
 ) -> Option<BranchChoice> {
-    let mut best: Option<BranchChoice> = None;
-    let mut best_worst = candidates.len(); // require strictly smaller than the full set
+    if let Some((choice, _)) = best_single_branch(candidates, used, used_atoms) {
+        return Some(choice);
+    }
+    if candidates.len() > LOOKAHEAD_MIN_CANDIDATES {
+        return lookahead_branch(candidates, used, used_atoms);
+    }
+    None
+}
 
-    // Candidate branch keys: tags (plain or sanitized) appearing in a positive Eq/FirstTagIn atom,
-    // plus the `side`/`has_parent`/`prefix`/`infix` sentinels wherever those predicates appear at
-    // all.
+/// Bounded 2-ply fallback, only tried on an already-large candidate set (see
+/// `LOOKAHEAD_MIN_CANDIDATES`) that no single branch shrinks at all: try each remaining key `key1`
+/// anyway, and see whether some *second* branch shrinks the worst resulting child — several
+/// branches can jointly resolve an `Or` spanning multiple keys that no single one of them could
+/// decide alone (see `simplify`'s own doc; `is_protected_bikelane_separation`-shaped conditions,
+/// `Or`ing across `separation*` and `traffic_mode*`, are exactly this case). Only considers `Key`
+/// branches for `key1` (not atoms) — atoms are already single literal splits with little left for a
+/// second branch to jointly resolve. Tried only above the size threshold: below it, this ran on
+/// *every* no-single-branch-helps leaf tree-wide and bloated the tree ~11x for a handful of leaves
+/// actually worth it (measured on `bikelanes/way`: 83→71 leaves >6 candidates, 247→2774 nodes) —
+/// gating it to already-large leaves keeps the search where the payoff is.
+fn lookahead_branch(
+    candidates: &[Candidate],
+    used: &FxHashSet<BranchKey>,
+    used_atoms: &FxHashSet<Predicate>,
+) -> Option<BranchChoice> {
+    let tags = branch_key_candidates(candidates, used);
+
+    let mut best: Option<BranchChoice> = None;
+    let mut best_worst = candidates.len();
+    for key1 in tags {
+        let values = eligible_values(candidates, &key1);
+        let mut used1 = used.clone();
+        used1.insert(key1.clone());
+
+        let child_worst = |child: &[Candidate]| match best_single_branch(child, &used1, used_atoms) {
+            Some((_, w)) => w,
+            None => child.len(),
+        };
+
+        let wild = fold_candidates(candidates, &|p| decide_wildcard(p, &key1, &values));
+        let mut worst = child_worst(&wild);
+        for v in &values {
+            let child = fold_candidates(candidates, &|p| decide_value(p, &key1, v));
+            worst = worst.max(child_worst(&child));
+        }
+
+        if worst < best_worst {
+            best_worst = worst;
+            best = Some(BranchChoice::Key(key1));
+        }
+    }
+    best
+}
+
+/// The set of eligible branch keys across `candidates` — tags (plain, sanitized, or parent-scoped)
+/// appearing in a positive Eq/FirstTagIn atom, plus the `side`/`has_parent`/`prefix`/`infix`
+/// sentinels wherever those predicates appear at all. Shared by `best_single_branch` and
+/// `lookahead_branch`.
+fn branch_key_candidates(candidates: &[Candidate], used: &FxHashSet<BranchKey>) -> FxHashSet<BranchKey> {
     let mut tags: FxHashSet<BranchKey> = FxHashSet::default();
     for (_, e, _) in candidates {
         collect_branch_keys(e, &mut |k| {
-            let parent_scoped = match &k {
-                BranchKey::Tag(extract) => parent_scoped(extract),
-                BranchKey::Sentinel(_) => false,
-            };
-            if !parent_scoped && !used.contains(&k) {
+            if !used.contains(&k) {
                 tags.insert(k);
             }
         });
     }
+    tags
+}
+
+/// The best single branch (tag/context key, or atom) whose worst-case child is smallest, alongside
+/// that worst-case size — `None` if nothing reduces the candidate set at all in one step.
+fn best_single_branch(
+    candidates: &[Candidate],
+    used: &FxHashSet<BranchKey>,
+    used_atoms: &FxHashSet<Predicate>,
+) -> Option<(BranchChoice, usize)> {
+    let mut best: Option<BranchChoice> = None;
+    let mut best_worst = candidates.len(); // require strictly smaller than the full set
+
+    let tags = branch_key_candidates(candidates, used);
     for key in tags {
         let values = eligible_values(candidates, &key);
         let mut worst =
@@ -519,9 +592,9 @@ fn choose_branch(
         }
     }
 
-    // Candidate atoms: total (non-Eq) predicates on a plain, non-parent-scoped tag — `Contains`,
-    // `StartsWith`, `EndsWith`, `Num`, `Exists`, `HasKeyPrefix` — either polarity, since a missing
-    // tag decides them outright (false) rather than leaving them unknown.
+    // Candidate atoms: total (non-Eq) predicates — `Contains`, `StartsWith`, `EndsWith`, `Num`,
+    // `Exists`, `HasKeyPrefix` — either polarity, since a missing tag decides them outright (false)
+    // rather than leaving them unknown.
     let mut atoms: FxHashSet<Predicate> = FxHashSet::default();
     for (_, e, _) in candidates {
         collect_atom_candidates(e, &mut |p| {
@@ -547,7 +620,7 @@ fn choose_branch(
         }
     }
 
-    best
+    best.map(|b| (b, best_worst))
 }
 
 /// All exact-eq values of `key` across the candidate conditions. For the `side`/`has_parent`
@@ -751,25 +824,21 @@ fn collect_branch_keys(e: &Expr, f: &mut impl FnMut(BranchKey)) {
 }
 
 /// Invoke `f` on every `Contains`/`StartsWith`/`EndsWith`/`Num`/`Exists`/`HasKeyPrefix` atom (either
-/// polarity) whose tag (if any) isn't parent-scoped — the atom kinds `AtomBranch` can use.
+/// polarity) — the atom kinds `AtomBranch` can use. Parent-scoped atoms are included: `eval_atom`
+/// reads through `read_extract`/`read_extract_num`, which redirect a parent-scoped `Extract` to
+/// `ctx.parent_tags`, so branching on one is exactly as sound as a plain-tag atom.
 fn collect_atom_candidates(e: &Expr, f: &mut impl FnMut(&Predicate)) {
     match e {
         Expr::Lit(Literal::Pos(p) | Literal::Neg(p)) => {
-            let extract = match p {
-                Predicate::Contains(e, _)
-                | Predicate::StartsWith(e, _)
-                | Predicate::EndsWith(e, _)
-                | Predicate::Exists(e)
-                | Predicate::Num(e, _, _) => Some(e),
-                Predicate::HasKeyPrefix(_) => None,
-                _ => return,
-            };
-            if let Some(extract) = extract {
-                if parent_scoped(extract) {
-                    return;
-                }
+            match p {
+                Predicate::Contains(..)
+                | Predicate::StartsWith(..)
+                | Predicate::EndsWith(..)
+                | Predicate::Exists(..)
+                | Predicate::Num(..)
+                | Predicate::HasKeyPrefix(..) => f(p),
+                _ => {}
             }
-            f(p);
         }
         Expr::True | Expr::False => {}
         Expr::Not(x) => collect_atom_candidates(x, f),
