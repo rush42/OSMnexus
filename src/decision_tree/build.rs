@@ -112,6 +112,30 @@ fn conjoin(parts: Vec<Expr>) -> Expr {
     }
 }
 
+/// The candidate sets a `Key(key)` branch would split `candidates` into — the wildcard child first,
+/// then one per `values`, same order `Branch::children`/`build_rec` use. Shared by `build_rec`
+/// (recurses into them for real) and `lookahead_branch` (needs the actual folded content to score a
+/// 2-ply choice, not just a count). `best_single_branch`'s own single-ply scoring deliberately
+/// doesn't use this: it only needs *how many* candidates would survive each child, which
+/// `kleene::keep_for` answers without `fold_candidates`' `simplify` allocating a new `Expr` per
+/// candidate — worth avoiding since it runs at every node just to pick a branch, most of which are
+/// never taken.
+fn key_children(candidates: &[Candidate], key: &BranchKey, values: &[String]) -> Vec<Vec<Candidate>> {
+    std::iter::once(fold_candidates(candidates, &|p| decide_wildcard(p, key, values)))
+        .chain(values.iter().map(|v| fold_candidates(candidates, &|p| decide_value(p, key, v))))
+        .collect()
+}
+
+/// The `(on_true, on_false)` candidate sets an `Atom(atom)` branch would split `candidates` into —
+/// `key_children`'s counterpart for the other `BranchChoice` kind, same sharing rationale (used by
+/// `build_rec` only; `best_single_branch` scores atoms via cheap `keep_for` counting, same as keys).
+fn atom_children(candidates: &[Candidate], atom: &Predicate) -> (Vec<Candidate>, Vec<Candidate>) {
+    let b = |cond: bool| if cond { K::T } else { K::F };
+    let on_true = fold_candidates(candidates, &|p| if p == atom { b(true) } else { K::U });
+    let on_false = fold_candidates(candidates, &|p| if p == atom { b(false) } else { K::U });
+    (on_true, on_false)
+}
+
 fn build_rec(
     candidates: Vec<Candidate>,
     used: &mut FxHashSet<BranchKey>,
@@ -131,16 +155,15 @@ fn build_rec(
             let values = eligible_values(&candidates, &tag);
             used.insert(tag.clone());
 
+            let mut child_sets = key_children(&candidates, &tag, &values).into_iter();
+            let wildcard = Box::new(build_rec(
+                child_sets.next().expect("key_children always yields the wildcard child first"),
+                used, used_atoms, depth + 1, max_depth,
+            ));
             let mut children = FxHashMap::default();
-            for v in &values {
-                let kept = fold_candidates(&candidates, &|p| decide_value(p, &tag, v));
-                children.insert(
-                    v.clone(),
-                    build_rec(kept, used, used_atoms, depth + 1, max_depth),
-                );
+            for (v, kept) in values.iter().zip(child_sets) {
+                children.insert(v.clone(), build_rec(kept, used, used_atoms, depth + 1, max_depth));
             }
-            let wild = fold_candidates(&candidates, &|p| decide_wildcard(p, &tag, &values));
-            let wildcard = Box::new(build_rec(wild, used, used_atoms, depth + 1, max_depth));
 
             used.remove(&tag);
             DecisionTree::Branch { tag, children, wildcard }
@@ -148,9 +171,7 @@ fn build_rec(
         BranchChoice::Atom(atom) => {
             used_atoms.insert(atom.clone());
 
-            let b = |cond: bool| if cond { K::T } else { K::F };
-            let on_true = fold_candidates(&candidates, &|p| if p == &atom { b(true) } else { K::U });
-            let on_false = fold_candidates(&candidates, &|p| if p == &atom { b(false) } else { K::U });
+            let (on_true, on_false) = atom_children(&candidates, &atom);
             let on_true = Box::new(build_rec(on_true, used, used_atoms, depth + 1, max_depth));
             let on_false = Box::new(build_rec(on_false, used, used_atoms, depth + 1, max_depth));
 
@@ -236,13 +257,7 @@ fn lookahead_branch(
             Some((_, w)) => w,
             None => child.len(),
         };
-
-        let wild = fold_candidates(candidates, &|p| decide_wildcard(p, &key1, &values));
-        let mut worst = child_worst(&wild);
-        for v in &values {
-            let child = fold_candidates(candidates, &|p| decide_value(p, &key1, v));
-            worst = worst.max(child_worst(&child));
-        }
+        let worst = key_children(candidates, &key1, &values).iter().map(|child| child_worst(child)).max().unwrap_or(0);
 
         if worst < best_worst {
             best_worst = worst;
@@ -306,14 +321,8 @@ fn best_single_branch(
     }
     for atom in atoms {
         let b = |cond: bool| if cond { K::T } else { K::F };
-        let t = candidates
-            .iter()
-            .filter(|(_, e, _)| keep_for(e, &|p| if p == &atom { b(true) } else { K::U }))
-            .count();
-        let f = candidates
-            .iter()
-            .filter(|(_, e, _)| keep_for(e, &|p| if p == &atom { b(false) } else { K::U }))
-            .count();
+        let t = candidates.iter().filter(|(_, e, _)| keep_for(e, &|p| if p == &atom { b(true) } else { K::U })).count();
+        let f = candidates.iter().filter(|(_, e, _)| keep_for(e, &|p| if p == &atom { b(false) } else { K::U })).count();
         let worst = t.max(f);
         if worst < best_worst {
             best_worst = worst;
