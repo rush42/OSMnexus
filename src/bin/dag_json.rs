@@ -3,22 +3,26 @@
 //! views. Same field/variant grouping as `bin/plot_dag` (which emits Graphviz DOT instead, deriver
 //! trees only), just JSON on stdout rather than one `.dot` file per variant.
 //!
-//! Usage: `dag_json <config-dir> <topic-name> <mode> <selector>`, e.g. `dag_json configs
-//! tilda/bikelanes deriver list` or `dag_json configs tilda/bikelanes deriver surface`.
+//! Usage: `dag_json <config-dir> <topic-name> <mode> <selector> [order-idx]`, e.g. `dag_json
+//! configs tilda/bikelanes deriver list` or `dag_json configs tilda/bikelanes deriver surface`.
 //! `<topic-name>` is the same string `TopicRunner::load` takes — `<config-dir>/topics/<topic-name>/`.
-//! `<mode>` is `deriver` (per-field output producer trees), `category` (the flat, human-readable
-//! priority order an object is assigned a category by), or `decision-tree` (the *compiled*
-//! discrimination net that actually prunes the runtime walk). `<selector>` is either `list` — cheap,
-//! no graphs built, just the available field/kind names for the picker — or one of those names, to
-//! build just that one field/kind's graph. Building every field/kind's graph on every request (the
-//! live editor only ever displays one at a time) was the dominant cost for topics with many/large
+//! `<mode>` is `deriver` (per-field output producer trees), `category` (one category's own
+//! condition + what it excludes, picked from its kind's priority order), or `decision-tree` (the
+//! *compiled* discrimination net that actually prunes the runtime walk). `<selector>` is either
+//! `list` — cheap, no graphs built, just the available field/kind names for the picker — or one of
+//! those names. For `deriver`/`decision-tree`, a name alone builds that field's/kind's graph.
+//! `category` has a third level: a kind name alone (no `order-idx`) returns that kind's category
+//! names in priority order (still no graph built) instead of one crammed-together tree of every
+//! category at once; passing `order-idx` too (an index into that ordered list) builds the graph for
+//! just that one category's condition. Building every field/kind's graph on every request (the live
+//! editor only ever displays one at a time) was the dominant cost for topics with many/large
 //! fields, so the caller is expected to fetch `list` once and then one graph per field the user
 //! actually selects.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
 
-use osmnexus::dag::{category_order_dag, decision_tree_dag, producer_dag, DagGraph};
+use osmnexus::dag::{self, category_condition_dag, decision_tree_dag, producer_dag, DagGraph};
 use osmnexus::lang::producer::Producer;
 use osmnexus::topic::runner::TopicRunner;
 
@@ -44,11 +48,12 @@ struct GraphResponse {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: dag_json <config-dir> <topic-name> <deriver|category|decision-tree> <list|name>";
+    let usage = "usage: dag_json <config-dir> <topic-name> <deriver|category|decision-tree> <list|name> [order-idx]";
     let config_dir = args.next().context(usage)?;
     let topic_name = args.next().context(usage)?;
     let mode = args.next().context(usage)?;
     let selector = args.next().context(usage)?;
+    let order_idx: Option<usize> = args.next().map(|s| s.parse()).transpose().context("order-idx must be a number")?;
 
     // Compiling the per-kind decision tree (`CategoriesFile::build_order`'s `decision_tree::build`
     // call, skipped via `TopicRunner::load`'s `linear_classify` flag) is by far the most expensive
@@ -61,7 +66,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     match mode.as_str() {
-        "category" | "decision-tree" => {
+        "decision-tree" => {
             if selector == "list" {
                 let names = runner.categories.keys().map(|k| k.id_prefix().to_owned()).collect();
                 println!("{}", serde_json::to_string(&ListResponse { topic: topic_name, names })?);
@@ -69,10 +74,34 @@ fn main() -> Result<()> {
             }
             let (kind, cats) = runner.categories.iter().find(|(k, _)| k.id_prefix() == selector)
                 .with_context(|| format!("unknown kind '{selector}'"))?;
-            let graph = if mode == "decision-tree" { decision_tree_dag(cats) } else { category_order_dag(cats) };
-            let variant = Variant { labels: vec![kind.id_prefix().to_owned()], graph };
+            let variant = Variant { labels: vec![kind.id_prefix().to_owned()], graph: decision_tree_dag(cats) };
             let resp = GraphResponse { topic: topic_name, name: selector, variants: vec![variant] };
             println!("{}", serde_json::to_string(&resp)?);
+        }
+        "category" => {
+            if selector == "list" {
+                let names = runner.categories.keys().map(|k| k.id_prefix().to_owned()).collect();
+                println!("{}", serde_json::to_string(&ListResponse { topic: topic_name, names })?);
+                return Ok(());
+            }
+            let (_, cats) = runner.categories.iter().find(|(k, _)| k.id_prefix() == selector)
+                .with_context(|| format!("unknown kind '{selector}'"))?;
+            match order_idx {
+                // No category picked yet — just its kind's category names, in the same priority
+                // order `order` (and therefore the runtime first-match walk) already uses, so the
+                // picker reflects the actual evaluation order rather than an arbitrary one.
+                None => {
+                    let names = (0..cats.order.len()).map(|i| dag::order_label(cats, i)).collect();
+                    println!("{}", serde_json::to_string(&ListResponse { topic: topic_name, names })?);
+                }
+                Some(idx) => {
+                    ensure!(idx < cats.order.len(), "order index {idx} out of range for kind '{selector}'");
+                    let label = dag::order_label(cats, idx);
+                    let variant = Variant { labels: vec![label.clone()], graph: category_condition_dag(cats, idx) };
+                    let resp = GraphResponse { topic: topic_name, name: label, variants: vec![variant] };
+                    println!("{}", serde_json::to_string(&resp)?);
+                }
+            }
         }
         "deriver" => {
             if selector == "list" {

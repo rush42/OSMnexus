@@ -85,7 +85,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             // (`topic::runner::default_value_producer`), always empty `rules`. Shown as a plain
             // literal, not a one-branch "match" wrapper around nothing.
             let d = default.as_ref().expect("MatchOrigin::Default always carries a default");
-            let label = format!("Default\nvalue: {}", truncate(&format!("{d:?}"), 40));
+            let label = format!("Default\n{}", truncate(&d.to_string(), 40));
             let node = g.node(label, "const");
             annotate_node(g, &node, annotate);
             node
@@ -121,7 +121,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
                 g.edge(&rule_node, &value_node, "");
             }
             if let Some(d) = default {
-                let default_node = g.node(format!("Const\nvalue: {}", truncate(&format!("{d:?}"), 40)), "const");
+                let default_node = g.node(format!("Const\n{}", truncate(&d.to_string(), 40)), "const");
                 g.edge(&node, &default_node, "default");
             }
             node
@@ -139,7 +139,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             }
         }
         Producer::Const { value, annotate } => {
-            let label = format!("Const\nvalue: {}", truncate(&format!("{value:?}"), 40));
+            let label = format!("Const\n{}", truncate(&value.to_string(), 40));
             let node = g.node(label, "const");
             annotate_node(g, &node, annotate);
             node
@@ -178,32 +178,30 @@ fn step_label(step: &Step) -> String {
     }
 }
 
-/// The categorization tree for one `ElementKind`'s `CategoriesFile` — which category (or no
-/// category, for a disqualifier) an object gets, tried in `order` (the compiled priority list;
-/// see `categories::build_order`), each branch's condition rendered as a `Filter` expression tree.
-/// A flat, single-level branch per `order` entry (not a discrimination net like `DecisionTree`) —
-/// it mirrors `categorize_linear`'s reference walk, which is what a human actually reads a
-/// category set as: try these conditions in order, first match wins.
-pub fn category_order_dag(cats: &CategoriesFile) -> DagGraph {
+/// One `order` entry's (see `categories::build_order`) own condition, rendered as a `Filter`
+/// expression tree under a header node naming it — and, for a real category, what it excludes.
+/// The categorize view used to cram every category into one "try these in order" tree at once
+/// (`categorize_linear`'s reference walk, laid out flat); that stopped being readable past a
+/// handful of categories, so the live editor now drives this one-category-at-a-time view off a
+/// dropdown instead, ordered the same way `order` (the compiled priority list) already is — see
+/// `bin/dag_json.rs`'s category-mode list/selector handling.
+pub fn category_condition_dag(cats: &CategoriesFile, order_idx: usize) -> DagGraph {
     let mut g = DagGraph::default();
-    let root = g.node(format!("categorize\n{} rule(s)", cats.order.len()), "match");
-    for (i, node) in cats.order.iter().enumerate() {
-        match node {
-            OrderedNode::Category { idx } => {
-                let cat = &cats.categories[*idx];
-                let branch = g.node(format!("priority {}\ncategory: {}", i + 1, cat.id), "rule");
-                g.edge(&root, &branch, "");
-                let cond = render_filter(&mut g, &cat.condition);
-                g.edge(&branch, &cond, "if");
+    let node = &cats.order[order_idx];
+    let (header_label, condition) = match node {
+        OrderedNode::Category { idx } => {
+            let cat = &cats.categories[*idx];
+            let mut label = format!("Category\n{}", cat.id);
+            if let Some(excludes) = cat.excludes.as_ref().filter(|e| !e.is_empty()) {
+                label.push_str(&format!("\nexcludes: {}", excludes.join(", ")));
             }
-            OrderedNode::Skip { condition } => {
-                let branch = g.node(format!("priority {}\n(no category)", i + 1), "sanitizer");
-                g.edge(&root, &branch, "");
-                let cond = render_filter(&mut g, condition);
-                g.edge(&branch, &cond, "if");
-            }
+            (label, &cat.condition)
         }
-    }
+        OrderedNode::Skip { condition } => ("No Category".to_owned(), condition),
+    };
+    let header = g.node(header_label, "rule");
+    let cond_node = render_filter(&mut g, condition);
+    g.edge(&header, &cond_node, "if");
     g
 }
 
@@ -251,7 +249,7 @@ pub fn decision_tree_dag(cats: &CategoriesFile) -> DagGraph {
     g
 }
 
-fn order_label(cats: &CategoriesFile, idx: usize) -> String {
+pub fn order_label(cats: &CategoriesFile, idx: usize) -> String {
     match &cats.order[idx] {
         OrderedNode::Category { idx } => cats.categories[*idx].id.clone(),
         OrderedNode::Skip { .. } => "(no category)".to_owned(),

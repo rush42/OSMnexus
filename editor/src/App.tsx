@@ -322,15 +322,108 @@ export default function App() {
     }
   }
 
+  // Map/Tree/Categorize/Decision-tree switcher. Only the map view has no header row of its own to
+  // put this in — it's a full-bleed canvas — so it floats as an absolute top-right overlay there.
+  // The tree views (`DagView`) have their own header row full of field/category/variant dropdowns,
+  // so this gets passed into that row instead (`extraHeader`, pushed right via `margin-left: auto`)
+  // rather than absolutely overlaid on top of it, which is what used to cover up (or get covered
+  // by, depending on which dropdown happened to be wide that render) whatever sat at that row's
+  // right edge.
+  const viewSwitcher = (
+    <div style={{ display: "flex", gap: 4 }}>
+      <button
+        onClick={() => setViewMode("map")}
+        style={{
+          fontWeight: viewMode === "map" ? 700 : 400,
+          padding: "7px 12px",
+          background: "rgba(255,255,255,0.85)",
+          backdropFilter: "blur(6px)",
+          borderRadius: "var(--radius)",
+          boxShadow: "var(--shadow)",
+          border: "1px solid var(--border)",
+        }}
+        title="Show classified features on the map"
+      >
+        Map
+      </button>
+      <button
+        onClick={() => active.topic && setViewMode("tree")}
+        disabled={!active.topic}
+        style={{
+          fontWeight: viewMode === "tree" ? 700 : 400,
+          opacity: active.topic ? 1 : 0.5,
+          padding: "7px 12px",
+          background: "rgba(255,255,255,0.85)",
+          backdropFilter: "blur(6px)",
+          borderRadius: "var(--radius)",
+          boxShadow: "var(--shadow)",
+          border: "1px solid var(--border)",
+        }}
+        title="Plot this topic's deriver (Producer) trees"
+      >
+        Tree
+      </button>
+      <button
+        onClick={() => active.topic && setViewMode("categorize")}
+        disabled={!active.topic}
+        style={{
+          fontWeight: viewMode === "categorize" ? 700 : 400,
+          opacity: active.topic ? 1 : 0.5,
+          padding: "7px 12px",
+          background: "rgba(255,255,255,0.85)",
+          backdropFilter: "blur(6px)",
+          borderRadius: "var(--radius)",
+          boxShadow: "var(--shadow)",
+          border: "1px solid var(--border)",
+        }}
+        title="Plot this topic's categorization trees (which category an object gets)"
+      >
+        Categorize
+      </button>
+      <button
+        onClick={() => active.topic && setViewMode("decision-tree")}
+        disabled={!active.topic}
+        style={{
+          fontWeight: viewMode === "decision-tree" ? 700 : 400,
+          opacity: active.topic ? 1 : 0.5,
+          padding: "7px 12px",
+          background: "rgba(255,255,255,0.85)",
+          backdropFilter: "blur(6px)",
+          borderRadius: "var(--radius)",
+          boxShadow: "var(--shadow)",
+          border: "1px solid var(--border)",
+        }}
+        title="Plot the compiled discrimination net that prunes categorize's first-match walk"
+      >
+        Decision tree
+      </button>
+    </div>
+  );
+
   return (
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
       <div style={{ flex: "1 1 60%", position: "relative" }}>
         {viewMode === "tree" && active.topic ? (
-          <DagView topic={active.topic} category={active.isTopicConfig ? null : active.name || null} mode="deriver" />
+          <DagView
+            topic={active.topic}
+            category={active.isTopicConfig ? null : active.name || null}
+            mode="deriver"
+            extraHeader={viewSwitcher}
+          />
         ) : viewMode === "categorize" && active.topic ? (
-          <DagView topic={active.topic} category={active.isTopicConfig ? null : active.name || null} mode="category" />
+          <DagView
+            topic={active.topic}
+            category={active.isTopicConfig ? null : active.name || null}
+            mode="category"
+            extraHeader={viewSwitcher}
+          />
         ) : viewMode === "decision-tree" && active.topic ? (
-          <DagView topic={active.topic} category={active.isTopicConfig ? null : active.name || null} mode="decision-tree" />
+          <DagView
+            topic={active.topic}
+            category={active.isTopicConfig ? null : active.name || null}
+            mode="decision-tree"
+            extraHeader={viewSwitcher}
+          />
         ) : (
           <Map
             bounds={bounds}
@@ -346,122 +439,53 @@ export default function App() {
             onBboxSelected={selectBbox}
           />
         )}
-        <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8 }}>
-          {viewMode === "map" && (
-            <>
-              <label
-                style={{
-                  padding: "7px 12px",
-                  background: "rgba(255,255,255,0.85)",
-                  backdropFilter: "blur(6px)",
-                  color: "var(--text)",
-                  fontFamily: "var(--font-ui)",
-                  fontSize: 13,
-                  borderRadius: "var(--radius)",
-                  boxShadow: "var(--shadow)",
-                  border: "1px solid var(--border)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
-                Show intersections
-              </label>
-              <label
-                style={{
-                  padding: "7px 12px",
-                  background: "rgba(255,255,255,0.85)",
-                  backdropFilter: "blur(6px)",
-                  color: "var(--text)",
-                  fontFamily: "var(--font-ui)",
-                  fontSize: 13,
-                  borderRadius: "var(--radius)",
-                  boxShadow: "var(--shadow)",
-                  border: "1px solid var(--border)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
-                Follow selection
-              </label>
-            </>
-          )}
-          <div style={{ display: "flex", gap: 4 }}>
-            <button
-              onClick={() => setViewMode("map")}
+        {viewMode === "map" && (
+          <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8 }}>
+            <label
               style={{
-                fontWeight: viewMode === "map" ? 700 : 400,
                 padding: "7px 12px",
                 background: "rgba(255,255,255,0.85)",
                 backdropFilter: "blur(6px)",
+                color: "var(--text)",
+                fontFamily: "var(--font-ui)",
+                fontSize: 13,
                 borderRadius: "var(--radius)",
                 boxShadow: "var(--shadow)",
                 border: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                cursor: "pointer",
+                userSelect: "none",
               }}
-              title="Show classified features on the map"
             >
-              Map
-            </button>
-            <button
-              onClick={() => active.topic && setViewMode("tree")}
-              disabled={!active.topic}
+              <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
+              Show intersections
+            </label>
+            <label
               style={{
-                fontWeight: viewMode === "tree" ? 700 : 400,
-                opacity: active.topic ? 1 : 0.5,
                 padding: "7px 12px",
                 background: "rgba(255,255,255,0.85)",
                 backdropFilter: "blur(6px)",
+                color: "var(--text)",
+                fontFamily: "var(--font-ui)",
+                fontSize: 13,
                 borderRadius: "var(--radius)",
                 boxShadow: "var(--shadow)",
                 border: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                cursor: "pointer",
+                userSelect: "none",
               }}
-              title="Plot this topic's deriver (Producer) trees"
             >
-              Tree
-            </button>
-            <button
-              onClick={() => active.topic && setViewMode("categorize")}
-              disabled={!active.topic}
-              style={{
-                fontWeight: viewMode === "categorize" ? 700 : 400,
-                opacity: active.topic ? 1 : 0.5,
-                padding: "7px 12px",
-                background: "rgba(255,255,255,0.85)",
-                backdropFilter: "blur(6px)",
-                borderRadius: "var(--radius)",
-                boxShadow: "var(--shadow)",
-                border: "1px solid var(--border)",
-              }}
-              title="Plot this topic's categorization trees (which category an object gets)"
-            >
-              Categorize
-            </button>
-            <button
-              onClick={() => active.topic && setViewMode("decision-tree")}
-              disabled={!active.topic}
-              style={{
-                fontWeight: viewMode === "decision-tree" ? 700 : 400,
-                opacity: active.topic ? 1 : 0.5,
-                padding: "7px 12px",
-                background: "rgba(255,255,255,0.85)",
-                backdropFilter: "blur(6px)",
-                borderRadius: "var(--radius)",
-                boxShadow: "var(--shadow)",
-                border: "1px solid var(--border)",
-              }}
-              title="Plot the compiled discrimination net that prunes categorize's first-match walk"
-            >
-              Decision tree
-            </button>
+              <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
+              Follow selection
+            </label>
+            {viewSwitcher}
           </div>
-        </div>
+        )}
         {viewMode === "map" && (!selected || extracting) && (
           <div
             style={{

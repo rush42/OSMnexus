@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ReactFlow,
   Background,
@@ -170,29 +170,41 @@ function layoutTree(nodes: DagNode[], edges: DagEdge[]): { positions: Map<string
   return { positions, widths };
 }
 
-// Plots the `Producer` tree behind a topic's output field (`mode: "deriver"`) or the categorization
-// tree that assigns an object to a category in the first place (`mode: "category"`, one tree per
-// `ElementKind` instead of per field; see `src/dag.rs`'s `category_order_dag`) — one tree per
-// field/kind, per distinct variant (categories sharing the same effective producer for a field
-// collapse into one variant; see `src/bin/dag_json.rs`). Two fetches: the field/kind name list (on
-// every `topic`/`mode` change) and, separately, the selected field's graph (on every `field` change
-// too) — `dag_json` builds only the one graph actually requested rather than every field's, since a
-// topic with many/large fields made building all of them upfront the dominant cost even though only
-// one is ever shown at a time.
+// Plots the `Producer` tree behind a topic's output field (`mode: "deriver"`), or, per `ElementKind`
+// instead of per field, either its category picker (`mode: "category"` — one category's own
+// condition + what it excludes at a time, picked from its kind's priority order; see `src/dag.rs`'s
+// `category_condition_dag`) or its compiled discrimination net (`mode: "decision-tree"`). Fetches
+// are staged so `dag_json` only ever builds the one graph actually on screen rather than every
+// field's/category's, which was the dominant load-time cost for topics with many/large ones: the
+// field/kind name list (on every `topic`/`mode` change), then, for `category` mode only, that kind's
+// category names in priority order, then finally the one graph actually selected.
 export default function DagView({
   topic,
   category,
   mode = "deriver",
+  extraHeader,
 }: {
   topic: string;
   category?: string | null;
   mode?: "deriver" | "category" | "decision-tree";
+  // Rendered at the right end of this view's own header row (its field/category/variant dropdowns
+  // sit at the left) — App.tsx uses this for the Map/Tree/Categorize/Decision-tree view switcher, so
+  // it's part of this row's normal flow instead of an absolute overlay that used to sit on top of
+  // (and get overlapped by) whichever dropdowns ran the full row width.
+  extraHeader?: ReactNode;
 }) {
   const [fieldNames, setFieldNames] = useState<string[] | null>(null);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<string>("");
   const [variantIdx, setVariantIdx] = useState(0);
+  // `category` mode has a third level: `field` here is the *kind* (way/node/relation), and within
+  // it a category is picked separately — one tree per category (its own condition + what it
+  // excludes) instead of cramming every category for a kind into one "try these in order" tree, per
+  // `src/dag.rs`'s `category_condition_dag`. Names arrive already in the kind's priority order
+  // (`order`, the actual runtime first-match sequence) — never re-sorted, unlike `fieldNames`.
+  const [categoryNames, setCategoryNames] = useState<string[] | null>(null);
+  const [categoryIdx, setCategoryIdx] = useState(0);
   const fieldLabel = mode === "deriver" ? "field" : "kind";
   const endpoint = mode === "category" ? "/api/categorize-dag/" : mode === "decision-tree" ? "/api/decision-tree-dag/" : "/api/dag/";
 
@@ -200,6 +212,8 @@ export default function DagView({
     let ignore = false;
     setFieldNames(null);
     setVariants([]);
+    setCategoryNames(null);
+    setCategoryIdx(0);
     setError(null);
     setField("");
     setVariantIdx(0);
@@ -222,6 +236,29 @@ export default function DagView({
     };
   }, [topic, mode, endpoint]);
 
+  // `category` mode only: once a kind is confirmed selected, fetch its category names — in
+  // priority order, so the picker matches the actual first-match evaluation sequence.
+  useEffect(() => {
+    let ignore = false;
+    setCategoryNames(null);
+    setCategoryIdx(0);
+    if (mode !== "category" || !topic || !field || !fieldNames?.includes(field)) return;
+    fetch(`${endpoint}${encodeURIComponent(topic)}?name=${encodeURIComponent(field)}`)
+      .then((r) => r.json())
+      .then((d: ListResponse | { error: string }) => {
+        if (ignore) return;
+        if ("error" in d) {
+          setError(d.error);
+          return;
+        }
+        setCategoryNames(d.names);
+      })
+      .catch((err) => !ignore && setError(String(err)));
+    return () => {
+      ignore = true;
+    };
+  }, [topic, mode, endpoint, field, fieldNames]);
+
   useEffect(() => {
     let ignore = false;
     setVariants([]);
@@ -231,7 +268,14 @@ export default function DagView({
     // committed. Skip rather than fire a request doomed to 404/error against the new mode/endpoint;
     // the field-list effect will set a real field for this mode shortly and re-trigger this one.
     if (!topic || !field || !fieldNames?.includes(field)) return;
-    fetch(`${endpoint}${encodeURIComponent(topic)}?name=${encodeURIComponent(field)}`)
+    const url =
+      mode === "category"
+        ? categoryNames && categoryNames.length > 0
+          ? `${endpoint}${encodeURIComponent(topic)}?name=${encodeURIComponent(field)}&idx=${categoryIdx}`
+          : null
+        : `${endpoint}${encodeURIComponent(topic)}?name=${encodeURIComponent(field)}`;
+    if (!url) return;
+    fetch(url)
       .then((r) => r.json())
       .then((d: GraphResponse | { error: string }) => {
         if (ignore) return;
@@ -245,7 +289,7 @@ export default function DagView({
     return () => {
       ignore = true;
     };
-  }, [topic, mode, endpoint, field, fieldNames]);
+  }, [topic, mode, endpoint, field, fieldNames, categoryNames, categoryIdx]);
 
   const variant = variants[variantIdx];
 
@@ -294,18 +338,34 @@ export default function DagView({
     return { nodes, edges };
   }, [variant]);
 
-  if (error) {
-    return (
-      <div style={{ padding: 14, fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--danger-text)" }}>
-        {error}
+  const header = (content: ReactNode) => (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          padding: "10px 14px",
+          borderBottom: "1px solid var(--border)",
+          alignItems: "center",
+          background: "var(--panel)",
+          boxShadow: "var(--shadow-sm)",
+        }}
+      >
+        {content}
+        {extraHeader && <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>{extraHeader}</div>}
       </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }} />
+    </div>
+  );
+
+  if (error) {
+    return header(
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--danger-text)" }}>{error}</span>,
     );
   }
   if (!fieldNames) {
-    return (
-      <div style={{ padding: 14, fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--muted)" }}>
-        Loading…
-      </div>
+    return header(
+      <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--muted)" }}>Loading…</span>,
     );
   }
 
@@ -337,6 +397,22 @@ export default function DagView({
             </option>
           ))}
         </select>
+        {mode === "category" && categoryNames && (
+          <>
+            <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>category</span>
+            <select
+              value={categoryIdx}
+              onChange={(e) => setCategoryIdx(Number(e.target.value))}
+              style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-mono)", fontSize: 13 }}
+            >
+              {categoryNames.map((c, i) => (
+                <option key={i} value={i}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         {variants.length > 1 && (
           <select
             value={variantIdx}
@@ -350,6 +426,7 @@ export default function DagView({
             ))}
           </select>
         )}
+        {extraHeader && <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>{extraHeader}</div>}
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <ReactFlow
@@ -357,7 +434,7 @@ export default function DagView({
           // (and later than) the field/variant selection, so without the `nodes.length > 0` flip in
           // the key, this instance would already be mounted (empty) by the time the real nodes show
           // up and never re-fit to them.
-          key={`${field}-${variantIdx}-${nodes.length > 0}`}
+          key={`${field}-${categoryIdx}-${variantIdx}-${nodes.length > 0}`}
           nodeTypes={NODE_TYPES}
           edgeTypes={EDGE_TYPES}
           nodes={nodes}

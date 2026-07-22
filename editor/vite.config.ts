@@ -309,7 +309,10 @@ function liveEditorApi(): Plugin {
         // (or kind's) variants. dag_json used to build every field/kind's graph on every request,
         // even though the live editor only ever displays one at a time — the dominant cost for
         // topics with many/large fields, so the frontend now fetches the list once and a graph per
-        // field the user actually selects.
+        // field the user actually selects. `category` mode has a third level: `name` alone (a kind)
+        // returns that kind's category names in priority order instead of one crammed-together tree
+        // of every category at once; `idx` (an index into that list) then builds the single-category
+        // graph — see `src/bin/dag_json.rs`'s own usage doc.
         const dagRouteMatch = url.pathname.match(/^\/api\/(dag|categorize-dag|decision-tree-dag)\/([^/]+)$/);
         if (dagRouteMatch && req.method === "GET") {
           const dagMode = { dag: "deriver", "categorize-dag": "category", "decision-tree-dag": "decision-tree" }[dagRouteMatch[1]]!;
@@ -318,8 +321,11 @@ function liveEditorApi(): Plugin {
             return sendJson(res, 400, { error: `unknown topic '${topic}'` });
           }
           const name = url.searchParams.get("name");
+          const idx = url.searchParams.get("idx");
           const configDir = await ensureConfigSelected();
-          const result = await run(DAG_JSON_BIN, [configDir, topic, dagMode, name ?? "list"]);
+          const dagArgs = [configDir, topic, dagMode, name ?? "list"];
+          if (idx != null) dagArgs.push(idx);
+          const result = await run(DAG_JSON_BIN, dagArgs);
           if (!result.ok) return sendJson(res, 500, { error: result.message });
           try {
             return sendJson(res, 200, JSON.parse(result.stdout));
