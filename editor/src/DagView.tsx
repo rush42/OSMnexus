@@ -440,7 +440,15 @@ export default function DagView({
           nodes={nodes}
           edges={edges}
           fitView
-          fitViewOptions={{ padding: 0.15 }}
+          // A wide, shallow tree (a decision-tree branch node fanning out into dozens of same-depth
+          // leaves is the typical case) can be dozens of node-widths wide but only a couple tall — fit
+          // that at NODE_W's true scale and the required zoom is a fraction of `minZoom`'s own
+          // floor, so `fitView` shrinks the whole thing into an unreadable sliver rather than ever
+          // hitting that floor. Capping fitView's own zoom range (separate from `minZoom`, which
+          // still lets a user manually zoom out further if they want the full-graph overview) keeps
+          // the initial view at a legible scale — a centered slice instead of the whole illegible
+          // thing.
+          fitViewOptions={{ padding: 0.15, minZoom: 0.3 }}
           minZoom={0.05}
           maxZoom={2}
           nodesDraggable={false}
