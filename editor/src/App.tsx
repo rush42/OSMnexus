@@ -361,7 +361,7 @@ export default function App() {
         }}
         title="Plot this topic's deriver (Producer) trees"
       >
-        Tree
+        Producer
       </button>
       <button
         onClick={() => active.topic && setViewMode("categorize")}
