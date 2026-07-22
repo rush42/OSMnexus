@@ -2,7 +2,7 @@
 //! that inspects the PBF's blob layout without (fully) decoding way/node data.
 
 use anyhow::{anyhow, Context};
-use osmpbf::{BlobReader, BlobType, ByteOffset, PrimitiveBlock};
+use osmpbf::{BlobDecode, BlobReader, BlobType, ByteOffset, Mmap, PrimitiveBlock};
 
 /// Build the blob index without decompressing any blob: record the byte offset of every
 /// `OSMData` blob and the offset of the first `OSMHeader` blob.
@@ -42,11 +42,11 @@ pub(super) fn pbf_is_sorted(path: &str, header_off: ByteOffset) -> anyhow::Resul
 /// Binary-search the first `OSMData` blob that is **not** node-only (i.e. contains ways or
 /// relations). Valid because a sorted file lays out node → way → relation blobs contiguously.
 /// A light boundary check guards against a mislabeled file (caller falls back on error).
-pub(super) fn find_way_section_start(path: &str, data: &[ByteOffset]) -> anyhow::Result<usize> {
+pub(super) fn find_way_section_start(mmap: &Mmap, data: &[ByteOffset]) -> anyhow::Result<usize> {
     let (mut lo, mut hi) = (0usize, data.len());
     while lo < hi {
         let mid = (lo + hi) / 2;
-        let k = blob_kind(&decode_block(path, data[mid])?);
+        let k = blob_kind(&decode_block(mmap, data[mid])?);
         if k.has_ways || k.has_relations {
             hi = mid;
         } else {
@@ -57,13 +57,13 @@ pub(super) fn find_way_section_start(path: &str, data: &[ByteOffset]) -> anyhow:
 
     // Sanity: the boundary must hold (guards a file that lies about its sort order).
     if way_start < data.len() {
-        let k = blob_kind(&decode_block(path, data[way_start])?);
+        let k = blob_kind(&decode_block(mmap, data[way_start])?);
         if !(k.has_ways || k.has_relations) {
             return Err(anyhow!("boundary blob {way_start} has no ways/relations"));
         }
     }
     if way_start > 0 {
-        let k = blob_kind(&decode_block(path, data[way_start - 1])?);
+        let k = blob_kind(&decode_block(mmap, data[way_start - 1])?);
         if k.has_ways || k.has_relations || !k.has_nodes {
             return Err(anyhow!("blob {} before boundary is not node-only", way_start - 1));
         }
@@ -78,14 +78,14 @@ pub(super) fn find_way_section_start(path: &str, data: &[ByteOffset]) -> anyhow:
 /// exist, returns `data.len()`. Errors on a layout that interleaves ways after relations (the caller
 /// falls back). `way_start` is the boundary from `find_way_section_start`.
 pub(super) fn find_relation_section_start(
-    path: &str,
+    mmap: &Mmap,
     data: &[ByteOffset],
     way_start: usize,
 ) -> anyhow::Result<usize> {
     let (mut lo, mut hi) = (way_start, data.len());
     while lo < hi {
         let mid = (lo + hi) / 2;
-        let k = blob_kind(&decode_block(path, data[mid])?);
+        let k = blob_kind(&decode_block(mmap, data[mid])?);
         if k.has_relations {
             hi = mid;
         } else {
@@ -97,13 +97,13 @@ pub(super) fn find_relation_section_start(
     // Sanity: the boundary must hold — a relation region blob has relations, and the blob before it
     // (if inside the tail) must be way-only (no relations). Guards an interleaved/mislabeled file.
     if rel_start < data.len() {
-        let k = blob_kind(&decode_block(path, data[rel_start])?);
+        let k = blob_kind(&decode_block(mmap, data[rel_start])?);
         if !k.has_relations {
             return Err(anyhow!("boundary blob {rel_start} has no relations"));
         }
     }
     if rel_start > way_start {
-        let k = blob_kind(&decode_block(path, data[rel_start - 1])?);
+        let k = blob_kind(&decode_block(mmap, data[rel_start - 1])?);
         if k.has_relations {
             return Err(anyhow!("blob {} before relation boundary still has relations", rel_start - 1));
         }
@@ -139,10 +139,18 @@ fn blob_kind(block: &PrimitiveBlock) -> BlobKind {
     k
 }
 
-/// Decode the `OSMData` primitive block at `off`. Opens its own file handle so this is safe
-/// to call from parallel rayon tasks.
-pub(super) fn decode_block(path: &str, off: ByteOffset) -> anyhow::Result<PrimitiveBlock> {
-    let mut reader = BlobReader::seekable_from_path(path).context("opening PBF for blob")?;
-    let blob = reader.blob_from_offset(off).with_context(|| format!("reading blob at {off:?}"))?;
-    blob.to_primitiveblock().with_context(|| format!("decoding blob at {off:?}"))
+/// Decode the `OSMData` primitive block at `off` directly from the shared memory map — no file
+/// handle, no seek/read syscall per blob. `Mmap` is a read-only page-cache-backed view so this is
+/// safe (and fast — no lock contention) to call concurrently from parallel rayon tasks.
+pub(super) fn decode_block(mmap: &Mmap, off: ByteOffset) -> anyhow::Result<PrimitiveBlock> {
+    let mut reader = mmap.blob_iter();
+    reader.seek(off);
+    let blob = reader
+        .next()
+        .ok_or_else(|| anyhow!("no blob at offset {off:?}"))?
+        .with_context(|| format!("reading blob at {off:?}"))?;
+    match blob.decode().with_context(|| format!("decoding blob at {off:?}"))? {
+        BlobDecode::OsmData(block) => Ok(block),
+        _ => Err(anyhow!("blob at {off:?} is not an OSMData blob")),
+    }
 }

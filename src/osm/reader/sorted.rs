@@ -19,7 +19,7 @@ use super::resolve::{dense_node_data, node_data, rel_data, way_data, NodeCoords}
 /// consumed both to build `SelectionContext::rel_members` and (by the caller, `stream_osm`) to
 /// derive which ways need their node refs recorded regardless of their own tag-keep status.
 pub(super) fn classify_relations<CR>(
-    path: &str,
+    mmap: &osmpbf::Mmap,
     rel_offsets: &[ByteOffset],
     classify_rel: &CR,
 ) -> anyhow::Result<FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>>
@@ -29,7 +29,7 @@ where
     rel_offsets
         .par_iter()
         .map(|&off| -> anyhow::Result<FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>> {
-            let block = decode_block(path, off)?;
+            let block = decode_block(mmap, off)?;
             let mut out = FxHashMap::default();
             for group in block.groups() {
                 for rel in group.relations() {
@@ -56,7 +56,7 @@ where
 /// intersection-detection inputs) — a relation-only way never affects them, matching how it never
 /// contributes to the extracted graph itself.
 pub(super) fn classify_and_index<C>(
-    path: &str,
+    mmap: &osmpbf::Mmap,
     way_offsets: &[ByteOffset],
     classify: &C,
     extra_way_ids: &FxHashSet<i64>,
@@ -67,7 +67,7 @@ where
     way_offsets
         .par_iter()
         .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, FxHashMap<i64, (Vec<i64>, u32)>)> {
-            let block = decode_block(path, off)?;
+            let block = decode_block(mmap, off)?;
             let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
             let mut endpoints: FxHashSet<i64> = FxHashSet::default();
             let mut way_refs: FxHashMap<i64, (Vec<i64>, u32)> = FxHashMap::default();
@@ -123,7 +123,7 @@ where
 /// node) or node-topic classification (only run for `use_counts` members) — pure coordinate
 /// lookup, no side effects on the main graph's intersection/cut-point logic.
 pub(super) fn collect_coords<CN>(
-    path: &str,
+    mmap: &osmpbf::Mmap,
     node_offsets: &[ByteOffset],
     use_counts: &FxHashMap<i64, u32>,
     classify_nodes: bool,
@@ -136,7 +136,7 @@ where
     let per_blob: Vec<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>)> = node_offsets
         .par_iter()
         .map(|&off| -> anyhow::Result<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>)> {
-            let block = decode_block(path, off)?;
+            let block = decode_block(mmap, off)?;
             let mut out = Vec::new();
             let mut selected: FxHashSet<i64> = FxHashSet::default();
             for group in block.groups() {

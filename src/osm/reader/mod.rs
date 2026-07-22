@@ -18,6 +18,7 @@ mod fallback;
 mod resolve;
 mod sorted;
 
+use anyhow::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{info, warn};
 
@@ -123,6 +124,11 @@ where
     let (data_offsets, header_offset) = build_blob_index(path)?;
     info!("[phase] blob index build: {:.1}s", t_idx.elapsed().as_secs_f32());
 
+    // One shared, read-only memory map for every blob decode below — avoids a fresh
+    // open()+seek() syscall per blob (see `blob_index::decode_block`'s own doc).
+    let file = std::fs::File::open(path).with_context(|| format!("opening PBF at {path}"))?;
+    let mmap = unsafe { osmpbf::Mmap::from_file(&file)? };
+
     // Escape hatch: `PBF_FORCE_FALLBACK=1` skips the ordered fast path (debugging / a file that
     // wrongly advertises Sort.Type_then_ID).
     let force_fallback = std::env::var_os("PBF_FORCE_FALLBACK").is_some();
@@ -138,7 +144,7 @@ where
         );
         // The only "risky" steps (the sort-order assumptions) are the boundary searches; they run
         // before any streaming, so a failure can still fall back cleanly.
-        match find_regions(path, &data_offsets) {
+        match find_regions(&mmap, &data_offsets) {
             Ok((way_start, rel_start)) => {
                 let node_offsets = &data_offsets[..way_start];
                 let way_offsets = &data_offsets[way_start..rel_start];
@@ -153,7 +159,7 @@ where
                 // Relations pass — classify + emit relation rows, collect member-way requests.
                 let rel_members = if cb.has_relations && !rel_offsets.is_empty() {
                     let t = std::time::Instant::now();
-                    let m = classify_relations(path, rel_offsets, &cb.classify_rel)?;
+                    let m = classify_relations(&mmap, rel_offsets, &cb.classify_rel)?;
                     info!("[phase] Relations pass (classify + emit): {:.1}s ({} kept)", t.elapsed().as_secs_f32(), m.len());
                     m
                 } else {
@@ -168,7 +174,7 @@ where
                 // Pass A — way region (decoded once): classify + counts + endpoints + way_refs.
                 let t = std::time::Instant::now();
                 let (use_counts, endpoints, way_refs) =
-                    classify_and_index(path, way_offsets, &cb.classify_way, &extra_way_ids)?;
+                    classify_and_index(&mmap, way_offsets, &cb.classify_way, &extra_way_ids)?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
 
                 // Pass B — node region: coords for every referenced node (+ classify nodes).
@@ -179,7 +185,7 @@ where
                     .collect();
                 let t = std::time::Instant::now();
                 let (node_coords, selected) = collect_coords(
-                    path, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &extra_node_ids,
+                    &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &extra_node_ids,
                 )?;
                 info!(
                     "[phase] Pass B (collect node coords{}): {:.1}s",
@@ -203,8 +209,8 @@ where
 }
 
 /// Locate the `(way_start, rel_start)` region boundaries in a sorted file's blob list.
-fn find_regions(path: &str, data: &[osmpbf::ByteOffset]) -> anyhow::Result<(usize, usize)> {
-    let way_start = find_way_section_start(path, data)?;
-    let rel_start = find_relation_section_start(path, data, way_start)?;
+fn find_regions(mmap: &osmpbf::Mmap, data: &[osmpbf::ByteOffset]) -> anyhow::Result<(usize, usize)> {
+    let way_start = find_way_section_start(mmap, data)?;
+    let rel_start = find_relation_section_start(mmap, data, way_start)?;
     Ok((way_start, rel_start))
 }
