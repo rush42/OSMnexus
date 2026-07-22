@@ -100,19 +100,19 @@ pub enum DirectedFrom {
 impl InputTransform {
     /// Returns whether the object should be kept in the active set — always `true` except for
     /// `Drop`, which returns `false` exactly when its `when` filter holds.
-    pub fn apply(
+    pub fn apply<'a>(
         &self,
-        tags: &mut RawTags,
+        tags: &mut RawTags<'a>,
         annotations: &mut Map<String, Value>,
-        parent_tags: Option<&RawTags>,
+        parent_tags: Option<&RawTags<'a>>,
     ) -> bool {
         match self {
             InputTransform::TagRule { output, source } => {
                 let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
                 if let Some(p) = source.eval(&ctx) {
                     match p.value {
-                        Value::Null => { tags.remove(output); }
-                        Value::String(s) => { tags.insert(output.clone(), s); }
+                        Value::Null => { tags.remove(output.as_str()); }
+                        Value::String(s) => { tags.insert(output.clone().into(), s.into()); }
                         other => panic!(
                             "tag_rules for '{output}' produced a non-string, non-null value: {other}"
                         ),
@@ -157,7 +157,7 @@ impl InputTransform {
                 if let Some(raw) = read_directed(tags, parent_tags, annotations, key, *from) {
                     match eval_sanitize(sanitize.as_ref(), raw) {
                         None | Some(Value::Null) => {}
-                        Some(Value::String(s)) => { tags.insert(output.clone(), s); }
+                        Some(Value::String(s)) => { tags.insert(output.clone().into(), s.into()); }
                         Some(other) => panic!(
                             "directed extract for '{output}' produced a non-string, non-null value: {other}"
                         ),
@@ -217,12 +217,12 @@ pub struct CloneStep {
 /// `tags` without a self-referential `Vec<ExtractCtx>`). Returns `false` iff the object itself
 /// was dropped (a top-level `Drop` step fired) — the caller should stop immediately and emit
 /// nothing at all, not even the `clones` collected so far.
-pub fn run_transform_steps(
-    tags: &mut RawTags,
+pub fn run_transform_steps<'a>(
+    tags: &mut RawTags<'a>,
     annotations: &mut Map<String, Value>,
     steps: &[TransformStep],
     default_id: &str,
-    clones: &mut Vec<(RawTags, Map<String, Value>, String)>,
+    clones: &mut Vec<(RawTags<'a>, Map<String, Value>, String)>,
 ) -> bool {
     for step in steps {
         match step {
@@ -264,8 +264,8 @@ pub fn run_transform_steps(
 /// bare-key-then-directed-key) at once, which is why it's a step in the transform pipeline rather
 /// than a generic `Extract` shape: `apply`'s signature already carries both.
 fn read_directed<'a>(
-    tags: &'a RawTags,
-    parent_tags: Option<&'a RawTags>,
+    tags: &'a RawTags<'a>,
+    parent_tags: Option<&'a RawTags<'a>>,
     annotations: &Map<String, Value>,
     key: &str,
     from: DirectedFrom,
@@ -309,12 +309,12 @@ fn read_directed<'a>(
 /// Example (prefix="cycleway", infix="left"), full prefix "cycleway:left":
 ///   key == "cycleway:left"        → dest["cycleway"] = val, + dest["source"] if source: sibling exists
 ///   key == "cycleway:left:width"  → dest["width"]    = val, + dest["source:width"] if source: sibling exists
-pub(crate) fn unnest_prefixed_tags(
-    tags: &RawTags,
+pub(crate) fn unnest_prefixed_tags<'a>(
+    tags: &RawTags<'a>,
     prefix: &str,
     infix: &str,
     meta_prefixes: &[&str],
-    dest: &mut RawTags,
+    dest: &mut RawTags<'a>,
 ) {
     let full_prefix = if infix.is_empty() {
         prefix.to_owned()
@@ -349,7 +349,7 @@ pub(crate) fn unnest_prefixed_tags(
             continue;
         };
 
-        dest.insert(suffix.unwrap_or(prefix).to_owned(), val.clone());
+        dest.insert(suffix.unwrap_or(prefix).to_owned().into(), val.clone());
 
         for meta in meta_prefixes {
             meta_key_buf.clear();
@@ -361,7 +361,7 @@ pub(crate) fn unnest_prefixed_tags(
                 Some(s) => format!("{meta_key}:{s}"),
                 None => meta_key.to_owned(),
             };
-            dest.insert(dest_key, meta_val.clone());
+            dest.insert(dest_key.into(), meta_val.clone());
         }
     }
 }
@@ -373,8 +373,8 @@ pub(crate) fn unnest_prefixed_tags(
 /// can express (they all name their target key(s) statically). Everything else that used to live
 /// here (`lifecycle`, `rename_key`, `value_cases`) is expressible as `tag_rules` `Producer`
 /// entries and has moved to topic JSON.
-pub fn strip_prefix(
-    tags: &mut RawTags,
+pub fn strip_prefix<'a>(
+    tags: &mut RawTags<'a>,
     prefix: &str,
     stamp_key: &str,
     stamp_value: &str,
@@ -382,23 +382,23 @@ pub fn strip_prefix(
 ) {
     // Only the keys need cloning here (can't mutate `tags` while iterating it) — each matched
     // value is moved out via `remove` below instead of being cloned up front.
-    let matched: Vec<String> = tags
+    let matched: Vec<std::borrow::Cow<'a, str>> = tags
         .iter()
         .filter(|(k, _)| k.starts_with(prefix))
         .map(|(k, _)| k.clone())
         .collect();
 
     for key in matched {
-        let value = tags.remove(&key).expect("key just collected from tags");
-        let base = key[prefix.len()..].to_owned();
-        tags.insert(base.clone(), value);
+        let value = tags.remove(key.as_ref()).expect("key just collected from tags");
+        let base = key.as_ref()[prefix.len()..].to_owned();
+        tags.insert(base.clone().into(), value);
 
         let marker = if stamp_nested_under.iter().any(|p| base.starts_with(p.as_str())) {
             format!("{base}:{stamp_key}")
         } else {
             stamp_key.to_owned()
         };
-        tags.insert(marker, stamp_value.to_owned());
+        tags.insert(marker.into(), stamp_value.to_owned().into());
     }
 }
 
@@ -406,8 +406,8 @@ pub fn strip_prefix(
 mod unnest_tags_tests {
     use super::*;
 
-    fn tags(pairs: &[(&str, &str)]) -> RawTags {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    fn tags<'a>(pairs: &[(&'a str, &'a str)]) -> RawTags<'a> {
+        pairs.iter().map(|&(k, v)| (std::borrow::Cow::Borrowed(k), std::borrow::Cow::Borrowed(v))).collect()
     }
 
     #[test]
@@ -419,7 +419,7 @@ mod unnest_tags_tests {
         };
         let kept = step.apply(&mut obj, &mut annotations, None);
         assert!(kept);
-        assert_eq!(obj.get("width").map(String::as_str), Some("1.5"));
+        assert_eq!(obj.get("width").map(|v| v.as_ref()), Some("1.5"));
     }
 
     #[test]
@@ -431,7 +431,7 @@ mod unnest_tags_tests {
             prefix: "cycleway", infix: "right", meta_prefixes: &[], guard: None, record_infix_as: None,
         };
         step.apply(&mut obj, &mut annotations, Some(&way_tags));
-        assert_eq!(obj.get("cycleway").map(String::as_str), Some("lane"));
+        assert_eq!(obj.get("cycleway").map(|v| v.as_ref()), Some("lane"));
     }
 
     #[test]
@@ -474,7 +474,7 @@ mod unnest_tags_tests {
         let drop = InputTransform::Drop { when: Filter::TagsEmpty { tags_empty: true } };
         assert!(!drop.apply(&mut obj, &mut annotations, None));
 
-        obj.insert("cycleway".to_owned(), "lane".to_owned());
+        obj.insert("cycleway".into(), "lane".into());
         assert!(drop.apply(&mut obj, &mut annotations, None));
     }
 }
@@ -483,8 +483,8 @@ mod unnest_tags_tests {
 mod directed_extract_tests {
     use super::*;
 
-    fn tags(pairs: &[(&str, &str)]) -> RawTags {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    fn tags<'a>(pairs: &[(&'a str, &'a str)]) -> RawTags<'a> {
+        pairs.iter().map(|&(k, v)| (std::borrow::Cow::Borrowed(k), std::borrow::Cow::Borrowed(v))).collect()
     }
 
     fn side_annotations(side: &str) -> Map<String, Value> {
@@ -503,7 +503,7 @@ mod directed_extract_tests {
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let mut annotations = side_annotations("right");
         step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
-        assert_eq!(obj.get("cycleway:lanes").map(String::as_str), Some("existing"));
+        assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("existing"));
     }
 
     #[test]
@@ -512,7 +512,7 @@ mod directed_extract_tests {
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let mut annotations = side_annotations("right");
         step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
-        assert_eq!(obj.get("cycleway:lanes").map(String::as_str), Some("lane"));
+        assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("lane"));
 
         let mut obj = RawTags::default();
         let parent = RawTags::default();
@@ -525,7 +525,7 @@ mod directed_extract_tests {
         let mut obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
         let mut annotations = side_annotations("right");
         step("traffic_sign", DirectedFrom::Obj).apply(&mut obj, &mut annotations, None);
-        assert_eq!(obj.get("traffic_sign").map(String::as_str), Some("DE:1022-10"));
+        assert_eq!(obj.get("traffic_sign").map(|v| v.as_ref()), Some("DE:1022-10"));
     }
 
     #[test]
@@ -551,7 +551,7 @@ mod directed_extract_tests {
         let mut obj = RawTags::default();
         let mut left = side_annotations("left");
         step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut left, Some(&parent));
-        assert_eq!(obj.get("cycleway:lanes").map(String::as_str), Some("lane"));
+        assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("lane"));
     }
 }
 
@@ -559,8 +559,8 @@ mod directed_extract_tests {
 mod unnest_prefixed_tags_tests {
     use super::*;
 
-    fn tags(pairs: &[(&str, &str)]) -> RawTags {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    fn tags<'a>(pairs: &[(&'a str, &'a str)]) -> RawTags<'a> {
+        pairs.iter().map(|&(k, v)| (std::borrow::Cow::Borrowed(k), std::borrow::Cow::Borrowed(v))).collect()
     }
 
     #[test]
@@ -568,8 +568,8 @@ mod unnest_prefixed_tags_tests {
         let src = tags(&[("cycleway:left", "lane"), ("cycleway:left:width", "1.5")]);
         let mut dest = RawTags::default();
         unnest_prefixed_tags(&src, "cycleway", "left", &[], &mut dest);
-        assert_eq!(dest.get("cycleway").map(String::as_str), Some("lane"));
-        assert_eq!(dest.get("width").map(String::as_str), Some("1.5"));
+        assert_eq!(dest.get("cycleway").map(|v| v.as_ref()), Some("lane"));
+        assert_eq!(dest.get("width").map(|v| v.as_ref()), Some("1.5"));
     }
 
     #[test]
@@ -582,10 +582,10 @@ mod unnest_prefixed_tags_tests {
         ]);
         let mut dest = RawTags::default();
         unnest_prefixed_tags(&src, "cycleway", "left", &["source:", "note:"], &mut dest);
-        assert_eq!(dest.get("cycleway").map(String::as_str), Some("lane"));
-        assert_eq!(dest.get("source").map(String::as_str), Some("survey"));
-        assert_eq!(dest.get("width").map(String::as_str), Some("1.5"));
-        assert_eq!(dest.get("source:width").map(String::as_str), Some("survey"));
+        assert_eq!(dest.get("cycleway").map(|v| v.as_ref()), Some("lane"));
+        assert_eq!(dest.get("source").map(|v| v.as_ref()), Some("survey"));
+        assert_eq!(dest.get("width").map(|v| v.as_ref()), Some("1.5"));
+        assert_eq!(dest.get("source:width").map(|v| v.as_ref()), Some("survey"));
         assert!(!dest.contains_key("note"));
     }
 
@@ -613,8 +613,8 @@ mod run_transform_steps_tests {
     use super::*;
     use crate::lang::extract::Extract;
 
-    fn tags(pairs: &[(&str, &str)]) -> RawTags {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    fn tags<'a>(pairs: &[(&'a str, &'a str)]) -> RawTags<'a> {
+        pairs.iter().map(|&(k, v)| (std::borrow::Cow::Borrowed(k), std::borrow::Cow::Borrowed(v))).collect()
     }
 
     fn annotation_str<'a>(m: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -679,7 +679,7 @@ mod run_transform_steps_tests {
         assert_eq!(clones.len(), 1);
         let (clone_tags, clone_annotations, id) = &clones[0];
         assert_eq!(id, "way/1/cycleway/right");
-        assert_eq!(clone_tags.get("highway").map(String::as_str), Some("cycleway"));
+        assert_eq!(clone_tags.get("highway").map(|v| v.as_ref()), Some("cycleway"));
         assert_eq!(annotation_str(clone_annotations, "_side"), Some("right"));
         assert_eq!(annotation_str(clone_annotations, "_infix"), Some("right"));
     }

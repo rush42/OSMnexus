@@ -130,6 +130,9 @@ impl Extract {
 /// behind `Extract::Candidates`, also reused by
 /// `categorize::transform::InputTransform::DirectedExtract`'s own key resolution. Returns the
 /// first key that is set.
-pub(crate) fn first_present<K: AsRef<str>>(tags: &RawTags, keys: impl IntoIterator<Item = K>) -> Option<&str> {
-    keys.into_iter().find_map(|k| tags.get(k.as_ref()).map(String::as_str))
+pub(crate) fn first_present<'a, K: AsRef<str>>(
+    tags: &'a RawTags<'a>,
+    keys: impl IntoIterator<Item = K>,
+) -> Option<&'a str> {
+    keys.into_iter().find_map(|k| tags.get(k.as_ref()).map(|v| v.as_ref()))
 }

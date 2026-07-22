@@ -24,7 +24,7 @@ pub(super) fn classify_relations<CR>(
     classify_rel: &CR,
 ) -> anyhow::Result<FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>>
 where
-    CR: Fn(&RelData) -> Option<u32> + Sync,
+    CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync,
 {
     rel_offsets
         .par_iter()
@@ -62,7 +62,7 @@ pub(super) fn classify_and_index<C>(
     extra_way_ids: &FxHashSet<i64>,
 ) -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, FxHashMap<i64, (Vec<i64>, u32)>)>
 where
-    C: Fn(&WayData) -> Option<u32> + Sync,
+    C: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync,
 {
     way_offsets
         .par_iter()
@@ -131,7 +131,7 @@ pub(super) fn collect_coords<CN>(
     extra_node_ids: &FxHashSet<i64>,
 ) -> anyhow::Result<(NodeCoords, FxHashSet<i64>)>
 where
-    CN: Fn(&NodeData) -> bool + Sync,
+    CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync,
 {
     let per_blob: Vec<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>)> = node_offsets
         .par_iter()

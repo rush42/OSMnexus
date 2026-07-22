@@ -1,6 +1,8 @@
 //! Way-filtering, tag extraction, and geometry resolution — the leaf helpers shared by both the
 //! sorted fast path and the full-scan fallback.
 
+use std::borrow::Cow;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use osmpbf::{DenseNode, Node, Relation, RelMemberType, Way};
 use tracing::info;
@@ -37,17 +39,19 @@ fn extract_meta(info: osmpbf::Info) -> WayMeta {
     }
 }
 
-/// Extract a [`WayData`] from an osmpbf `Way`.
-pub(super) fn way_data(way: &Way) -> WayData {
-    let tags: RawTags = way.tags().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
+/// Extract a [`WayData`] from an osmpbf `Way`. `tags` borrows straight from the block's string
+/// table (`Cow::Borrowed`, no allocation) — an excluded way (kept by no topic) never pays for a
+/// tag clone at all; see `RawTags`'s own doc.
+pub(super) fn way_data<'a>(way: &Way<'a>) -> WayData<'a> {
+    let tags: RawTags<'a> = way.tags().map(|(k, v)| (Cow::Borrowed(k), Cow::Borrowed(v))).collect();
     let refs: Vec<i64> = way.refs().collect();
     WayData { id: way.id(), tags, node_refs: refs, meta: extract_meta(way.info()) }
 }
 
 /// Extract a [`RelData`] from an osmpbf `Relation`, keeping only its **way** members (id + role —
 /// role is needed for `Polygon` assembly, see `geom::relation`).
-pub(super) fn rel_data(rel: &Relation) -> RelData {
-    let tags: RawTags = rel.tags().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
+pub(super) fn rel_data<'a>(rel: &Relation<'a>) -> RelData<'a> {
+    let tags: RawTags<'a> = rel.tags().map(|(k, v)| (Cow::Borrowed(k), Cow::Borrowed(v))).collect();
     let member_ways: Vec<(i64, MemberRole)> = rel
         .members()
         .filter(|m| m.member_type == RelMemberType::Way)
@@ -58,8 +62,8 @@ pub(super) fn rel_data(rel: &Relation) -> RelData {
 
 /// Extract a [`NodeData`] from an osmpbf dense node. Dense nodes carry `DenseNodeInfo` (distinct
 /// from the `Info` on ways/relations/sparse nodes), present only when the file has metadata.
-pub(super) fn dense_node_data(n: &DenseNode) -> NodeData {
-    let tags: RawTags = n.tags().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
+pub(super) fn dense_node_data<'a>(n: &DenseNode<'a>) -> NodeData<'a> {
+    let tags: RawTags<'a> = n.tags().map(|(k, v)| (Cow::Borrowed(k), Cow::Borrowed(v))).collect();
     let meta = match n.info() {
         Some(info) => WayMeta {
             timestamp: Some(info.milli_timestamp() / 1000),
@@ -72,8 +76,8 @@ pub(super) fn dense_node_data(n: &DenseNode) -> NodeData {
 }
 
 /// Extract a [`NodeData`] from an osmpbf (non-dense) node.
-pub(super) fn node_data(n: &Node) -> NodeData {
-    let tags: RawTags = n.tags().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
+pub(super) fn node_data<'a>(n: &Node<'a>) -> NodeData<'a> {
+    let tags: RawTags<'a> = n.tags().map(|(k, v)| (Cow::Borrowed(k), Cow::Borrowed(v))).collect();
     NodeData { id: n.id(), tags, meta: extract_meta(n.info()), lon: n.lon(), lat: n.lat() }
 }
 

@@ -41,11 +41,11 @@ fn eval_fields(
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn build_topic_rows(
+pub fn build_topic_rows<'a>(
     runner: &TopicRunner,
     kind: ElementKind,
     osm_id: i64,
-    raw_tags: &RawTags,
+    raw_tags: &'a RawTags<'a>,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
     // The category set for this element kind. Absent → the topic has no categories for this kind.
@@ -78,7 +78,7 @@ pub fn build_topic_rows(
     static EMPTY_PIPELINE: Vec<TransformStep> = Vec::new();
     let pipeline = runner.pipelines.get(&kind).unwrap_or(&EMPTY_PIPELINE);
 
-    let mut tags: Cow<RawTags> = if pipeline.is_empty() {
+    let mut tags: Cow<'a, RawTags<'a>> = if pipeline.is_empty() {
         Cow::Borrowed(raw_tags)
     } else {
         Cow::Owned(raw_tags.clone())

@@ -101,8 +101,8 @@ pub struct Produced {
 /// separately and only ever hands `eval`/`Producer::eval` a reborrowed `&Map`.
 #[derive(Clone, Copy)]
 pub struct ExtractCtx<'a> {
-    pub obj_tags: &'a RawTags,
-    pub parent_tags: Option<&'a RawTags>,
+    pub obj_tags: &'a RawTags<'a>,
+    pub parent_tags: Option<&'a RawTags<'a>>,
     pub id: &'a str,
     pub annotations: &'a Map<String, Value>,
 }
@@ -291,7 +291,7 @@ mod classify_bool_tests {
     use crate::lang::filter::Filter;
     use crate::parser::TagSet;
 
-    fn ctx<'a>(obj: &'a RawTags, parent: Option<&'a RawTags>) -> ExtractCtx<'a> {
+    fn ctx<'a>(obj: &'a RawTags<'a>, parent: Option<&'a RawTags<'a>>) -> ExtractCtx<'a> {
         ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations() }
     }
 
@@ -317,7 +317,7 @@ mod classify_bool_tests {
 
     #[test]
     fn matching_filter_produces_true() {
-        let obj: RawTags = [("oneway".to_owned(), "yes".to_owned())].into_iter().collect();
+        let obj: RawTags = [("oneway".into(), "yes".into())].into_iter().collect();
         let producer = bool_producer(
             Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: None }, eq: "yes".to_owned() },
             TagSet::Obj,
@@ -328,7 +328,7 @@ mod classify_bool_tests {
 
     #[test]
     fn non_matching_filter_produces_false() {
-        let obj: RawTags = [("oneway".to_owned(), "no".to_owned())].into_iter().collect();
+        let obj: RawTags = [("oneway".into(), "no".into())].into_iter().collect();
         let producer = bool_producer(
             Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: None }, eq: "yes".to_owned() },
             TagSet::Obj,

@@ -115,9 +115,9 @@ pub fn assign_node_ids(
 /// Fallback (unsorted / boundary check fails / `PBF_FORCE_FALLBACK`): full parallel scans.
 pub fn stream_osm<CR, CW, CN>(path: &str, cb: Callbacks<CR, CW, CN>) -> anyhow::Result<SelectionContext>
 where
-    CR: Fn(&RelData) -> Option<u32> + Sync + Send,
-    CW: Fn(&WayData) -> Option<u32> + Sync + Send,
-    CN: Fn(&NodeData) -> bool + Sync + Send,
+    CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
+    CW: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync + Send,
+    CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync + Send,
 {
     info!("Building blob index (no decompression)...");
     let t_idx = std::time::Instant::now();

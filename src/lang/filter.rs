@@ -213,7 +213,7 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
 
 /// Evaluate a Filter against raw tags with a neutral context (side=self, no parent).
 /// Used by the topic engine for way-level exclude_condition checks.
-pub fn eval_filter(filter: &Filter, tags: &RawTags) -> bool {
+pub fn eval_filter(filter: &Filter, tags: &RawTags<'_>) -> bool {
     let ctx = ExtractCtx {
         obj_tags: tags,
         parent_tags: None,

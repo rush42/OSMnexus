@@ -319,11 +319,11 @@ impl TopicRunner {
     /// categorize/extract into tag rows against the kind's category set. `raw_tags` are the
     /// element's untouched tags — `build_topic_rows` only clones them if it actually needs to
     /// mutate a copy (an excluded element, or one with no transform pipeline, never pays for it).
-    pub fn process(
+    pub fn process<'a>(
         &self,
         kind: ElementKind,
         osm_id: i64,
-        raw_tags: &RawTags,
+        raw_tags: &'a RawTags<'a>,
         meta: &OsmMeta,
     ) -> Vec<TopicRow> {
         if !self.has_kind(kind) {
@@ -429,7 +429,7 @@ mod producer_tree_tests {
                     let mut tags: RawTags = RawTags::default();
                     for (k, v) in keys.iter().zip(combo.iter()) {
                         if let Some(v) = v {
-                            tags.insert((*k).clone(), v.to_string());
+                            tags.insert((*k).clone().into(), v.to_string().into());
                         }
                     }
                     let parent_tags = if has_parent { Some(tags.clone()) } else { None };

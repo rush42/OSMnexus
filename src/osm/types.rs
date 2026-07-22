@@ -36,7 +36,13 @@ impl ElementKind {
 
 /// Way tags. FxHashMap (not the default SipHash) because categorize + extract do millions of
 /// `.get()` lookups and per-way/per-side-object clones of these maps — the hot path of Pass C.
-pub type RawTags = rustc_hash::FxHashMap<String, String>;
+/// Values are `Cow<'a, str>`, not `String`: a way/node/relation's tags start out borrowed straight
+/// from the pbf block's string table (no per-element allocation for elements no topic keeps — see
+/// `osm::reader::resolve::way_data`), and only become `Cow::Owned` where a transform step
+/// (`categorize::transform::InputTransform`) computes and inserts a new value. A bonus: cloning a
+/// still-all-borrowed map (`topic::pipeline::build_topic_rows`'s per-topic `Cow<RawTags>` upgrade)
+/// copies pointer+len per entry instead of deep-copying every string.
+pub type RawTags<'a> = rustc_hash::FxHashMap<std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>>;
 
 /// A way resolved to geometry. Tags/meta are *not* carried here — classification is tag-only and
 /// happens in Pass A from `WayData`; this type exists only for the geometry pass, which needs the
@@ -54,9 +60,9 @@ pub struct OsmWay {
 
 /// A filter-passing way's tags + node refs + metadata, produced by the reader's single way-region
 /// decode (Pass A). Tag-only classification consumes this; the geometry pass keeps only `node_refs`.
-pub struct WayData {
+pub struct WayData<'a> {
     pub id: i64,
-    pub tags: RawTags,
+    pub tags: RawTags<'a>,
     pub node_refs: Vec<i64>,
     pub meta: WayMeta,
 }
@@ -93,9 +99,9 @@ impl MemberRole {
 /// Node/relation members are ignored — only way members are pulled into the graph. Classification
 /// is tag-only; the member ids feed the `relation_members` link output and (independently, see
 /// `main.rs`) relation geometry construction.
-pub struct RelData {
+pub struct RelData<'a> {
     pub id: i64,
-    pub tags: RawTags,
+    pub tags: RawTags<'a>,
     pub member_ways: Vec<(i64, MemberRole)>,
     pub meta: WayMeta,
 }
@@ -104,9 +110,9 @@ pub struct RelData {
 /// kept way. Classification is tag-only; a selected node becomes a forced graph-vertex cut point.
 /// `lon`/`lat` (WGS84) ride along so `--emit-node-geometries` can build a point row without a
 /// second lookup.
-pub struct NodeData {
+pub struct NodeData<'a> {
     pub id: i64,
-    pub tags: RawTags,
+    pub tags: RawTags<'a>,
     pub meta: WayMeta,
     pub lon: f64,
     pub lat: f64,

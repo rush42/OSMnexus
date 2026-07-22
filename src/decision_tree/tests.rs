@@ -76,19 +76,19 @@ fn tree_matches_linear() {
 
         let sides = ["self", "left", "right"];
         let parent_tags: RawTags =
-            [("highway".to_owned(), "secondary".to_owned())].into_iter().collect();
+            [("highway".into(), "secondary".into())].into_iter().collect();
         let mut checked = 0usize;
         for hw in &hw_vals {
             for other in &others {
                 for &side in &sides {
                     let mut tags: RawTags = RawTags::default();
                     if let Some(h) = hw {
-                        tags.insert("highway".into(), h.clone());
+                        tags.insert("highway".into(), h.clone().into());
                     }
                     if let Some((t, v)) = other {
-                        tags.insert(t.clone(), v.clone());
+                        tags.insert(t.clone().into(), v.clone().into());
                     }
-                    let (prefix, side_parent_tags): (Option<&str>, Option<&RawTags>) = match side {
+                    let (prefix, side_parent_tags): (Option<&str>, Option<&RawTags<'_>>) = match side {
                         "self" => (None, None),
                         _ => (Some("cycleway"), Some(&parent_tags)),
                     };

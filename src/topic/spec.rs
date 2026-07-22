@@ -435,8 +435,8 @@ mod transforms_spec_tests {
     use super::*;
     use crate::osm::types::RawTags;
 
-    fn tags(pairs: &[(&str, &str)]) -> RawTags {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    fn tags<'a>(pairs: &[(&'a str, &'a str)]) -> RawTags<'a> {
+        pairs.iter().map(|&(k, v)| (std::borrow::Cow::Borrowed(k), std::borrow::Cow::Borrowed(v))).collect()
     }
 
     /// A cycleway left/right split, authored the way a topic's own `transforms.json` would,
@@ -479,8 +479,8 @@ mod transforms_spec_tests {
         assert_eq!(clones.len(), 1);
         let (clone_tags, clone_annotations, id) = &clones[0];
         assert_eq!(id, "way/1/cycleway/left");
-        assert_eq!(clone_tags.get("cycleway").map(String::as_str), Some("lane"));
-        assert_eq!(clone_tags.get("highway").map(String::as_str), Some("cycleway"));
+        assert_eq!(clone_tags.get("cycleway").map(|v| v.as_ref()), Some("lane"));
+        assert_eq!(clone_tags.get("highway").map(|v| v.as_ref()), Some("cycleway"));
         assert_eq!(clone_annotations.get("_infix").and_then(Value::as_str), Some("left"));
     }
 

@@ -26,7 +26,7 @@ fn classify_element(
     runners: &[TopicRunner],
     kind: ElementKind,
     id: i64,
-    tags: &crate::osm::types::RawTags,
+    tags: &crate::osm::types::RawTags<'_>,
     meta: &OsmMeta,
 ) -> Vec<Vec<TopicRow>> {
     runners.iter().map(|r| r.process(kind, id, tags, meta)).collect()
@@ -41,7 +41,7 @@ pub struct ClassifyOutput {
 
 /// Tag-only classification for one way (Pass A). Runs every topic's way pipeline against the way's
 /// raw tags. No geometry — coords are not needed and not available yet.
-pub fn classify_way(runners: &[TopicRunner], wd: &WayData) -> ClassifyOutput {
+pub fn classify_way(runners: &[TopicRunner], wd: &WayData<'_>) -> ClassifyOutput {
     let meta = meta_from(&wd.meta);
     let mut mask = 0u32;
     let topic_rows: Vec<Vec<TopicRow>> = runners
@@ -59,13 +59,13 @@ pub fn classify_way(runners: &[TopicRunner], wd: &WayData) -> ClassifyOutput {
 }
 
 /// Tag-only classification for one relation (relations pass). Per-topic relation tag rows.
-pub fn classify_relation(runners: &[TopicRunner], rd: &RelData) -> Vec<Vec<TopicRow>> {
+pub fn classify_relation(runners: &[TopicRunner], rd: &RelData<'_>) -> Vec<Vec<TopicRow>> {
     let meta = meta_from(&rd.meta);
     classify_element(runners, ElementKind::Relation, rd.id, &rd.tags, &meta)
 }
 
 /// Tag-only classification for one node (nodes pass). Per-topic node tag rows.
-pub fn classify_node(runners: &[TopicRunner], nd: &NodeData) -> Vec<Vec<TopicRow>> {
+pub fn classify_node(runners: &[TopicRunner], nd: &NodeData<'_>) -> Vec<Vec<TopicRow>> {
     let meta = meta_from(&nd.meta);
     classify_element(runners, ElementKind::Node, nd.id, &nd.tags, &meta)
 }

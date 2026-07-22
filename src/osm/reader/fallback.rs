@@ -20,9 +20,9 @@ pub(super) fn stream_osm_fallback<CR, CW, CN>(
     cb: Callbacks<CR, CW, CN>,
 ) -> anyhow::Result<SelectionContext>
 where
-    CR: Fn(&RelData) -> Option<u32> + Sync + Send,
-    CW: Fn(&WayData) -> Option<u32> + Sync + Send,
-    CN: Fn(&NodeData) -> bool + Sync + Send,
+    CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
+    CW: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync + Send,
+    CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync + Send,
 {
     // Scan R — relations: classify + emit rows, collect member-way requests. Independent of the
     // ways/nodes scans below. Sequential (the relation region is small relative to ways/nodes).
