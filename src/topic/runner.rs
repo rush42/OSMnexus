@@ -233,7 +233,7 @@ impl TopicRunner {
             .with_context(|| format!("loading topics/{name}/ categories"))?;
         let mut categories: HashMap<ElementKind, CategoriesFile> = HashMap::new();
         for (kind, mut cats) in categories_loaded {
-            cats.build_order(tree_max_depth)
+            cats.build_order(tree_max_depth, linear_classify)
                 .with_context(|| format!("building category order for topics/{name}"))?;
             categories.insert(kind, cats);
         }
