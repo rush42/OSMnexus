@@ -1,11 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
-import { ReactFlow, Background, BackgroundVariant, Controls, MarkerType, type Node, type Edge } from "@xyflow/react";
+import {
+  ReactFlow,
+  Background,
+  BackgroundVariant,
+  BaseEdge,
+  Controls,
+  EdgeLabelRenderer,
+  Handle,
+  MarkerType,
+  Position,
+  getSmoothStepPath,
+  type Node,
+  type Edge,
+  type EdgeProps,
+  type NodeProps,
+} from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
 type DagNode = { id: string; label: string; kind: string };
 type DagEdge = { id: string; source: string; target: string; label: string };
 type Variant = { labels: string[]; nodes: DagNode[]; edges: DagEdge[] };
-type DagResponse = { topic: string; fields: Record<string, Variant[]> };
+type ListResponse = { topic: string; names: string[] };
+type GraphResponse = { topic: string; name: string; variants: Variant[] };
 
 // Mirrors the node-fill colors `src/bin/plot_dag.rs` uses for the DOT rendering, keyed on the
 // `kind` string `osmnexus::dag::DagNode` stamps (see `src/dag.rs`) — paired with a matching border
@@ -22,11 +38,83 @@ const KIND_COLOR: Record<string, { bg: string; border: string }> = {
   annotate: { bg: "#f3f3f4", border: "#d4d6da" },
 };
 
+// Every node gets four handles: the default top/bottom pair for the tree's normal parent-child
+// flow, plus a right/left pair used only by annotate edges (an annotate node sits beside its owner,
+// same row, not below it — routing that edge through the default top/bottom handles is what drew
+// the Z-shaped line: down out of the owner's bottom, sideways, then up into the annotate node's top).
+function DagNodeBox({ data }: NodeProps) {
+  const hidden = { opacity: 0 } as const;
+  // First line is the node's type (e.g. "Extract", "Mapping") — centered, since it's a heading, not
+  // a value. Remaining lines are that type's own arguments (key/value pairs, counts) — left-bound.
+  const [typeLine, ...argLines] = (data.label as string).split("\n");
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={hidden} />
+      <Handle type="source" position={Position.Bottom} style={hidden} />
+      <Handle type="target" position={Position.Left} id="left" style={hidden} />
+      <Handle type="source" position={Position.Right} id="right" style={hidden} />
+      <div style={{ textAlign: "center", fontWeight: 600 }}>{typeLine}</div>
+      {argLines.length > 0 && (
+        <div style={{ textAlign: "left", marginTop: 4 }}>{argLines.join("\n")}</div>
+      )}
+    </>
+  );
+}
+
+const NODE_TYPES = { dagNode: DagNodeBox };
+
+// Sibling edges (e.g. every "branch\ntag: X" edge fanning out of a decision-tree branch node) all
+// leave their source from the same handle, so their paths are coincident right where they exit —
+// the default per-edge label (drawn inline in that edge's own SVG group) could end up painted over
+// by a later sibling's line there, since SVG paint order just follows the edges array. Rendering the
+// label through `EdgeLabelRenderer` instead puts it in one shared DOM layer that sits above the
+// entire edges SVG pane, so no edge's line can ever cover another edge's label.
+function DagEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, style, markerEnd }: EdgeProps) {
+  const [edgePath, labelX, labelY] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  return (
+    <>
+      <BaseEdge id={id} path={edgePath} style={style} markerEnd={markerEnd} />
+      {label != null && (
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              background: "var(--panel)",
+              padding: "2px 4px",
+              borderRadius: 4,
+              fontFamily: "var(--font-ui)",
+              fontSize: 11,
+              color: "var(--muted)",
+              pointerEvents: "none",
+            }}
+          >
+            {label}
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
+
+const EDGE_TYPES = { dagEdge: DagEdge };
+
 const NODE_W = 260;
+const NODE_W_MAX = 480;
 const NODE_H = 90;
 const GAP_X = 44;
 const GAP_Y = 76;
 const ANNOTATE_GAP_X = 24;
+// Rough monospace advance at the node's 12.5px font, plus the box's horizontal padding — used to
+// widen a node past NODE_W when its longest line (e.g. a decision-tree leaf's list of candidate
+// category names) wouldn't otherwise fit.
+const CHAR_W = 7.4;
+const NODE_PAD_X = 24;
+
+function widthFor(label: string): number {
+  const maxLine = Math.max(...label.split("\n").map((l) => l.length));
+  return Math.min(NODE_W_MAX, Math.max(NODE_W, Math.ceil(maxLine * CHAR_W) + NODE_PAD_X));
+}
 
 // A `Producer`/`Sanitizer` tree from `src/dag.rs` is a strict tree (single root, each non-root node
 // has exactly one incoming edge) — no need for a general graph-layout library. Post-order DFS: a
@@ -35,8 +123,9 @@ const ANNOTATE_GAP_X = 24;
 // "annotate" nodes (src/dag.rs's `annotate_node`) are excluded from that DFS entirely — they're not
 // a step in the value's build flow, just a side note on their owner — and instead placed directly
 // beside it afterward, same row, one node-width to the right.
-function layoutTree(nodes: DagNode[], edges: DagEdge[]): Map<string, { x: number; y: number }> {
+function layoutTree(nodes: DagNode[], edges: DagEdge[]): { positions: Map<string, { x: number; y: number }>; widths: Map<string, number> } {
   const kindOf = new Map(nodes.map((n) => [n.id, n.kind]));
+  const widths = new Map(nodes.map((n) => [n.id, widthFor(n.label)]));
   const treeEdges = edges.filter((e) => kindOf.get(e.target) !== "annotate");
   const annotateEdges = edges.filter((e) => kindOf.get(e.target) === "annotate");
 
@@ -47,40 +136,49 @@ function layoutTree(nodes: DagNode[], edges: DagEdge[]): Map<string, { x: number
   }
   const positions = new Map<string, { x: number; y: number }>();
   let nextX = 0;
-  function place(id: string, depth: number): number {
+  // Returns each placed node's left edge and right edge (left + its own width), so a parent centers
+  // over the true span of its children instead of just the average of their left edges.
+  function place(id: string, depth: number): [left: number, right: number] {
+    const width = widths.get(id) ?? NODE_W;
     const children = childrenOf.get(id) ?? [];
-    let x: number;
+    let left: number;
     if (children.length === 0) {
-      x = nextX;
-      nextX += NODE_W + GAP_X;
+      left = nextX;
+      nextX += width + GAP_X;
     } else {
-      const childXs = children.map((c) => place(c, depth + 1));
-      x = (childXs[0] + childXs[childXs.length - 1]) / 2;
+      const spans = children.map((c) => place(c, depth + 1));
+      const spanLeft = spans[0][0];
+      const spanRight = spans[spans.length - 1][1];
+      left = (spanLeft + spanRight) / 2 - width / 2;
     }
-    positions.set(id, { x, y: depth * (NODE_H + GAP_Y) });
-    return x;
+    positions.set(id, { x: left, y: depth * (NODE_H + GAP_Y) });
+    return [left, left + width];
   }
-  if (nodes[0]) place(nodes[0].id, 0);
+  // The tree's root is whichever node is never a `treeEdges` target — not necessarily `nodes[0]`:
+  // `src/dag.rs`'s `render_chain` creates an `Extract` leaf's own node before the sanitize steps
+  // that feed into it, so for a field whose top-level producer is a sanitized `Extract`, the first
+  // node in the array is that leaf, not the chain's actual entry point.
+  const hasIncoming = new Set(treeEdges.map((e) => e.target));
+  const root = nodes.find((n) => !hasIncoming.has(n.id)) ?? nodes[0];
+  if (root) place(root.id, 0);
 
   for (const e of annotateEdges) {
     const ownerPos = positions.get(e.source);
-    if (ownerPos) positions.set(e.target, { x: ownerPos.x + NODE_W + ANNOTATE_GAP_X, y: ownerPos.y });
+    const ownerWidth = widths.get(e.source) ?? NODE_W;
+    if (ownerPos) positions.set(e.target, { x: ownerPos.x + ownerWidth + ANNOTATE_GAP_X, y: ownerPos.y });
   }
-  return positions;
-}
-
-// Node count of a field's biggest variant — used to sort the field picker so the most interesting
-// (most-branching) trees sort first instead of alphabetically.
-function maxNodeCount(variants: Variant[]): number {
-  return variants.reduce((max, v) => Math.max(max, v.nodes.length), 0);
+  return { positions, widths };
 }
 
 // Plots the `Producer` tree behind a topic's output field (`mode: "deriver"`) or the categorization
 // tree that assigns an object to a category in the first place (`mode: "category"`, one tree per
 // `ElementKind` instead of per field; see `src/dag.rs`'s `category_order_dag`) — one tree per
 // field/kind, per distinct variant (categories sharing the same effective producer for a field
-// collapse into one variant; see `src/bin/dag_json.rs`). Fetches fresh on every `topic`/`mode`
-// change since the tree reflects whatever's currently on disk in the (possibly just-edited) config.
+// collapse into one variant; see `src/bin/dag_json.rs`). Two fetches: the field/kind name list (on
+// every `topic`/`mode` change) and, separately, the selected field's graph (on every `field` change
+// too) — `dag_json` builds only the one graph actually requested rather than every field's, since a
+// topic with many/large fields made building all of them upfront the dominant cost even though only
+// one is ever shown at a time.
 export default function DagView({
   topic,
   category,
@@ -90,40 +188,65 @@ export default function DagView({
   category?: string | null;
   mode?: "deriver" | "category" | "decision-tree";
 }) {
-  const [response, setResponse] = useState<DagResponse | null>(null);
+  const [fieldNames, setFieldNames] = useState<string[] | null>(null);
+  const [variants, setVariants] = useState<Variant[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<string>("");
   const [variantIdx, setVariantIdx] = useState(0);
   const fieldLabel = mode === "deriver" ? "field" : "kind";
+  const endpoint = mode === "category" ? "/api/categorize-dag/" : mode === "decision-tree" ? "/api/decision-tree-dag/" : "/api/dag/";
 
   useEffect(() => {
-    setResponse(null);
+    let ignore = false;
+    setFieldNames(null);
+    setVariants([]);
     setError(null);
     setField("");
     setVariantIdx(0);
     if (!topic) return;
-    const endpoint =
-      mode === "category" ? "/api/categorize-dag/" : mode === "decision-tree" ? "/api/decision-tree-dag/" : "/api/dag/";
     fetch(`${endpoint}${encodeURIComponent(topic)}`)
       .then((r) => r.json())
-      .then((d: DagResponse | { error: string }) => {
+      .then((d: ListResponse | { error: string }) => {
+        if (ignore) return;
         if ("error" in d) {
           setError(d.error);
           return;
         }
-        setResponse(d);
-        const sortedFields = Object.keys(d.fields).sort((a, b) => maxNodeCount(d.fields[b]) - maxNodeCount(d.fields[a]));
-        setField((prev) => (d.fields[prev] ? prev : sortedFields[0] ?? ""));
-        setVariantIdx(0);
+        const sortedNames = [...d.names].sort();
+        setFieldNames(sortedNames);
+        setField(sortedNames[0] ?? "");
       })
-      .catch((err) => setError(String(err)));
-  }, [topic, mode]);
+      .catch((err) => !ignore && setError(String(err)));
+    return () => {
+      ignore = true;
+    };
+  }, [topic, mode, endpoint]);
 
-  const fieldNames = useMemo(
-    () => (response ? Object.keys(response.fields).sort((a, b) => maxNodeCount(response.fields[b]) - maxNodeCount(response.fields[a])) : []),
-    [response],
-  );
-  const variants = response?.fields[field] ?? [];
+  useEffect(() => {
+    let ignore = false;
+    setVariants([]);
+    setVariantIdx(0);
+    // `field` can briefly still hold the previous mode's selection here — the effect above resets
+    // it, but on a `mode` change both effects fire in the same pass, before that reset has
+    // committed. Skip rather than fire a request doomed to 404/error against the new mode/endpoint;
+    // the field-list effect will set a real field for this mode shortly and re-trigger this one.
+    if (!topic || !field || !fieldNames?.includes(field)) return;
+    fetch(`${endpoint}${encodeURIComponent(topic)}?name=${encodeURIComponent(field)}`)
+      .then((r) => r.json())
+      .then((d: GraphResponse | { error: string }) => {
+        if (ignore) return;
+        if ("error" in d) {
+          setError(d.error);
+          return;
+        }
+        setVariants(d.variants);
+      })
+      .catch((err) => !ignore && setError(String(err)));
+    return () => {
+      ignore = true;
+    };
+  }, [topic, mode, endpoint, field, fieldNames]);
+
   const variant = variants[variantIdx];
 
   // A focused category (from the sidebar tree) limits which variant this view shows — jump to
@@ -136,11 +259,12 @@ export default function DagView({
 
   const { nodes, edges } = useMemo(() => {
     if (!variant) return { nodes: [] as Node[], edges: [] as Edge[] };
-    const positions = layoutTree(variant.nodes, variant.edges);
+    const { positions, widths } = layoutTree(variant.nodes, variant.edges);
     const nodes: Node[] = variant.nodes.map((n) => {
       const colors = KIND_COLOR[n.kind] ?? { bg: "#eee", border: "var(--border)" };
       return {
         id: n.id,
+        type: "dagNode",
         position: positions.get(n.id) ?? { x: 0, y: 0 },
         data: { label: n.label },
         style: {
@@ -151,22 +275,20 @@ export default function DagView({
           fontSize: 12.5,
           fontFamily: "var(--font-mono)",
           whiteSpace: "pre-wrap",
-          width: NODE_W,
+          width: widths.get(n.id) ?? NODE_W,
           boxShadow: "0 1px 2px rgba(16, 24, 40, 0.06), 0 2px 6px rgba(16, 24, 40, 0.05)",
         },
       };
     });
+    const kindOf = new Map(variant.nodes.map((n) => [n.id, n.kind]));
     const edges: Edge[] = variant.edges.map((e) => ({
       id: e.id,
       source: e.source,
       target: e.target,
+      ...(kindOf.get(e.target) === "annotate" ? { sourceHandle: "right", targetHandle: "left" } : {}),
       label: e.label || undefined,
-      type: "smoothstep",
+      type: "dagEdge",
       style: { stroke: "#9aa1ac", strokeWidth: 1.5 },
-      labelStyle: { fontFamily: "var(--font-ui)", fontSize: 11, fill: "var(--muted)" },
-      labelBgStyle: { fill: "var(--panel)" },
-      labelBgPadding: [4, 2] as [number, number],
-      labelBgBorderRadius: 4,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#9aa1ac" },
     }));
     return { nodes, edges };
@@ -179,7 +301,7 @@ export default function DagView({
       </div>
     );
   }
-  if (!response) {
+  if (!fieldNames) {
     return (
       <div style={{ padding: 14, fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--muted)" }}>
         Loading…
@@ -211,8 +333,7 @@ export default function DagView({
         >
           {fieldNames.map((f) => (
             <option key={f} value={f}>
-              {f} ({maxNodeCount(response.fields[f])} nodes
-              {response.fields[f].length > 1 ? `, ${response.fields[f].length} variants` : ""})
+              {f}
             </option>
           ))}
         </select>
@@ -232,7 +353,13 @@ export default function DagView({
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <ReactFlow
-          key={`${field}-${variantIdx}`}
+          // `fitView` only fits on mount — the graph now arrives via its own fetch, separate from
+          // (and later than) the field/variant selection, so without the `nodes.length > 0` flip in
+          // the key, this instance would already be mounted (empty) by the time the real nodes show
+          // up and never re-fit to them.
+          key={`${field}-${variantIdx}-${nodes.length > 0}`}
+          nodeTypes={NODE_TYPES}
+          edgeTypes={EDGE_TYPES}
           nodes={nodes}
           edges={edges}
           fitView

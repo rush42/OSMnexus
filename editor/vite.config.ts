@@ -304,46 +304,22 @@ function liveEditorApi(): Plugin {
           return sendJson(res, 200, { topics: await listTopics() });
         }
 
-        const dagMatch = url.pathname.match(/^\/api\/dag\/([^/]+)$/);
-        if (dagMatch && req.method === "GET") {
-          const topic = decodeURIComponent(dagMatch[1]);
+        // Two-stage: `list` (no `name` query param) returns just the field/kind names available for
+        // a topic — cheap, no graphs built. Passing `name` builds and returns just that one field's
+        // (or kind's) variants. dag_json used to build every field/kind's graph on every request,
+        // even though the live editor only ever displays one at a time — the dominant cost for
+        // topics with many/large fields, so the frontend now fetches the list once and a graph per
+        // field the user actually selects.
+        const dagRouteMatch = url.pathname.match(/^\/api\/(dag|categorize-dag|decision-tree-dag)\/([^/]+)$/);
+        if (dagRouteMatch && req.method === "GET") {
+          const dagMode = { dag: "deriver", "categorize-dag": "category", "decision-tree-dag": "decision-tree" }[dagRouteMatch[1]]!;
+          const topic = decodeURIComponent(dagRouteMatch[2]);
           if (!(await listTopics()).includes(topic)) {
             return sendJson(res, 400, { error: `unknown topic '${topic}'` });
           }
+          const name = url.searchParams.get("name");
           const configDir = await ensureConfigSelected();
-          const result = await run(DAG_JSON_BIN, [configDir, topic]);
-          if (!result.ok) return sendJson(res, 500, { error: result.message });
-          try {
-            return sendJson(res, 200, JSON.parse(result.stdout));
-          } catch (err) {
-            return sendJson(res, 500, { error: `dag_json produced invalid JSON: ${String(err)}` });
-          }
-        }
-
-        const categorizeDagMatch = url.pathname.match(/^\/api\/categorize-dag\/([^/]+)$/);
-        if (categorizeDagMatch && req.method === "GET") {
-          const topic = decodeURIComponent(categorizeDagMatch[1]);
-          if (!(await listTopics()).includes(topic)) {
-            return sendJson(res, 400, { error: `unknown topic '${topic}'` });
-          }
-          const configDir = await ensureConfigSelected();
-          const result = await run(DAG_JSON_BIN, [configDir, topic, "category"]);
-          if (!result.ok) return sendJson(res, 500, { error: result.message });
-          try {
-            return sendJson(res, 200, JSON.parse(result.stdout));
-          } catch (err) {
-            return sendJson(res, 500, { error: `dag_json produced invalid JSON: ${String(err)}` });
-          }
-        }
-
-        const decisionTreeDagMatch = url.pathname.match(/^\/api\/decision-tree-dag\/([^/]+)$/);
-        if (decisionTreeDagMatch && req.method === "GET") {
-          const topic = decodeURIComponent(decisionTreeDagMatch[1]);
-          if (!(await listTopics()).includes(topic)) {
-            return sendJson(res, 400, { error: `unknown topic '${topic}'` });
-          }
-          const configDir = await ensureConfigSelected();
-          const result = await run(DAG_JSON_BIN, [configDir, topic, "decision-tree"]);
+          const result = await run(DAG_JSON_BIN, [configDir, topic, dagMode, name ?? "list"]);
           if (!result.ok) return sendJson(res, 500, { error: result.message });
           try {
             return sendJson(res, 200, JSON.parse(result.stdout));

@@ -74,27 +74,20 @@ fn annotate_node(g: &mut DagGraph, owner: &str, annotate: &Map<String, Value>) {
 /// any `Sanitizer` chain hanging off an `Extract`).
 pub fn producer_dag(producer: &Producer) -> DagGraph {
     let mut g = DagGraph::default();
-    render_producer(&mut g, producer, None);
+    render_producer(&mut g, producer);
     g
 }
 
-/// Renders `p`, returning its own node id (for the caller to wire a value-flow edge to). `annotate_to`
-/// is where *this producer's own* `annotate` (not any nested producer's) should attach — the nearest
-/// condition/rule ancestor, i.e. the caller's own anchor, not the producer's own freshly-made node:
-/// an annotate describes why a *branch* produced what it did, and the branch is identified by its
-/// condition, not by however many hops (a `Parent` wrap, a further nested `Match`) the value takes to
-/// actually resolve. `None` only at the tree root, where there is no condition to attach to yet, so
-/// it falls back to the producer's own node.
-fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) -> String {
+fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
     match p {
         Producer::Match { rules: _, default, annotate, origin: MatchOrigin::Default, tree: _ } => {
             // No real branching — a `defaults` JSON entry bundled straight into a producer
             // (`topic::runner::default_value_producer`), always empty `rules`. Shown as a plain
             // literal, not a one-branch "match" wrapper around nothing.
             let d = default.as_ref().expect("MatchOrigin::Default always carries a default");
-            let label = format!("default\nvalue: {}", truncate(&format!("{d:?}"), 40));
+            let label = format!("Default\nvalue: {}", truncate(&format!("{d:?}"), 40));
             let node = g.node(label, "const");
-            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
+            annotate_node(g, &node, annotate);
             node
         }
         Producer::Match { rules, default, annotate, origin, tree: _ } => {
@@ -103,86 +96,85 @@ fn render_producer(g: &mut DagGraph, p: &Producer, annotate_to: Option<&str>) ->
             // so those show priority order instead of the (uninformative) condition text.
             let priority_only = matches!(origin, MatchOrigin::Fallback | MatchOrigin::TagOr);
             let label = match origin {
-                MatchOrigin::Rules => format!("match\n{} rule(s)", rules.len()),
-                MatchOrigin::Fallback => format!("fallback\n{} branch(es)", rules.len()),
-                MatchOrigin::ParentOrObj => "parent_or_obj".to_owned(),
-                MatchOrigin::TagOr => "tag_or".to_owned(),
+                MatchOrigin::Rules => "Match".to_owned(),
+                MatchOrigin::Fallback => format!("Fallback\n{} branch(es)", rules.len()),
+                MatchOrigin::ParentOrObj => "Parent Or Obj".to_owned(),
+                MatchOrigin::TagOr => "Tag Or".to_owned(),
                 MatchOrigin::Default => unreachable!("handled above"),
             };
             let node = g.node(label, "match");
-            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
+            annotate_node(g, &node, annotate);
             // Each rule is its own branch, and its value producer (which may itself be a further
             // `Match`) hangs off that node so the tree actually branches instead of cramming every
-            // rule into one node's text. The rule node is the value's `annotate_to` — its own
-            // condition, not the value node however many hops down it ends up.
+            // rule into one node's text.
             for (i, r) in rules.iter().enumerate() {
-                let rule_label = if priority_only { format!("priority {}", i + 1) } else { truncate(&r.when.describe(), 120) };
+                let rule_label = if matches!(origin, MatchOrigin::Fallback) {
+                    format!("Option {}", i + 1)
+                } else if priority_only {
+                    format!("{}", i + 1)
+                } else {
+                    truncate(&r.when.describe(), 120)
+                };
                 let rule_node = g.node(rule_label, "rule");
                 g.edge(&node, &rule_node, "");
-                let value_node = render_producer(g, &r.value, Some(&rule_node));
+                let value_node = render_producer(g, &r.value);
                 g.edge(&rule_node, &value_node, "");
             }
             if let Some(d) = default {
-                let default_node = g.node(format!("const\nvalue: {}", truncate(&format!("{d:?}"), 40)), "const");
+                let default_node = g.node(format!("Const\nvalue: {}", truncate(&format!("{d:?}"), 40)), "const");
                 g.edge(&node, &default_node, "default");
             }
             node
         }
         Producer::Extract { extract, annotate } => {
             let (label, kind) = match extract {
-                Extract::Value { key, .. } => (format!("extract\nkey: {key}"), "extract"),
-                Extract::Candidates { keys, .. } => (format!("extract\nkeys: {keys:?}"), "extract"),
+                Extract::Value { key, .. } => (format!("Extract\nkey: {key}"), "extract"),
+                Extract::Candidates { keys, .. } => (format!("Extract\nkeys: {keys:?}"), "extract"),
             };
             let node = g.node(label, kind);
-            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
-            if let Some(chain) = extract.sanitize() {
-                let chain_root = render_chain(g, chain);
-                g.edge(&node, &chain_root, "sanitize");
+            annotate_node(g, &node, annotate);
+            match extract.sanitize() {
+                Some(chain) => render_chain(g, chain, &node),
+                None => node,
             }
-            node
         }
         Producer::Const { value, annotate } => {
-            let label = format!("const\nvalue: {}", truncate(&format!("{value:?}"), 40));
+            let label = format!("Const\nvalue: {}", truncate(&format!("{value:?}"), 40));
             let node = g.node(label, "const");
-            annotate_node(g, annotate_to.unwrap_or(&node), annotate);
+            annotate_node(g, &node, annotate);
             node
         }
         Producer::Parent(inner) => {
-            // Not a condition itself — transparent plumbing (a tagset switch), so it forwards
-            // whatever `annotate_to` it received rather than substituting its own node: `inner`'s
-            // annotate still belongs to the nearest real condition, same as if `Parent` weren't there.
-            let node = g.node("parent".to_owned(), "parent");
-            let child = render_producer(g, inner, annotate_to);
+            let node = g.node("Parent".to_owned(), "parent");
+            let child = render_producer(g, inner);
             g.edge(&node, &child, "");
             node
         }
     }
 }
 
-fn render_chain(g: &mut DagGraph, chain: &Sanitizer) -> String {
-    let steps = chain.steps();
-    let mut prev: Option<String> = None;
-    let mut first: Option<String> = None;
-    for step in steps {
+/// Renders `chain`'s steps as a line feeding into `sink` (the `Extract` leaf they sanitize), each
+/// step wired to the next in application order and the last wired to `sink` — so the tree reads as
+/// the actual data flow (sanitize steps, then the extract they feed) rather than a side branch
+/// hanging off the extract. Returns the entry point: the first step's node, or `sink` itself if the
+/// chain has no steps.
+fn render_chain(g: &mut DagGraph, chain: &Sanitizer, sink: &str) -> String {
+    let mut next = sink.to_owned();
+    for step in chain.steps().iter().rev() {
         let id = g.node(step_label(step), "step");
-        if first.is_none() {
-            first = Some(id.clone());
-        }
-        if let Some(p) = &prev {
-            g.edge(p, &id, "");
-        }
-        prev = Some(id);
+        g.edge(&id, &next, "");
+        next = id;
     }
-    first.unwrap_or_else(|| g.node("(empty chain)".to_owned(), "step"))
+    next
 }
 
 fn step_label(step: &Step) -> String {
     match step {
         Step::Mapping { mapping, on_miss } => {
-            format!("mapping\n{} entries\non_miss: {:?}", mapping.len(), on_miss.as_deref().unwrap_or("drop"))
+            format!("Mapping\n{} entries\non_miss: {:?}", mapping.len(), on_miss.as_deref().unwrap_or("drop"))
         }
-        Step::Replace { replace } => format!("replace\n{} rule(s)", replace.len()),
-        Step::Builtin(name) => format!("builtin: {name}"),
+        Step::Replace { replace } => format!("Replace\n{} rule(s)", replace.len()),
+        Step::Builtin(name) => format!("Builtin\nname: {name}"),
     }
 }
 
@@ -222,7 +214,7 @@ pub fn category_order_dag(cats: &CategoriesFile) -> DagGraph {
 fn render_filter(g: &mut DagGraph, f: &Filter) -> String {
     match f {
         Filter::And { and } => {
-            let node = g.node(format!("and\n{} clause(s)", and.len()), "match");
+            let node = g.node("And".to_owned(), "match");
             for c in and {
                 let child = render_filter(g, c);
                 g.edge(&node, &child, "");
@@ -230,7 +222,7 @@ fn render_filter(g: &mut DagGraph, f: &Filter) -> String {
             node
         }
         Filter::Or { or } => {
-            let node = g.node(format!("or\n{} clause(s)", or.len()), "match");
+            let node = g.node("Or".to_owned(), "match");
             for c in or {
                 let child = render_filter(g, c);
                 g.edge(&node, &child, "");
@@ -238,7 +230,7 @@ fn render_filter(g: &mut DagGraph, f: &Filter) -> String {
             node
         }
         Filter::Not { not } => {
-            let node = g.node("not".to_owned(), "parent");
+            let node = g.node("Not".to_owned(), "parent");
             let child = render_filter(g, not);
             g.edge(&node, &child, "");
             node
@@ -261,7 +253,7 @@ pub fn decision_tree_dag(cats: &CategoriesFile) -> DagGraph {
 
 fn order_label(cats: &CategoriesFile, idx: usize) -> String {
     match &cats.order[idx] {
-        OrderedNode::Category { idx } => format!("category: {}", cats.categories[*idx].id),
+        OrderedNode::Category { idx } => cats.categories[*idx].id.clone(),
         OrderedNode::Skip { .. } => "(no category)".to_owned(),
     }
 }
@@ -270,10 +262,10 @@ fn render_decision_tree(g: &mut DagGraph, tree: &DecisionTree, cats: &Categories
     match tree {
         DecisionTree::Leaf(idxs) => {
             let label = if idxs.is_empty() {
-                "leaf\n(no candidates)".to_owned()
+                "Leaf\n(no candidates)".to_owned()
             } else {
-                let mut lines = vec![format!("leaf\n{} candidate(s)", idxs.len())];
-                lines.extend(idxs.iter().map(|(i, _)| format!("priority {}: {}", i + 1, order_label(cats, *i))));
+                let mut lines = vec!["Leaf".to_owned()];
+                lines.extend(idxs.iter().map(|(i, _)| order_label(cats, *i)));
                 truncate(&lines.join("\n"), 200)
             };
             g.node(label, "const")
