@@ -119,7 +119,7 @@ function sendJson(res: any, status: number, body: unknown) {
 
 async function runPipeline(pbfPath: string, outDir: string): Promise<{ ok: true } | { ok: false; message: string }> {
   const configDir = await ensureConfigSelected();
-  const result = await run(PIPELINE_BIN, [pbfPath, "--config-dir", configDir, "--output", "geojson", "--out-dir", outDir]);
+  const result = await run(PIPELINE_BIN, [pbfPath, "--config-dir", configDir, "--output", "geojson", "--out-dir", outDir, "--linear-classify"]);
   return result.ok ? { ok: true } : result;
 }
 

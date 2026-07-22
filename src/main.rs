@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     // it's picked up — no code changes needed.
     osmnexus::paths::set_config_root(cfg.config_dir.clone());
     info!("Config directory: {}", cfg.config_dir.display());
-    let runners: Vec<TopicRunner> = TopicRunner::load_all(cfg.tree_max_depth)?;
+    let runners: Vec<TopicRunner> = TopicRunner::load_all(cfg.tree_max_depth, cfg.linear_classify)?;
 
     let tables: Vec<String> = runners.iter().map(|r| r.table().to_owned()).collect();
     let table_refs: Vec<&str> = tables.iter().map(String::as_str).collect();

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use serde_json::{Map, Value};
 
-use crate::categorize::categories::categorize;
+use crate::categorize::categories::{categorize, categorize_linear};
 use crate::lang::filter::eval_filter;
 use crate::lang::producer::ExtractCtx;
 use crate::categorize::transform::{run_transform_steps, TransformStep};
@@ -92,7 +92,12 @@ pub fn build_topic_rows<'a>(
 
     let mut rows = Vec::new();
     let mut emit = |ectx: ExtractCtx| {
-        let Some(category) = categorize(&ectx, categories) else {
+        let category = if runner.linear_classify {
+            categorize_linear(&ectx, categories)
+        } else {
+            categorize(&ectx, categories)
+        };
+        let Some(category) = category else {
             return;
         };
 

@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     let decision_tree_mode = mode.as_deref() == Some("decision-tree");
 
     osmnexus::paths::set_config_root(config_dir);
-    let runner = TopicRunner::load(&topic_name, 64)
+    let runner = TopicRunner::load(&topic_name, 64, false)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     let fields = if decision_tree_mode {

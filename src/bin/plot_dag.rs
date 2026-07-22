@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     }
     std::fs::create_dir_all(&out_dir)?;
 
-    let runner = TopicRunner::load(&topic_name, 64)
+    let runner = TopicRunner::load(&topic_name, 64, false)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     // field -> repr(producer) -> (one instance, labels of who produces it this way)

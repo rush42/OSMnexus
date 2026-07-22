@@ -80,6 +80,12 @@ pub struct Config {
     #[arg(long, default_value_t = DEFAULT_TREE_MAX_DEPTH)]
     pub tree_max_depth: usize,
 
+    /// Bypass the compiled decision tree and classify by walking `categories.json`'s `order`
+    /// linearly (see `categorize_linear` in `categorize::categories`) — for debugging/perf
+    /// comparison against the tree-based classifier.
+    #[arg(long, default_value_t = false)]
+    pub linear_classify: bool,
+
     /// Shape of the per-topic `{table}_edge` pgRouting table, for topics that declare
     /// `"geometry": { "way": ["graph"] }` in their `topic.json` (see
     /// `TopicRunner::wants_way_graph`) — built as a post-processing SQL step after the shared edge
