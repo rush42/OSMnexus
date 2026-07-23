@@ -102,18 +102,29 @@ const EDGE_TYPES = { dagEdge: DagEdge };
 const NODE_W = 260;
 const NODE_W_MAX = 480;
 const NODE_H = 90;
-const GAP_X = 44;
-const GAP_Y = 76;
-const ANNOTATE_GAP_X = 24;
+const GAP_X = 70;
+const GAP_Y = 110;
+const ANNOTATE_GAP_X = 40;
 // Rough monospace advance at the node's 12.5px font, plus the box's horizontal padding — used to
 // widen a node past NODE_W when its longest line (e.g. a decision-tree leaf's list of candidate
 // category names) wouldn't otherwise fit.
 const CHAR_W = 7.4;
 const NODE_PAD_X = 24;
+// Rough line height at the node's 12.5px font, plus the box's vertical padding (`10px 12px` in the
+// node style below) — used to grow a node past NODE_H when it has more argument lines than a
+// typical node (e.g. a decision-tree leaf listing many candidate category names, or a `Mapping`
+// step with several entries), the same way `widthFor` grows width past NODE_W.
+const LINE_H = 17;
+const NODE_PAD_Y = 24;
 
 function widthFor(label: string): number {
   const maxLine = Math.max(...label.split("\n").map((l) => l.length));
   return Math.min(NODE_W_MAX, Math.max(NODE_W, Math.ceil(maxLine * CHAR_W) + NODE_PAD_X));
+}
+
+function heightFor(label: string): number {
+  const lines = label.split("\n").length;
+  return Math.max(NODE_H, lines * LINE_H + NODE_PAD_Y);
 }
 
 // A `Producer`/`Sanitizer` tree from `src/dag.rs` is a strict tree (single root, each non-root node
@@ -123,9 +134,13 @@ function widthFor(label: string): number {
 // "annotate" nodes (src/dag.rs's `annotate_node`) are excluded from that DFS entirely — they're not
 // a step in the value's build flow, just a side note on their owner — and instead placed directly
 // beside it afterward, same row, one node-width to the right.
-function layoutTree(nodes: DagNode[], edges: DagEdge[]): { positions: Map<string, { x: number; y: number }>; widths: Map<string, number> } {
+function layoutTree(
+  nodes: DagNode[],
+  edges: DagEdge[],
+): { positions: Map<string, { x: number; y: number }>; widths: Map<string, number>; heights: Map<string, number> } {
   const kindOf = new Map(nodes.map((n) => [n.id, n.kind]));
   const widths = new Map(nodes.map((n) => [n.id, widthFor(n.label)]));
+  const heights = new Map(nodes.map((n) => [n.id, heightFor(n.label)]));
   const treeEdges = edges.filter((e) => kindOf.get(e.target) !== "annotate");
   const annotateEdges = edges.filter((e) => kindOf.get(e.target) === "annotate");
 
@@ -134,11 +149,16 @@ function layoutTree(nodes: DagNode[], edges: DagEdge[]): { positions: Map<string
     if (!childrenOf.has(e.source)) childrenOf.set(e.source, []);
     childrenOf.get(e.source)!.push(e.target);
   }
+  const depthOf = new Map<string, number>();
   const positions = new Map<string, { x: number; y: number }>();
   let nextX = 0;
   // Returns each placed node's left edge and right edge (left + its own width), so a parent centers
-  // over the true span of its children instead of just the average of their left edges.
+  // over the true span of its children instead of just the average of their left edges. Only `x` is
+  // final here — `y` depends on every other node's height at the same depth (a tall sibling several
+  // branches over still pushes this row's children down), so that's a second pass below once every
+  // node's depth is known.
   function place(id: string, depth: number): [left: number, right: number] {
+    depthOf.set(id, depth);
     const width = widths.get(id) ?? NODE_W;
     const children = childrenOf.get(id) ?? [];
     let left: number;
@@ -151,7 +171,7 @@ function layoutTree(nodes: DagNode[], edges: DagEdge[]): { positions: Map<string
       const spanRight = spans[spans.length - 1][1];
       left = (spanLeft + spanRight) / 2 - width / 2;
     }
-    positions.set(id, { x: left, y: depth * (NODE_H + GAP_Y) });
+    positions.set(id, { x: left, y: 0 });
     return [left, left + width];
   }
   // The tree's root is whichever node is never a `treeEdges` target — not necessarily `nodes[0]`:
@@ -162,12 +182,29 @@ function layoutTree(nodes: DagNode[], edges: DagEdge[]): { positions: Map<string
   const root = nodes.find((n) => !hasIncoming.has(n.id)) ?? nodes[0];
   if (root) place(root.id, 0);
 
+  // Each row's height is its tallest node's — a multi-line leaf (e.g. a decision-tree leaf's long
+  // candidate list) otherwise overflows NODE_H's fixed row spacing and overlaps the row below it.
+  const rowHeight = new Map<number, number>();
+  for (const [id, depth] of depthOf) {
+    rowHeight.set(depth, Math.max(rowHeight.get(depth) ?? 0, heights.get(id) ?? NODE_H));
+  }
+  const rowY = new Map<number, number>();
+  let y = 0;
+  for (let d = 0; d <= Math.max(0, ...rowHeight.keys()); d++) {
+    rowY.set(d, y);
+    y += (rowHeight.get(d) ?? NODE_H) + GAP_Y;
+  }
+  for (const [id, depth] of depthOf) {
+    const p = positions.get(id)!;
+    positions.set(id, { x: p.x, y: rowY.get(depth) ?? 0 });
+  }
+
   for (const e of annotateEdges) {
     const ownerPos = positions.get(e.source);
     const ownerWidth = widths.get(e.source) ?? NODE_W;
     if (ownerPos) positions.set(e.target, { x: ownerPos.x + ownerWidth + ANNOTATE_GAP_X, y: ownerPos.y });
   }
-  return { positions, widths };
+  return { positions, widths, heights };
 }
 
 // Plots the `Producer` tree behind a topic's output field (`mode: "deriver"`), or, per `ElementKind`
