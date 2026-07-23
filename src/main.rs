@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
             "Loaded topic '{}' ({} categories, {} outputs)",
             r.table(),
             r.categories.values().map(|c| c.categories.len()).sum::<usize>(),
-            r.spec.outputs.len(),
+            r.default_outputs.len(),
         );
         for (kind, cats) in &r.categories {
             let s = cats.tree.stats();

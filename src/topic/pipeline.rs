@@ -112,8 +112,14 @@ pub fn build_topic_rows<'a>(
         // is gone (redundant with the parent's own `highway` tag, already reachable through
         // `ectx.parent_tags`).
         let mut annotations = ectx.annotations.clone();
-        let outputs = runner.category_outputs.get(&category.id).unwrap_or(&runner.default_outputs);
-        eval_fields(outputs, &ectx, &mut produced, &mut annotations);
+        if runner.pass_through_all_tags {
+            // `"outputs": true` (see `topic::spec::OutputsSpec`) — every tag verbatim, no per-field
+            // `Producer` evaluation at all.
+            produced.extend(ectx.obj_tags.iter().map(|(k, v)| (k.to_string(), Value::String(v.to_string()))));
+        } else {
+            let outputs = runner.category_outputs.get(&category.id).unwrap_or(&runner.default_outputs);
+            eval_fields(outputs, &ectx, &mut produced, &mut annotations);
+        }
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_edges`), joined on `osm_id` at materialization time. `ectx.id`

@@ -55,6 +55,12 @@ pub struct TopicRunner {
     /// category's effective defaults can still differ from the topic's even with no `outputs`
     /// override).
     pub category_outputs: HashMap<String, Vec<Field>>,
+    /// Set when `topic.json`'s `outputs` is the bare `true` shorthand (`OutputsSpec::is_all`) —
+    /// every tag on the element is copied into `produced` verbatim, bypassing `default_outputs`/
+    /// `category_outputs` and `pipeline::eval_fields` entirely. `default_outputs`/`category_outputs`
+    /// are still built (empty, since `OutputsSpec::into_fields_map` treats `All` as `{}`) so this
+    /// stays a pure additive fast path rather than a second code shape callers need to branch on.
+    pub pass_through_all_tags: bool,
 }
 
 /// Resolve one topic's or category's raw `outputs` map (already merged by key, category winning)
@@ -245,11 +251,17 @@ impl TopicRunner {
             .map(TransformsSpec::into_pipelines)
             .unwrap_or_default();
 
+        // `true` here means "pass every tag through verbatim" (see `OutputsSpec`) — read before
+        // `spec.outputs` is consumed into a plain fields map below, since it isn't itself a `Field`
+        // shape `resolve_outputs` can produce.
+        let pass_through_all_tags = spec.outputs.is_all();
+        let topic_outputs = spec.outputs.clone().into_fields_map();
+
         // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
         let mut default_outputs = merge_default_fields(
             resolve_outputs(
-                spec.outputs.clone(), &producer_lib, &sanitizers,
+                topic_outputs.clone(), &producer_lib, &sanitizers,
                 &format!("topics/{name}/topic.json: outputs"),
             )?,
             &spec.defaults,
@@ -264,7 +276,7 @@ impl TopicRunner {
         let mut category_outputs = HashMap::new();
         for cats in categories.values() {
             for cat in &cats.categories {
-                let raw = merge(&spec.outputs, &cat.outputs);
+                let raw = merge(&topic_outputs, &cat.outputs);
                 let fields = resolve_outputs(
                     raw, &producer_lib, &sanitizers,
                     &format!("topics/{name}: category '{}' outputs", cat.id),
@@ -289,6 +301,7 @@ impl TopicRunner {
             default_outputs,
             linear_classify,
             category_outputs,
+            pass_through_all_tags,
         })
     }
 

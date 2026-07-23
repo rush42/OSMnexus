@@ -22,9 +22,12 @@ pub struct TopicSpec {
     /// `osm_fields`/`sanitizers`/`derivers` lists, all of which produced the same
     /// `Field{output, source: Producer}` shape and are now just different value shapes of one
     /// `outputs` map (see `resolve_output_entry`). A category can override any subset of these by
-    /// declaring its own `outputs` map, merged over the topic's by key (category wins).
+    /// declaring its own `outputs` map, merged over the topic's by key (category wins). Also
+    /// accepts a bare `true`/`false` in place of the map (see `OutputsSpec`) — `true` means "pass
+    /// every tag through verbatim", for scratch/inspection topics that don't want to enumerate
+    /// fields.
     #[serde(default)]
-    pub outputs: Map<String, Value>,
+    pub outputs: OutputsSpec,
     /// Optional Filter condition evaluated against raw way tags before categorization.
     /// If the condition matches, the way is skipped entirely for this topic.
     /// Uses the same Filter JSON syntax as category conditions.
@@ -39,6 +42,38 @@ pub struct TopicSpec {
     /// per-topic declaration. See `GeometryShape`.
     #[serde(default)]
     pub geometry: GeometrySpec,
+}
+
+/// `topic.json`'s top-level `outputs`: normally a `{field: producer}` map, but a bare `true`/
+/// `false` is also accepted — `false` behaves exactly like `{}` (no fields; `into_fields_map`
+/// treats both the same way), while `true` means "pass every tag through verbatim" and is read
+/// via `is_all` into `TopicRunner::pass_through_all_tags`, which bypasses per-field `Field`
+/// evaluation entirely (see `pipeline::eval_fields`'s call site) rather than expanding to one
+/// `Field` per possible tag.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OutputsSpec {
+    All(bool),
+    Fields(Map<String, Value>),
+}
+
+impl Default for OutputsSpec {
+    fn default() -> Self {
+        OutputsSpec::Fields(Map::new())
+    }
+}
+
+impl OutputsSpec {
+    pub fn into_fields_map(self) -> Map<String, Value> {
+        match self {
+            OutputsSpec::All(_) => Map::new(),
+            OutputsSpec::Fields(m) => m,
+        }
+    }
+
+    pub fn is_all(&self) -> bool {
+        matches!(self, OutputsSpec::All(true))
+    }
 }
 
 /// Per-kind geometry output declarations (`topic.json`'s `"geometry"`). Every shape is now built
