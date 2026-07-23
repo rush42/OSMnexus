@@ -198,7 +198,7 @@ pub fn resolve_output_entry(
     output: &str,
     value: Value,
     producer_lib: &HashMap<String, Producer>,
-    sanitizers: &HashMap<String, Sanitizer>,
+    sanitizers: &HashMap<String, Vec<Sanitizer>>,
 ) -> anyhow::Result<Producer> {
     let is_sanitizer_shorthand = matches!(&value, Value::Object(m) if m.contains_key("name")
         && !m.contains_key("key") && !m.contains_key("keys")
@@ -218,7 +218,7 @@ pub fn resolve_output_entry(
         let extract = Producer::Extract {
             extract: Extract::Candidates {
                 keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
-                sanitize: Some(resolve_named_sanitizer(&r.name, sanitizers)),
+                sanitize: resolve_named_sanitizer(&r.name, sanitizers),
             },
             annotate: Map::new(),
         };
@@ -230,7 +230,7 @@ pub fn resolve_output_entry(
     } else {
         match value {
             Value::Bool(true) => Producer::Extract {
-                extract: Extract::Value { key: output.to_owned(), sanitize: None },
+                extract: Extract::Value { key: output.to_owned(), sanitize: Vec::new() },
                 annotate: Map::new(),
             },
             Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),
@@ -312,7 +312,7 @@ pub enum TransformSpec {
         output: String,
         key: String,
         from: DirectedFrom,
-        sanitize: Option<Sanitizer>,
+        sanitize: Vec<Sanitizer>,
     },
     /// `{ "prefix": ..., "stamp_key": ..., "stamp_value": ..., "stamp_nested_under"?: [...] }` —
     /// identified by its required `stamp_key` field.
@@ -386,8 +386,8 @@ impl<'de> Deserialize<'de> for TransformSpec {
                 key: String,
                 #[serde(default)]
                 from: DirectedFrom,
-                #[serde(default)]
-                sanitize: Option<Sanitizer>,
+                #[serde(default, deserialize_with = "crate::parser::deserialize_sanitize_chain")]
+                sanitize: Vec<Sanitizer>,
             }
             #[derive(Deserialize)]
             struct Repr {

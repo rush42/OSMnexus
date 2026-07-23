@@ -1,15 +1,16 @@
 //! The atomic `&str -> atomic value` sanitize-chain machinery underneath an `Extract`'s
-//! `sanitize:` field: `Sanitizer`/`Step` (the chain and its steps — really just
-//! mapping/replace/builtin) and the one built-in, `parse_length`. A named `sanitize: "<name>"`
-//! reference is never a distinct type here — `topic::load::inline_sanitize_refs` splices the
-//! resolved chain's own JSON (via `Sanitizer`/`Step`'s `Serialize` impls below) into place at
+//! `sanitize:` field: `Sanitizer` (one step — a table lookup, literal rewrites, or a built-in) and
+//! the chain it's folded over, a plain `Vec<Sanitizer>` (an empty chain is the identity transform —
+//! no separate wrapper type needed) plus the one built-in, `parse_length`. A named
+//! `sanitize: "<name>"` reference is never a distinct type here — `topic::load::inline_sanitize_refs`
+//! splices the resolved chain's own JSON (via `Sanitizer`'s `Serialize` impl below) into place at
 //! load time, before any `Filter`/`Producer` JSON is deserialized, so `sanitize:` always
-//! deserializes straight into `Option<Sanitizer>` (see `resolve_named_sanitizer`, the one piece of
+//! deserializes straight into `Vec<Sanitizer>` (see `resolve_named_sanitizer`, the one piece of
 //! by-name lookup logic, shared by that inlining pass and `topic::spec::resolve_output_entry`'s
-//! own by-name shorthand). Neither `Sanitizer` nor `Step` derives `Deserialize`/`Serialize` here —
-//! their JSON sugar (a bare single step instead of an array; `cases`/`filter`/`drop` as sugar for
-//! `mapping`, only on the way in) is folded in by hand-written impls in `parser`, kept separate
-//! from the runtime types/eval logic defined here.
+//! own by-name shorthand). `Sanitizer` doesn't derive `Deserialize` here — its JSON sugar (a bare
+//! single step instead of an array; `cases`/`filter`/`drop` as sugar for `mapping`, only on the way
+//! in) is folded in by hand-written impls in `parser`, kept separate from the runtime types/eval
+//! logic defined here.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -24,7 +25,7 @@ fn identity(raw: &str) -> Value {
     Value::String(raw.to_owned())
 }
 
-/// `name` not found in `sanitizers` falls back to a built-in alias (`Step::Builtin`, e.g.
+/// `name` not found in `sanitizers` falls back to a built-in alias (`Sanitizer::Builtin`, e.g.
 /// `"parse_length"`) rather than erroring — mirrors the pre-inlining fallback
 /// (`None => apply_builtin(name, raw)`). A truly unrecognized name still isn't caught until
 /// `apply_builtin` runs (it has no load-time name registry of its own, just one built-in), so it
@@ -33,69 +34,30 @@ fn identity(raw: &str) -> Value {
 /// `topic::load::inline_sanitize_refs` (JSON-level `sanitize: "name"`) and
 /// `topic::spec::resolve_output_entry` (the sanitizer-shorthand `{ "name": ... }` output entry,
 /// which never goes through JSON inlining since it isn't spelled as a `sanitize:` field).
-pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Sanitizer>) -> Sanitizer {
+pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> Vec<Sanitizer> {
     match sanitizers.get(name) {
         Some(chain) => chain.clone(),
-        None => Sanitizer::from_steps(vec![Step::Builtin(name.to_owned())]),
+        None => vec![Sanitizer::Builtin(name.to_owned())],
     }
 }
 
-/// Evaluate a resolved `sanitize` chain against `raw`. `None` is the identity transform
-/// (always succeeds) — every `sanitize:` field is `Option<Sanitizer>`, already resolved by the
-/// time `Filter`/`Producer` deserialize it (see `resolve_named_sanitizer`'s own doc).
-pub fn eval_sanitize(sanitize: Option<&Sanitizer>, raw: &str) -> Option<Value> {
-    match sanitize {
-        None => Some(identity(raw)),
-        Some(chain) => chain.eval(raw),
+/// Evaluate a resolved `sanitize` chain against `raw`, folded left (each step consumes the
+/// previous string; the terminal step may yield any atomic `Value`). An empty chain is the
+/// identity transform (always succeeds) — every `sanitize:` field is a plain `Vec<Sanitizer>`,
+/// already resolved by the time `Filter`/`Producer` deserialize it (see `resolve_named_sanitizer`'s
+/// own doc).
+pub fn eval_sanitize(chain: &[Sanitizer], raw: &str) -> Option<Value> {
+    // First step reads `raw` directly (no upfront `to_owned` just to hand a `&str` right back
+    // out) — only a step past the first needs a materialized `Value` to read `.as_str()` from.
+    let mut steps = chain.iter();
+    let mut cur = match steps.next() {
+        Some(first) => first.apply(raw)?,
+        None => return Some(identity(raw)),
+    };
+    for s in steps {
+        cur = s.apply(cur.as_str()?)?;
     }
-}
-
-/// An atomic `&str -> atomic` chain: an ordered list of `Step`s folded left (each step consumes
-/// the previous string; the terminal step may yield any atomic `Value`). Always just a
-/// `Vec<Step>` — `parser`'s hand-written `Deserialize` impl folds the JSON sugar (a
-/// bare single step, with no wrapping array) into a one-element `Vec` at parse time, so "a chain
-/// of one" is never a distinct concept downstream (same treatment `Producer` gives its `fallback`
-/// sugar). The field is private; `parser` builds a `Sanitizer` through `from_steps` rather than
-/// reaching into it directly.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Sanitizer(Vec<Step>);
-
-/// Serializes as the canonical array-of-steps shape — `parser`'s `Deserialize` impl accepts that
-/// shape back (`SanitizerJson::Chain`) regardless of chain length, so this round-trips even a
-/// one-step chain. The one consumer: `topic::load::inline_sanitize_refs`, splicing a resolved
-/// `sanitize: "<name>"` reference back into the raw JSON `Value` tree before `Filter`/`Producer`
-/// ever deserialize it.
-impl serde::Serialize for Sanitizer {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
-    }
-}
-
-impl Sanitizer {
-    /// Construct directly from already-known steps — used by `parser`'s `Deserialize`
-    /// impl (after folding any JSON sugar) and by `resolve_named_sanitizer`'s builtin-name fallback.
-    pub(crate) fn from_steps(steps: Vec<Step>) -> Self {
-        Sanitizer(steps)
-    }
-
-    /// The chain's steps, in evaluation order — e.g. for diagnostics (`plot_dag`'s DAG rendering).
-    pub fn steps(&self) -> &[Step] {
-        &self.0
-    }
-
-    fn eval(&self, raw: &str) -> Option<Value> {
-        // First step reads `raw` directly (no upfront `to_owned` just to hand a `&str` right back
-        // out) — only a step past the first needs a materialized `Value` to read `.as_str()` from.
-        let mut steps = self.0.iter();
-        let mut cur = match steps.next() {
-            Some(first) => first.apply(raw)?,
-            None => return Some(Value::String(raw.to_owned())),
-        };
-        for s in steps {
-            cur = s.apply(cur.as_str()?)?;
-        }
-        Some(cur)
-    }
+    Some(cur)
 }
 
 // ── Chain steps: the atomic `&str -> atomic value` building blocks of a `Sanitizer` ──────
@@ -117,9 +79,9 @@ impl StrOrVec {
     }
 }
 
-/// A `Step::Mapping` entry's value, restricted to what a mapping step ever actually produces —
+/// A `Sanitizer::Mapping` entry's value, restricted to what a mapping step ever actually produces —
 /// string/bool/number, never a nested array/object. Exists (instead of the raw `serde_json::Value`
-/// the JSON side still uses) purely so `Step`/`Sanitizer` can derive `Eq`/`Hash`/`Ord`: `Value` isn't
+/// the JSON side still uses) purely so `Sanitizer`/`Vec<Sanitizer>` can derive `Eq`/`Hash`/`Ord`: `Value` isn't
 /// `Eq`/`Hash` (its `Number` can hold a `NaN`-capable `f64`), the same problem
 /// `Predicate::Num` already solves by bit-casting its threshold to `u64` — same trick here.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -131,10 +93,10 @@ pub enum AtomicJson {
 }
 
 impl AtomicJson {
-    /// `None` for anything not atomic (array/object) — a `Step::Mapping` entry may only ever be
-    /// string/bool/number (see `Step::Mapping`'s own doc); `Value::Null` is handled by the caller
+    /// `None` for anything not atomic (array/object) — a `Sanitizer::Mapping` entry may only ever be
+    /// string/bool/number (see `Sanitizer::Mapping`'s own doc); `Value::Null` is handled by the caller
     /// (it's the drop sentinel, not a value `AtomicJson` represents). `pub(crate)`: `parser`'s
-    /// hand-written `Step` `Deserialize` impl needs it to convert the JSON-side raw `Value` map.
+    /// hand-written `Sanitizer` `Deserialize` impl needs it to convert the JSON-side raw `Value` map.
     pub(crate) fn from_value(v: &Value) -> Option<Self> {
         match v {
             Value::String(s) => Some(AtomicJson::Str(s.clone())),
@@ -155,9 +117,9 @@ impl AtomicJson {
     }
 }
 
-/// One transform step: a table lookup (`Mapping`), literal rewrites (`Replace`), or a built-in
+/// One sanitize-chain step: a table lookup (`Mapping`), literal rewrites (`Replace`), or a built-in
 /// (`Builtin`) — see `parser`'s hand-written `Deserialize` impl for the JSON sugar
-/// (`cases`/`filter`/`drop`) that folds into `Mapping` at parse time, so a `Step` value is only
+/// (`cases`/`filter`/`drop`) that folds into `Mapping` at parse time, so a `Sanitizer` value is only
 /// ever one of these three:
 /// - `cases` (`{ "<output>": "<input>" | ["<input>", ...] }`, the inverted-lookup shorthand)
 ///   expands to one `mapping` entry per input, all pointing at the same output.
@@ -167,11 +129,11 @@ impl AtomicJson {
 ///   maps to JSON `null` — the sentinel meaning "found, but drop anyway" (see `Mapping`'s own doc)
 ///   — with `on_miss: "keep"` so anything else passes through.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Step {
+pub enum Sanitizer {
     /// Table lookup. A mapped value is any atomic JSON (string/bool/number) so a step can produce
     /// e.g. a boolean (`{ "yes": true }`) — except a missing (`None`) entry value, reserved as the
     /// "found this key, but drop the value anyway" sentinel (distinct from `on_miss`'s own
-    /// drop-on-absence; see `Step`'s own doc for why `drop` needs it). On a miss, `on_miss`
+    /// drop-on-absence; see `Sanitizer`'s own doc for why `drop` needs it). On a miss, `on_miss`
     /// decides: "keep" (passthrough), "drop"/absent (null), or any other string (a constant
     /// default). `BTreeMap` (not `HashMap`) so the whole chain stays `Hash`/`Ord`.
     Mapping {
@@ -187,15 +149,15 @@ pub enum Step {
     Builtin(String),
 }
 
-/// The `Serialize` counterpart to `parser`'s hand-written `Step` `Deserialize` — canonical shapes
+/// The `Serialize` counterpart to `parser`'s hand-written `Sanitizer` `Deserialize` — canonical shapes
 /// only (`Mapping`/`Replace` as their own object, `Builtin` as a bare string), never the folded
 /// `cases`/`filter`/`drop` sugar (that sugar only ever exists transiently on the way in). Same one
 /// consumer as `Sanitizer`'s own `Serialize`.
-impl serde::Serialize for Step {
+impl serde::Serialize for Sanitizer {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         match self {
-            Step::Mapping { mapping, on_miss } => {
+            Sanitizer::Mapping { mapping, on_miss } => {
                 let mut m = serializer.serialize_map(Some(if on_miss.is_some() { 2 } else { 1 }))?;
                 let mapping: std::collections::BTreeMap<&str, Value> = mapping
                     .iter()
@@ -207,12 +169,12 @@ impl serde::Serialize for Step {
                 }
                 m.end()
             }
-            Step::Replace { replace } => {
+            Sanitizer::Replace { replace } => {
                 let mut m = serializer.serialize_map(Some(1))?;
                 m.serialize_entry("replace", replace)?;
                 m.end()
             }
-            Step::Builtin(name) => serializer.serialize_str(name),
+            Sanitizer::Builtin(name) => serializer.serialize_str(name),
         }
     }
 }
@@ -253,19 +215,19 @@ impl ReplaceRule {
     }
 }
 
-impl Step {
+impl Sanitizer {
     fn apply(&self, v: &str) -> Option<Value> {
         match self {
-            Step::Mapping { mapping, on_miss } => match mapping.get(v) {
-                Some(None) => None, // found, but marked "drop" (see `Step`'s own doc)
+            Sanitizer::Mapping { mapping, on_miss } => match mapping.get(v) {
+                Some(None) => None, // found, but marked "drop" (see `Sanitizer`'s own doc)
                 Some(Some(mapped)) => Some(mapped.clone().into_value()),
                 None => apply_on_miss(on_miss.as_deref(), v),
             },
-            Step::Replace { replace } => {
+            Sanitizer::Replace { replace } => {
                 let out = replace.iter().fold(Cow::Borrowed(v), |s, r| r.apply(s));
                 Some(Value::String(out.into_owned()))
             }
-            Step::Builtin(name) => apply_builtin(name, v),
+            Sanitizer::Builtin(name) => apply_builtin(name, v),
         }
     }
 }

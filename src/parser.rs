@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer, Rule};
-use crate::lang::sanitize::{AtomicJson, ReplaceRule, Sanitizer, Step, StrOrVec};
+use crate::lang::sanitize::{AtomicJson, ReplaceRule, Sanitizer, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
 
@@ -107,7 +107,7 @@ enum ProducerJson {
     Extract {
         #[serde(default)] key: Option<String>,
         #[serde(default)] keys: Option<Vec<String>>,
-        #[serde(default)] sanitize: Option<Sanitizer>,
+        #[serde(default, deserialize_with = "deserialize_sanitize_chain")] sanitize: Vec<Sanitizer>,
         #[serde(default)] annotate: Map<String, Value>,
     },
     /// A literal value, independent of any tag.
@@ -130,12 +130,12 @@ impl<'de> Deserialize<'de> for Producer {
                 tree: None,
             },
             ProducerJson::Tag { tag, or: None } => {
-                Producer::Extract { extract: Extract::Value { key: tag, sanitize: None }, annotate: Map::new() }
+                Producer::Extract { extract: Extract::Value { key: tag, sanitize: Vec::new() }, annotate: Map::new() }
             }
             ProducerJson::Tag { tag, or: Some(or) } => Producer::Match {
                 rules: vec![Rule {
                     when: Filter::Bool(true),
-                    value: Producer::Extract { extract: Extract::Value { key: tag, sanitize: None }, annotate: Map::new() },
+                    value: Producer::Extract { extract: Extract::Value { key: tag, sanitize: Vec::new() }, annotate: Map::new() },
                 }],
                 default: Some(or),
                 annotate: Map::new(),
@@ -159,35 +159,48 @@ impl<'de> Deserialize<'de> for Producer {
     }
 }
 
-// ── Sanitizer ────────────────────────────────────────────────────────────────
+// ── Sanitizer chain ──────────────────────────────────────────────────────────
 
-/// The JSON shapes a `Sanitizer` accepts: a single step (any of `Step`'s own shapes, including the
-/// bare-string `Builtin` alias), or an explicit array of steps. Untagged, array tried first (a
-/// step is never itself a JSON array).
+/// The JSON shapes a `sanitize:` field accepts: a single step (any of `Sanitizer`'s own shapes,
+/// including the bare-string `Builtin` alias), or an explicit array of steps. Untagged, array
+/// tried first (a step is never itself a JSON array). The `deserialize_with` behind every
+/// `sanitize: Vec<Sanitizer>` field (`Extract`'s two variants, `ProducerJson::Extract`,
+/// `topic::spec`'s `directed` sugar) and, via `parse_sanitize_chain`, every `sanitizers.json` entry
+/// (`topic::load::load_topic_sanitizers`) — `Vec<Sanitizer>` is a foreign type here, so this can't
+/// be a `Deserialize` impl on it directly (orphan rule); a `deserialize_with` function is the
+/// idiomatic escape hatch.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-enum SanitizerJson {
-    Chain(Vec<Step>),
-    One(Step),
+enum SanitizeChainJson {
+    Chain(Vec<Sanitizer>),
+    One(Sanitizer),
 }
 
-impl<'de> Deserialize<'de> for Sanitizer {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(match SanitizerJson::deserialize(deserializer)? {
-            SanitizerJson::Chain(steps) => Sanitizer::from_steps(steps),
-            SanitizerJson::One(step) => Sanitizer::from_steps(vec![step]),
-        })
-    }
+pub(crate) fn deserialize_sanitize_chain<'de, D>(deserializer: D) -> Result<Vec<Sanitizer>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(match SanitizeChainJson::deserialize(deserializer)? {
+        SanitizeChainJson::Chain(steps) => steps,
+        SanitizeChainJson::One(step) => vec![step],
+    })
 }
 
-// ── Step ─────────────────────────────────────────────────────────────────────
+/// Same folding as `deserialize_sanitize_chain`, over an already-parsed `Value` rather than a live
+/// `Deserializer` — what `topic::load::load_topic_sanitizers` needs, since a `sanitizers.json`
+/// entry is read out of a `HashMap<String, Value>` rather than deserialized field-by-field.
+pub(crate) fn parse_sanitize_chain(value: Value) -> Result<Vec<Sanitizer>, serde_json::Error> {
+    Ok(match serde_json::from_value(value)? {
+        SanitizeChainJson::Chain(steps) => steps,
+        SanitizeChainJson::One(step) => vec![step],
+    })
+}
 
-/// The JSON shapes `Step` accepts — see `Step`'s own doc for how `Cases`/`Filter`/`Drop` fold into
-/// `Mapping`. Untagged; object shapes are distinguished by their required field name, so order
-/// among them doesn't matter, but the bare-string `Builtin` must be tried where a plain JSON
+// ── Sanitizer ────────────────────────────────────────────────────────────────
+
+/// The JSON shapes `Sanitizer` accepts — see `Sanitizer`'s own doc for how `Cases`/`Filter`/`Drop`
+/// fold into `Mapping`. Untagged; object shapes are distinguished by their required field name, so
+/// order among them doesn't matter, but the bare-string `Builtin` must be tried where a plain JSON
 /// string naturally falls out (it's the only variant a string can deserialize into).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -208,10 +221,10 @@ enum StepJson {
     Builtin(String),
 }
 
-/// Convert one JSON-side mapping value to its canonical `Step::Mapping` entry: `Value::Null` is the
-/// "found, but drop anyway" sentinel (`None`); any other atomic (string/bool/number) becomes
-/// `Some`; a nested array/object is rejected — `Step::Mapping` entries are never anything else (see
-/// `Step`'s own doc).
+/// Convert one JSON-side mapping value to its canonical `Sanitizer::Mapping` entry: `Value::Null`
+/// is the "found, but drop anyway" sentinel (`None`); any other atomic (string/bool/number) becomes
+/// `Some`; a nested array/object is rejected — `Sanitizer::Mapping` entries are never anything else
+/// (see `Sanitizer`'s own doc).
 fn mapping_entry<E: serde::de::Error>(v: Value) -> Result<Option<AtomicJson>, E> {
     match &v {
         Value::Null => Ok(None),
@@ -221,17 +234,17 @@ fn mapping_entry<E: serde::de::Error>(v: Value) -> Result<Option<AtomicJson>, E>
     }
 }
 
-impl<'de> Deserialize<'de> for Step {
+impl<'de> Deserialize<'de> for Sanitizer {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         Ok(match StepJson::deserialize(deserializer)? {
-            StepJson::Mapping { mapping, on_miss } => Step::Mapping {
+            StepJson::Mapping { mapping, on_miss } => Sanitizer::Mapping {
                 mapping: mapping.into_iter().map(|(k, v)| Ok((k, mapping_entry(v)?))).collect::<Result<_, D::Error>>()?,
                 on_miss,
             },
-            StepJson::Cases { cases, on_miss } => Step::Mapping {
+            StepJson::Cases { cases, on_miss } => Sanitizer::Mapping {
                 mapping: cases.into_iter()
                     .flat_map(|(output, inputs)| {
                         inputs.into_vec().into_iter().map(move |input| (input, Some(AtomicJson::Str(output.clone()))))
@@ -239,16 +252,16 @@ impl<'de> Deserialize<'de> for Step {
                     .collect(),
                 on_miss,
             },
-            StepJson::Filter { filter } => Step::Mapping {
+            StepJson::Filter { filter } => Sanitizer::Mapping {
                 mapping: filter.into_iter().map(|v| (v.clone(), Some(AtomicJson::Str(v)))).collect(),
                 on_miss: None,
             },
-            StepJson::Drop { drop } => Step::Mapping {
+            StepJson::Drop { drop } => Sanitizer::Mapping {
                 mapping: drop.into_iter().map(|v| (v, None)).collect(),
                 on_miss: Some("keep".to_owned()),
             },
-            StepJson::Replace { replace } => Step::Replace { replace },
-            StepJson::Builtin(name) => Step::Builtin(name),
+            StepJson::Replace { replace } => Sanitizer::Replace { replace },
+            StepJson::Builtin(name) => Sanitizer::Builtin(name),
         })
     }
 }

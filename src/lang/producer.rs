@@ -192,10 +192,10 @@ pub enum Producer {
         annotate: Map<String, Value>,
     },
     /// A literal value, independent of any tag — `Extract`'s opposite number: the other leaf a
-    /// producer tree bottoms out at. Always produces; has no on-disk way to carry its own
-    /// `annotate` (a bare JSON literal has nowhere to hang one), so it's always empty here — a
-    /// `Const` used as a `Rule` branch inherits the enclosing `Match`'s `annotate` instead (see
-    /// `match_rules`).
+    /// producer tree bottoms out at. Always produces; on-disk `annotate` defaults to empty (a
+    /// bare JSON literal doesn't need one, since a `Const` used as a `Rule` branch inherits the
+    /// enclosing `Match`'s `annotate` when its own is empty — see `match_rules`) but can be set
+    /// explicitly, same as `Extract`'s.
     Const {
         value: Value,
         annotate: Map<String, Value>,

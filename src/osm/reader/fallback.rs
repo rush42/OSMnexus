@@ -44,8 +44,13 @@ where
     } else {
         FxHashMap::default()
     };
-    let extra_way_ids: FxHashSet<i64> =
-        rel_members.values().flat_map(|(members, _)| members.iter().map(|&(w, _)| w)).collect();
+    // Only relations whose mask wants some geometry pull their member ways' coords in — see
+    // `sorted`'s own path for why (mirrored here for the fallback scan).
+    let extra_way_ids: FxHashSet<i64> = rel_members
+        .values()
+        .filter(|(_, mask)| mask & cb.relation_geom_mask != 0)
+        .flat_map(|(members, _)| members.iter().map(|&(w, _)| w))
+        .collect();
 
     // Scan 1 — ways: classify (emit tag rows), record every kept or relation-member way's
     // (node_refs, mask) — mask 0 for a relation-only way (see `sorted::classify_and_index`'s doc).

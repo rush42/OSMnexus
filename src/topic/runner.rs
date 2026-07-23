@@ -76,7 +76,7 @@ pub struct TopicRunner {
 fn resolve_outputs(
     raw: Map<String, Value>,
     producer_lib: &HashMap<String, Producer>,
-    sanitizers: &HashMap<String, crate::lang::sanitize::Sanitizer>,
+    sanitizers: &HashMap<String, Vec<crate::lang::sanitize::Sanitizer>>,
     context: &str,
 ) -> anyhow::Result<Vec<Field>> {
     raw.into_iter()

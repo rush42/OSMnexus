@@ -13,7 +13,7 @@
 //! any of it is deserialized into a `Filter`/`Producer`/`Rule`/`CategoryDef`: `inline_macro_refs`
 //! (substitutes `{"macro": "<name>"}` with the macro's own, recursively-inlined JSON) and
 //! `inline_sanitize_refs` (substitutes a bare `"sanitize": "<name>"` string with the resolved
-//! chain's own JSON, via `Sanitizer`/`Step`'s `Serialize` impls). Both are purely structural Value
+//! chain's own JSON, via `Sanitizer`'s `Serialize` impl). Both are purely structural Value
 //! rewrites — they don't know or care which `Filter`/`Producer` variant a match sits inside, the
 //! same treatment `inline_shared_producers` below already gives `{"shared": "<name>"}`. After both
 //! passes, a `Filter`/`Producer`/`Rule`/`CategoryDef`'s own `Deserialize` never has to represent an
@@ -27,6 +27,7 @@ use serde_json::{Map, Value};
 use crate::categorize::categories::CategoriesFile;
 use crate::lang::filter::Filter;
 use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer};
+use crate::parser::parse_sanitize_chain;
 use crate::osm::types::ElementKind;
 use crate::topic::spec::TransformsSpec;
 
@@ -88,11 +89,11 @@ pub fn inline_macro_refs(value: Value, macros: &Map<String, Value>, stack: &mut 
 /// Recursively replace every bare `"sanitize": "<name>"` string in `value` with the resolved
 /// chain's own JSON (`Sanitizer`'s `Serialize` impl) — the load-time pass that makes an unresolved
 /// named sanitizer structurally impossible by the time `Filter`/`Producer` deserialize `sanitize:`
-/// straight into `Option<Sanitizer>`. An inline chain (already an array/object, not a bare string)
+/// straight into `Vec<Sanitizer>`. An inline chain (already an array/object, not a bare string)
 /// is left alone. Purely structural — doesn't know which `Filter`/`Producer` variant `sanitize` is
 /// a field of, so it also happily leaves alone anything named `sanitize` that isn't a bare string
 /// (there is no such case in practice, since `sanitize:` never appears with a non-chain value).
-pub fn inline_sanitize_refs(value: Value, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Value> {
+pub fn inline_sanitize_refs(value: Value, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Value> {
     Ok(match value {
         Value::Object(obj) => Value::Object(obj.into_iter()
             .map(|(k, v)| {
@@ -117,7 +118,7 @@ pub fn inline_sanitize_refs(value: Value, sanitizers: &HashMap<String, Sanitizer
 /// Run both inlining passes, in order (a macro body can itself carry a `sanitize:` reference, so
 /// macros must be inlined first). The one entry point every raw topic JSON document goes through
 /// before its first typed `Deserialize` call.
-pub fn resolve_refs(value: Value, macros: &Map<String, Value>, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Value> {
+pub fn resolve_refs(value: Value, macros: &Map<String, Value>, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Value> {
     let value = inline_macro_refs(value, macros, &mut Vec::new())?;
     inline_sanitize_refs(value, sanitizers)
 }
@@ -150,7 +151,7 @@ pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<Map<S
 /// Recursively macro-inline (and sanitizer-inline) every entry in `raw_macros` against itself, so
 /// a macro body referencing another macro is expanded too. The result is what `inline_macro_refs`
 /// needs elsewhere (a fully macro-free JSON per name) — see `topic::runner::TopicRunner::load`.
-pub fn resolve_macros(raw_macros: &Map<String, Value>, sanitizers: &HashMap<String, Sanitizer>) -> anyhow::Result<Map<String, Value>> {
+pub fn resolve_macros(raw_macros: &Map<String, Value>, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Map<String, Value>> {
     raw_macros.iter()
         .map(|(name, def)| {
             let expanded = inline_macro_refs(def.clone(), raw_macros, &mut vec![name.clone()])?;
@@ -168,7 +169,7 @@ pub fn resolve_macros(raw_macros: &Map<String, Value>, sanitizers: &HashMap<Stri
 pub fn load_topic_transforms(
     topic_dir: &std::path::Path,
     resolved_macros: &Map<String, Value>,
-    sanitizers: &HashMap<String, Sanitizer>,
+    sanitizers: &HashMap<String, Vec<Sanitizer>>,
 ) -> anyhow::Result<Option<TransformsSpec>> {
     let path = topic_dir.join("transforms.json");
     if !path.exists() {
@@ -193,7 +194,7 @@ pub fn load_topic_categories(
     topic_dir: &std::path::Path,
     resolved_macros: &Map<String, Value>,
     macros_filter: &HashMap<String, Filter>,
-    sanitizers: &HashMap<String, Sanitizer>,
+    sanitizers: &HashMap<String, Vec<Sanitizer>>,
 ) -> anyhow::Result<HashMap<ElementKind, CategoriesFile>> {
     let mut out = HashMap::new();
     for kind in ElementKind::ALL {
@@ -215,7 +216,7 @@ pub fn load_categories_dir(
     dir: &std::path::Path,
     resolved_macros: &Map<String, Value>,
     macros_filter: &HashMap<String, Filter>,
-    sanitizers: &HashMap<String, Sanitizer>,
+    sanitizers: &HashMap<String, Vec<Sanitizer>>,
 ) -> anyhow::Result<CategoriesFile> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
@@ -323,19 +324,24 @@ fn expand_family(stem: &str, mut obj: Value) -> anyhow::Result<Vec<Value>> {
 
 /// Load a topic's atomic sanitizer registry: shared (`<config_root>/sanitizers.json`) merged with
 /// the topic's own (`<topic>/sanitizers.json`), topic-local winning on name conflict.
-/// Self-contained — a `Step` never references another named sanitizer — so nothing here needs a
-/// resolution pass; only whatever references an entry by name (`sanitize:`) does.
+/// Self-contained — a `Sanitizer` never references another named sanitizer — so nothing here needs
+/// a resolution pass; only whatever references an entry by name (`sanitize:`) does. Each entry
+/// accepts the same single-step-or-array sugar a `sanitize:` field does (`parse_sanitize_chain`) —
+/// `HashMap<String, Vec<Sanitizer>>`'s own `Deserialize` can't apply that sugar itself (`Vec`'s
+/// default `Deserialize` only accepts an array), so entries are read as raw `Value`s first.
 pub fn load_topic_sanitizers(
     topic_dir: &std::path::Path,
     config_root: &std::path::Path,
-) -> anyhow::Result<HashMap<String, Sanitizer>> {
-    let read = |path: &std::path::Path| -> anyhow::Result<HashMap<String, Sanitizer>> {
-        if path.exists() {
-            Ok(serde_json::from_str(&std::fs::read_to_string(path)?)
-                .with_context(|| format!("parsing {}", path.display()))?)
-        } else {
-            Ok(HashMap::new())
+) -> anyhow::Result<HashMap<String, Vec<Sanitizer>>> {
+    let read = |path: &std::path::Path| -> anyhow::Result<HashMap<String, Vec<Sanitizer>>> {
+        if !path.exists() {
+            return Ok(HashMap::new());
         }
+        let raw: HashMap<String, Value> = serde_json::from_str(&std::fs::read_to_string(path)?)
+            .with_context(|| format!("parsing {}", path.display()))?;
+        raw.into_iter()
+            .map(|(name, v)| Ok((name, parse_sanitize_chain(v).with_context(|| format!("parsing {}", path.display()))?)))
+            .collect()
     };
     let shared = read(&config_root.join("sanitizers.json"))?;
     let local = read(&topic_dir.join("sanitizers.json"))?;

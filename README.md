@@ -195,6 +195,7 @@ Add `RUST_LOG=info` in front of either command for per-phase timings.
 | `--threads <n>` | `1` | rayon pool size for the CPU-bound passes (`0` = all cores) |
 | `--left-hand-traffic` | off | flip which physical side a side-split object's `forward`/`backward` tags are read from |
 | `--tree-max-depth <n>` | `6` | max branch depth of the categorization decision tree; deeper prunes more aggressively at the cost of build time |
+| `--linear-classify` | off | bypass the compiled decision tree and classify by walking each topic's `categories.json` `order` linearly instead — for debugging/perf comparison against the tree-based classifier |
 
 The `csv`/`geojson` backends write the same schema as `pg` — `<topic>.csv` (tag tables),
 `edges.csv`, and any opted-in geometry tables — with a header row, JSON columns as quoted CSV, and
@@ -220,6 +221,23 @@ one:
 
 Shared macros/sanitizers/value-sets live in `<config-dir>/_shared/`.
 
+## Dev tools (`src/bin/`)
+
+Small standalone binaries built from the same `osmnexus` lib crate, for config authoring/debugging
+rather than the main import:
+
+- `cargo run --bin check_overlaps` — lint every topic's categories for pairs that could match the
+  same object without excluding each other (would otherwise be silently resolved by first-match
+  order). Same check the `categories_are_disjoint` test enforces; this is for ad-hoc inspection.
+- `cargo run --bin plot_dag -- <topic-name> [-o <out-dir>]` — render a topic's output `Producer`
+  trees (plus sanitizer chains) as Graphviz DOT, one `.dot` file per output field per distinct
+  resolved producer. E.g. `cargo run --bin plot_dag -- tilda/bikelanes -o dag_out`.
+- `cargo run --bin dag_json -- <config-dir> <topic-name> [category|decision-tree]` — emit a
+  topic's producer trees (default), flat category-priority order (`category`), or compiled
+  decision tree (`decision-tree`) as JSON node/edge graphs on stdout. Used by the live editor's
+  backend to feed its browser-rendered tree views. E.g. `cargo run --bin dag_json -- configs/tilda
+  tilda/bikelanes decision-tree`.
+
 ## Live editor
 
 [`editor/`](editor/) is a local web app for iterating on topic/category JSON against a real map:
@@ -231,6 +249,7 @@ the pipeline reruns (`--output geojson`) and the map re-renders — no manual CL
 
 ```
 src/          engine (classify, transforms, DB/output writers), reader, main
+src/bin/      standalone dev-tool binaries (config linting, DAG export) — see Dev tools above
 src/geom/     geometry output: per-topic GeometryPlan + in-process materialization (point/line/polygon rows)
 configs/      data-defined config directories (tilda, osmnx, ...), each with its own topics
 editor/       live editor — local web app for iterating on topic/category JSON against a map

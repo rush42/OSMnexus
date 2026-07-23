@@ -250,6 +250,7 @@ async fn main() -> anyhow::Result<()> {
             osm::reader::Callbacks {
                 has_relations,
                 classify_rel: classify_rel_cb,
+                relation_geom_mask: plan.relation_geom_mask,
                 classify_way: classify_way_cb,
                 has_nodes,
                 classify_node: classify_node_cb,

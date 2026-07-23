@@ -62,6 +62,13 @@ pub struct Callbacks<CR, CW, CN> {
     /// if kept by nobody). Fully independent of the ways pass for classification purposes —
     /// relation membership never affects whether a way is tag-kept.
     pub classify_rel: CR,
+    /// OR of every topic index bit that wants *any* relation geometry (line/point/polygon) — i.e.
+    /// `GeometryPlan::relation_geom_mask`. Gates which kept relations' member ways get their node
+    /// refs/coords pulled in at all: a relation whose mask doesn't intersect this is tag-kept but
+    /// nobody will ever build geometry for it, so its member ways would otherwise be indexed and
+    /// have their coordinates decoded for nothing (this used to balloon Pass A/B cost whenever
+    /// relations were enabled, regardless of how many relation topics were attribute-only).
+    pub relation_geom_mask: u32,
     /// Ways pass: emit tag rows; return the keep mask (`None` if kept by nobody). Relation
     /// membership has no bearing on this — see `classify_and_index`'s own doc.
     pub classify_way: CW,
@@ -167,9 +174,14 @@ where
                 };
                 // Every relation-member way id needs its node refs recorded too (as a `mask == 0`
                 // `way_refs` entry) even when its own tags never tag-keep it — see
-                // `SelectionContext::way_refs`'s own doc.
-                let extra_way_ids: FxHashSet<i64> =
-                    rel_members.values().flat_map(|(members, _)| members.iter().map(|&(w, _)| w)).collect();
+                // `SelectionContext::way_refs`'s own doc. But only for relations whose mask
+                // intersects `relation_geom_mask`: a relation kept purely for attribute output (no
+                // topic wants its geometry) has nothing to gain from its member ways' coordinates.
+                let extra_way_ids: FxHashSet<i64> = rel_members
+                    .values()
+                    .filter(|(_, mask)| mask & cb.relation_geom_mask != 0)
+                    .flat_map(|(members, _)| members.iter().map(|&(w, _)| w))
+                    .collect();
 
                 // Pass A — way region (decoded once): classify + counts + endpoints + way_refs.
                 let t = std::time::Instant::now();

@@ -69,7 +69,7 @@ pub enum InputTransform {
         output: String,
         key: String,
         from: DirectedFrom,
-        sanitize: Option<Sanitizer>,
+        sanitize: Vec<Sanitizer>,
     },
     /// Remove this object from the active set when `when` holds — `apply`'s only variant that
     /// returns `false`. Every other variant is a pure tag mutation and always keeps the object;
@@ -155,7 +155,7 @@ impl InputTransform {
             }
             InputTransform::DirectedExtract { output, key, from, sanitize } => {
                 if let Some(raw) = read_directed(tags, parent_tags, annotations, key, *from) {
-                    match eval_sanitize(sanitize.as_ref(), raw) {
+                    match eval_sanitize(sanitize, raw) {
                         None | Some(Value::Null) => {}
                         Some(Value::String(s)) => { tags.insert(output.clone().into(), s.into()); }
                         Some(other) => panic!(
@@ -494,7 +494,7 @@ mod directed_extract_tests {
     }
 
     fn step(key: &str, from: DirectedFrom) -> InputTransform {
-        InputTransform::DirectedExtract { output: key.to_owned(), key: key.to_owned(), from, sanitize: None }
+        InputTransform::DirectedExtract { output: key.to_owned(), key: key.to_owned(), from, sanitize: Vec::new() }
     }
 
     #[test]

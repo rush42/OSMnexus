@@ -312,9 +312,11 @@ export default function DagView({
           : null
         : `${endpoint}${encodeURIComponent(topic)}?name=${encodeURIComponent(field)}`;
     if (!url) return;
+    console.log("DEBUG fetching", url);
     fetch(url)
       .then((r) => r.json())
       .then((d: GraphResponse | { error: string }) => {
+        console.log("DEBUG fetched", ignore, "error" in d, !("error" in d) && d.variants?.length);
         if (ignore) return;
         if ("error" in d) {
           setError(d.error);

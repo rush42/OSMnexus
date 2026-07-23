@@ -13,7 +13,7 @@ use crate::decision_tree::DecisionTree;
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer};
-use crate::lang::sanitize::{Sanitizer, Step};
+use crate::lang::sanitize::Sanitizer;
 
 #[derive(Serialize)]
 pub struct DagNode {
@@ -133,10 +133,8 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             };
             let node = g.node(label, kind);
             annotate_node(g, &node, annotate);
-            match extract.sanitize() {
-                Some(chain) => render_chain(g, chain, &node),
-                None => node,
-            }
+            let chain = extract.sanitize();
+            if chain.is_empty() { node } else { render_chain(g, chain, &node) }
         }
         Producer::Const { value, annotate } => {
             let label = format!("Const\n{}", truncate(&value.to_string(), 40));
@@ -158,9 +156,9 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
 /// the actual data flow (sanitize steps, then the extract they feed) rather than a side branch
 /// hanging off the extract. Returns the entry point: the first step's node, or `sink` itself if the
 /// chain has no steps.
-fn render_chain(g: &mut DagGraph, chain: &Sanitizer, sink: &str) -> String {
+fn render_chain(g: &mut DagGraph, chain: &[Sanitizer], sink: &str) -> String {
     let mut next = sink.to_owned();
-    for step in chain.steps().iter().rev() {
+    for step in chain.iter().rev() {
         let id = g.node(step_label(step), "step");
         g.edge(&id, &next, "");
         next = id;
@@ -168,13 +166,13 @@ fn render_chain(g: &mut DagGraph, chain: &Sanitizer, sink: &str) -> String {
     next
 }
 
-fn step_label(step: &Step) -> String {
+fn step_label(step: &Sanitizer) -> String {
     match step {
-        Step::Mapping { mapping, on_miss } => {
+        Sanitizer::Mapping { mapping, on_miss } => {
             format!("Mapping\n{} entries\non_miss: {:?}", mapping.len(), on_miss.as_deref().unwrap_or("drop"))
         }
-        Step::Replace { replace } => format!("Replace\n{} rule(s)", replace.len()),
-        Step::Builtin(name) => format!("Builtin\nname: {name}"),
+        Sanitizer::Replace { replace } => format!("Replace\n{} rule(s)", replace.len()),
+        Sanitizer::Builtin(name) => format!("Builtin\nname: {name}"),
     }
 }
 

@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 
 use osmnexus::lang::extract::Extract;
 use osmnexus::lang::producer::Producer;
-use osmnexus::lang::sanitize::{Sanitizer, Step};
+use osmnexus::lang::sanitize::Sanitizer;
 use osmnexus::topic::runner::TopicRunner;
 
 fn main() -> Result<()> {
@@ -151,7 +151,8 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
             }
             let node = g.node(&label, "box", "#d9e8fb");
-            if let Some(chain) = extract.sanitize() {
+            let chain = extract.sanitize();
+            if !chain.is_empty() {
                 let chain_root = render_chain(g, chain);
                 g.edge(&node, &chain_root, "sanitize");
             }
@@ -173,11 +174,10 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
     }
 }
 
-fn render_chain(g: &mut Graph, chain: &Sanitizer) -> String {
-    let steps = chain.steps();
+fn render_chain(g: &mut Graph, chain: &[Sanitizer]) -> String {
     let mut prev: Option<String> = None;
     let mut first: Option<String> = None;
-    for step in steps {
+    for step in chain {
         let id = g.node(&step_label(step), "ellipse", "#ead1dc");
         if first.is_none() {
             first = Some(id.clone());
@@ -190,12 +190,12 @@ fn render_chain(g: &mut Graph, chain: &Sanitizer) -> String {
     first.unwrap_or_else(|| g.node("(empty chain)", "ellipse", "#ead1dc"))
 }
 
-fn step_label(step: &Step) -> String {
+fn step_label(step: &Sanitizer) -> String {
     match step {
-        Step::Mapping { mapping, on_miss } => {
+        Sanitizer::Mapping { mapping, on_miss } => {
             format!("mapping\n{} entries\non_miss: {:?}", mapping.len(), on_miss.as_deref().unwrap_or("drop"))
         }
-        Step::Replace { replace } => format!("replace\n{} rule(s)", replace.len()),
-        Step::Builtin(name) => format!("builtin: {name}"),
+        Sanitizer::Replace { replace } => format!("replace\n{} rule(s)", replace.len()),
+        Sanitizer::Builtin(name) => format!("builtin: {name}"),
     }
 }

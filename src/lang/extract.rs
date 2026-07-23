@@ -39,23 +39,23 @@ pub enum Extract {
     Candidates {
         #[serde(alias = "first_tag")]
         keys: Vec<String>,
-        #[serde(default)]
-        sanitize: Option<Sanitizer>,
+        #[serde(default, deserialize_with = "crate::parser::deserialize_sanitize_chain")]
+        sanitize: Vec<Sanitizer>,
     },
     /// A single, specific key.
     Value {
         #[serde(alias = "tag")]
         key: String,
-        #[serde(default)]
-        sanitize: Option<Sanitizer>,
+        #[serde(default, deserialize_with = "crate::parser::deserialize_sanitize_chain")]
+        sanitize: Vec<Sanitizer>,
     },
 }
 
 impl Extract {
-    /// This variant's own `sanitize` chain, if any.
-    pub fn sanitize(&self) -> Option<&Sanitizer> {
+    /// This variant's own `sanitize` chain — empty if unset.
+    pub fn sanitize(&self) -> &[Sanitizer] {
         match self {
-            Extract::Value { sanitize, .. } | Extract::Candidates { sanitize, .. } => sanitize.as_ref(),
+            Extract::Value { sanitize, .. } | Extract::Candidates { sanitize, .. } => sanitize,
         }
     }
 
@@ -77,12 +77,13 @@ impl Extract {
     /// sanitize output (or one that isn't string-shaped) compares as absent, not equal to "".
     pub fn read_str<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
         let raw = self.read_raw(ctx)?;
-        match self.sanitize() {
-            None => Some(Cow::Borrowed(raw)),
-            Some(sanitize) => match eval_sanitize(Some(sanitize), raw)? {
-                Value::String(s) => Some(Cow::Owned(s)),
-                other => other.as_str().map(|s| Cow::Owned(s.to_owned())),
-            },
+        let chain = self.sanitize();
+        if chain.is_empty() {
+            return Some(Cow::Borrowed(raw));
+        }
+        match eval_sanitize(chain, raw)? {
+            Value::String(s) => Some(Cow::Owned(s)),
+            other => other.as_str().map(|s| Cow::Owned(s.to_owned())),
         }
     }
 
