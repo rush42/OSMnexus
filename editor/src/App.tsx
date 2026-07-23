@@ -21,6 +21,59 @@ function bboxSizeMeters(box: [number, number, number, number]): { widthM: number
   };
 }
 
+// Drag-resizes one numeric size (px) along one axis, from a divider's `onMouseDown`. `current` is
+// the size at drag-start (captured once, not re-read mid-drag, since `set` triggers a re-render but
+// this closure keeps running against the value it started with — dragging is relative to where the
+// drag began, not to whatever the size happens to be after intermediate re-renders). `invert` flips
+// which direction growth is: a divider left of the panel it resizes needs dragging *left* (negative
+// delta) to grow it.
+function beginResize(e: React.MouseEvent, axis: "x" | "y", current: number, set: (n: number) => void, min: number, max: number, invert = false) {
+  e.preventDefault();
+  const start = axis === "x" ? e.clientX : e.clientY;
+  const prevUserSelect = document.body.style.userSelect;
+  document.body.style.userSelect = "none";
+  const onMove = (ev: MouseEvent) => {
+    const cur = axis === "x" ? ev.clientX : ev.clientY;
+    const delta = (cur - start) * (invert ? -1 : 1);
+    set(Math.min(max, Math.max(min, current + delta)));
+  };
+  const onUp = () => {
+    document.body.style.userSelect = prevUserSelect;
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
+// A thin drag handle between two panels — transparent until hovered/dragged, so it doesn't add
+// visual clutter to a UI that otherwise has none.
+function Divider({ axis, onMouseDown }: { axis: "x" | "y"; onMouseDown: (e: React.MouseEvent) => void }) {
+  const [highlight, setHighlight] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHighlight(true)}
+      onMouseLeave={() => setHighlight(false)}
+      onMouseDown={(e) => {
+        setHighlight(true);
+        onMouseDown(e);
+        const onUp = () => {
+          setHighlight(false);
+          window.removeEventListener("mouseup", onUp);
+        };
+        window.addEventListener("mouseup", onUp);
+      }}
+      style={{
+        flexShrink: 0,
+        cursor: axis === "x" ? "col-resize" : "row-resize",
+        background: highlight ? "var(--accent, #6b8afd)" : "transparent",
+        ...(axis === "x" ? { width: 5, marginLeft: -2.5, marginRight: -2.5 } : { height: 5, marginTop: -2.5, marginBottom: -2.5 }),
+        zIndex: 1,
+      }}
+    />
+  );
+}
+
 type Category = { topic: string; kind: string; name: string };
 // A "selection" is either a category (kind/name point at a way/node/relation category file) or the
 // topic's own topic.json (table/exclude_condition/osm_fields) — same editor pane, different file.
@@ -64,6 +117,11 @@ export default function App() {
   const [manualSelect, setManualSelect] = useState(false);
   const [newNameByTopic, setNewNameByTopic] = useState<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState(false);
+  // Drag-resizable panel sizes (px) — the map/tree pane vs. the side panel, and, within the side
+  // panel, the topics/category list vs. the JSON editor below it. Defaults roughly match the old
+  // fixed 60/40 flex split and the old 320px list `maxHeight`.
+  const [sidebarWidth, setSidebarWidth] = useState(420);
+  const [topicsListHeight, setTopicsListHeight] = useState(320);
   const [showNodes, setShowNodes] = useState(false);
   const [followSelection, setFollowSelection] = useState(true);
   const [viewMode, setViewMode] = useState<"map" | "tree" | "categorize" | "decision-tree">("map");
@@ -402,7 +460,7 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
-      <div style={{ flex: "1 1 60%", position: "relative" }}>
+      <div style={{ flex: "1 1 auto", minWidth: 0, position: "relative" }}>
         {viewMode === "tree" && active.topic ? (
           <DagView
             topic={active.topic}
@@ -531,9 +589,12 @@ export default function App() {
           </div>
         )}
       </div>
+      {!collapsed && (
+        <Divider axis="x" onMouseDown={(e) => beginResize(e, "x", sidebarWidth, setSidebarWidth, 260, 900, true)} />
+      )}
       <div
         style={{
-          flex: collapsed ? "0 0 auto" : "1 1 40%",
+          flex: collapsed ? "0 0 auto" : `0 0 ${sidebarWidth}px`,
           display: "flex",
           flexDirection: "column",
           background: "var(--panel)",
@@ -591,7 +652,7 @@ export default function App() {
         )}
         {!collapsed && (
           <>
-            <div style={{ borderBottom: "1px solid var(--border)", maxHeight: 320, overflowY: "auto" }}>
+            <div style={{ borderBottom: "1px solid var(--border)", height: topicsListHeight, flexShrink: 0, overflowY: "auto" }}>
               {topics.map((topic) => {
                 const expanded = expandedTopics.has(topic);
                 const cats = categoriesByTopic[topic] ?? [];
@@ -729,24 +790,27 @@ export default function App() {
               })}
             </div>
             {active.topic && (active.name || active.isTopicConfig) && (
-              <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-                <div
-                  style={{
-                    padding: "6px 12px",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    color: "var(--muted)",
-                    background: "#f7f8fa",
-                    borderTop: "1px solid var(--border)",
-                    borderBottom: "1px solid var(--border)",
-                  }}
-                >
-                  {active.isTopicConfig ? `${active.topic}/topic.json` : `${active.topic}/${active.kind}/${active.name}.json`}
+              <>
+                <Divider axis="y" onMouseDown={(e) => beginResize(e, "y", topicsListHeight, setTopicsListHeight, 80, 640)} />
+                <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+                  <div
+                    style={{
+                      padding: "6px 12px",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11,
+                      color: "var(--muted)",
+                      background: "#f7f8fa",
+                      borderTop: "1px solid var(--border)",
+                      borderBottom: "1px solid var(--border)",
+                    }}
+                  >
+                    {active.isTopicConfig ? `${active.topic}/topic.json` : `${active.topic}/${active.kind}/${active.name}.json`}
+                  </div>
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <Editor value={text} onChange={setText} />
+                  </div>
                 </div>
-                <div style={{ flex: 1, minHeight: 0 }}>
-                  <Editor value={text} onChange={setText} />
-                </div>
-              </div>
+              </>
             )}
             {error && (
               <div
