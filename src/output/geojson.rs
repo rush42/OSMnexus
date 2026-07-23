@@ -150,7 +150,11 @@ fn base_properties(record: &csv::StringRecord, osm_id: i64) -> Map<String, Value
     let mut properties = Map::new();
     properties.insert("osm_id".to_owned(), json!(osm_id));
     properties.insert("id".to_owned(), json!(&record[2]));
-    properties.insert("category".to_owned(), json!(&record[3]));
+    // Empty means `accept_all` (no category matched — see `TopicRow::category`); keep the column
+    // out of GeoJSON properties entirely rather than emitting a misleading empty string.
+    if !record[3].is_empty() {
+        properties.insert("category".to_owned(), json!(&record[3]));
+    }
     merge_properties(&mut properties, &record[4]);
     // `annotations` carries engine-attached bookkeeping (e.g. `_side`, the side-split object's
     // left/right/self side; `<output>_source`/`_confidence` provenance) rather than topic-authored

@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS {table} (
   osm_id    bigint,
   osm_type  text,
   id        text NOT NULL,
-  category  text NOT NULL,
+  category  text,
   produced    jsonb,
   annotations jsonb,
   meta        jsonb

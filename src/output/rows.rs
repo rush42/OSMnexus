@@ -28,8 +28,10 @@ pub struct TopicRow {
     pub osm_type: &'static str,
     pub id: String,
     /// The matched category's id — a dedicated column rather than a `produced` key, since every
-    /// row has exactly one and it's not itself a `Producer`-evaluated output.
-    pub category: String,
+    /// row has at most one and it's not itself a `Producer`-evaluated output. `None` for an
+    /// `accept_all` kind (see `TopicSpec::accept_all`), which never matches a category at all;
+    /// serializes as an empty CSV field, which Postgres `COPY ... FORMAT CSV` reads back as NULL.
+    pub category: Option<String>,
     /// Every non-underscore-prefixed output (the former separate `osm`/`sanitized`/`derived`
     /// columns — all three were always the same `Producer`-evaluation mechanism, just different
     /// JSON shorthands for declaring one entry in one `outputs` map; see `TopicSpec::outputs`).
@@ -49,7 +51,7 @@ impl CsvRow for TopicRow {
             self.osm_id.to_string(),
             self.osm_type.to_owned(),
             self.id.clone(),
-            self.category.clone(),
+            self.category.clone().unwrap_or_default(),
             serde_json::to_string(&self.produced)?,
             serde_json::to_string(&self.annotations)?,
             serde_json::to_string(&self.meta)?,

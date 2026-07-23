@@ -61,6 +61,11 @@ pub struct TopicRunner {
     /// are still built (empty, since `OutputsSpec::into_fields_map` treats `All` as `{}`) so this
     /// stays a pure additive fast path rather than a second code shape callers need to branch on.
     pub pass_through_all_tags: bool,
+    /// Kinds flagged in `topic.json`'s `"accept_all"` (see `TopicSpec::accept_all`) — every
+    /// (non-excluded) element of this kind is emitted with no category match and no `category`
+    /// value, using `default_outputs` directly. Disjoint from `categories`'s keys (`load` rejects
+    /// a kind declaring both a category directory and `accept_all`).
+    pub accept_all: std::collections::HashSet<ElementKind>,
 }
 
 /// Resolve one topic's or category's raw `outputs` map (already merged by key, category winning)
@@ -244,6 +249,19 @@ impl TopicRunner {
             categories.insert(kind, cats);
         }
 
+        // `accept_all` kinds skip category matching entirely — reject a kind that also has a
+        // category directory, since first-match-or-accept-all-fallback would be ambiguous about
+        // which one actually governs.
+        let accept_all: std::collections::HashSet<ElementKind> =
+            ElementKind::ALL.into_iter().filter(|k| spec.accept_all.get(*k)).collect();
+        for kind in &accept_all {
+            anyhow::ensure!(
+                !categories.contains_key(kind),
+                "topics/{name}: kind '{}' has both a category directory and accept_all",
+                kind.subdir()
+            );
+        }
+
         // `transforms.json`, if the topic has one, is the whole per-kind pipeline set (already
         // resolved by `load_topic_transforms`); a topic with none simply has no pipelines (see
         // `TransformsSpec`'s own doc).
@@ -302,6 +320,7 @@ impl TopicRunner {
             linear_classify,
             category_outputs,
             pass_through_all_tags,
+            accept_all,
         })
     }
 

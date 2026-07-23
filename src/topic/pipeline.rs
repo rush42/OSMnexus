@@ -48,9 +48,12 @@ pub fn build_topic_rows<'a>(
     raw_tags: &'a RawTags<'a>,
     meta: &OsmMeta,
 ) -> Vec<TopicRow> {
-    // The category set for this element kind. Absent → the topic has no categories for this kind.
+    // The category set for this element kind. Absent → either this kind is flagged `accept_all`
+    // (every element passes straight through, no category match — see `TopicSpec::accept_all`) or
+    // the topic simply has no categories for this kind at all.
     let categories = match runner.categories.get(&kind) {
-        Some(c) => c,
+        Some(c) => Some(c),
+        None if runner.accept_all.contains(&kind) => None,
         None => return Vec::new(),
     };
 
@@ -92,13 +95,21 @@ pub fn build_topic_rows<'a>(
 
     let mut rows = Vec::new();
     let mut emit = |ectx: ExtractCtx| {
-        let category = if runner.linear_classify {
-            categorize_linear(&ectx, categories)
-        } else {
-            categorize(&ectx, categories)
-        };
-        let Some(category) = category else {
-            return;
+        // `accept_all` kinds (`categories` is `None`) skip category matching entirely — every
+        // element is kept, with no `category` value and `default_outputs` as its outputs.
+        let category_id = match categories {
+            Some(cats) => {
+                let category = if runner.linear_classify {
+                    categorize_linear(&ectx, cats)
+                } else {
+                    categorize(&ectx, cats)
+                };
+                let Some(category) = category else {
+                    return;
+                };
+                Some(category.id.clone())
+            }
+            None => None,
         };
 
         // This category's effective outputs (topic `outputs` ⊕ category `outputs`, see
@@ -117,7 +128,10 @@ pub fn build_topic_rows<'a>(
             // `Producer` evaluation at all.
             produced.extend(ectx.obj_tags.iter().map(|(k, v)| (k.to_string(), Value::String(v.to_string()))));
         } else {
-            let outputs = runner.category_outputs.get(&category.id).unwrap_or(&runner.default_outputs);
+            let outputs = category_id
+                .as_ref()
+                .and_then(|id| runner.category_outputs.get(id))
+                .unwrap_or(&runner.default_outputs);
             eval_fields(outputs, &ectx, &mut produced, &mut annotations);
         }
 
@@ -129,7 +143,7 @@ pub fn build_topic_rows<'a>(
             osm_id,
             osm_type: kind.osm_type(),
             id: ectx.id.to_owned(),
-            category: category.id.clone(),
+            category: category_id,
             produced,
             annotations,
             meta: meta.clone(),

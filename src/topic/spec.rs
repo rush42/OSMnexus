@@ -42,6 +42,37 @@ pub struct TopicSpec {
     /// per-topic declaration. See `GeometryShape`.
     #[serde(default)]
     pub geometry: GeometrySpec,
+    /// Per-kind "no subcategorization" opt-out from the `topics/<name>/{node,way,relation}/`
+    /// category-file convention — a kind flagged here accepts every (non-`exclude_condition`-
+    /// matched) element straight through the topic's own `outputs`/`defaults`, with no category
+    /// directory to load and no `category` value in its output rows (see `TopicRow::category`).
+    /// Replaces the old workaround of writing a single trivial `{"condition": true}` category file
+    /// per kind (e.g. `buildings/way/building.json`) just to opt out of subcategorization.
+    #[serde(default)]
+    pub accept_all: AcceptAllSpec,
+}
+
+/// `topic.json`'s `"accept_all"`: which element kinds skip category matching entirely (see
+/// `TopicSpec::accept_all`). A kind can have a category directory *or* be listed here, never both
+/// — `TopicRunner::load` rejects that combination.
+#[derive(Debug, Deserialize, Default)]
+pub struct AcceptAllSpec {
+    #[serde(default)]
+    pub node: bool,
+    #[serde(default)]
+    pub way: bool,
+    #[serde(default)]
+    pub relation: bool,
+}
+
+impl AcceptAllSpec {
+    pub fn get(&self, kind: crate::osm::types::ElementKind) -> bool {
+        match kind {
+            crate::osm::types::ElementKind::Node => self.node,
+            crate::osm::types::ElementKind::Way => self.way,
+            crate::osm::types::ElementKind::Relation => self.relation,
+        }
+    }
 }
 
 /// `topic.json`'s top-level `outputs`: normally a `{field: producer}` map, but a bare `true`/
