@@ -445,7 +445,7 @@ pub enum PipelineStepSpec {
     Transform(TransformSpec),
     Clone {
         when: Option<Filter>,
-        annotate: Vec<(String, String)>,
+        annotate: std::collections::BTreeMap<String, String>,
         id_suffix: String,
         steps: Vec<TransformSpec>,
     },
@@ -469,13 +469,9 @@ impl<'de> Deserialize<'de> for PipelineStepSpec {
                 #[serde(default)]
                 steps: Vec<TransformSpec>,
             }
-            let r: Repr = serde_json::from_value(v["clone"].clone()).map_err(D::Error::custom)?;
-            Ok(PipelineStepSpec::Clone {
-                when: r.when,
-                annotate: r.annotate.into_iter().collect(),
-                id_suffix: r.id_suffix,
-                steps: r.steps,
-            })
+            let Repr { when, annotate, id_suffix, steps } =
+                serde_json::from_value(v["clone"].clone()).map_err(D::Error::custom)?;
+            Ok(PipelineStepSpec::Clone { when, annotate, id_suffix, steps })
         } else {
             Ok(PipelineStepSpec::Transform(TransformSpec::deserialize(Value::Object(v)).map_err(D::Error::custom)?))
         }
@@ -488,7 +484,7 @@ impl PipelineStepSpec {
             PipelineStepSpec::Transform(t) => TransformStep::Transform(t.into_input_transform()),
             PipelineStepSpec::Clone { when, annotate, id_suffix, steps } => TransformStep::Clone(CloneStep {
                 when,
-                annotate,
+                annotate: annotate.into_iter().collect(),
                 id_suffix,
                 steps: steps.into_iter().map(TransformSpec::into_input_transform).collect(),
             }),
