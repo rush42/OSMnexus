@@ -84,12 +84,12 @@ impl std::fmt::Display for BranchKey {
             BranchKey::Sentinel(s) => write!(f, "{s}"),
             BranchKey::Tag(Extract::Value { key, sanitize }) => {
                 write!(f, "{key}")?;
-                if sanitize.is_some() { write!(f, " (sanitized)")?; }
+                if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
                 Ok(())
             }
             BranchKey::Tag(Extract::Candidates { keys, sanitize }) => {
                 write!(f, "{}", keys.join("/"))?;
-                if sanitize.is_some() { write!(f, " (sanitized)")?; }
+                if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
                 Ok(())
             }
         }

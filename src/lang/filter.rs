@@ -93,7 +93,7 @@ impl Filter {
         // change what's being compared.
         fn maybe_sanitized(extract: &Extract) -> String {
             let k = key(extract);
-            if extract.sanitize().is_some() { format!("{k} (sanitized)") } else { k }
+            if !extract.sanitize().is_empty() { format!("{k} (sanitized)") } else { k }
         }
         match self {
             Filter::Bool(b) => b.to_string(),
@@ -196,9 +196,10 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
 /// comparison is false on missing/garbage input. No geometry-derived values (length, …) are
 /// available: classification is tag-only.
 pub(crate) fn read_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
-    match extract.sanitize() {
-        Some(_) => num_from_value(&extract.read(ctx)?),
-        None => extract.read_raw(ctx)?.trim().parse().ok(),
+    if extract.sanitize().is_empty() {
+        extract.read_raw(ctx)?.trim().parse().ok()
+    } else {
+        num_from_value(&extract.read(ctx)?)
     }
 }
 
