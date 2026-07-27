@@ -1,10 +1,12 @@
 //! Topic-agnostic PBF streaming reader — the "select" phase. Drives tag classification of
 //! relations, ways, and nodes over a PBF (the sorted fast path decodes each blob region once, in
 //! the logical order relations → ways → nodes; an unsorted file falls back to full scans), and
-//! returns a [`SelectionContext`]: everything geometry construction needs (node coordinates, each
-//! kept way's node refs, each kept relation's member ways, node use-counts for graph-vertex
-//! detection) — but no geometry itself. That's `geom::materialize`'s job, run separately
-//! afterward over the returned context; this module never builds or routes a geometry row.
+//! returns a [`SelectionContext`]: everything geometry construction needs (node coordinates with
+//! their graph-vertex `shared` flag already folded in, each kept way's node refs, each kept
+//! relation's member ways) — but no geometry itself. That's `geom::materialize`'s job, run
+//! separately afterward over the returned context; this module never builds or routes a geometry
+//! row. Anything the passes need only among themselves — the raw per-node use counts, the endpoint
+//! set — is dropped before returning rather than carried through the materialize phase.
 //!
 //! Tag-row output is the one thing that *can't* wait for a returned value — buffering every tag
 //! row in memory until the whole file is classified is exactly what an earlier version of this

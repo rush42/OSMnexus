@@ -147,7 +147,23 @@ pub(super) fn collect_coords<CN>(
 where
     CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync,
 {
-    let mut coords: NodeCoords = FxHashMap::default();
+    // Size the map up front. Growing from empty means the final doubling holds the old and new
+    // bucket arrays at once — a transient of ~1.5x the final table, which at this cardinality is
+    // GBs, and it turned out to be the single largest contributor to Pass B's peak (brandenburg
+    // 1080 -> 976 MB peak RSS from this line alone).
+    //
+    // The hint is the exact count of *distinct* node ids that could be inserted. It's an upper
+    // bound rather than the truth only because a referenced node may be absent from the file —
+    // negligible for a complete download, but real for a clipped extract. That matters because
+    // hashbrown rounds to `next_pow2(hint * 8/7)` buckets: overshooting by enough to cross a
+    // power-of-two boundary would *double* the table permanently instead of saving the transient.
+    // Checked against an `osmium extract -s simple` extract (dangling refs by construction, no
+    // `complete_ways`) — still a win there, 158 -> 152 MB, so the boundary case isn't being hit in
+    // practice. Re-measure that case before loosening the hint.
+    let distinct_needed = use_counts.len()
+        + extra_node_ids.iter().filter(|id| !use_counts.contains_key(id)).count();
+    let mut coords: NodeCoords =
+        FxHashMap::with_capacity_and_hasher(distinct_needed, Default::default());
     let mut selected: FxHashSet<i64> = FxHashSet::default();
     let mut standalone_total: u64 = 0;
 
