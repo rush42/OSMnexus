@@ -105,12 +105,14 @@ where
         .flat_map(|(_, (refs, _))| refs.iter().copied())
         .collect();
     info!("Fallback scan 2 (parallel): collect node coords{}...", if cb.has_nodes { " + classify nodes" } else { "" });
-    let (coords_vec, selected): (Vec<(i64, f32, f32)>, FxHashSet<i64>) = ElementReader::from_path(path)
+    let (coords_vec, selected, standalone_classified): (Vec<(i64, f32, f32)>, FxHashSet<i64>, u64) =
+        ElementReader::from_path(path)
         .context("opening PBF for node scan")?
         .par_map_reduce(
             |element| {
                 let mut coords: Vec<(i64, f32, f32)> = Vec::new();
                 let mut selected: FxHashSet<i64> = FxHashSet::default();
+                let mut standalone: u64 = 0;
                 match element {
                     Element::DenseNode(n) if use_counts.contains_key(&n.id()) => {
                         coords.push((n.id(), n.lon() as f32, n.lat() as f32));
@@ -130,14 +132,26 @@ where
                     Element::Node(n) if extra_node_ids.contains(&n.id()) => {
                         coords.push((n.id(), n.lon() as f32, n.lat() as f32));
                     }
+                    // Not part of any kept way — still classify it (tag rows / point geometry are
+                    // driven by `classify_node` itself from `NodeData`, not `NodeCoords`), just
+                    // don't hold its coords or count it toward graph cut points.
+                    Element::DenseNode(n) if cb.has_nodes => {
+                        (cb.classify_node)(&dense_node_data(&n));
+                        standalone += 1;
+                    }
+                    Element::Node(n) if cb.has_nodes => {
+                        (cb.classify_node)(&node_data(&n));
+                        standalone += 1;
+                    }
                     _ => {}
                 }
-                (coords, selected)
+                (coords, selected, standalone)
             },
-            || (Vec::new(), FxHashSet::default()),
+            || (Vec::new(), FxHashSet::default(), 0u64),
             |mut a, b| {
                 a.0.extend(b.0);
                 a.1.extend(b.1);
+                a.2 += b.2;
                 a
             },
         )
@@ -150,7 +164,7 @@ where
         })
         .collect();
 
-    log_node_summary(&use_counts);
+    log_node_summary(&use_counts, standalone_classified);
 
     Ok(SelectionContext { node_coords, way_refs, rel_members, use_counts, selected })
 }

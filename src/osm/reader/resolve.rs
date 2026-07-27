@@ -16,12 +16,13 @@ use crate::osm::types::{MemberRole, NodeData, OsmWay, RawTags, RelData, WayData,
 /// relation geometry from it.
 pub type NodeCoords = FxHashMap<i64, (f32, f32, bool)>;
 
-pub(super) fn log_node_summary(use_counts: &FxHashMap<i64, u32>) {
+pub(super) fn log_node_summary(use_counts: &FxHashMap<i64, u32>, standalone_classified: u64) {
     let intersections = use_counts.values().filter(|&&c| c >= 2).count();
     info!(
-        "{} referenced nodes, {} intersection nodes (≥2 ways)",
+        "{} referenced nodes, {} intersection nodes (≥2 ways), {} standalone nodes classified",
         use_counts.len(),
-        intersections
+        intersections,
+        standalone_classified
     );
 }
 

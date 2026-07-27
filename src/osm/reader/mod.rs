@@ -196,7 +196,7 @@ where
                     .flat_map(|(_, (refs, _))| refs.iter().copied())
                     .collect();
                 let t = std::time::Instant::now();
-                let (node_coords, selected) = collect_coords(
+                let (node_coords, selected, standalone_classified) = collect_coords(
                     &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &extra_node_ids,
                 )?;
                 info!(
@@ -204,7 +204,7 @@ where
                     if cb.has_nodes { " + classify nodes" } else { "" },
                     t.elapsed().as_secs_f32()
                 );
-                resolve::log_node_summary(&use_counts);
+                resolve::log_node_summary(&use_counts, standalone_classified);
                 let _ = endpoints; // endpoints are re-derived from way_refs by geom::materialize (mask != 0 subset)
 
                 return Ok(SelectionContext { node_coords, way_refs, rel_members, use_counts, selected });

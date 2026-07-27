@@ -129,16 +129,17 @@ pub(super) fn collect_coords<CN>(
     classify_nodes: bool,
     classify_node: &CN,
     extra_node_ids: &FxHashSet<i64>,
-) -> anyhow::Result<(NodeCoords, FxHashSet<i64>)>
+) -> anyhow::Result<(NodeCoords, FxHashSet<i64>, u64)>
 where
     CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync,
 {
-    let per_blob: Vec<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>)> = node_offsets
+    let per_blob: Vec<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>, u64)> = node_offsets
         .par_iter()
-        .map(|&off| -> anyhow::Result<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>)> {
+        .map(|&off| -> anyhow::Result<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>, u64)> {
             let block = decode_block(mmap, off)?;
             let mut out = Vec::new();
             let mut selected: FxHashSet<i64> = FxHashSet::default();
+            let mut standalone: u64 = 0;
             for group in block.groups() {
                 for n in group.dense_nodes() {
                     if let Some(&c) = use_counts.get(&n.id()) {
@@ -148,6 +149,12 @@ where
                         }
                     } else if extra_node_ids.contains(&n.id()) {
                         out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
+                    } else if classify_nodes {
+                        // Not part of any kept way — still classify it (tag rows / point geometry
+                        // are driven by `classify_node` itself from `NodeData`, not `NodeCoords`),
+                        // just don't hold its coords or count it toward graph cut points.
+                        classify_node(&dense_node_data(&n));
+                        standalone += 1;
                     }
                 }
                 for n in group.nodes() {
@@ -158,20 +165,25 @@ where
                         }
                     } else if extra_node_ids.contains(&n.id()) {
                         out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
+                    } else if classify_nodes {
+                        classify_node(&node_data(&n));
+                        standalone += 1;
                     }
                 }
             }
-            Ok((out, selected))
+            Ok((out, selected, standalone))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     let mut coords: NodeCoords = FxHashMap::default();
     let mut selected: FxHashSet<i64> = FxHashSet::default();
-    for (chunk, sel) in per_blob {
+    let mut standalone_total: u64 = 0;
+    for (chunk, sel, standalone) in per_blob {
         for (id, lon, lat, shared) in chunk {
             coords.insert(id, (lon, lat, shared));
         }
         selected.extend(sel);
+        standalone_total += standalone;
     }
-    Ok((coords, selected))
+    Ok((coords, selected, standalone_total))
 }
