@@ -44,10 +44,6 @@ pub struct SelectionContext {
     /// (regardless of whether any topic wants relation geometry — that decision is
     /// `geom::materialize`'s, using a `GeometryPlan`, not this module's).
     pub rel_members: FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>,
-    /// Per-node reference counts among `way_refs` entries with `mask != 0` — a node used by ≥2
-    /// such ways is a graph-vertex/intersection candidate. Relation-member-only ways (`mask == 0`)
-    /// never contribute here, matching how they never contribute to the extracted graph itself.
-    pub use_counts: FxHashMap<i64, u32>,
     /// Node ids classified by a node topic that also declared `"geometry": {"node": ["graph"]}` —
     /// forced cut points even at use-count 1. A node classified only by point-only (or bare) node
     /// topics is not in here — see `GeometryPlan::node_graph_mask`.
@@ -211,7 +207,15 @@ where
                 resolve::log_node_summary(&use_counts, standalone_classified);
                 let _ = endpoints; // endpoints are re-derived from way_refs by geom::materialize (mask != 0 subset)
 
-                return Ok(SelectionContext { node_coords, way_refs, rel_members, use_counts, selected });
+                // `use_counts` has no consumer past this point — the `shared` flag it feeds is
+                // already baked into `node_coords` (see `NodeCoords`' own doc). Dropped explicitly,
+                // and before the return, because it's one `FxHashMap` entry per referenced node:
+                // carrying it into the materialize phase (which is what returning it in
+                // `SelectionContext` used to do) costs the same order of memory as the coordinate
+                // map itself, for nothing.
+                drop(use_counts);
+
+                return Ok(SelectionContext { node_coords, way_refs, rel_members, selected });
             }
             Err(e) => {
                 warn!("ordered fast-path boundary check failed ({e:#}); falling back to full scan");

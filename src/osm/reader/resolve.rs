@@ -11,9 +11,9 @@ use crate::osm::types::{MemberRole, NodeData, OsmWay, RawTags, RelData, WayData,
 
 /// Node coordinate map for the geometry pass: `id → (lon, lat, shared)` where `shared` = the node
 /// is used by ≥2 filter-passing ways (an intersection cut-point). Folding the shared flag in here
-/// lets `use_counts` be dropped after Pass B, so the geometry pass holds only this one map. Part of
-/// `SelectionContext` — public since `geom::materialize` (outside `osm::reader`) resolves way/
-/// relation geometry from it.
+/// is what lets `use_counts` be dropped at the end of Pass B (both paths do so explicitly), so the
+/// geometry pass holds only this one map. Part of `SelectionContext` — public since
+/// `geom::materialize` (outside `osm::reader`) resolves way/relation geometry from it.
 pub type NodeCoords = FxHashMap<i64, (f32, f32, bool)>;
 
 pub(super) fn log_node_summary(use_counts: &FxHashMap<i64, u32>, standalone_classified: u64) {

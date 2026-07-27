@@ -166,5 +166,8 @@ where
 
     log_node_summary(&use_counts, standalone_classified);
 
-    Ok(SelectionContext { node_coords, way_refs, rel_members, use_counts, selected })
+    // See the sorted path's own `drop(use_counts)` — nothing past here reads it.
+    drop(use_counts);
+
+    Ok(SelectionContext { node_coords, way_refs, rel_members, selected })
 }
