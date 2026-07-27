@@ -109,9 +109,23 @@ where
         )
 }
 
+/// How many node blobs Pass B decodes in parallel before folding their output into the coordinate
+/// map. This bounds the *transient* cost of the decoded-but-not-yet-folded `Vec`s: collecting every
+/// blob first (which is what this used to do) meant the whole file's node data was resident twice at
+/// the moment the fold began — once as 24-byte `Vec` tuples, once in the growing map. At ~8k nodes
+/// per blob this caps that transient at a few tens of MB regardless of file size.
+///
+/// The fold stays sequential and *in blob order* on purpose. A producer/consumer channel would
+/// overlap decoding with folding and be faster, but blobs would arrive in completion order, which
+/// changes the insertion order into the map. `FxHashMap` is unseeded, so its iteration order is a
+/// deterministic function of insertion order, and `assign_node_ids` hands out internal graph-vertex
+/// ids in exactly that order — reordering insertions would silently renumber every row of the
+/// `nodes` and `edges` tables. Not worth it for a fold that is a small fraction of decode time.
+const FOLD_CHUNK_BLOBS: usize = 256;
+
 /// Pass B — collect coordinates (as f32, ~1 m precision) for the needed nodes from the node-region
-/// blobs, in parallel. Each node's `shared` flag (used by ≥2 mask-!=0 ways) is read from
-/// `use_counts` here and baked into the value.
+/// blobs, in parallel (in chunks of `FOLD_CHUNK_BLOBS`, see its doc). Each node's `shared` flag
+/// (used by ≥2 mask-!=0 ways) is read from `use_counts` here and baked into the value.
 ///
 /// When `classify_nodes` is set, every needed node's tags are also decoded and passed to
 /// `classify_node` (side effect: emit node tag rows); a node it returns `true` for is *selected*
@@ -133,57 +147,61 @@ pub(super) fn collect_coords<CN>(
 where
     CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync,
 {
-    let per_blob: Vec<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>, u64)> = node_offsets
-        .par_iter()
-        .map(|&off| -> anyhow::Result<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>, u64)> {
-            let block = decode_block(mmap, off)?;
-            let mut out = Vec::new();
-            let mut selected: FxHashSet<i64> = FxHashSet::default();
-            let mut standalone: u64 = 0;
-            for group in block.groups() {
-                for n in group.dense_nodes() {
-                    if let Some(&c) = use_counts.get(&n.id()) {
-                        out.push((n.id(), n.lon() as f32, n.lat() as f32, c > 1));
-                        if classify_nodes && classify_node(&dense_node_data(&n)) {
-                            selected.insert(n.id());
-                        }
-                    } else if extra_node_ids.contains(&n.id()) {
-                        out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
-                    } else if classify_nodes {
-                        // Not part of any kept way — still classify it (tag rows / point geometry
-                        // are driven by `classify_node` itself from `NodeData`, not `NodeCoords`),
-                        // just don't hold its coords or count it toward graph cut points.
-                        classify_node(&dense_node_data(&n));
-                        standalone += 1;
-                    }
-                }
-                for n in group.nodes() {
-                    if let Some(&c) = use_counts.get(&n.id()) {
-                        out.push((n.id(), n.lon() as f32, n.lat() as f32, c > 1));
-                        if classify_nodes && classify_node(&node_data(&n)) {
-                            selected.insert(n.id());
-                        }
-                    } else if extra_node_ids.contains(&n.id()) {
-                        out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
-                    } else if classify_nodes {
-                        classify_node(&node_data(&n));
-                        standalone += 1;
-                    }
-                }
-            }
-            Ok((out, selected, standalone))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
     let mut coords: NodeCoords = FxHashMap::default();
     let mut selected: FxHashSet<i64> = FxHashSet::default();
     let mut standalone_total: u64 = 0;
-    for (chunk, sel, standalone) in per_blob {
-        for (id, lon, lat, shared) in chunk {
-            coords.insert(id, (lon, lat, shared));
+
+    for blob_chunk in node_offsets.chunks(FOLD_CHUNK_BLOBS) {
+        let per_blob: Vec<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>, u64)> = blob_chunk
+            .par_iter()
+            .map(|&off| -> anyhow::Result<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>, u64)> {
+                let block = decode_block(mmap, off)?;
+                let mut out = Vec::new();
+                let mut selected: FxHashSet<i64> = FxHashSet::default();
+                let mut standalone: u64 = 0;
+                for group in block.groups() {
+                    for n in group.dense_nodes() {
+                        if let Some(&c) = use_counts.get(&n.id()) {
+                            out.push((n.id(), n.lon() as f32, n.lat() as f32, c > 1));
+                            if classify_nodes && classify_node(&dense_node_data(&n)) {
+                                selected.insert(n.id());
+                            }
+                        } else if extra_node_ids.contains(&n.id()) {
+                            out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
+                        } else if classify_nodes {
+                            // Not part of any kept way — still classify it (tag rows / point
+                            // geometry are driven by `classify_node` itself from `NodeData`, not
+                            // `NodeCoords`), just don't hold its coords or count it toward graph
+                            // cut points.
+                            classify_node(&dense_node_data(&n));
+                            standalone += 1;
+                        }
+                    }
+                    for n in group.nodes() {
+                        if let Some(&c) = use_counts.get(&n.id()) {
+                            out.push((n.id(), n.lon() as f32, n.lat() as f32, c > 1));
+                            if classify_nodes && classify_node(&node_data(&n)) {
+                                selected.insert(n.id());
+                            }
+                        } else if extra_node_ids.contains(&n.id()) {
+                            out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
+                        } else if classify_nodes {
+                            classify_node(&node_data(&n));
+                            standalone += 1;
+                        }
+                    }
+                }
+                Ok((out, selected, standalone))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        for (chunk, sel, standalone) in per_blob {
+            for (id, lon, lat, shared) in chunk {
+                coords.insert(id, (lon, lat, shared));
+            }
+            selected.extend(sel);
+            standalone_total += standalone;
         }
-        selected.extend(sel);
-        standalone_total += standalone;
     }
     Ok((coords, selected, standalone_total))
 }
