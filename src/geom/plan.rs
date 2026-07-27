@@ -23,6 +23,10 @@ pub struct GeometryPlan {
     pub point_topics: Vec<usize>,
     pub way_point_eligible: Vec<bool>,
     pub node_point_eligible: Vec<bool>,
+    /// OR of every topic index bit wanting `"geometry": { "node": ["graph"] }` — a node classified
+    /// by a topic whose bit is set here forces a graph cut point; classified by a point-only (or
+    /// bare) node topic, it doesn't. See `GeometrySpec::node`'s own doc.
+    pub node_graph_mask: u32,
     /// Topic indices wanting relation `line`/`point`/`polygon`, and the OR-ed bitmask of all three
     /// — `classify_rel_cb`'s cheap gate for whether a kept relation is even worth recording for
     /// relation-geometry resolution.
@@ -48,6 +52,10 @@ impl GeometryPlan {
         let way_point_eligible = point_topics.iter().map(|i| way_point.contains(i)).collect();
         let node_point_eligible = point_topics.iter().map(|i| node_point.contains(i)).collect();
 
+        let node_graph_mask = indices_wanting(ElementKind::Node, GeometryShape::Graph)
+            .into_iter()
+            .fold(0u32, |m, i| m | (1 << i));
+
         let relation_line_topics = indices_wanting(ElementKind::Relation, GeometryShape::Line);
         let relation_point_topics = indices_wanting(ElementKind::Relation, GeometryShape::Point);
         let relation_polygon_topics = indices_wanting(ElementKind::Relation, GeometryShape::Polygon);
@@ -64,6 +72,7 @@ impl GeometryPlan {
             point_topics,
             way_point_eligible,
             node_point_eligible,
+            node_graph_mask,
             relation_line_topics,
             relation_point_topics,
             relation_polygon_topics,

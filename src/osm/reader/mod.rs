@@ -48,7 +48,9 @@ pub struct SelectionContext {
     /// such ways is a graph-vertex/intersection candidate. Relation-member-only ways (`mask == 0`)
     /// never contribute here, matching how they never contribute to the extracted graph itself.
     pub use_counts: FxHashMap<i64, u32>,
-    /// Node ids classified (selected) by a node topic — forced cut points even at use-count 1.
+    /// Node ids classified by a node topic that also declared `"geometry": {"node": ["graph"]}` —
+    /// forced cut points even at use-count 1. A node classified only by point-only (or bare) node
+    /// topics is not in here — see `GeometryPlan::node_graph_mask`.
     pub selected: FxHashSet<i64>,
 }
 
@@ -74,16 +76,18 @@ pub struct Callbacks<CR, CW, CN> {
     pub classify_way: CW,
     /// Whether any topic declares node categories — gates node tag decoding in Pass B.
     pub has_nodes: bool,
-    /// Nodes pass: emit node tag rows; return `true` if the node was selected (a forced cut
-    /// point). A node's own point-geometry row (if wanted) is built and routed right here too, by
-    /// the caller — a node is a leaf, its point shape needs nothing `SelectionContext` provides.
+    /// Nodes pass: emit node tag rows; return `true` if the node should be a forced graph cut
+    /// point (classified by a topic that declared `"geometry": {"node": ["graph"]}` — not merely
+    /// classified at all, see `GeometryPlan::node_graph_mask`). A node's own point-geometry row (if
+    /// wanted) is built and routed right here too, by the caller — a node is a leaf, its point
+    /// shape needs nothing `SelectionContext` provides.
     pub classify_node: CN,
 }
 
 /// Assign a compact, sequential internal id to every graph vertex — a node that will appear as a
 /// `start_id`/`end_id` in the `edges` table: shared between ≥2 ways, a way endpoint, or forced by a
-/// node classifier (`selected`). Plain interior nodes of a single way never need an id since they're
-/// never referenced by more than the one edge they're already embedded in.
+/// node topic wanting graph output (`selected`). Plain interior nodes of a single way never need an
+/// id since they're never referenced by more than the one edge they're already embedded in.
 ///
 /// Returns the `osm_id -> internal id` lookup and the `nodes` table rows (`internal id, osm_id, lon,
 /// lat`). Called from `geom::materialize` (only when some topic wants the graph), not from here —

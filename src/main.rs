@@ -222,10 +222,13 @@ async fn main() -> anyhow::Result<()> {
                 kept.then_some(mask)
             }
         };
-        // Nodes pass: emit node tag rows; a node is "selected" (forced cut point) iff some topic
-        // categorized it. Also builds + routes this node's own point row right here — a node is a
-        // leaf, its point shape needs nothing `SelectionContext` provides, so there's no reason to
-        // defer it to the materialize phase the way way/relation geometry is deferred.
+        // Nodes pass: emit node tag rows; also builds + routes this node's own point row right here
+        // — a node is a leaf, its point shape needs nothing `SelectionContext` provides, so there's
+        // no reason to defer it to the materialize phase the way way/relation geometry is deferred.
+        // The callback's return value becomes `SelectionContext::selected` (forced graph cut
+        // point) — true only when a *matching* topic declared `"geometry": {"node": ["graph"]}`
+        // (`plan.node_graph_mask`), not merely "some topic classified this node" — a point-only (or
+        // bare) node topic never affects how ways get cut.
         let classify_node_cb = {
             let (runners, writers, plan) = (runners.clone(), writers.clone(), plan.clone());
             move |nd: &NodeData| -> bool {
@@ -242,7 +245,7 @@ async fn main() -> anyhow::Result<()> {
                         writers.route_node_point(mask, row, &plan);
                     }
                 }
-                kept
+                kept && (mask & plan.node_graph_mask != 0)
             }
         };
         osm::reader::stream_osm(

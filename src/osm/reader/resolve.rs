@@ -85,8 +85,10 @@ pub(super) fn node_data<'a>(n: &Node<'a>) -> NodeData<'a> {
 /// Resolve a way's node ids into an `OsmWay` geometry by looking up node coordinates. Tag/meta are
 /// not involved — classification already ran in Pass A.
 ///
-/// `selected` holds node ids that were *classified* in the nodes pass (e.g. crossings, signals);
-/// they become forced cut points ("count as intersections") even when used by a single way.
+/// `selected` holds node ids classified in the nodes pass by a topic that also wants node `graph`
+/// output (e.g. crossings, signals — see `GeometryPlan::node_graph_mask`); they become forced cut
+/// points ("count as intersections") even when used by a single way. A node classified only by a
+/// point-only node topic is not in `selected` and has no effect on cutting.
 pub fn resolve_geometry(
     id: i64,
     node_refs: &[i64],
