@@ -319,7 +319,7 @@ mod classify_bool_tests {
     fn matching_filter_produces_true() {
         let obj: RawTags = [("oneway".into(), "yes".into())].into_iter().collect();
         let producer = bool_producer(
-            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: None }, eq: "yes".to_owned() },
+            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: vec![] }, eq: "yes".to_owned() },
             TagSet::Obj,
         );
         let produced = producer.eval(&ctx(&obj, None)).unwrap();
@@ -330,7 +330,7 @@ mod classify_bool_tests {
     fn non_matching_filter_produces_false() {
         let obj: RawTags = [("oneway".into(), "no".into())].into_iter().collect();
         let producer = bool_producer(
-            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: None }, eq: "yes".to_owned() },
+            Filter::Eq { extract: Extract::Value { key: "oneway".to_owned(), sanitize: vec![] }, eq: "yes".to_owned() },
             TagSet::Obj,
         );
         let produced = producer.eval(&ctx(&obj, None)).unwrap();
