@@ -210,8 +210,22 @@ where
         .filter_map(|(&id, (_, mask))| resolved.get(&id).map(|w| (id, *mask, way(w, &node_ids, plan))))
         .for_each(|(id, mask, g)| route_way(id, mask, g));
 
-    let way_coords: FxHashMap<i64, Vec<(f64, f64)>> =
-        resolved.iter().map(|(&id, w)| (id, w.coords.clone())).collect();
+    // A second coordinate copy, only for ways relation-geometry assembly actually needs — skip
+    // entirely when no topic wants relation line/point/polygon (`relations()` would build nothing
+    // from it either way), and even then only clone the subset of `resolved` that's an actual
+    // relation member, not every kept way (relation members are typically a small fraction of
+    // `resolved` — e.g. `roads`-sized configs keep millions of ways but reference far fewer of them
+    // from any relation).
+    let want_relation_geom = !plan.relation_line_topics.is_empty()
+        || !plan.relation_point_topics.is_empty()
+        || !plan.relation_polygon_topics.is_empty();
+    let way_coords: FxHashMap<i64, Vec<(f64, f64)>> = if want_relation_geom && !ctx.rel_members.is_empty() {
+        let member_way_ids: FxHashSet<i64> =
+            ctx.rel_members.values().flat_map(|(members, _)| members.iter().map(|&(w, _)| w)).collect();
+        resolved.iter().filter(|(id, _)| member_way_ids.contains(id)).map(|(&id, w)| (id, w.coords.clone())).collect()
+    } else {
+        FxHashMap::default()
+    };
     let requests: Vec<(i64, Vec<(i64, MemberRole)>, u32)> =
         ctx.rel_members.iter().map(|(&id, (members, mask))| (id, members.clone(), *mask)).collect();
     let relations_batch = relations(&requests, &way_coords, plan);
