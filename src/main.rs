@@ -274,20 +274,20 @@ async fn main() -> anyhow::Result<()> {
 
     // Materialize phase: resolve way/relation geometry from `ctx` and route every row to its
     // writer channel — see `geom::materialize::run`'s own doc. Runs on the blocking pool (rayon
-    // work inside); routing itself is sequential (one thread), unlike the old design where it was
-    // naturally parallelized by running per-way inside the reader's own parallel geometry pass —
-    // a possible future optimization if routing throughput ever becomes the bottleneck.
+    // work inside); way rows are routed straight from `run`'s own parallel resolution pass (one
+    // `writers.route_way` call per way, from whichever rayon worker resolved it) instead of being
+    // collected into a `Vec` and drained afterward — keeps every way's output rows from being
+    // resident in memory at once on top of `ctx.node_coords`/the per-way coordinate cache.
     let t_mat = std::time::Instant::now();
     let materialize_plan = plan.clone();
     let writers = Arc::new(writers);
     let materialize_writers = writers.clone();
     let relations_batch = tokio::task::spawn_blocking(move || {
         let writers = materialize_writers;
-        let m = geom::materialize::run(&ctx, &materialize_plan);
-        writers.route_node_rows(m.node_rows);
-        for (_way_id, mask, g) in m.ways {
+        let m = geom::materialize::run(&ctx, &materialize_plan, |_way_id, mask, g| {
             writers.route_way(mask, g, &materialize_plan);
-        }
+        });
+        writers.route_node_rows(m.node_rows);
         m.relations
     })
     .await

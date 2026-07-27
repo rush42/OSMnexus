@@ -157,22 +157,29 @@ pub fn relations(
 
 /// Every row `run` produced, ready for `main.rs` to route to writer channels — the top-level
 /// entry point of the "materialize" phase: everything below this is `run`'s own implementation.
+/// Way shapes are *not* included here — `run` routes each way's `WayGeometry` to `route_way`
+/// itself, one way at a time as its own `par_iter` resolves it, instead of collecting every way's
+/// (already-serialized) shapes into one big `Vec` before any of it can be written out (that used to
+/// mean the whole run's way-output rows were resident in memory simultaneously, on top of
+/// `SelectionContext::node_coords` and the `resolved` map below — see this module's own history).
 pub struct MaterializedGeometry {
     /// `osm node id -> internal graph-vertex id` — empty unless `plan.any_way_graph`.
     pub node_ids: FxHashMap<i64, i64>,
     pub node_rows: Vec<NodeRow>,
-    /// One entry per way with a non-zero keep mask (relation-member-only ways are never
-    /// materialized for their own shapes — see `SelectionContext::way_refs`'s own doc) —
-    /// `(way_id, mask, shapes)`.
-    pub ways: Vec<(i64, u32, WayGeometry)>,
     pub relations: RelationGeomBatch,
 }
 
 /// Run the whole materialize phase over a finished `SelectionContext`: resolve every referenced
 /// way's coordinates once (shared between way-shape building and relation-geometry assembly, so a
 /// way that's both independently kept *and* a relation member is only resolved once), assign graph
-/// vertex ids if needed, and build every shape every topic asked for.
-pub fn run(ctx: &SelectionContext, plan: &GeometryPlan) -> MaterializedGeometry {
+/// vertex ids if needed, and build every shape every topic asked for. Each mask-!=0 way's shapes are
+/// handed to `route_way(way_id, mask, shapes)` as soon as they're built, from whichever `rayon`
+/// worker resolved that way — `route_way` must be safe to call concurrently (the caller's
+/// `TableWriters::route_way` already is, called the same way from the select phase's callbacks).
+pub fn run<F>(ctx: &SelectionContext, plan: &GeometryPlan, route_way: F) -> MaterializedGeometry
+where
+    F: Fn(i64, u32, WayGeometry) + Sync,
+{
     // Resolve every referenced way once — mask-!=0 ways (for their own shapes) and mask-0
     // relation-member-only ways (for relation-geometry assembly) alike. `resolve_geometry`
     // already applies the "too short to be a line" (<2 resolvable points) rule uniformly.
@@ -197,12 +204,11 @@ pub fn run(ctx: &SelectionContext, plan: &GeometryPlan) -> MaterializedGeometry 
         (FxHashMap::default(), Vec::new())
     };
 
-    let ways: Vec<(i64, u32, WayGeometry)> = ctx
-        .way_refs
+    ctx.way_refs
         .par_iter()
         .filter(|(_, (_, mask))| *mask != 0)
         .filter_map(|(&id, (_, mask))| resolved.get(&id).map(|w| (id, *mask, way(w, &node_ids, plan))))
-        .collect();
+        .for_each(|(id, mask, g)| route_way(id, mask, g));
 
     let way_coords: FxHashMap<i64, Vec<(f64, f64)>> =
         resolved.iter().map(|(&id, w)| (id, w.coords.clone())).collect();
@@ -210,5 +216,5 @@ pub fn run(ctx: &SelectionContext, plan: &GeometryPlan) -> MaterializedGeometry 
         ctx.rel_members.iter().map(|(&id, (members, mask))| (id, members.clone(), *mask)).collect();
     let relations_batch = relations(&requests, &way_coords, plan);
 
-    MaterializedGeometry { node_ids, node_rows, ways, relations: relations_batch }
+    MaterializedGeometry { node_ids, node_rows, relations: relations_batch }
 }
