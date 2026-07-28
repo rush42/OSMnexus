@@ -2,6 +2,57 @@
 
 Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
 
+- **Flat arenas + a sort-merge node locator, to replace the `id → coord` hashmap — DESIGNED, NOT
+  BUILT. Baseline is now 12211 MB** (germany-latest, `configs/tilda`, 4 threads, CSV, peak RSS),
+  down from 15366 MB after the three quick wins in the Unreleased changelog entry. Do this only if
+  that number is still unacceptable; it is a substantially larger change than what it replaces.
+  - **Shape.** Pass A writes way node refs into a flat `ref_ids: Vec<i64>` with a per-way
+    `offsets: Vec<u64>`, replacing `way_refs: FxHashMap<i64, (Vec<i64>, u32)>` and its per-way
+    allocation. A join index `Vec<(i64 node_id, u64 slot)>`, rayon-`par_sort_unstable`-ed by node
+    id, replaces the coord hashmap. Pass B allocates `coords` parallel to `ref_ids` (NaN sentinel =
+    missing; **not** all-zeros, since (0,0) is a valid coordinate) and merge-walks it: each node
+    blob covers a contiguous id range, so it `partition_point`s to its start and walks forward.
+    Materialize then reads each way's coords contiguously *in way order* straight from the arena.
+  - **What it removes:** the coord hashmap, `use_counts` entirely (runs of equal node id in the
+    sorted join index give the `shared` flag directly), the random hashmap probe per node ref in
+    `resolve_geometry`, and the f64-widened `resolved: FxHashMap<i64, OsmWay>` in `materialize.rs`.
+    Also one hash probe per node in the file — currently ~400 M probes into a ~100 M-entry map.
+    Rough budget: ~32 B/ref against today's ~75 B/ref equivalent.
+  - **Hazards found while designing it (each has bitten a similar rewrite before):**
+    - `shared` must be derived only from `mask != 0` slots. Relation-member-only ways don't
+      contribute to `use_counts` today, and deriving it from raw runs would silently over-cut ways.
+      Carry a per-slot `KEPT` flag byte.
+    - `use_counts` counts *occurrences*, not distinct ways — a closed way gives its own closing node
+      a count of 2. Run-length counting over slots reproduces that exactly; deduplicating by way id
+      would silently change the graph. Worth a roundabout regression test.
+    - Node blobs are **not** provably id-disjoint (`blob_index.rs` verifies element type per blob,
+      not id monotonicity across them), and a block can mix dense and sparse groups. So the
+      "disjoint slices, `split_at_mut`" version is unsound. Use `Vec<AtomicU64>` with `Relaxed`
+      stores — a plain `mov` on x86-64, zero measurable cost, correct unconditionally.
+    - `endpoints` must stay defined on **raw** `refs.first()/last()`, not the NaN-filtered
+      resolvable ones, or the graph-vertex count changes.
+    - Use `u64` slot indices, not `u32`: `(i64, u32)` pads to 16 B anyway so it's free, and
+      `europe-latest.osm.pbf` (in this repo) has enough way-nodes to overflow a u32 arena index.
+  - **Don't bother interleaving materialization into the node pass.** The original motivation for
+    this work was "free a way's coordinates once it's emitted", but way rows already stream out one
+    at a time (`790c02a02`), so nothing accumulates to free; and a flat arena can't return a
+    completed way's slice to the allocator anyway. Giving each way its own allocation so it *could*
+    be freed costs ~30 B/way of header + pointer to save ~8 B/ref, which at OSM's ~10 refs/way is a
+    wash before allocator churn. The payoff would be latency, not RAM. If a further RAM cut is
+    genuinely needed, mmap-spill the join index instead (it's written once sequentially and read
+    once in sorted order — a perfect page-cache candidate) for roughly a tenth of the complexity.
+  - **Verification note:** byte-identical CSV is not achievable and never was — row order varies
+    run to run. Compare sorted. If a config ever enables `"geometry": {"way": ["graph"]}`, internal
+    vertex ids also need canonicalizing (join `edges` to `nodes` and substitute `osm_id`).
+
+- **No shipped config enables `"geometry": {"way": ["graph"]}`.** `grep` finds it nowhere in
+  `configs/`, and `git log -S` finds it nowhere in the history either — so `plan.any_way_graph` is
+  false on every config in the repo, and `assign_node_ids`, `MaterializedGeometry::node_rows`, and
+  `node_ids` are all dead weight at runtime today. Worth knowing before optimizing any of them: on
+  paper `node_rows` looks like a ~2 GB buffer held across the whole materialize phase (~88 B per
+  graph vertex, drained only at the end of `main.rs`), and it is — but only for a config that
+  doesn't currently exist. Fix it when the graph path is actually used, not before.
+
 - **Decision tree / discrimination net for `categorize` — BUILT, MEASURED, LIVE (this note
   previously said "reverted"; it wasn't — `cats.tree` is wired into `categorize` today via
   `decision_tree::build` in `CategoriesFile::build_order`, `categories.rs`). Correcting the record
