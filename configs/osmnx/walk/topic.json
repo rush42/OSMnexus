@@ -1,5 +1,8 @@
 {
   "table": "walk",
+  "geometry": {
+    "way": ["line"]
+  },
   "outputs": {
     "highway": true,
     "name": true,

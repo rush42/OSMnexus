@@ -7,6 +7,7 @@ FROM rust:1-bookworm AS rust-builder
 WORKDIR /repo
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY benches ./benches
 RUN cargo build --release --bin osmnexus --bin dag_json
 
 FROM node:20-bookworm-slim

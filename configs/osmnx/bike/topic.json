@@ -1,5 +1,8 @@
 {
   "table": "bike",
+  "geometry": {
+    "way": ["line"]
+  },
   "outputs": {
     "highway": true,
     "name": true,
