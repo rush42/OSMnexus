@@ -28,6 +28,9 @@ dhat = { version = "0.3.3", optional = true }
 memmap2 = "0.9"
 tempfile = "3"
 boomphf = "0.6"
+arrow-array = "53"
+arrow-schema = "53"
+parquet = { version = "53", features = ["arrow"] }
 
 [dev-dependencies]
 criterion = "0.5"

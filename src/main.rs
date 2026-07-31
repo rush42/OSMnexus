@@ -182,6 +182,12 @@ async fn main() -> anyhow::Result<()> {
             info!("GeoJSONSeq output → {}/ (one {{topic}}.geojsonseq Feature stream per topic)", cfg.out_dir);
             (None, 1)
         }
+        Output::Parquet => {
+            std::fs::create_dir_all(&cfg.out_dir)
+                .with_context(|| format!("creating output dir {}", cfg.out_dir))?;
+            info!("Parquet output → {}/ (CSV staging files + one {{topic}}.parquet per topic)", cfg.out_dir);
+            (None, 1)
+        }
     };
 
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
@@ -385,6 +391,14 @@ async fn main() -> anyhow::Result<()> {
         output::geojson::write_geojsonseq_from_csv(&out_dir, &tables)?;
         for table in &tables {
             info!("Wrote {}/{table}.geojsonseq", cfg.out_dir);
+        }
+    }
+
+    if cfg.output == Output::Parquet {
+        info!("Building Parquet from CSV output...");
+        output::parquet::write_parquet_from_csv(&out_dir, &tables)?;
+        for table in &tables {
+            info!("Wrote {}/{table}.parquet", cfg.out_dir);
         }
     }
 
