@@ -1,0 +1,39 @@
+{
+  "table": "trains",
+  "geometry": {
+    "node": ["point"],
+    "relation": ["line"]
+  },
+  "outputs": {
+    "type": true,
+    "route": true,
+    "public_transport": true,
+    "railway": true,
+    "name": true,
+    "ref": true,
+    "colour": true,
+    "operator": true,
+    "network": true,
+    "from": true,
+    "to": true,
+    "via": true,
+    "interval": true,
+    "duration": true,
+    "usage": true,
+    "service": true,
+    "electrified": true,
+    "gauge": true,
+    "maxspeed": true,
+    "tracks": true,
+    "bridge": {
+      "name": "yes_flag"
+    },
+    "tunnel": {
+      "name": "yes_flag"
+    },
+    "layer": true
+  },
+  "defaults": {
+    "minzoom": 0
+  }
+}

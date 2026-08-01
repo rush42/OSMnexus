@@ -1,0 +1,8 @@
+{
+  "condition": {
+    "and": [
+      { "tag": "railway", "eq": "station" },
+      { "not": { "tag": "station", "in": ["subway", "light_rail"] } }
+    ]
+  }
+}

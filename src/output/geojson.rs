@@ -4,9 +4,11 @@
 //! tooling (e.g. the live editor) that wants one self-contained file instead of a table pair.
 //! Falls back to the shared `edges.csv` graph table for a topic that declared `"way": ["graph"]`
 //! instead of `["line"]` — that's the one shape not stored per-topic (see `EDGE_TABLE`'s own doc) —
-//! surfacing each way's intersection-split segments plus the node shared between consecutive
-//! segments of the same way as a "cut point", so callers can see exactly where the graph broke a
-//! way apart. A topic with per-topic geometry tables has no split points, so `cutPoints` is empty.
+//! surfacing each way's intersection-split segments plus two kinds of point in `cutPoints`, each
+//! tagged `"kind"`: `"cut"` for the node shared between consecutive segments of the same way (where
+//! the graph broke it apart), and `"endpoint"` for the way's own two ends (which may or may not
+//! coincide with another way — the graph shape alone doesn't say). A topic with per-topic geometry
+//! tables has no split points, so `cutPoints` is empty.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -276,9 +278,26 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
                                 cut_points.push(json!({
                                     "type": "Feature",
                                     "geometry": { "type": "Point", "coordinates": start },
-                                    "properties": { "osm_id": osm_id },
+                                    "properties": { "osm_id": osm_id, "kind": "cut" },
                                 }));
                             }
+                        }
+                        // The way's own two ends — never a "cut" (that's reserved for splits
+                        // *within* this way, see above), but still worth surfacing since they may
+                        // coincide with another way's endpoint or a cut point of its own.
+                        if let Some(first) = segments.first().and_then(|s| s.coordinates.first()) {
+                            cut_points.push(json!({
+                                "type": "Feature",
+                                "geometry": { "type": "Point", "coordinates": first },
+                                "properties": { "osm_id": osm_id, "kind": "endpoint" },
+                            }));
+                        }
+                        if let Some(last) = segments.last().and_then(|s| s.coordinates.last()) {
+                            cut_points.push(json!({
+                                "type": "Feature",
+                                "geometry": { "type": "Point", "coordinates": last },
+                                "properties": { "osm_id": osm_id, "kind": "endpoint" },
+                            }));
                         }
                     }
                 }

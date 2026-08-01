@@ -1,0 +1,3 @@
+{
+  "yes_flag": { "mapping": { "yes": true }, "on_miss": "drop" }
+}

@@ -5,6 +5,14 @@ const SOURCE_ID = "live-editor-features";
 const CUT_POINTS_SOURCE_ID = "live-editor-cut-points";
 const DRAW_SOURCE_ID = "bbox-draw";
 
+const CUT_POINT_COLOR_EXPRESSION = [
+  "match",
+  ["get", "kind"],
+  "cut",
+  "#dc2626",
+  "#000000",
+] as unknown as maplibregl.ExpressionSpecification;
+
 function boxToPolygon(a: [number, number], b: [number, number]): GeoJSON.Feature {
   const west = Math.min(a[0], b[0]);
   const east = Math.max(a[0], b[0]);
@@ -81,6 +89,36 @@ function forEachCoordinate(geometry: GeoJSON.Geometry, visit: (lon: number, lat:
     }
   };
   if ("coordinates" in geometry) walk(geometry.coordinates);
+}
+
+// Derives point features at each line feature's endpoints (`LineString`/`MultiLineString` only) —
+// the "Show intersections" fallback for topics that emit `"line"` geometry (whole, uncut ways)
+// instead of `"graph"` (intersection-split segments, whose real cut points come from the backend
+// via `cutPoints` — see `output/geojson.rs`). Not verified intersections, just where two ways'
+// endpoints happen to land on the same coordinate — the best a `"line"`-only topic can show without
+// the graph relationship, but it's what overlapping endpoints visually read as anyway.
+function lineEndpoints(fc: GeoJSON.FeatureCollection): GeoJSON.FeatureCollection {
+  const points: GeoJSON.Feature[] = [];
+  for (const feature of fc.features) {
+    const { geometry, properties } = feature;
+    const lines =
+      geometry.type === "LineString"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiLineString"
+          ? geometry.coordinates
+          : [];
+    for (const coords of lines) {
+      if (coords.length < 2) continue;
+      for (const c of [coords[0], coords[coords.length - 1]]) {
+        points.push({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: c },
+          properties: { ...properties, kind: "endpoint" },
+        });
+      }
+    }
+  }
+  return { type: "FeatureCollection", features: points };
 }
 
 // Excludes features whose `topic` property is in `hiddenTopics`; when `isolateCategory` is set
@@ -189,7 +227,14 @@ export default function Map({
         id: `${CUT_POINTS_SOURCE_ID}-point`,
         type: "circle",
         source: CUT_POINTS_SOURCE_ID,
-        paint: { "circle-color": "#000000", "circle-radius": 3, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1 },
+        // `"kind": "cut"` (a graph-shape mid-way split, see `output/geojson.rs`) in red, everything
+        // else — `"endpoint"` (a way's own two ends, real or derived — see `lineEndpoints`) — black.
+        paint: {
+          "circle-color": CUT_POINT_COLOR_EXPRESSION,
+          "circle-radius": 3,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1,
+        },
       });
 
       const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: "320px" });
@@ -305,9 +350,16 @@ export default function Map({
 
   useEffect(() => {
     if (!ready) return;
-    const fc = cutPoints ?? { type: "FeatureCollection" as const, features: [] };
+    // Real graph cut points (topics with `"graph"` geometry) take priority; falls back to
+    // derived line endpoints (see `lineEndpoints`) when the backend gave us none, e.g. every
+    // visible topic only declared `"line"`.
+    const fc = cutPoints?.features.length
+      ? cutPoints
+      : data
+        ? lineEndpoints(data)
+        : { type: "FeatureCollection" as const, features: [] };
     (mapRef.current!.getSource(CUT_POINTS_SOURCE_ID) as maplibregl.GeoJSONSource).setData(fc);
-  }, [ready, cutPoints]);
+  }, [ready, cutPoints, data]);
 
   useEffect(() => {
     if (!ready) return;
