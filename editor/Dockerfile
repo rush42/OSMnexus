@@ -12,7 +12,7 @@ RUN cargo build --release --bin osmnexus --bin dag_json
 
 FROM node:20-bookworm-slim
 # osmium-tool: the one-off "all ways" ingest pass still extracts/reads a PBF. postgresql-client:
-# `psql`, used by vite.config.ts to read the base region's bbox for the map's initial view.
+# `psql`, used by lib/liveEditor.ts to read the base region's bbox for the map's initial view.
 RUN apt-get update && apt-get install -y --no-install-recommends osmium-tool postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 

@@ -195,6 +195,18 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   (`edges`/`nodes`), relations, and node-only topics — the live editor only ever needed way
   line-geometry preview.
 
+- **Read auxiliary/annotation data into the live editor.** The `annotations jsonb` column that
+  already exists on every tag table (`create_tag_table_sql`, `src/db/schema.rs`) is *not* user or
+  editorial metadata — it's engine-internal bookkeeping the topic pipeline writes during tag
+  transforms (e.g. `_side`/`_prefix` markers recording how a side-split/cloned feature was derived,
+  readable via `Filter::AnnotationEq`). `src/live_source.rs`'s `fetch_ways()` doesn't even select it
+  today — only `osm_id`, `produced`, and geometry/length. There is no existing user-facing
+  annotation/notes/QA-flag table anywhere in the repo. To actually support auxiliary data (editorial
+  notes, QA flags, custom attributes) added by users of the live editor, this needs building from
+  scratch: a new table (e.g. `{table}_annotations(osm_id, ...)`), a join added to `fetch_ways()`,
+  and threading the result through to the frontend/vite plugin (`editor/vite.config.ts`). Not
+  started.
+
 - **Promote the jsonb tag columns to named columns (generated per topic).** The four data columns
   (`osm`, `derived`, `private`, `meta`) are all flat `string→scalar` maps whose full key universe is
   statically knowable from each topic's JSON (`osm_fields` outputs, deriver keys + their const
@@ -217,3 +229,11 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
     is handled by drop+recreate — no online `ALTER` concern.
   - **Composes with the relations→ways→nodes plan:** each per-kind topic table just generates its own
     column set.
+
+- **Root `Dockerfile` (standalone one-container live-editor demo) is stale.** It bundles a single
+  container with no Postgres service, but the live editor now requires `db`
+  (`editor/docker-compose.yml`) plus a one-time "all ways" ingest pass — see the Next.js migration
+  changelog entry. Needs either a Postgres service added to that image (`postgres` as a second
+  process, or switch it to `docker compose`-based too) plus the ingest command run at build/start
+  time, or retiring it in favor of `editor/docker-compose.yml` everywhere. Low urgency — it's a
+  convenience demo image, not the primary dev path.

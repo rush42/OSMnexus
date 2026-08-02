@@ -1,3 +1,5 @@
+"use client";
+
 import { useEffect, useRef } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { json } from "@codemirror/lang-json";
