@@ -57,6 +57,11 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Config::parse();
 
+    match cfg.source {
+        config::Source::Pbf => anyhow::ensure!(!cfg.pbf_file.is_empty(), "a .osm.pbf file is required for --source pbf"),
+        config::Source::Postgis => anyhow::ensure!(cfg.bbox.is_some(), "--bbox is required for --source postgis"),
+    }
+
     osmnexus::traffic::set_left_hand_traffic(cfg.left_hand_traffic);
     if cfg.left_hand_traffic {
         info!("Left-hand traffic: forward/backward directed tags read from the opposite side");
@@ -169,14 +174,40 @@ async fn main() -> anyhow::Result<()> {
     let writers = Arc::new(TableWriters::spawn(cfg.output, &pool, &out_dir, w, &tables, &table_refs, &plan));
     mem_snapshot("config+writers");
 
+    // Arc'd here (rather than right before the PBF select phase, where this used to live) so the
+    // postgis live-editor branch below — which needs neither the PBF reader nor its callbacks —
+    // can share both without duplicating the wrap.
+    let plan = Arc::new(plan);
+    let runners = Arc::new(runners);
+
+    if cfg.source == config::Source::Postgis {
+        // Live-editor path: no PBF, no node-coord resolution — read ways (tags + already-resolved
+        // geometry) straight out of Postgres for this bbox and run just the tag/filter/producer
+        // pipeline (see `live_source`'s own doc for why this exists).
+        let n = osmnexus::live_source::run(&cfg, runners.clone(), plan.clone(), writers.clone()).await?;
+        info!("Classified {n} ways from postgis source '{}'", cfg.source_table);
+
+        let writers = Arc::try_unwrap(writers)
+            .unwrap_or_else(|_| unreachable!("live_source::run's writers clone is dropped by the time it returns"));
+        let (writers, _select_counts) = writers.finish_select().await?;
+        writers.finish_materialize(plan.any_way_graph).await?;
+
+        if cfg.output == Output::GeoJson {
+            info!("Building GeoJSON from CSV output...");
+            output::geojson::write_geojson_from_csv(&out_dir, &tables)?;
+            for table in &tables {
+                info!("Wrote {}/{table}.geojson", cfg.out_dir);
+            }
+        }
+        return Ok(());
+    }
+
     // Select phase: the reader decodes the PBF once and drives the classify callbacks below,
     // streaming tag rows out as it goes (side effect — see `osm::reader`'s own doc for why that
     // can't wait), and returns a `SelectionContext` once finished. Runs on the blocking pool
     // (CPU-bound rayon work).
     let pbf_file = cfg.pbf_file.clone();
-    let plan = Arc::new(plan);
     // Shared, thread-safe state captured by the reader's callbacks (called from rayon workers).
-    let runners = Arc::new(runners);
     let producer_runners = runners.clone();
     let producer_plan = plan.clone();
     let producer_writers = writers.clone();

@@ -10,8 +10,9 @@ pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
 #[derive(Parser, Debug)]
 #[command(about = "Data-driven OSM PBF topic processing pipeline → PostgreSQL")]
 pub struct Config {
-    /// Path to the .osm.pbf file
-    #[arg(env = "PBF_FILE")]
+    /// Path to the .osm.pbf file. Required for `--source pbf` (the default); ignored/omittable for
+    /// `--source postgis`, which reads elements from the database instead (see `Source`).
+    #[arg(env = "PBF_FILE", default_value = "")]
     pub pbf_file: String,
 
     /// Config directory: a self-contained folder of topic dirs plus a shared config-root library
@@ -95,6 +96,32 @@ pub struct Config {
     /// declare `graph`.
     #[arg(long, value_enum, default_value_t = TopicEdgeMode::Pgrouting)]
     pub topic_edges: TopicEdgeMode,
+
+    /// Where to read elements from: `pbf` decodes `pbf_file` as usual; `postgis` instead reads
+    /// already-loaded ways (tags + geometry) from `source_table`/`source_table`_geom in the
+    /// database addressed by the `db_*` fields, filtered to `bbox` — no PBF decode, no node-coord
+    /// resolution (the geometry is already known). Built for the live editor: a one-time "all ways"
+    /// pass loads a whole region into Postgres (see `configs/live_raw/topic.json`), then every bbox
+    /// edit re-runs only the tiny per-topic tag/filter/producer pipeline over that bbox's rows.
+    #[arg(long, value_enum, default_value_t = Source::Pbf)]
+    pub source: Source,
+
+    /// Bbox filter for `--source postgis`, as `min_lon,min_lat,max_lon,max_lat` (WGS84). Required
+    /// when `--source postgis` is set; ignored otherwise.
+    #[arg(long)]
+    pub bbox: Option<String>,
+
+    /// Table holding the "all ways" pass's raw tag rows for `--source postgis` (its geometry
+    /// sibling is `{source_table}_geom`, per `schema::way_geom_table`) — the output `table` of
+    /// whatever topic.json was used for that pass, e.g. `live_raw`.
+    #[arg(long, default_value = "live_raw")]
+    pub source_table: String,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Source {
+    Pbf,
+    Postgis,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]

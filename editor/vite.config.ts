@@ -14,15 +14,25 @@ const PIPELINE_BIN = process.env.PIPELINE_BIN_PATH || path.join(REPO_DIR, "targe
 // Emits a topic's output Producer trees as node/edge JSON for the tree view — see `src/bin/dag_json.rs`.
 const DAG_JSON_BIN = process.env.DAG_JSON_BIN_PATH || path.join(REPO_DIR, "target", "release", "dag_json");
 const CONFIGS_ROOT = path.join(REPO_DIR, "configs");
-const BASE_PBF = process.env.BASE_PBF_PATH || path.join(EDITOR_DIR, "fixtures", "tiny.osm.pbf");
-const EXTRACT_DIR = path.join(EDITOR_DIR, "live-extract");
+// The table an "all ways" pass loaded a whole region into (tags in `SOURCE_TABLE`, geometry in
+// `SOURCE_TABLE`_geom — see `configs/live_raw/topic.json` and `src/live_source.rs`). A bbox
+// selection is now just a spatial query against this table, not an `osmium extract` + full PBF
+// reparse — see this file's own former `extractBbox`/`runPipeline`.
+const SOURCE_TABLE = process.env.LIVE_SOURCE_TABLE || "live_raw";
+// DB connection for both the bounds query below and the pipeline subprocess (`osmnexus --source
+// postgis` reads the same `PG*` env vars — see `src/config.rs`).
+const PG_ENV = {
+  PGHOST: process.env.PGHOST || "",
+  PGDATABASE: process.env.PGDATABASE || "postgres",
+  PGUSER: process.env.PGUSER || "postgres",
+  PGPASSWORD: process.env.PGPASSWORD || "",
+  PGPORT: process.env.PGPORT || "5432",
+};
 // Upper bound on a shift-dragged bbox's side length (meters), configurable via docker-compose so a
-// deployment with a bigger base PBF (and tolerance for slower extracts) can raise it.
+// deployment with a bigger base region (and tolerance for slower queries) can raise it.
 const MAX_BBOX_M = Number(process.env.MAX_BBOX_M) || 10000;
 
-// The extract currently in use for the map/pipeline. Starts out unset until
-// the user picks a bbox (or, for the bundled fixture, defaults to it).
-let currentExtractPath: string | null = null;
+// The bbox currently in use for the map/pipeline. Starts out unset until the user picks one.
 let currentBounds: [number, number, number, number] | null = null;
 
 // A config is any non-`_`-prefixed directory directly under CONFIGS_ROOT (configs/tilda,
@@ -59,9 +69,9 @@ async function ensureConfigSelected(): Promise<string> {
   return currentConfigDir;
 }
 
-function run(bin: string, args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; message: string }> {
+function run(bin: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ ok: true; stdout: string } | { ok: false; message: string }> {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: env ? { ...process.env, ...env } : process.env });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
@@ -74,31 +84,36 @@ function run(bin: string, args: string[]): Promise<{ ok: true; stdout: string } 
   });
 }
 
-async function baseFileBounds(): Promise<[number, number, number, number]> {
-  const result = await run("osmium", ["fileinfo", "-e", "-j", BASE_PBF]);
+// One `-tAc` (tuples-only, unaligned) query against the base region database via `psql`, using the
+// same `PG*` connection env the pipeline binary reads (see `PG_ENV`/`src/db/pool.rs`).
+async function psqlQuery(sql: string): Promise<string> {
+  const args = ["-tAc", sql];
+  if (PG_ENV.PGHOST) args.unshift("-h", PG_ENV.PGHOST, "-p", PG_ENV.PGPORT, "-U", PG_ENV.PGUSER, "-d", PG_ENV.PGDATABASE);
+  else args.unshift("-U", PG_ENV.PGUSER, "-d", PG_ENV.PGDATABASE);
+  const result = await run("psql", args, PG_ENV);
   if (!result.ok) throw new Error(result.message);
-  const info = JSON.parse(result.stdout);
-  return info.data.bbox;
+  return result.stdout.trim();
 }
 
-async function extractBbox(bounds: [number, number, number, number]): Promise<{ ok: true } | { ok: false; message: string }> {
-  await fs.mkdir(EXTRACT_DIR, { recursive: true });
-  const outPath = path.join(EXTRACT_DIR, "extract.osm.pbf");
-  const result = await run("osmium", [
-    "extract",
-    "-b",
-    bounds.join(","),
-    "-s",
-    "complete_ways",
-    "-o",
-    outPath,
-    "--overwrite",
-    BASE_PBF,
-  ]);
-  if (!result.ok) return result;
-  currentExtractPath = outPath;
+// The bbox (WGS84) covering every way the "all ways" pass loaded — used only to center the map on
+// first load, before the user has drawn a bbox of their own.
+async function baseTableBounds(): Promise<[number, number, number, number]> {
+  const row = await psqlQuery(
+    `SELECT ST_XMin(e)||','||ST_YMin(e)||','||ST_XMax(e)||','||ST_YMax(e) ` +
+      `FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) e FROM ${SOURCE_TABLE}_geom) s`,
+  );
+  const bbox = row.split(",").map(Number);
+  if (bbox.length !== 4 || bbox.some((n) => Number.isNaN(n))) {
+    throw new Error(`could not read bounds from ${SOURCE_TABLE}_geom — did you run the "all ways" ingest pass?`);
+  }
+  return bbox as [number, number, number, number];
+}
+
+// Selecting a bbox used to shell out to `osmium extract` (cut a fresh PBF slice, then re-parse it
+// from scratch on every single edit). Now it's just recording the bounds — the pipeline queries
+// `SOURCE_TABLE`/`SOURCE_TABLE`_geom for exactly this bbox on every run instead (see `runPipeline`).
+function selectBbox(bounds: [number, number, number, number]): void {
   currentBounds = bounds;
-  return { ok: true };
 }
 
 function readBody(req: any): Promise<string> {
@@ -117,9 +132,27 @@ function sendJson(res: any, status: number, body: unknown) {
   res.end(text);
 }
 
-async function runPipeline(pbfPath: string, outDir: string): Promise<{ ok: true } | { ok: false; message: string }> {
+async function runPipeline(bounds: [number, number, number, number], outDir: string): Promise<{ ok: true } | { ok: false; message: string }> {
   const configDir = await ensureConfigSelected();
-  const result = await run(PIPELINE_BIN, [pbfPath, "--config-dir", configDir, "--output", "geojson", "--out-dir", outDir, "--linear-classify"]);
+  const result = await run(
+    PIPELINE_BIN,
+    [
+      "--source",
+      "postgis",
+      "--source-table",
+      SOURCE_TABLE,
+      "--bbox",
+      bounds.join(","),
+      "--config-dir",
+      configDir,
+      "--output",
+      "geojson",
+      "--out-dir",
+      outDir,
+      "--linear-classify",
+    ],
+    PG_ENV,
+  );
   return result.ok ? { ok: true } : result;
 }
 
@@ -222,12 +255,12 @@ async function topicFilePath(topic: string) {
 // FeatureCollection — shared by the category-edit and topic-config-edit endpoints, which only
 // differ in which file they write beforehand.
 async function runPipelineAndRespond(res: any) {
-  if (!currentExtractPath) {
-    return sendJson(res, 400, { error: "no extract selected yet: pick a bbox on the map first" });
+  if (!currentBounds) {
+    return sendJson(res, 400, { error: "no bbox selected yet: pick a bbox on the map first" });
   }
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-"));
   const t0 = performance.now();
-  const result = await runPipeline(currentExtractPath, outDir);
+  const result = await runPipeline(currentBounds, outDir);
   const pipelineMs = Math.round(performance.now() - t0);
   if (!result.ok) {
     return sendJson(res, 400, { error: result.message });
@@ -253,13 +286,16 @@ function liveEditorApi(): Plugin {
         if (url.pathname === "/api/bounds" && req.method === "GET") {
           if (currentBounds) return sendJson(res, 200, { bounds: currentBounds, selected: true, maxBboxM: MAX_BBOX_M });
           try {
-            const bounds = await baseFileBounds();
+            const bounds = await baseTableBounds();
             return sendJson(res, 200, { bounds, selected: false, maxBboxM: MAX_BBOX_M });
           } catch (err) {
             return sendJson(res, 500, { error: String(err) });
           }
         }
 
+        // Historically this shelled out to `osmium extract` (cut a PBF slice); now it's just
+        // recording the bbox — see `selectBbox`'s own doc. Endpoint path/shape kept the same so the
+        // frontend doesn't need to change.
         if (url.pathname === "/api/extract" && req.method === "POST") {
           const body = await readBody(req);
           let payload: { bounds: [number, number, number, number] };
@@ -273,9 +309,8 @@ function liveEditorApi(): Plugin {
             return sendJson(res, 400, { error: "bounds must be [west, south, east, north]" });
           }
           const t0 = performance.now();
-          const result = await extractBbox(bounds as [number, number, number, number]);
+          selectBbox(bounds as [number, number, number, number]);
           const extractMs = Math.round(performance.now() - t0);
-          if (!result.ok) return sendJson(res, 400, { error: result.message });
           return sendJson(res, 200, { bounds: currentBounds, extractMs });
         }
 

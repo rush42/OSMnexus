@@ -1,8 +1,28 @@
 services:
+  # Holds the "all ways" pass's output: `live_raw` (tags) + `live_raw_geom` (geometry, GiST-indexed)
+  # — see `configs/live_raw/topic.json`. Populate it once with:
+  #   docker compose run --rm editor /opt/osmnexus/osmnexus /data/base.osm.pbf \
+  #     --config-dir configs/live_raw --output pg --create-index
+  # (or a host-built `target/release/osmnexus` pointed at the same DB). The editor's bbox
+  # selection then queries this table directly instead of re-running `osmium extract` + a full PBF
+  # reparse per edit (see `src/live_source.rs`).
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      - POSTGRES_DB=${PGDATABASE:-postgres}
+      - POSTGRES_USER=${PGUSER:-postgres}
+      - POSTGRES_PASSWORD=${PGPASSWORD:-postgres}
+    volumes:
+      - live_raw_db:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
   editor:
     build:
       context: ..
       dockerfile: editor/Dockerfile
+    depends_on:
+      - db
     volumes:
       - ..:/repo
       # Anonymous volume on top of the repo bind mount: node_modules is built into the image
@@ -14,9 +34,18 @@ services:
     environment:
       - BASE_PBF_PATH=/data/base.osm.pbf
       - MAX_BBOX_M=${MAX_BBOX_M:-10000}
+      - LIVE_SOURCE_TABLE=${LIVE_SOURCE_TABLE:-live_raw}
+      - PGHOST=db
+      - PGPORT=5432
+      - PGDATABASE=${PGDATABASE:-postgres}
+      - PGUSER=${PGUSER:-postgres}
+      - PGPASSWORD=${PGPASSWORD:-postgres}
       # Uncomment (or set on the CLI) to use host-built binaries instead of the image's baked-in
       # ones, for iterating on Rust code without a full image rebuild:
       - PIPELINE_BIN_PATH=/repo/target/release/osmnexus
       - DAG_JSON_BIN_PATH=/repo/target/release/dag_json
     ports:
       - "5173:5173"
+
+volumes:
+  live_raw_db:
