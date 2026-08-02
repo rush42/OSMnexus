@@ -15,7 +15,10 @@ services:
     volumes:
       - live_raw_db:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Host-side port only, for connecting a client (psql, the one-off ingest run) from outside
+      # the compose network; mapped off the default 5432 since a host Postgres often already owns
+      # it. The editor container always talks to `db:5432` directly, unaffected by this mapping.
+      - "${DB_HOST_PORT:-5433}:5432"
 
   editor:
     build:
