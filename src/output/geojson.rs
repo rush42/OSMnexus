@@ -1,16 +1,19 @@
-//! Builds one `<table>.geojson` FeatureCollection per topic from the CSV output `--output geojson`
-//! shares with `--output csv` (`{table}.csv` tag rows + this topic's own geometry table(s), see
-//! `db::schema`'s `way_geom_table`/`point_table`/`polygon_table`/`relation_*_table`) — for local
-//! tooling (e.g. the live editor) that wants one self-contained file instead of a table pair.
+//! Builds one `<table>.geojsonseq` newline-delimited GeoJSON Feature stream (RFC 8142) per topic
+//! from the CSV output `--output geojsonseq` shares with `--output csv` (`{table}.csv` tag rows +
+//! this topic's own geometry table(s), see `db::schema`'s
+//! `way_geom_table`/`point_table`/`polygon_table`/`relation_*_table`) — for local tooling (e.g. the
+//! live editor) that wants one self-contained file instead of a table pair.
 //! Falls back to the shared `edges.csv` graph table for a topic that declared `"way": ["graph"]`
 //! instead of `["line"]` — that's the one shape not stored per-topic (see `EDGE_TABLE`'s own doc) —
-//! surfacing each way's intersection-split segments plus two kinds of point in `cutPoints`, each
-//! tagged `"kind"`: `"cut"` for the node shared between consecutive segments of the same way (where
-//! the graph broke it apart), and `"endpoint"` for the way's own two ends (which may or may not
-//! coincide with another way — the graph shape alone doesn't say). A topic with per-topic geometry
-//! tables has no split points, so `cutPoints` is empty.
+//! surfacing each way's intersection-split segments plus two kinds of cut-point Feature interleaved
+//! into the same stream, each tagged `"kind"` in `properties`: `"cut"` for the node shared between
+//! consecutive segments of the same way (where the graph broke it apart), and `"endpoint"` for the
+//! way's own two ends (which may or may not coincide with another way — the graph shape alone
+//! doesn't say). A topic with per-topic geometry tables has no split points, so no `"kind"`-tagged
+//! features are emitted for it.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
@@ -169,9 +172,10 @@ fn base_properties(record: &csv::StringRecord, osm_id: i64) -> Map<String, Value
 /// Reads `{table}.csv` (per `tables`) plus whichever of this topic's own geometry tables exist
 /// (`{table}_geom`/`_point`/`_polygon` for way/node shapes, `{table}_relation_geom`/
 /// `_relation_point`/`_relation_polygon` for relation shapes, or the shared `edges.csv`/`nodes.csv`
-/// for a topic that declared `"way": ["graph"]` instead) and writes `{table}.geojson` alongside
-/// them: `{"type": "FeatureCollection", "features": [...], "cutPoints": {...}}`.
-pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
+/// for a topic that declared `"way": ["graph"]` instead) and writes `{table}.geojsonseq` alongside
+/// them: one GeoJSON `Feature` object per line (RFC 8142), cut points interleaved in with
+/// `properties.kind` set to `"cut"`/`"endpoint"`.
+pub fn write_geojsonseq_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
     debug_assert_eq!(TAG_COLUMNS, "osm_id,osm_type,id,category,produced,annotations,meta");
     let edges_path = out_dir.join("edges.csv");
     let edges = if edges_path.exists() { read_edges(&edges_path)? } else { HashMap::new() };
@@ -189,7 +193,6 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
 
         let mut reader = csv::Reader::from_path(out_dir.join(format!("{table}.csv")))?;
         let mut features = Vec::new();
-        let mut cut_points = Vec::new();
 
         for result in reader.records() {
             let record = result?;
@@ -275,7 +278,7 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
                         }
                         for segment in segments.iter().skip(1) {
                             if let Some(&start) = segment.coordinates.first() {
-                                cut_points.push(json!({
+                                features.push(json!({
                                     "type": "Feature",
                                     "geometry": { "type": "Point", "coordinates": start },
                                     "properties": { "osm_id": osm_id, "kind": "cut" },
@@ -286,14 +289,14 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
                         // *within* this way, see above), but still worth surfacing since they may
                         // coincide with another way's endpoint or a cut point of its own.
                         if let Some(first) = segments.first().and_then(|s| s.coordinates.first()) {
-                            cut_points.push(json!({
+                            features.push(json!({
                                 "type": "Feature",
                                 "geometry": { "type": "Point", "coordinates": first },
                                 "properties": { "osm_id": osm_id, "kind": "endpoint" },
                             }));
                         }
                         if let Some(last) = segments.last().and_then(|s| s.coordinates.last()) {
-                            cut_points.push(json!({
+                            features.push(json!({
                                 "type": "Feature",
                                 "geometry": { "type": "Point", "coordinates": last },
                                 "properties": { "osm_id": osm_id, "kind": "endpoint" },
@@ -304,15 +307,13 @@ pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Resu
             }
         }
 
-        let feature_collection = json!({
-            "type": "FeatureCollection",
-            "features": features,
-            "cutPoints": { "type": "FeatureCollection", "features": cut_points },
-        });
-        std::fs::write(
-            out_dir.join(format!("{table}.geojson")),
-            serde_json::to_vec(&feature_collection)?,
-        )?;
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(
+            out_dir.join(format!("{table}.geojsonseq")),
+        )?);
+        for feature in &features {
+            serde_json::to_writer(&mut writer, feature)?;
+            writer.write_all(b"\n")?;
+        }
     }
     Ok(())
 }

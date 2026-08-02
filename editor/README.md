@@ -54,7 +54,7 @@ until that's updated.
 
 It's a thin wrapper around the same [`osmnexus`](../README.md) binary: saving an edit shells out
 to the release build with `--source postgis --bbox <the selected bbox> --config-dir <the selected
-configs/* dir> --output geojson`, then the map reloads the resulting `<topic>.geojson` files.
+configs/* dir> --output geojsonseq`, then the map reloads the resulting `<topic>.geojsonseq` files.
 
 A **config selector** (top of the topics panel) lists every directory under `configs/` (`tilda`,
 `osmnx`, `public_transport`, ...) and lets you switch between them; whichever one is selected is

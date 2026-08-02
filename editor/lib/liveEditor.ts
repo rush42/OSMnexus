@@ -168,7 +168,7 @@ async function runPipeline(bounds: [number, number, number, number], outDir: str
       "--config-dir",
       configDir,
       "--output",
-      "geojson",
+      "geojsonseq",
       "--out-dir",
       outDir,
       "--linear-classify",
@@ -204,24 +204,30 @@ export async function getConfigs(): Promise<{ configs: string[]; current: string
 }
 
 // The pipeline itself joins tag rows to edge geometries (by osm_id) and reprojects back to WGS84
-// — see src/output/geojson.rs — so this just reads its per-topic output back and merges every
-// topic into one FeatureCollection, stamping a `topic` property onto each feature/cut point since
-// category *names* aren't unique across topics (e.g. osmnx's bike/walk/drive all use "all").
+// — see src/output/geojson.rs — so this just reads its per-topic output back (a newline-delimited
+// GeoJSON Feature stream, RFC 8142) and merges every topic into one FeatureCollection, stamping a
+// `topic` property onto each feature/cut point since category *names* aren't unique across topics
+// (e.g. osmnx's bike/walk/drive all use "all"). Cut points are interleaved into the same stream,
+// tagged `properties.kind` of `"cut"`/`"endpoint"` (see geojson.rs), and split back out here.
 async function readMergedFeatureCollections(outDir: string, topics: string[]) {
   const features: GeoJSON.Feature[] = [];
   const cutPoints: GeoJSON.Feature[] = [];
   for (const topic of topics) {
-    let fc: { features: GeoJSON.Feature[]; cutPoints?: { features: GeoJSON.Feature[] } };
+    let text: string;
     try {
-      fc = JSON.parse(await fs.readFile(path.join(outDir, `${topic}.geojson`), "utf-8"));
+      text = await fs.readFile(path.join(outDir, `${topic}.geojsonseq`), "utf-8");
     } catch {
       continue; // topic produced no rows for this extract
     }
-    for (const f of fc.features) {
-      features.push({ ...f, properties: { topic, ...f.properties } });
-    }
-    for (const f of fc.cutPoints?.features ?? []) {
-      cutPoints.push({ ...f, properties: { topic, ...f.properties } });
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      const f: GeoJSON.Feature = JSON.parse(line);
+      const stamped = { ...f, properties: { topic, ...f.properties } };
+      if (f.properties?.kind === "cut" || f.properties?.kind === "endpoint") {
+        cutPoints.push(stamped);
+      } else {
+        features.push(stamped);
+      }
     }
   }
   return {
