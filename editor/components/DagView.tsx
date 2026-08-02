@@ -225,7 +225,7 @@ export default function DagView({
 }: {
   topic: string;
   category?: string | null;
-  mode?: "deriver" | "category" | "decision-tree";
+  mode?: "deriver" | "category" | "decision-tree" | "sanitizer";
   // Rendered at the right end of this view's own header row (its field/category/variant dropdowns
   // sit at the left) — App.tsx uses this for the Map/Tree/Categorize/Decision-tree view switcher, so
   // it's part of this row's normal flow instead of an absolute overlay that used to sit on top of
@@ -244,8 +244,15 @@ export default function DagView({
   // (`order`, the actual runtime first-match sequence) — never re-sorted, unlike `fieldNames`.
   const [categoryNames, setCategoryNames] = useState<string[] | null>(null);
   const [categoryIdx, setCategoryIdx] = useState(0);
-  const fieldLabel = mode === "deriver" ? "field" : "kind";
-  const endpoint = mode === "category" ? "/api/categorize-dag/" : mode === "decision-tree" ? "/api/decision-tree-dag/" : "/api/dag/";
+  const fieldLabel = mode === "deriver" ? "field" : mode === "sanitizer" ? "sanitizer" : "kind";
+  const endpoint =
+    mode === "category"
+      ? "/api/categorize-dag/"
+      : mode === "decision-tree"
+        ? "/api/decision-tree-dag/"
+        : mode === "sanitizer"
+          ? "/api/sanitizer-dag/"
+          : "/api/dag/";
 
   useEffect(() => {
     let ignore = false;

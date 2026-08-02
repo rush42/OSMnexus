@@ -413,8 +413,13 @@ export async function setTopicJson(topic: string, json: string): Promise<unknown
 // category names in priority order instead of one crammed-together tree of every category at
 // once; `idx` (an index into that list) then builds the single-category graph — see
 // `src/bin/dag_json.rs`'s own usage doc.
-export async function getDag(routeMode: "dag" | "categorize-dag" | "decision-tree-dag", topic: string, name: string | null, idx: string | null): Promise<unknown> {
-  const dagMode = { dag: "deriver", "categorize-dag": "category", "decision-tree-dag": "decision-tree" }[routeMode];
+export async function getDag(
+  routeMode: "dag" | "categorize-dag" | "decision-tree-dag" | "sanitizer-dag",
+  topic: string,
+  name: string | null,
+  idx: string | null,
+): Promise<unknown> {
+  const dagMode = { dag: "deriver", "categorize-dag": "category", "decision-tree-dag": "decision-tree", "sanitizer-dag": "sanitizer" }[routeMode];
   if (!(await listTopics()).includes(topic)) {
     throw new ApiError(400, `unknown topic '${topic}'`);
   }

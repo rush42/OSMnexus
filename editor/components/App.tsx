@@ -126,7 +126,7 @@ export default function App() {
   const [topicsListHeight, setTopicsListHeight] = useState(320);
   const [showNodes, setShowNodes] = useState(false);
   const [followSelection, setFollowSelection] = useState(true);
-  const [viewMode, setViewMode] = useState<"map" | "tree" | "categorize" | "decision-tree">("map");
+  const [viewMode, setViewMode] = useState<"map" | "tree" | "categorize" | "decision-tree" | "sanitizers">("map");
   const [text, setText] = useState<string>("");
   const [data, setData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [cutPoints, setCutPoints] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -457,6 +457,23 @@ export default function App() {
       >
         Decision tree
       </button>
+      <button
+        onClick={() => active.topic && setViewMode("sanitizers")}
+        disabled={!active.topic}
+        style={{
+          fontWeight: viewMode === "sanitizers" ? 700 : 400,
+          opacity: active.topic ? 1 : 0.5,
+          padding: "7px 12px",
+          background: "rgba(255,255,255,0.85)",
+          backdropFilter: "blur(6px)",
+          borderRadius: "var(--radius)",
+          boxShadow: "var(--shadow)",
+          border: "1px solid var(--border)",
+        }}
+        title="List this topic's named sanitizers (shared + topic-local) and plot each one's mapping/replace chain"
+      >
+        Sanitizers
+      </button>
     </div>
   );
 
@@ -484,6 +501,8 @@ export default function App() {
             mode="decision-tree"
             extraHeader={viewSwitcher}
           />
+        ) : viewMode === "sanitizers" && active.topic ? (
+          <DagView topic={active.topic} mode="sanitizer" extraHeader={viewSwitcher} />
         ) : (
           <Map
             bounds={bounds}

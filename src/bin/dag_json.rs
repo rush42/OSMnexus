@@ -7,23 +7,26 @@
 //! configs tilda/bikelanes deriver list` or `dag_json configs tilda/bikelanes deriver surface`.
 //! `<topic-name>` is the same string `TopicRunner::load` takes — `<config-dir>/topics/<topic-name>/`.
 //! `<mode>` is `deriver` (per-field output producer trees), `category` (one category's own
-//! condition + what it excludes, picked from its kind's priority order), or `decision-tree` (the
-//! *compiled* discrimination net that actually prunes the runtime walk). `<selector>` is either
-//! `list` — cheap, no graphs built, just the available field/kind names for the picker — or one of
-//! those names. For `deriver`/`decision-tree`, a name alone builds that field's/kind's graph.
-//! `category` has a third level: a kind name alone (no `order-idx`) returns that kind's category
-//! names in priority order (still no graph built) instead of one crammed-together tree of every
-//! category at once; passing `order-idx` too (an index into that ordered list) builds the graph for
-//! just that one category's condition. Building every field/kind's graph on every request (the live
-//! editor only ever displays one at a time) was the dominant cost for topics with many/large
-//! fields, so the caller is expected to fetch `list` once and then one graph per field the user
-//! actually selects.
+//! condition + what it excludes, picked from its kind's priority order), `decision-tree` (the
+//! *compiled* discrimination net that actually prunes the runtime walk), or `sanitizer` (one named
+//! sanitizer's own mapping/replace/builtin chain, shared+topic-local merged the same way
+//! `TopicRunner::load` resolves `sanitize:` references — see `load_topic_sanitizers`). `<selector>`
+//! is either `list` — cheap, no graphs built, just the available field/kind/sanitizer names for the
+//! picker — or one of those names. For `deriver`/`decision-tree`/`sanitizer`, a name alone builds
+//! that field's/kind's/sanitizer's graph. `category` has a third level: a kind name alone (no
+//! `order-idx`) returns that kind's category names in priority order (still no graph built) instead
+//! of one crammed-together tree of every category at once; passing `order-idx` too (an index into
+//! that ordered list) builds the graph for just that one category's condition. Building every
+//! field/kind's graph on every request (the live editor only ever displays one at a time) was the
+//! dominant cost for topics with many/large fields, so the caller is expected to fetch `list` once
+//! and then one graph per field the user actually selects.
 
 use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
 
-use osmnexus::dag::{self, category_condition_dag, decision_tree_dag, producer_dag, DagGraph};
+use osmnexus::dag::{self, category_condition_dag, decision_tree_dag, producer_dag, sanitizer_dag, DagGraph};
 use osmnexus::lang::producer::Producer;
+use osmnexus::topic::load::load_topic_sanitizers;
 use osmnexus::topic::runner::TopicRunner;
 
 #[derive(Serialize)]
@@ -48,12 +51,36 @@ struct GraphResponse {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: dag_json <config-dir> <topic-name> <deriver|category|decision-tree> <list|name> [order-idx]";
+    let usage = "usage: dag_json <config-dir> <topic-name> <deriver|category|decision-tree|sanitizer> <list|name> [order-idx]";
     let config_dir = args.next().context(usage)?;
     let topic_name = args.next().context(usage)?;
     let mode = args.next().context(usage)?;
     let selector = args.next().context(usage)?;
     let order_idx: Option<usize> = args.next().map(|s| s.parse()).transpose().context("order-idx must be a number")?;
+
+    osmnexus::paths::set_config_root(config_dir);
+
+    // `sanitizer` mode never needs a fully-loaded `TopicRunner` — `load_topic_sanitizers` is the
+    // same shared+topic-local merge `TopicRunner::load` itself does internally (see its own doc),
+    // called here directly instead of paying for the whole topic's categories/producers/transforms
+    // to be compiled just to read back the one map it doesn't otherwise expose.
+    if mode == "sanitizer" {
+        let base = osmnexus::paths::config_root().join(&topic_name);
+        let config_root = base.parent().expect("topics/<name> has a parent").to_path_buf();
+        let sanitizers = load_topic_sanitizers(&base, &config_root)
+            .with_context(|| format!("loading sanitizers for topic '{topic_name}'"))?;
+        if selector == "list" {
+            let mut names: Vec<String> = sanitizers.keys().cloned().collect();
+            names.sort();
+            println!("{}", serde_json::to_string(&ListResponse { topic: topic_name, names })?);
+            return Ok(());
+        }
+        let chain = sanitizers.get(&selector).with_context(|| format!("unknown sanitizer '{selector}'"))?;
+        let variant = Variant { labels: Vec::new(), graph: sanitizer_dag(&selector, chain) };
+        let resp = GraphResponse { topic: topic_name, name: selector, variants: vec![variant] };
+        println!("{}", serde_json::to_string(&resp)?);
+        return Ok(());
+    }
 
     // Compiling the per-kind decision tree (`CategoriesFile::build_order`'s `decision_tree::build`
     // call, skipped via `TopicRunner::load`'s `linear_classify` flag) is by far the most expensive
@@ -61,7 +88,6 @@ fn main() -> Result<()> {
     // (non-`list`) decision-tree request. Every other mode/selector, including the decision-tree
     // view's own field-name `list`, never looks at `cats.tree`, so there's no reason to pay for it.
     let build_tree = mode == "decision-tree" && selector != "list";
-    osmnexus::paths::set_config_root(config_dir);
     let runner = TopicRunner::load(&topic_name, 64, !build_tree)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 

@@ -166,6 +166,27 @@ fn render_chain(g: &mut DagGraph, chain: &[Sanitizer], sink: &str) -> String {
     next
 }
 
+/// A named sanitizer's own chain, standalone — independent of any `Extract` leaf that happens to
+/// reference it (unlike `render_chain`, which only ever appears as a tail hanging off one). Reads
+/// top-down: the root names the sanitizer, each step feeds the next in application order, ending
+/// at the last step (there's no downstream consumer to wire into here — this *is* the sink).
+pub fn sanitizer_dag(name: &str, chain: &[Sanitizer]) -> DagGraph {
+    let mut g = DagGraph::default();
+    let root = g.node(format!("Sanitizer\n{name}"), "sanitizer");
+    if chain.is_empty() {
+        let identity = g.node("Identity\n(no steps)".to_owned(), "const");
+        g.edge(&root, &identity, "");
+        return g;
+    }
+    let mut prev = root;
+    for step in chain {
+        let node = g.node(step_label(step), "step");
+        g.edge(&prev, &node, "");
+        prev = node;
+    }
+    g
+}
+
 fn step_label(step: &Sanitizer) -> String {
     match step {
         Sanitizer::Mapping { mapping, on_miss } => {

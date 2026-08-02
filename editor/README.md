@@ -73,10 +73,12 @@ It's a Next.js (App Router) app — a real Next.js server, not the old Vite-dev-
 - **`components/App.tsx`** / **`Map.tsx`** / **`Editor.tsx`** / **`DagView.tsx`** — the React UI
   (all client components — `"use client"`): a MapLibre map for bbox selection and rendering
   classified features, a CodeMirror JSON editor for the selected topic/category file (the "Text"
-  tab), and an `@xyflow/react` graph view (the "Tree" tab) that plots the selected topic's
-  output-field `Producer` trees — each field's `Match`/`Extract`/`Const`/... tree, and the
-  `Sanitizer` chain hanging off any `Extract` leaf, same walk as `src/bin/plot_dag.rs`'s Graphviz
-  DOT output but as JSON (`src/dag.rs`) rendered in-browser.
+  tab), and an `@xyflow/react` graph view (`DagView`, reused across four tabs — Producer/
+  Categorize/Decision tree/Sanitizers) that plots the selected topic's output-field `Producer`
+  trees (each field's `Match`/`Extract`/`Const`/... tree, with the `Sanitizer` chain hanging off
+  any `Extract` leaf inline), or, standalone, one named sanitizer's own mapping/replace/builtin
+  chain (`src/dag.rs`'s `sanitizer_dag`, `dag_json`'s `sanitizer` mode) — same node/edge JSON shape
+  either way, so `DagView` needed no new rendering code, just a fourth `mode`.
 - **`app/layout.tsx`** / **`app/page.tsx`** — the root shell; `page.tsx` just renders `App`.
 - **`fixtures/tiny.osm.pbf`** — the default base extract when no larger one is mounted (see
   `BASE_PBF_PATH` above).
