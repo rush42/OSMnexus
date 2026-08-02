@@ -328,9 +328,14 @@ impl TopicRunner {
         &self.spec.table
     }
 
-    /// Whether this topic has any categories for `kind` (i.e. a `topics/<t>/<kind>/` folder).
+    /// Whether this topic processes `kind` at all — either a `topics/<t>/<kind>/` category folder,
+    /// or `accept_all` declared for it (mutually exclusive, enforced at load time above). Before
+    /// this included `accept_all`, `process()`'s `!self.has_kind(kind)` guard short-circuited an
+    /// `accept_all` kind before it ever reached `build_topic_rows` — so `accept_all` silently never
+    /// fired for any topic, ever (no config in the repo used it until `configs/live_raw`, which is
+    /// how this surfaced).
     pub fn has_kind(&self, kind: ElementKind) -> bool {
-        self.categories.contains_key(&kind)
+        self.categories.contains_key(&kind) || self.accept_all.contains(&kind)
     }
     /// Whether this topic declared `shape` for `kind` (`topic.json`'s `"geometry"` — see
     /// `GeometrySpec`). Replaces the old per-(kind,shape) accessors (`wants_way_graph`/
