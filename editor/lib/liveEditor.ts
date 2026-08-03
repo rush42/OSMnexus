@@ -146,14 +146,31 @@ function requireCurrentTopic(topic: string): string {
   return dir;
 }
 
+// Peak RSS (kB) of a running process, read from the kernel-maintained "high water mark" in
+// `/proc/<pid>/status` — already the max over the process's lifetime, so a single successful read
+// at any point while it's alive is enough; no need to poll-and-max ourselves. Linux-only (matches
+// the Docker image this runs in); returns `null` on any other platform or read failure.
+async function peakRssKb(pid: number): Promise<number | null> {
+  try {
+    const status = await fs.readFile(`/proc/${pid}/status`, "utf-8");
+    const match = status.match(/^VmHWM:\s*(\d+) kB$/m);
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 // `stdin`, when given, is written to the child's stdin and the stream is closed — used to hand
 // the pipeline binary a CSV way stream (see `fetchWays`/`runPipeline`) without a temp file.
+// `trackMemory` polls the child's peak RSS (see `peakRssKb`) while it runs — off by default since
+// most callers (`psql`, etc.) don't care and the poll loop is needless overhead for them.
 function run(
   bin: string,
   args: string[],
   env?: Record<string, string>,
   stdin?: string,
-): Promise<{ ok: true; stdout: string } | { ok: false; message: string }> {
+  options?: { trackMemory?: boolean },
+): Promise<{ ok: true; stdout: string; peakRssKb: number | null } | { ok: false; message: string }> {
   return new Promise((resolve) => {
     const child = spawn(bin, args, {
       stdio: [stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
@@ -161,14 +178,32 @@ function run(
     });
     let stdout = "";
     let stderr = "";
+    let peakRss: number | null = null;
+    const memInterval =
+      options?.trackMemory && child.pid
+        ? setInterval(async () => {
+            const kb = await peakRssKb(child.pid!);
+            if (kb != null) peakRss = kb;
+          }, 25)
+        : null;
     // Non-null: `stdio`'s indices 1/2 are always `"pipe"` above regardless of `stdin`, and index 0
     // is `"pipe"` exactly when `stdin != null` below — TS can't narrow a ternary in an object
     // literal to a specific `spawn` overload, so it falls back to the nullable general type.
     child.stdout!.on("data", (d) => (stdout += d.toString()));
     child.stderr!.on("data", (d) => (stderr += d.toString()));
-    child.on("error", (err) => resolve({ ok: false, message: String(err) }));
-    child.on("close", (code) => {
-      if (code === 0) resolve({ ok: true, stdout });
+    child.on("error", (err) => {
+      if (memInterval) clearInterval(memInterval);
+      resolve({ ok: false, message: String(err) });
+    });
+    child.on("close", async (code) => {
+      // One last read: VmHWM is a monotonic high-water mark, so this catches a final growth spurt
+      // the last poll tick missed, right up until the process actually exits.
+      if (options?.trackMemory && child.pid) {
+        const kb = await peakRssKb(child.pid);
+        if (kb != null) peakRss = kb;
+      }
+      if (memInterval) clearInterval(memInterval);
+      if (code === 0) resolve({ ok: true, stdout, peakRssKb: peakRss });
       else resolve({ ok: false, message: stderr || `${bin} exited with code ${code}` });
     });
     if (stdin != null) {
@@ -346,7 +381,9 @@ export function selectWay(osmId: string, bounds: [number, number, number, number
 async function runPipeline(
   target: { wayId: string } | { bounds: [number, number, number, number] },
   outDir: string,
-): Promise<{ ok: true; geometry: Map<string, GeoJSON.Geometry> } | { ok: false; message: string }> {
+): Promise<
+  { ok: true; geometry: Map<string, GeoJSON.Geometry>; peakRssKb: number | null } | { ok: false; message: string }
+> {
   const configDir = requireTopicDir();
   const { tagsCsv, geometry } = await fetchWays(target);
   const result = await run(
@@ -354,8 +391,9 @@ async function runPipeline(
     ["--source", "csv", "--config-dir", configDir, "--output", "csv", "--out-dir", outDir, "--linear-classify"],
     undefined,
     tagsCsv,
+    { trackMemory: true },
   );
-  return result.ok ? { ok: true, geometry } : result;
+  return result.ok ? { ok: true, geometry, peakRssKb: result.peakRssKb } : result;
 }
 
 // Deletes a scratch topic dir some time after it stops being `currentTopicDir` — not immediately.
@@ -531,7 +569,7 @@ export async function runPipelineAndRespond(): Promise<unknown> {
   }
   try {
     const fc = await buildFeatureCollections(outDir, [state.currentTopicName!], result.geometry);
-    return { ...fc, pipelineMs };
+    return { ...fc, pipelineMs, pipelineMemKb: result.peakRssKb };
   } catch (err) {
     throw new ApiError(500, String(err));
   } finally {

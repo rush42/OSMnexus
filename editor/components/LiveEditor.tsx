@@ -147,6 +147,7 @@ export default function LiveEditor({
   const [error, setError] = useState<string | null>(null);
   const [extractMs, setExtractMs] = useState<number | null>(null);
   const [pipelineMs, setPipelineMs] = useState<number | null>(null);
+  const [pipelineMemKb, setPipelineMemKb] = useState<number | null>(null);
   const [wayIdQuery, setWayIdQuery] = useState("");
   const [wayIdError, setWayIdError] = useState<string | null>(null);
   // The osm_id last found via search — drives Map's highlight layer. Cleared on a fresh manual
@@ -265,6 +266,9 @@ export default function LiveEditor({
     }
     setExtracting(true);
     setError(null);
+    setExtractMs(null);
+    setPipelineMs(null);
+    setPipelineMemKb(null);
     try {
       const res = await fetch("/api/extract", {
         method: "POST",
@@ -319,6 +323,7 @@ export default function LiveEditor({
       setData(body);
       setCutPoints(body.cutPoints ?? null);
       setPipelineMs(body.pipelineMs ?? null);
+      setPipelineMemKb(body.pipelineMemKb ?? null);
 
       const wayNum = Number(id);
       const matched = (body.features as GeoJSON.Feature[] | undefined)?.some((f) => f.properties?.osm_id === wayNum);
@@ -389,6 +394,7 @@ export default function LiveEditor({
       setData(body);
       setCutPoints(body.cutPoints ?? null);
       setPipelineMs(body.pipelineMs ?? null);
+      setPipelineMemKb(body.pipelineMemKb ?? null);
     } else {
       setError(body.error || "Unknown error");
     }
@@ -636,7 +642,7 @@ export default function LiveEditor({
             {extracting ? "Extracting…" : "Shift+drag on the map to select an area to edit"}
           </div>
         )}
-        {viewMode === "map" && (extractMs !== null || pipelineMs !== null) && (
+        {viewMode === "map" && (extractMs !== null || pipelineMs !== null || pipelineMemKb !== null) && (
           <div
             style={{
               position: "absolute",
@@ -657,6 +663,8 @@ export default function LiveEditor({
             {extractMs !== null && <>extract: {extractMs}ms</>}
             {extractMs !== null && pipelineMs !== null && " · "}
             {pipelineMs !== null && <>pipeline: {pipelineMs}ms</>}
+            {(extractMs !== null || pipelineMs !== null) && pipelineMemKb !== null && " · "}
+            {pipelineMemKb !== null && <>mem: {(pipelineMemKb / 1024).toFixed(1)}MB</>}
           </div>
         )}
       </div>
