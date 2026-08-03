@@ -117,22 +117,21 @@ pub(crate) fn empty_annotations() -> &'static Map<String, Value> {
 /// Why a `Producer::Match` exists — a real authored rule table, or the runtime shape one of the
 /// JSON sugars (`fallback`/`parent_or_obj`/`tag_or`) or a Rust-side synthesis (`topic::runner`'s
 /// `default_value_producer`/`as_fallback_pair`) folds into. Purely informational — `eval`/`resolve`
-/// never branch on it, only display code does (see `dag::render_producer`): a `Fallback`/`TagOr`
+/// never branch on it, only display code does (see `dag::render_producer`): a `Fallback`
 /// match's rules are always `when: true` by construction, so describing that condition on every
 /// rule node is noise — what actually distinguishes each branch is its priority, not a predicate.
+/// `parent_or_obj` and `tag_or` are just `Fallback` under a different JSON spelling — their rules
+/// aren't gated equally either, they're tried in priority order the same way — so they share this
+/// one variant rather than getting their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MatchOrigin {
     /// Authored directly as `{"rules": [...], ...}` — a real rule table, not folded from anything.
     #[default]
     Rules,
-    /// Desugared from `{"fallback": [...]}` (`parser`) or built directly by
-    /// `topic::runner::as_fallback_pair` — every rule `when: true`, first branch that produces
-    /// anything wins.
+    /// Desugared from `{"fallback": [...]}`, `{"parent_or_obj": ...}`, or `{"tag": ..., "or": ...}`
+    /// (`parser`), or built directly by `topic::runner::as_fallback_pair` — every rule `when: true`,
+    /// first branch that produces anything wins.
     Fallback,
-    /// Desugared from `{"parent_or_obj": ...}` — see `Producer::parent_or_obj`.
-    ParentOrObj,
-    /// Desugared from `{"tag": ..., "or": ...}` — a single `when: true` rule plus `default`.
-    TagOr,
     /// Built directly from a `defaults` JSON entry (`topic::runner::default_value_producer`) — no
     /// rules at all, just a `default`.
     Default,

@@ -91,15 +91,12 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             node
         }
         Producer::Match { rules, default, annotate, origin, tree: _ } => {
-            // `Fallback`/`TagOr` matches always have `when: true` on every rule by construction
-            // (see `MatchOrigin`'s own doc) — describing a condition that's always "true" is noise,
-            // so those show priority order instead of the (uninformative) condition text.
-            let priority_only = matches!(origin, MatchOrigin::Fallback | MatchOrigin::TagOr);
+            // `Fallback` matches always have `when: true` on every rule by construction (see
+            // `MatchOrigin`'s own doc) — describing a condition that's always "true" is noise, so
+            // those show priority order instead of the (uninformative) condition text.
             let label = match origin {
                 MatchOrigin::Rules => "Match".to_owned(),
-                MatchOrigin::Fallback => format!("Fallback\n{} branch(es)", rules.len()),
-                MatchOrigin::ParentOrObj => "Parent Or Obj".to_owned(),
-                MatchOrigin::TagOr => "Tag Or".to_owned(),
+                MatchOrigin::Fallback => "Fallback".to_owned(),
                 MatchOrigin::Default => unreachable!("handled above"),
             };
             let node = g.node(label, "match");
@@ -110,8 +107,6 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             for (i, r) in rules.iter().enumerate() {
                 let rule_label = if matches!(origin, MatchOrigin::Fallback) {
                     format!("Option {}", i + 1)
-                } else if priority_only {
-                    format!("{}", i + 1)
                 } else {
                     truncate(&r.when.describe(), 120)
                 };
