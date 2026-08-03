@@ -284,18 +284,33 @@ async function runPipeline(
   return result.ok ? { ok: true } : result;
 }
 
+// Deletes a scratch topic dir some time after it stops being `currentTopicDir` — not immediately.
+// An in-flight pipeline/dag_json subprocess call captures `currentTopicDir`'s value up front (see
+// `runPipeline`/`getDag`) and keeps reading files out of it for the life of that one request; if a
+// second `switchTopic`/`switchConfig` call landed in the meantime (e.g. two topic-select requests
+// firing close together) and deleted that same directory immediately, the in-flight request could
+// have a category file vanish out from under it mid-read — surfacing as a confusing "exclude
+// references unknown category" error with no actual config problem. A delay long enough to outlast
+// any real request (pipeline runs here are consistently well under a second) avoids that without
+// needing to track in-flight request counts.
+const SCRATCH_DIR_CLEANUP_DELAY_MS = 30_000;
+function scheduleCleanup(dir: string | null): void {
+  if (!dir) return;
+  setTimeout(() => {
+    fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }, SCRATCH_DIR_CLEANUP_DELAY_MS);
+}
+
 // Selecting a config no longer implies picking (or copying) a topic — that's `switchTopic`'s job,
-// called separately once the topic dropdown has something to select. Best-effort-cleans the
-// previous topic's scratch dir, same reasoning as `switchTopic`'s own cleanup.
+// called separately once the topic dropdown has something to select.
 export async function switchConfig(config: string): Promise<void> {
   if (!(await listConfigs()).includes(config)) {
     throw new ApiError(400, `unknown config '${config}'`);
   }
   state.currentConfigName = config;
   state.currentTopicName = null;
-  const prevDir = state.currentTopicDir;
+  scheduleCleanup(state.currentTopicDir);
   state.currentTopicDir = null;
-  if (prevDir) fs.rm(prevDir, { recursive: true, force: true }).catch(() => {});
 }
 
 // Builds a scratch dir containing ONLY `topic`'s subtree plus the current config's shared
@@ -322,12 +337,9 @@ export async function switchTopic(topic: string): Promise<void> {
   );
   await fs.cp(path.join(configSrc, topic), path.join(workDir, topic), { recursive: true });
 
-  const prevDir = state.currentTopicDir;
+  scheduleCleanup(state.currentTopicDir);
   state.currentTopicName = topic;
   state.currentTopicDir = workDir;
-  // Not load-bearing if this fails (OS temp cleanup is a fallback) — just avoids unbounded scratch
-  // dir accumulation across topic switches within one long-running dev server.
-  if (prevDir) fs.rm(prevDir, { recursive: true, force: true }).catch(() => {});
 }
 
 export async function getConfigs(): Promise<{ configs: string[]; current: string | null }> {
