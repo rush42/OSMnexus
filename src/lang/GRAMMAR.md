@@ -173,9 +173,9 @@ outputs.<name> =
   | String
       // named lookup: <name'> must exist in this topic's producers.json
 
-  | { "name": String, "in"?: [String,...], "from"?: TagSet }
+  | { "sanitizer": String, "in"?: [String,...], "from"?: TagSet }
       // sanitizer shorthand (no key/keys/fallback/rules present):
-      // Extract{ keys: in or [<name>] } piped through sanitize "name",
+      // Extract{ keys: in or [<name>] } piped through sanitize "sanitizer",
       // wrapped per "from" (obj default / parent / parent_or_obj)
 ```
 

@@ -8,21 +8,21 @@
     "surface": "surface",
     "smoothness": "smoothness",
     "width": {
-      "name": "parse_length"
+      "sanitizer": "parse_length"
     },
     "source:width": true,
     "bridge": {
-      "name": "yes_flag",
+      "sanitizer": "yes_flag",
       "from": "parent_or_obj"
     },
     "tunnel": {
-      "name": "yes_flag",
+      "sanitizer": "yes_flag",
       "from": "parent_or_obj"
     },
     "oneway": "oneway",
     "oneway:bicycle": "oneway:bicycle",
     "traffic_sign": {
-      "name": "traffic_sign"
+      "sanitizer": "traffic_sign"
     },
     "is_directed": "is_directed",
     "informal": "informal",
@@ -49,7 +49,7 @@
     "buffer:both": true,
     "surface:colour": "surface:colour",
     "separation_left": {
-      "name": "separation",
+      "sanitizer": "separation",
       "in": [
         "separation:left",
         "separation:both",
@@ -57,14 +57,14 @@
       ]
     },
     "separation_right": {
-      "name": "separation",
+      "sanitizer": "separation",
       "in": [
         "separation:right",
         "separation:both"
       ]
     },
     "marking_left": {
-      "name": "marking",
+      "sanitizer": "marking",
       "in": [
         "marking:left",
         "marking:both",
@@ -72,14 +72,14 @@
       ]
     },
     "marking_right": {
-      "name": "marking",
+      "sanitizer": "marking",
       "in": [
         "marking:right",
         "marking:both"
       ]
     },
     "buffer_left": {
-      "name": "buffer",
+      "sanitizer": "buffer",
       "in": [
         "buffer:left",
         "buffer:both",
@@ -87,21 +87,21 @@
       ]
     },
     "buffer_right": {
-      "name": "buffer",
+      "sanitizer": "buffer",
       "in": [
         "buffer:right",
         "buffer:both"
       ]
     },
     "surface_color": {
-      "name": "surface_color",
+      "sanitizer": "surface_color",
       "in": [
         "surface:colour",
         "surface:color"
       ]
     },
     "width_effective": {
-      "name": "parse_length",
+      "sanitizer": "parse_length",
       "in": "width:effective"
     },
     "lifecycle": "lifecycle",

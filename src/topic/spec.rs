@@ -28,6 +28,13 @@ pub struct TopicSpec {
     /// fields.
     #[serde(default)]
     pub outputs: OutputsSpec,
+    /// Sugar for a batch of `"<tag>": true` entries in `outputs` (verbatim extract of the
+    /// identically-named tag — see `resolve_output_entry`) pulled out into their own list, so a
+    /// topic with many untouched passthrough tags doesn't have to sprinkle `true` throughout its
+    /// `outputs` map. Folded into `outputs` at load time (`TopicRunner::load`); a tag named here
+    /// that's also an explicit `outputs` key is a load-time error rather than a silent shadow.
+    #[serde(default)]
+    pub passthrough_tags: Vec<String>,
     /// Optional Filter condition evaluated against raw way tags before categorization.
     /// If the condition matches, the way is skipped entirely for this topic.
     /// Uses the same Filter JSON syntax as category conditions.
@@ -221,9 +228,9 @@ pub struct Field {
 /// - a JSON string — a named reference into `producer_lib` (the topic's `producers.json`),
 ///   resolved once here with no fallback on a miss (unlike `resolve_named_sanitizer`, which falls
 ///   back to a `Builtin` lookup before failing) — a typo'd name should fail loudly at load time.
-/// - an object shaped `{ name, in?, from? }` (no `key`/`keys`/`fallback`/`rules` — those would
+/// - an object shaped `{ sanitizer, in?, from? }` (no `key`/`keys`/`fallback`/`rules` — those would
 ///   identify a full `Producer` instead, rejected below): sugar for "read the first present of
-///   `in` (default `[output]`) from `from` (default obj), clean it with the `name` sanitizer." The
+///   `in` (default `[output]`) from `from` (default obj), clean it with the named sanitizer." The
 ///   map key supplies the output/default-input name, so unlike the old list-based sanitizer sugar
 ///   there's no redundant `tag` field. This is the one shape whose sanitizer name is never spelled
 ///   as a `sanitize:` field, so it's the one place here that still resolves a name directly
@@ -234,14 +241,14 @@ pub fn resolve_output_entry(
     producer_lib: &HashMap<String, Producer>,
     sanitizers: &HashMap<String, Vec<Sanitizer>>,
 ) -> anyhow::Result<Producer> {
-    let is_sanitizer_shorthand = matches!(&value, Value::Object(m) if m.contains_key("name")
+    let is_sanitizer_shorthand = matches!(&value, Value::Object(m) if m.contains_key("sanitizer")
         && !m.contains_key("key") && !m.contains_key("keys")
         && !m.contains_key("fallback") && !m.contains_key("rules"));
 
     let source = if is_sanitizer_shorthand {
         #[derive(Deserialize)]
         struct SanitizerRepr {
-            name: String,
+            sanitizer: String,
             #[serde(default, rename = "in")]
             in_keys: Option<StrOrVec>,
             #[serde(default)]
@@ -252,7 +259,7 @@ pub fn resolve_output_entry(
         let extract = Producer::Extract {
             extract: Extract::Candidates {
                 keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
-                sanitize: resolve_named_sanitizer(&r.name, sanitizers)
+                sanitize: resolve_named_sanitizer(&r.sanitizer, sanitizers)
                     .with_context(|| format!("topic outputs.{output}"))?,
             },
             annotate: Map::new(),
@@ -274,7 +281,7 @@ pub fn resolve_output_entry(
             })?,
             other => anyhow::bail!(
                 "topic outputs.{output}: must be `true`, a named producers.json reference, or the \
-                 sanitizer shorthand `{{ name, in?, from? }}` — not an inline producer: {other}"
+                 sanitizer shorthand `{{ sanitizer, in?, from? }}` — not an inline producer: {other}"
             ),
         }
     };

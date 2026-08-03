@@ -26,10 +26,10 @@
     "maxspeed": true,
     "tracks": true,
     "bridge": {
-      "name": "yes_flag"
+      "sanitizer": "yes_flag"
     },
     "tunnel": {
-      "name": "yes_flag"
+      "sanitizer": "yes_flag"
     },
     "layer": true
   },

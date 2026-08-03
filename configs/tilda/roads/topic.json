@@ -14,16 +14,16 @@
     "oneway:bicycle": true,
     "lit": true,
     "bridge": {
-      "name": "yes_flag"
+      "sanitizer": "yes_flag"
     },
     "tunnel": {
-      "name": "yes_flag"
+      "sanitizer": "yes_flag"
     },
     "operator_type": true,
     "informal": true,
     "covered": true,
     "traffic_sign": {
-      "name": "traffic_sign"
+      "sanitizer": "traffic_sign"
     },
     "lifecycle": "lifecycle",
     "road": "road"

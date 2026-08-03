@@ -31,7 +31,7 @@ fn identity(raw: &str) -> Value {
 /// built-in fails loudly here, at load time (`Builtin` is a closed enum, not a passthrough
 /// `String`). The one piece of by-name sanitizer resolution logic, shared by
 /// `topic::load::inline_sanitize_refs` (JSON-level `sanitize: "name"`) and
-/// `topic::spec::resolve_output_entry` (the sanitizer-shorthand `{ "name": ... }` output entry,
+/// `topic::spec::resolve_output_entry` (the sanitizer-shorthand `{ "sanitizer": ... }` output entry,
 /// which never goes through JSON inlining since it isn't spelled as a `sanitize:` field).
 pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Vec<Sanitizer>> {
     match sanitizers.get(name) {
