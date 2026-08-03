@@ -3,25 +3,27 @@
   "geometry": {
     "way": ["line"]
   },
+  "passthrough_tags": [
+    "highway",
+    "name",
+    "ref",
+    "surface",
+    "smoothness",
+    "maxspeed",
+    "oneway",
+    "oneway:bicycle",
+    "lit",
+    "operator_type",
+    "informal",
+    "covered"
+  ],
   "outputs": {
-    "highway": true,
-    "name": true,
-    "ref": true,
-    "surface": true,
-    "smoothness": true,
-    "maxspeed": true,
-    "oneway": true,
-    "oneway:bicycle": true,
-    "lit": true,
     "bridge": {
       "sanitizer": "yes_flag"
     },
     "tunnel": {
       "sanitizer": "yes_flag"
     },
-    "operator_type": true,
-    "informal": true,
-    "covered": true,
     "traffic_sign": {
       "sanitizer": "traffic_sign"
     },

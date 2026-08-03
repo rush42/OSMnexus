@@ -274,7 +274,17 @@ impl TopicRunner {
         // `spec.outputs` is consumed into a plain fields map below, since it isn't itself a `Field`
         // shape `resolve_outputs` can produce.
         let pass_through_all_tags = spec.outputs.is_all();
-        let topic_outputs = spec.outputs.clone().into_fields_map();
+        let mut topic_outputs = spec.outputs.clone().into_fields_map();
+
+        // `passthrough_tags` is sugar for a batch of `"<tag>": true` outputs entries (see
+        // `TopicSpec::passthrough_tags`) — folded in here, before any resolving, so the rest of
+        // this function never needs to know the two shapes exist.
+        for tag in &spec.passthrough_tags {
+            anyhow::ensure!(
+                topic_outputs.insert(tag.clone(), Value::Bool(true)).is_none(),
+                "topics/{name}/topic.json: '{tag}' is in both passthrough_tags and outputs",
+            );
+        }
 
         // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
         // category id missing from `category_outputs` (shouldn't normally happen; see below).

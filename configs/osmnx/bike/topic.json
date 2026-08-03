@@ -3,18 +3,18 @@
   "geometry": {
     "way": ["line"]
   },
-  "outputs": {
-    "highway": true,
-    "name": true,
-    "ref": true,
-    "access": true,
-    "bicycle": true,
-    "service": true,
-    "area": true,
-    "landuse": true,
-    "bridge": true,
-    "tunnel": true
-  },
+  "passthrough_tags": [
+    "highway",
+    "name",
+    "ref",
+    "access",
+    "bicycle",
+    "service",
+    "area",
+    "landuse",
+    "bridge",
+    "tunnel"
+  ],
   "exclude_condition": {
     "or": [
       {

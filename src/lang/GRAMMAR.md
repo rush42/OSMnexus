@@ -181,6 +181,10 @@ outputs.<name> =
 
 Any other object shape (an inline `Producer`) is a load-time error.
 
+`topic.json`'s top-level `passthrough_tags: [String, ...]` is sugar for a
+batch of `"<tag>": true` entries, folded into `outputs` at load time. A tag
+named in both `passthrough_tags` and `outputs` is a load-time error.
+
 ## `transforms.json`
 
 A pipeline of steps run over raw tags before classification, split into

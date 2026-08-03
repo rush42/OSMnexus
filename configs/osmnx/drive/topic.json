@@ -3,23 +3,23 @@
   "geometry": {
     "way": ["line"]
   },
-  "outputs": {
-    "highway": true,
-    "name": true,
-    "ref": true,
-    "maxspeed": true,
-    "oneway": true,
-    "lanes": true,
-    "junction": true,
-    "access": true,
-    "service": true,
-    "area": true,
-    "landuse": true,
-    "est_width": true,
-    "width": true,
-    "bridge": true,
-    "tunnel": true
-  },
+  "passthrough_tags": [
+    "highway",
+    "name",
+    "ref",
+    "maxspeed",
+    "oneway",
+    "lanes",
+    "junction",
+    "access",
+    "service",
+    "area",
+    "landuse",
+    "est_width",
+    "width",
+    "bridge",
+    "tunnel"
+  ],
   "exclude_condition": {
     "or": [
       {

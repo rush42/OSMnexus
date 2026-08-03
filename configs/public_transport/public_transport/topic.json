@@ -1,33 +1,35 @@
 {
   "table": "public_transport",
+  "passthrough_tags": [
+    "type",
+    "route",
+    "public_transport",
+    "railway",
+    "name",
+    "ref",
+    "colour",
+    "operator",
+    "network",
+    "from",
+    "to",
+    "via",
+    "interval",
+    "duration",
+    "usage",
+    "service",
+    "electrified",
+    "gauge",
+    "maxspeed",
+    "tracks",
+    "layer"
+  ],
   "outputs": {
-    "type": true,
-    "route": true,
-    "public_transport": true,
-    "railway": true,
-    "name": true,
-    "ref": true,
-    "colour": true,
-    "operator": true,
-    "network": true,
-    "from": true,
-    "to": true,
-    "via": true,
-    "interval": true,
-    "duration": true,
-    "usage": true,
-    "service": true,
-    "electrified": true,
-    "gauge": true,
-    "maxspeed": true,
-    "tracks": true,
     "bridge": {
       "sanitizer": "yes_flag"
     },
     "tunnel": {
       "sanitizer": "yes_flag"
-    },
-    "layer": true
+    }
   },
   "defaults": {
     "minzoom": 0

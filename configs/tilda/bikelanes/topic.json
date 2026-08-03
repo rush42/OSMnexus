@@ -3,6 +3,27 @@
   "geometry": {
     "way": ["line"]
   },
+  "passthrough_tags": [
+    "source:width",
+    "segregated",
+    "bicycle",
+    "foot",
+    "description",
+    "note",
+    "temporary",
+    "separation:left",
+    "separation:right",
+    "separation:both",
+    "marking:left",
+    "marking:right",
+    "marking:both",
+    "traffic_mode:left",
+    "traffic_mode:right",
+    "traffic_mode:both",
+    "buffer:left",
+    "buffer:right",
+    "buffer:both"
+  ],
   "outputs": {
     "name": "name",
     "surface": "surface",
@@ -10,7 +31,6 @@
     "width": {
       "sanitizer": "parse_length"
     },
-    "source:width": true,
     "bridge": {
       "sanitizer": "yes_flag",
       "from": "parent_or_obj"
@@ -29,24 +49,6 @@
     "covered": "covered",
     "operator_type": "operator_type",
     "mapillary": "mapillary",
-    "segregated": true,
-    "bicycle": true,
-    "foot": true,
-    "description": true,
-    "note": true,
-    "temporary": true,
-    "separation:left": true,
-    "separation:right": true,
-    "separation:both": true,
-    "marking:left": true,
-    "marking:right": true,
-    "marking:both": true,
-    "traffic_mode:left": true,
-    "traffic_mode:right": true,
-    "traffic_mode:both": true,
-    "buffer:left": true,
-    "buffer:right": true,
-    "buffer:both": true,
     "surface:colour": "surface:colour",
     "separation_left": {
       "sanitizer": "separation",
