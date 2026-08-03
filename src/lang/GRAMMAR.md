@@ -19,32 +19,34 @@ one `Extract` 1:1, so it's never a separate sibling field.
 
 ```
 Extract =
-  { "keys": [String, ...], "sanitize"?: Sanitizer }   // aka "first_tag" (legacy alias) — first key found wins
-  | { "key": String, "sanitize"?: Sanitizer }          // aka "tag" (legacy alias)
+  { "keys": [String, ...], "sanitize"?: SanitizeRef }   // aka "first_tag" (legacy alias) — first key found wins
+  | { "key": String, "sanitize"?: SanitizeRef }          // aka "tag" (legacy alias)
 ```
 
-## Sanitizer
+## SanitizeRef
 
 ```
-Sanitizer =
+SanitizeRef =
   String                           // name, looked up in sanitizers.json
 ```
 
 Always a name — there is no inline-chain form. Every sanitizer chain has
 exactly one definition, in `sanitizers.json`; a `sanitize:` field that isn't a
-bare string is a load-time error.
+bare string is a load-time error. Not a `Sanitizer` itself (see below) — it's
+resolved away to one before any Rust type ever sees it.
 
-## SanitizerChain / Step
+## SanitizerChain / Sanitizer
 
 `sanitizers.json` maps each name to a `SanitizerChain` — an ordered chain of
-`Step`s applied to a raw value.
+`Sanitizer` steps applied to a raw value. (Matches the Rust naming exactly:
+`Sanitizer` = one step, `Vec<Sanitizer>` = a chain.)
 
 ```
 SanitizerChain =
-  [Step, ...]                      // explicit chain
-  | Step                           // sugar: single-step chain
+  [Sanitizer, ...]                 // explicit chain
+  | Sanitizer                      // sugar: single-step chain
 
-Step =
+Sanitizer =
   { "mapping": {String: JSON, ...}, "on_miss"?: String }
   | { "cases": {String: [String,...] , ...}, "on_miss"?: String }
       // sugar: inverted-lookup mapping — desugars to "mapping"
@@ -59,7 +61,7 @@ ReplaceRule = { "from": String, "to": String, "at"?: "anywhere" | "prefix" }
               // "at" defaults to "anywhere"
 ```
 
-Built-in steps (looked up by name when `Step` is a bare string): `parse_length`.
+Built-in steps (looked up by name when `Sanitizer` is a bare string): `parse_length`.
 
 `on_miss` controls what happens when a mapping lookup misses: `"keep"` keeps
 the original value, `"drop"` (default for `cases`) drops it.
@@ -216,7 +218,7 @@ TransformStep =
   | { "drop": Filter }
       // Drop: discard the current object when Filter matches
 
-  | { "output": String, "directed": { "key": String, "from"?: "obj" | "parent", "sanitize"?: Sanitizer } }
+  | { "output": String, "directed": { "key": String, "from"?: "obj" | "parent", "sanitize"?: SanitizeRef } }
       // DirectedExtract: side-aware tag read (used with left/right split ways).
       // "from" is the narrower Obj/Parent vocabulary, not the general TagSet —
       // identified by its required "directed" field, checked before TagRule
@@ -265,8 +267,8 @@ StripPrefix, `unnest` → Unnest, `drop` → Drop, `directed` → DirectedExtrac
 
 - `Extract` — `src/lang/extract.rs`
 - `Filter` — `src/lang/filter.rs`
-- `SanitizerChain` / `Step` (Rust: `Sanitizer` = one `Step`, `Vec<Sanitizer>` = a chain) —
-  `src/lang/sanitize.rs`. The `Sanitizer` grammar production (the field-level name reference)
+- `SanitizerChain` / `Sanitizer` — `src/lang/sanitize.rs` (`Sanitizer` = one step, `Vec<Sanitizer>`
+  = a chain, matching the grammar names exactly). `SanitizeRef` (the field-level name reference)
   isn't a distinct Rust type — a named `sanitize: "<name>"` reference is resolved as a JSON-tree
   rewrite, `topic::load::inline_sanitize_refs`, before any Rust type ever sees it
 - `Producer` / `Rule` — `src/lang/producer.rs`, `src/lang/classifier.rs`
