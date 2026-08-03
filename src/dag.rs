@@ -13,7 +13,7 @@ use crate::decision_tree::DecisionTree;
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer};
-use crate::lang::sanitize::Sanitizer;
+use crate::lang::sanitize::{ReplaceAt, Sanitizer};
 
 #[derive(Serialize)]
 pub struct DagNode {
@@ -190,9 +190,24 @@ pub fn sanitizer_dag(name: &str, chain: &[Sanitizer]) -> DagGraph {
 fn step_label(step: &Sanitizer) -> String {
     match step {
         Sanitizer::Mapping { mapping, on_miss } => {
-            format!("Mapping\n{} entries\non_miss: {:?}", mapping.len(), on_miss.as_deref().unwrap_or("drop"))
+            let entries = mapping.iter().map(|(k, v)| match v {
+                Some(v) => format!("{k} -> {}", v.clone().into_value()),
+                None => format!("{k} -> (drop)"),
+            });
+            let lines: Vec<String> = std::iter::once("Mapping".to_owned())
+                .chain(entries)
+                .chain(std::iter::once(format!("on_miss: {}", on_miss.as_deref().unwrap_or("drop"))))
+                .collect();
+            lines.join("\n")
         }
-        Sanitizer::Replace { replace } => format!("Replace\n{} rule(s)", replace.len()),
+        Sanitizer::Replace { replace } => {
+            let lines: Vec<String> = std::iter::once("Replace".to_owned())
+                .chain(replace.iter().map(|r| {
+                    if r.at == ReplaceAt::Prefix { format!("{} -> {} (prefix)", r.from, r.to) } else { format!("{} -> {}", r.from, r.to) }
+                }))
+                .collect();
+            lines.join("\n")
+        }
         Sanitizer::Builtin(name) => format!("Builtin\nname: {name}"),
     }
 }
