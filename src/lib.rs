@@ -5,7 +5,7 @@ pub mod db;
 pub mod decision_tree;
 pub mod geom;
 pub mod lang;
-pub mod live_source;
+pub mod csv_source;
 pub mod osm;
 pub mod output;
 mod parser;

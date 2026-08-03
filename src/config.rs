@@ -11,7 +11,7 @@ pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
 #[command(about = "Data-driven OSM PBF topic processing pipeline → PostgreSQL")]
 pub struct Config {
     /// Path to the .osm.pbf file. Required for `--source pbf` (the default); ignored/omittable for
-    /// `--source postgis`, which reads elements from the database instead (see `Source`).
+    /// `--source csv`, which reads ways from stdin instead (see `Source`).
     #[arg(env = "PBF_FILE", default_value = "")]
     pub pbf_file: String,
 
@@ -98,38 +98,21 @@ pub struct Config {
     #[arg(long, value_enum, default_value_t = TopicEdgeMode::Pgrouting)]
     pub topic_edges: TopicEdgeMode,
 
-    /// Where to read elements from: `pbf` decodes `pbf_file` as usual; `postgis` instead reads
-    /// already-loaded ways (tags + geometry) from `source_table`/`source_table`_geom in the
-    /// database addressed by the `db_*` fields, filtered to `bbox` — no PBF decode, no node-coord
-    /// resolution (the geometry is already known). Built for the live editor: a one-time "all ways"
-    /// pass loads a whole region into Postgres (see `configs/live_raw/topic.json`), then every bbox
-    /// edit re-runs only the tiny per-topic tag/filter/producer pipeline over that bbox's rows.
+    /// Where to read elements from: `pbf` decodes `pbf_file` as usual; `csv` instead classifies ways
+    /// by tags alone, read as CSV from stdin — no PBF decode, no geometry at all (only valid with
+    /// `--output csv`; there's nothing to build a `pg`/`geojsonseq` output from). Built for the live
+    /// editor: whichever caller (e.g. `editor/lib/liveEditor.ts`) is responsible for selecting which
+    /// ways to run (bbox query, way-id search, ...) and streams them in as `osm_id,tags_json` rows —
+    /// see `csv_source`'s own doc for the exact schema, and for why geometry never crosses this
+    /// boundary.
     #[arg(long, value_enum, default_value_t = Source::Pbf)]
     pub source: Source,
-
-    /// Bbox filter for `--source postgis`, as `min_lon,min_lat,max_lon,max_lat` (WGS84). Required
-    /// when `--source postgis` is set and `way_id` isn't, ignored otherwise.
-    #[arg(long)]
-    pub bbox: Option<String>,
-
-    /// Restricts `--source postgis` to a single way (`t.osm_id = way_id`) instead of every way
-    /// intersecting `bbox` — the live editor's way-search feature, which wants to run the pipeline
-    /// on exactly the searched-for way and nothing else nearby. Takes priority over `bbox` when
-    /// both are set.
-    #[arg(long)]
-    pub way_id: Option<i64>,
-
-    /// Table holding the "all ways" pass's raw tag rows for `--source postgis` (its geometry
-    /// sibling is `{source_table}_geom`, per `schema::way_geom_table`) — the output `table` of
-    /// whatever topic.json was used for that pass, e.g. `live_raw`.
-    #[arg(long, default_value = "live_raw")]
-    pub source_table: String,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Source {
     Pbf,
-    Postgis,
+    Csv,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]

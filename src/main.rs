@@ -57,9 +57,14 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Config::parse();
 
-    match cfg.source {
-        config::Source::Pbf => anyhow::ensure!(!cfg.pbf_file.is_empty(), "a .osm.pbf file is required for --source pbf"),
-        config::Source::Postgis => anyhow::ensure!(cfg.bbox.is_some() || cfg.way_id.is_some(), "--bbox or --way-id is required for --source postgis"),
+    if cfg.source == config::Source::Pbf {
+        anyhow::ensure!(!cfg.pbf_file.is_empty(), "a .osm.pbf file is required for --source pbf");
+    }
+    if cfg.source == config::Source::Csv {
+        anyhow::ensure!(
+            cfg.output == Output::Csv,
+            "--source csv only supports --output csv — it never has geometry to build a `pg`/`geojsonseq` output from (see `csv_source`'s own doc)"
+        );
     }
 
     osmnexus::traffic::set_left_hand_traffic(cfg.left_hand_traffic);
@@ -180,25 +185,18 @@ async fn main() -> anyhow::Result<()> {
     let plan = Arc::new(plan);
     let runners = Arc::new(runners);
 
-    if cfg.source == config::Source::Postgis {
-        // Live-editor path: no PBF, no node-coord resolution — read ways (tags + already-resolved
-        // geometry) straight out of Postgres for this bbox and run just the tag/filter/producer
-        // pipeline (see `live_source`'s own doc for why this exists).
-        let n = osmnexus::live_source::run(&cfg, runners.clone(), plan.clone(), writers.clone()).await?;
-        info!("Classified {n} ways from postgis source '{}'", cfg.source_table);
+    if cfg.source == config::Source::Csv {
+        // Live-editor path: no PBF, no geometry at all — read ways' tags as CSV from stdin and run
+        // just the tag/filter/producer pipeline (see `csv_source`'s own doc for why this exists;
+        // the caller is responsible for joining the resulting `<topic>.csv` tag rows back to
+        // whatever geometry it already holds).
+        let n = osmnexus::csv_source::run(runners.clone(), writers.clone()).await?;
+        info!("Classified {n} ways from CSV stdin source");
 
         let writers = Arc::try_unwrap(writers)
-            .unwrap_or_else(|_| unreachable!("live_source::run's writers clone is dropped by the time it returns"));
+            .unwrap_or_else(|_| unreachable!("csv_source::run's writers clone is dropped by the time it returns"));
         let (writers, _select_counts) = writers.finish_select().await?;
         writers.finish_materialize(plan.any_way_graph).await?;
-
-        if cfg.output == Output::GeoJson {
-            info!("Building GeoJSONSeq from CSV output...");
-            output::geojson::write_geojsonseq_from_csv(&out_dir, &tables)?;
-            for table in &tables {
-                info!("Wrote {}/{table}.geojsonseq", cfg.out_dir);
-            }
-        }
         return Ok(());
     }
 

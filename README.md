@@ -244,8 +244,9 @@ rather than the main import:
 
 [`editor/`](editor/) is a local web app for iterating on topic/category JSON against a real map:
 pick a bbox, edit a category's condition or a topic's transforms/fields in a JSON editor, save, and
-the pipeline reruns (`--output geojsonseq`) and the map re-renders — no manual CLI round-trips. See
-[`editor/README.md`](editor/README.md) for setup and usage.
+the pipeline reruns (`--source csv --output csv`, classifying tags only — the editor joins the
+result back to geometry it already holds, see `src/csv_source.rs`) and the map re-renders — no
+manual CLI round-trips. See [`editor/README.md`](editor/README.md) for setup and usage.
 
 ## Layout
 

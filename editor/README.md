@@ -54,9 +54,15 @@ until that's updated.
 ## How it works
 
 It's a thin wrapper around the same [`osmnexus`](../README.md) binary: saving an edit shells out
-to the release build with `--source postgis --bbox <the selected bbox> --config-dir <a scratch dir
-containing only the selected topic> --output geojsonseq`, then the map reloads the resulting
-`<topic>.geojsonseq` file.
+to the release build with `--source csv --config-dir <a scratch dir containing only the selected
+topic> --output csv`, streaming the selected bbox's (or searched-for way's) ways in as
+`osm_id,tags_json` CSV over stdin — no geometry crosses into the pipeline at all. `lib/
+liveEditor.ts`'s `fetchWays` queries Postgres for both the tags (sent to the pipeline) and each
+way's WGS84 geometry (kept in memory, never sent); once the pipeline classifies and writes
+`<topic>.csv` back (tag rows only — see `src/csv_source.rs`), `buildFeatureCollections` joins the
+two by `osm_id` to build the map's `FeatureCollection` itself. Geometry never leaving this process
+is what makes `--source csv` fast at real bbox sizes — see `src/csv_source.rs`'s own doc for why an
+earlier version that also shipped geometry (hex-encoded EWKB) turned out to be the wrong call.
 
 **Config and topic selection is two pages, not a sidebar picker:**
 - `/` (the start page, `app/page.tsx`) lists every directory under `configs/` (`tilda`, `osmnx`,
@@ -103,8 +109,9 @@ It's a Next.js (App Router) app — a real Next.js server, not the old Vite-dev-
 
 Feature source moved off `osmium extract` per bbox drag onto Postgres/PostGIS: a one-time "all
 ways" pass loads a whole region's ways (tags + geometry) into a `live_raw`/`live_raw_geom` table
-(`configs/live_raw/topic.json`), and every bbox selection is now a spatial query against it
-(`src/live_source.rs`, `--source postgis`) instead of a PBF re-parse. See the root `docker-compose.yml`'s
+(`configs/live_raw/topic.json`), and every bbox selection is now a spatial query the editor itself
+runs against it (`fetchWaysCsv` in `lib/liveEditor.ts`), streaming the result to the pipeline as CSV
+(`src/csv_source.rs`, `--source csv`) instead of a PBF re-parse. See the root `docker-compose.yml`'s
 `db` service and its comment for the one-off ingest command.
 
 ## Editing configs

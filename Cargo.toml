@@ -34,6 +34,15 @@ lto = "thin"
 codegen-units = 1
 opt-level = 3
 
+# Fast iteration profile: `cargo build --profile dev-fast`. Skips LTO/high codegen-units
+# entirely and drops debug info, so it's much closer to `cargo check` speed than to
+# `--release`, while still producing a runnable binary (unlike `cargo check`).
+[profile.dev-fast]
+inherits = "dev"
+opt-level = 0
+debug = false
+incremental = true
+
 [features]
 dhat = ["dep:dhat"]
 

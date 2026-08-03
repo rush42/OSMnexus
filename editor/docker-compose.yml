@@ -4,8 +4,8 @@ services:
   #   docker compose run --rm editor /opt/osmnexus/osmnexus /data/base.osm.pbf \
   #     --config-dir configs/live_raw --output pg --create-index
   # (or a host-built `target/release/osmnexus` pointed at the same DB). The editor's bbox
-  # selection then queries this table directly instead of re-running `osmium extract` + a full PBF
-  # reparse per edit (see `src/live_source.rs`).
+  # selection then queries this table directly (see `fetchWaysCsv` in `lib/liveEditor.ts`) instead
+  # of re-running `osmium extract` + a full PBF reparse per edit.
   db:
     image: postgis/postgis:16-3.4
     environment:
@@ -43,10 +43,12 @@ services:
       - PGDATABASE=${PGDATABASE:-postgres}
       - PGUSER=${PGUSER:-postgres}
       - PGPASSWORD=${PGPASSWORD:-postgres}
-      # Uncomment (or set on the CLI) to use host-built binaries instead of the image's baked-in
-      # ones, for iterating on Rust code without a full image rebuild:
-      - PIPELINE_BIN_PATH=/repo/target/release/osmnexus
-      - DAG_JSON_BIN_PATH=/repo/target/release/dag_json
+      # Host-built dev-fast binaries instead of the image's baked-in (release) ones — the repo
+      # bind mount above makes them visible in the container too. Rebuild after Rust changes with
+      # `cargo build --profile dev-fast --bin osmnexus --bin dag_json` (see root CLAUDE.md); no
+      # image rebuild needed, and dev-fast rebuilds in ~seconds vs. --release's 60s+.
+      - PIPELINE_BIN_PATH=/repo/target/dev-fast/osmnexus
+      - DAG_JSON_BIN_PATH=/repo/target/dev-fast/dag_json
     ports:
       - "5173:5173"
 
