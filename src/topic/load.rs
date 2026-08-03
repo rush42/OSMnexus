@@ -86,13 +86,12 @@ pub fn inline_macro_refs(value: Value, macros: &Map<String, Value>, stack: &mut 
     })
 }
 
-/// Recursively replace every bare `"sanitize": "<name>"` string in `value` with the resolved
-/// chain's own JSON (`Sanitizer`'s `Serialize` impl) — the load-time pass that makes an unresolved
-/// named sanitizer structurally impossible by the time `Filter`/`Producer` deserialize `sanitize:`
-/// straight into `Vec<Sanitizer>`. An inline chain (already an array/object, not a bare string)
-/// is left alone. Purely structural — doesn't know which `Filter`/`Producer` variant `sanitize` is
-/// a field of, so it also happily leaves alone anything named `sanitize` that isn't a bare string
-/// (there is no such case in practice, since `sanitize:` never appears with a non-chain value).
+/// Recursively replace every `"sanitize": "<name>"` string in `value` with the resolved chain's
+/// own JSON (`Sanitizer`'s `Serialize` impl) — the load-time pass that makes an unresolved named
+/// sanitizer structurally impossible by the time `Filter`/`Producer` deserialize `sanitize:`
+/// straight into `Vec<Sanitizer>`. `sanitize:` must always be authored as a name — every sanitizer
+/// chain has exactly one definition, in `sanitizers.json`, so there's no such thing as an anonymous
+/// inline chain; a non-string `sanitize` value is a load-time error.
 pub fn inline_sanitize_refs(value: Value, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Value> {
     Ok(match value {
         Value::Object(obj) => Value::Object(obj.into_iter()
@@ -100,7 +99,9 @@ pub fn inline_sanitize_refs(value: Value, sanitizers: &HashMap<String, Vec<Sanit
                 let v = if k == "sanitize" {
                     match v {
                         Value::String(name) => serde_json::to_value(resolve_named_sanitizer(&name, sanitizers))?,
-                        other => inline_sanitize_refs(other, sanitizers)?,
+                        other => anyhow::bail!(
+                            "`sanitize` must be a named reference (a string), not an inline chain: {other}"
+                        ),
                     }
                 } else {
                     inline_sanitize_refs(v, sanitizers)?

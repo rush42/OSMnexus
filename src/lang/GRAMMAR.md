@@ -12,28 +12,35 @@ section. Untagged JSON objects are disambiguated by which fields are present.
 
 ## Extract
 
-Reads a raw tag value, without sanitizing.
+Reads a raw tag value and runs it through `sanitize` (identity if unset).
+`sanitize` lives on `Extract` itself — every embedding site (`Filter`'s
+tag/num predicates, `Producer::Extract`) pairs one `sanitize` with exactly
+one `Extract` 1:1, so it's never a separate sibling field.
 
 ```
 Extract =
-  { "keys": [String, ...] }        // aka "first_tag" (legacy alias) — first key found wins
-  | { "key": String }              // aka "tag" (legacy alias)
+  { "keys": [String, ...], "sanitize"?: Sanitizer }   // aka "first_tag" (legacy alias) — first key found wins
+  | { "key": String, "sanitize"?: Sanitizer }          // aka "tag" (legacy alias)
 ```
 
-## SanitizeRef
-
-```
-SanitizeRef =
-  String                           // name, looked up in sanitizers.json
-  | Sanitizer                      // inline chain, see below
-```
-
-## Sanitizer / Step
-
-A `Sanitizer` is an ordered chain of `Step`s applied to a raw value.
+## Sanitizer
 
 ```
 Sanitizer =
+  String                           // name, looked up in sanitizers.json
+```
+
+Always a name — there is no inline-chain form. Every sanitizer chain has
+exactly one definition, in `sanitizers.json`; a `sanitize:` field that isn't a
+bare string is a load-time error.
+
+## SanitizerChain / Step
+
+`sanitizers.json` maps each name to a `SanitizerChain` — an ordered chain of
+`Step`s applied to a raw value.
+
+```
+SanitizerChain =
   [Step, ...]                      // explicit chain
   | Step                           // sugar: single-step chain
 
@@ -59,8 +66,9 @@ the original value, `"drop"` (default for `cases`) drops it.
 
 ## Filter
 
-A boolean predicate evaluated against a tag set. `Extract` fields below are
-inlined (`#[serde(flatten)]`) into the same object as the comparison keyword.
+A boolean predicate evaluated against a tag set. `Extract` fields below
+(including its own `sanitize`) are inlined (`#[serde(flatten)]`) into the
+same object as the comparison keyword.
 
 ```
 Filter =
@@ -69,22 +77,22 @@ Filter =
   | { "or":  [Filter, ...] }
   | { "not": Filter }
   | { "macro": String }                            // expanded from macros.json before load
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "in_set": String }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "in": [String, ...] }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "contains": String, "case_insensitive"?: Boolean }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "starts_with": String }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "ends_with": String }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "exists": Boolean }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "eq": String }    // catch-all comparison
+  | { <Extract fields>, "in_set": String }
+  | { <Extract fields>, "in": [String, ...] }
+  | { <Extract fields>, "contains": String, "case_insensitive"?: Boolean }
+  | { <Extract fields>, "starts_with": String }
+  | { <Extract fields>, "ends_with": String }
+  | { <Extract fields>, "exists": Boolean }
+  | { <Extract fields>, "eq": String }              // catch-all comparison
   | { "parent": Filter }                            // re-run filter against parent tags
   | { "annotation": String, "eq": String }          // annotations[annotation] == eq (e.g. "_side"/"_prefix"/"_infix")
   | { "has_key_prefix": String }
   | { "has_parent": Boolean }
   | { "tags_empty": Boolean }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "lt":  Number }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "lte": Number }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "gt":  Number }
-  | { <Extract fields>, "sanitize"?: SanitizeRef, "gte": Number }
+  | { <Extract fields>, "lt":  Number }
+  | { <Extract fields>, "lte": Number }
+  | { <Extract fields>, "gt":  Number }
+  | { <Extract fields>, "gte": Number }
 ```
 
 Note: `<Extract fields>` means either `"key": String` (alias `"tag"`)
@@ -100,7 +108,7 @@ followed by an unconditional (`when: true`) trailing rule for "else".
 Selects which tag scope a `Producer` reads from.
 
 ```
-TagSet = "obj" (default) | "parent" | "parent_or_obj" | "annotations"
+TagSet = "obj" (default) | "parent" | "parent_or_obj"
 ```
 
 ## Producer
@@ -121,9 +129,6 @@ Producer =
       // sugar: first producer that yields a value wins — desugars to a Match
       // whose rules are all `when: true`, one per producer, "rules"-order
 
-  | { "directed": { "key": String, "from"?: TagSet, "sanitize"?: SanitizeRef, "annotate"?: {String: JSON} } }
-      // sugar for DirectedExtract — side-aware tag read (used with left/right split ways)
-
   | { "tag": String, "or"?: JSON }
       // sugar for Extract{key: tag}; with "or" present, a 1-rule Match, "default": or
 
@@ -131,13 +136,17 @@ Producer =
       // Match: first matching rule wins; a rule that matches but yields
       // nothing does NOT stop the search (this is what "fallback" desugars into)
 
-  | { "key"?: String, "keys"?: [String,...], "sanitize"?: SanitizeRef, "annotate"?: {String: JSON} }
+  | { <Extract fields>, "annotate"?: {String: JSON} }
       // Extract (tried after all the above, whose fields are all optional
       // and so would otherwise match everything first): reads + sanitizes a raw tag
 
   | JSON
       // Const (catch-all — tried last): a literal value, independent of any tag
 ```
+
+There is no `{ "directed": ... }` `Producer` shape — a direction-sensitive read
+moved to its own `transforms.json` pipeline step (`DirectedExtract`, see
+below), never a runtime `Producer` variant.
 
 `{ "shared": "name" }` is a pre-Producer reference, inlined from a shared
 producer table before any `Producer` parsing happens (topic load time) — it
@@ -171,8 +180,7 @@ outputs.<name> =
   | { "name": String, "in"?: [String,...], "from"?: TagSet }
       // sanitizer shorthand (no key/keys/fallback/rules present):
       // Extract{ keys: in or [<name>] } piped through sanitize "name",
-      // wrapped per "from" (obj default / parent / parent_or_obj;
-      // "annotations" is rejected here — directed-only)
+      // wrapped per "from" (obj default / parent / parent_or_obj)
 
   | Producer
       // full inline producer (any other object shape)
@@ -208,14 +216,19 @@ TransformStep =
   | { "drop": Filter }
       // Drop: discard the current object when Filter matches
 
+  | { "output": String, "directed": { "key": String, "from"?: "obj" | "parent", "sanitize"?: Sanitizer } }
+      // DirectedExtract: side-aware tag read (used with left/right split ways).
+      // "from" is the narrower Obj/Parent vocabulary, not the general TagSet —
+      // identified by its required "directed" field, checked before TagRule
+
   | { "output": String, ...Producer fields... }
       // TagRule (catch-all): compute "output" via the embedded Producer
 ```
 
 Disambiguation is by which distinguishing key is present: `stamp_key` →
-StripPrefix, `unnest` → Unnest, `drop` → Drop, else (requires `output`) →
-TagRule. `PipelineStep` is `clone` vs. everything else (delegated to
-`TransformStep`).
+StripPrefix, `unnest` → Unnest, `drop` → Drop, `directed` → DirectedExtract
+(checked before the generic catch-all), else (requires `output`) → TagRule.
+`PipelineStep` is `clone` vs. everything else (delegated to `TransformStep`).
 
 ## Worked example
 
@@ -252,10 +265,13 @@ TagRule. `PipelineStep` is `clone` vs. everything else (delegated to
 
 - `Extract` — `src/lang/extract.rs`
 - `Filter` — `src/lang/filter.rs`
-- `Sanitizer` / `Step` — `src/lang/sanitize.rs` (the `SanitizeRef` grammar production above isn't a
-  distinct Rust type — a named `sanitize: "<name>"` reference is resolved as a JSON-tree rewrite,
-  `topic::load::inline_sanitize_refs`, before any Rust type ever sees it)
+- `SanitizerChain` / `Step` (Rust: `Sanitizer` = one `Step`, `Vec<Sanitizer>` = a chain) —
+  `src/lang/sanitize.rs`. The `Sanitizer` grammar production (the field-level name reference)
+  isn't a distinct Rust type — a named `sanitize: "<name>"` reference is resolved as a JSON-tree
+  rewrite, `topic::load::inline_sanitize_refs`, before any Rust type ever sees it
 - `Producer` / `Rule` — `src/lang/producer.rs`, `src/lang/classifier.rs`
+- `DirectedExtract` — `src/topic/spec.rs` (`TransformSpec::DirectedExtract`),
+  `src/categorize/transform.rs` (`InputTransform::DirectedExtract`, `DirectedFrom`)
 - Sugar-folding `Deserialize` impls — `src/lang/parser.rs`
 - `topic.json` / `transforms.json` schema — `src/topic/spec.rs`
 
