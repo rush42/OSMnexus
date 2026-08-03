@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import Map from "./Map";
 import Editor from "./Editor";
 import DagView from "./DagView";
@@ -11,6 +12,10 @@ const NEW_CATEGORY_JSON = '{"condition":{}}';
 const MIN_BBOX_M = 100;
 const DEFAULT_MAX_BBOX_M = 10000; // Used until /api/bounds' server-configured value (MAX_BBOX_M env var) loads.
 const METERS_PER_DEG_LAT = 111_320;
+// Single topic in view at all times now (see this component's own doc) — Map still styles/filters
+// features by `properties.topic` (stamped server-side regardless), so it still wants a color map
+// and a hidden-topics set; there's just never more than one entry/never anything to hide.
+const NO_HIDDEN_TOPICS = new Set<string>();
 
 // Approximate bbox extents in meters (equirectangular — fine at this scale/precision, no need for
 // a real geodesic library just to sanity-check a manually-dragged selection size).
@@ -80,12 +85,9 @@ type Category = { topic: string; kind: string; name: string };
 // A "selection" is either a category (kind/name point at a way/node/relation category file) or the
 // topic's own topic.json (table/exclude_condition/osm_fields) — same editor pane, different file.
 type Selection = Category & { isTopicConfig?: boolean };
-const NO_SELECTION: Selection = { topic: "", kind: DEFAULT_KIND, name: "" };
 
-// Deterministic (not reshuffled every render) but effectively-random hue per key, so each
-// topic/category pair gets a stable color on the map without needing a maintained palette.
-// Keyed on topic+category (not category alone) since category *names* collide across topics —
-// e.g. osmnx's bike/walk/drive topics all use a single category literally named "all".
+// Deterministic (not reshuffled every render) but effectively-random hue per key, so the current
+// topic gets a stable color on the map without needing a maintained palette.
 function hashColor(key: string): string {
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
@@ -93,18 +95,30 @@ function hashColor(key: string): string {
   return `hsl(${hue}, 70%, 55%)`;
 }
 
-export default function App() {
+// The live editor's main UI: map/bbox selection, category sidebar, JSON editor, and the four
+// Producer/Categorize/Decision-tree/Sanitizers tree tabs — for exactly one (config, topic) pair at
+// a time. `config`/`topics`/`topic`/`onTopicChange` come from the parent route
+// (`app/editor/[config]/page.tsx`), which owns config/topic selection via the URL (so refresh/
+// back/shared links work) and has already POSTed `/api/config` + `/api/topic-select` server-side
+// before this component ever mounts — this component only ever deals with the one already-selected
+// topic, never a config picker or a multi-topic accordion (that's the start page's job now).
+export default function LiveEditor({
+  config,
+  topics,
+  topic,
+  onTopicChange,
+}: {
+  config: string;
+  topics: string[];
+  topic: string;
+  onTopicChange: (topic: string) => void;
+}) {
   const [bounds, setBounds] = useState<[number, number, number, number] | null>(null);
   const [selected, setSelected] = useState(false);
   const [maxBboxM, setMaxBboxM] = useState(DEFAULT_MAX_BBOX_M);
   const [extracting, setExtracting] = useState(false);
-  const [configs, setConfigs] = useState<string[]>([]);
-  const [currentConfig, setCurrentConfig] = useState("");
-  const [topics, setTopics] = useState<string[]>([]);
-  const [hiddenTopics, setHiddenTopics] = useState<Set<string>>(new Set());
-  const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
-  const [categoriesByTopic, setCategoriesByTopic] = useState<Record<string, Category[]>>({});
-  const [active, setActive] = useState<Selection>(NO_SELECTION);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [active, setActive] = useState<Selection>({ topic, kind: DEFAULT_KIND, name: "" });
   // Bumped on every category click (see Map's `focusTick` doc comment) — separate from `active`
   // itself since re-clicking the already-active category doesn't change `active.topic`/`.name`,
   // but should still refocus the map on it.
@@ -117,11 +131,11 @@ export default function App() {
   // cut points, which aren't category-scoped, keep showing. Gating `isolateCategory` on this instead
   // of `active` means the map shows every category's features until the user actually asks to focus.
   const [manualSelect, setManualSelect] = useState(false);
-  const [newNameByTopic, setNewNameByTopic] = useState<Record<string, string>>({});
+  const [newName, setNewName] = useState("");
   const [collapsed, setCollapsed] = useState(false);
   // Drag-resizable panel sizes (px) — the map/tree pane vs. the side panel, and, within the side
-  // panel, the topics/category list vs. the JSON editor below it. Defaults roughly match the old
-  // fixed 60/40 flex split and the old 320px list `maxHeight`.
+  // panel, the category list vs. the JSON editor below it. Defaults roughly match the old fixed
+  // 60/40 flex split and the old 320px list `maxHeight`.
   const [sidebarWidth, setSidebarWidth] = useState(420);
   const [topicsListHeight, setTopicsListHeight] = useState(320);
   const [showNodes, setShowNodes] = useState(false);
@@ -145,6 +159,7 @@ export default function App() {
   const [unmatchedWayFeature, setUnmatchedWayFeature] = useState<GeoJSON.Feature | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Bbox is independent of which topic is selected — fetched once, not on topic change.
   useEffect(() => {
     fetch("/api/bounds")
       .then((r) => r.json())
@@ -153,31 +168,17 @@ export default function App() {
         setSelected(d.selected);
         if (d.maxBboxM) setMaxBboxM(d.maxBboxM);
       });
-    fetch("/api/configs")
-      .then((r) => r.json())
-      .then((d: { configs: string[]; current: string }) => {
-        setConfigs(d.configs);
-        setCurrentConfig(d.current);
-      });
-    loadTopics();
   }, []);
 
-  // Fetches the topics/categories for whichever config the server currently has selected —
-  // shared by the initial mount and by switchConfig.
-  function loadTopics() {
-    fetch("/api/topics")
+  function loadCategories() {
+    fetch(`/api/categories/${encodeURIComponent(topic)}`)
       .then((r) => r.json())
-      .then((d: { topics: string[] }) => {
-        setTopics(d.topics);
-        // Topics start collapsed and nothing is selected — classify the first topic directly
-        // (bypassing `active`/`text`) so the map shows data immediately without highlighting a row
-        // or populating the editor pane, which would look selected despite nothing being expanded.
-        if (d.topics[0]) loadInitialMap(d.topics[0]);
-        for (const topic of d.topics) loadCategories(topic);
+      .then((d: { categories: { kind: string; name: string }[] }) => {
+        setCategories(d.categories.map((c) => ({ topic, ...c })));
       });
   }
 
-  async function loadInitialMap(topic: string) {
+  async function loadInitialMap() {
     try {
       const r = await fetch(`/api/topic/${encodeURIComponent(topic)}`);
       const d = await r.json();
@@ -187,42 +188,23 @@ export default function App() {
     }
   }
 
-  function loadCategories(topic: string) {
-    fetch(`/api/categories/${encodeURIComponent(topic)}`)
-      .then((r) => r.json())
-      .then((d: { categories: { kind: string; name: string }[] }) => {
-        const cats = d.categories.map((c) => ({ topic, ...c }));
-        setCategoriesByTopic((prev) => ({ ...prev, [topic]: cats }));
-      });
-  }
-
-  // Switches the server's selected config directory, then resets every topic-scoped piece of
-  // state (categories/selection differ entirely between configs) and reloads — same load path as
-  // the initial mount, so the freshly switched config classifies its first topic right away (if a
-  // bbox is already chosen) via loadTopics -> loadInitialMap. Keeps the current bbox and map data
-  // as-is (no reset/reload) — the old config's features stay on screen until the new config's
-  // classify call replaces them in place, instead of blanking the map while switching.
-  async function switchConfig(config: string) {
-    const res = await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setError(body.error || "Failed to switch config");
-      return;
-    }
-    setCurrentConfig(config);
-    setTopics([]);
-    setCategoriesByTopic({});
-    setHiddenTopics(new Set());
-    setExpandedTopics(new Set());
-    setNewNameByTopic({});
-    setActive(NO_SELECTION);
+  // Resets every category-scoped piece of state (the previous topic's categories/selection don't
+  // apply to the new one) and reloads — mirrors what the old multi-topic `switchConfig` used to
+  // reset, now scoped to a topic change instead of a config change. The server side
+  // (`/api/topic-select`) has already run by the time `topic` changes here (see the parent page),
+  // so `loadCategories`/`loadInitialMap` are safe to fire immediately.
+  useEffect(() => {
+    setCategories([]);
+    setActive({ topic, kind: DEFAULT_KIND, name: "" });
     setManualSelect(false);
-    loadTopics();
-  }
+    setNewName("");
+    setError(null);
+    setData(null);
+    setCutPoints(null);
+    loadCategories();
+    loadInitialMap();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topic]);
 
   useEffect(() => {
     if (active.isTopicConfig) {
@@ -242,41 +224,33 @@ export default function App() {
       .catch(() => setText(NEW_CATEGORY_JSON));
   }, [active]);
 
-  // Memoized so identity only changes when the selected topic/category actually does — an inline
-  // object literal here would change reference on every render (e.g. every keystroke while
-  // editing), which would defeat Map's focus effect's ability to tell "selection changed" from
-  // "unrelated re-render".
+  // Memoized so identity only changes when the selected category actually does — an inline object
+  // literal here would change reference on every render (e.g. every keystroke while editing),
+  // which would defeat Map's focus effect's ability to tell "selection changed" from "unrelated
+  // re-render".
   const isolateCategory = useMemo(
     () => (manualSelect && active.name && !active.isTopicConfig ? { topic: active.topic, name: active.name } : null),
     [manualSelect, active.topic, active.name, active.isTopicConfig],
   );
 
-  // What the map should fit its view to on the next focusTick — a topic click fits every feature
-  // in that topic (name: null); a category click narrows to just that category. Kept separate from
-  // `isolateCategory` since a topic click shouldn't hide that topic's other categories on the map,
-  // just move the viewport.
+  // What the map should fit its view to on the next focusTick — clicking topic.json fits every
+  // feature (name: null); a category click narrows to just that category.
   const focusTarget = useMemo(
     () => (manualSelect && active.topic ? { topic: active.topic, name: active.isTopicConfig ? null : active.name || null } : null),
     [manualSelect, active.topic, active.name, active.isTopicConfig],
   );
 
-  // One color per topic (not per category, for now) — categories within a topic aren't
-  // individually distinguished yet.
-  const topicColors = useMemo(() => {
-    const colors: Record<string, string> = {};
-    for (const topic of topics) colors[topic] = hashColor(topic);
-    return colors;
-  }, [topics]);
+  const topicColors = useMemo(() => ({ [topic]: hashColor(topic) }), [topic]);
 
-  async function addCategory(topic: string) {
-    const name = (newNameByTopic[topic] ?? "").trim();
+  async function addCategory() {
+    const name = newName.trim();
     if (!name) return;
-    setNewNameByTopic((prev) => ({ ...prev, [topic]: "" }));
+    setNewName("");
     const category = { topic, kind: DEFAULT_KIND, name };
     setActive(category);
     setText(NEW_CATEGORY_JSON);
     await classify(NEW_CATEGORY_JSON, category);
-    loadCategories(topic);
+    loadCategories();
   }
 
   async function selectBbox(box: [number, number, number, number]) {
@@ -304,7 +278,7 @@ export default function App() {
         setExtractMs(body.extractMs ?? null);
         setData(null);
         if (text && active.topic && (active.name || active.isTopicConfig)) classify(text);
-        else if (topics[0]) loadInitialMap(topics[0]);
+        else loadInitialMap();
       } else {
         setError(body.error || "Unknown error");
       }
@@ -382,35 +356,13 @@ export default function App() {
       setError(body.error || "Failed to delete category");
       return;
     }
-    const remaining = (categoriesByTopic[c.topic] ?? []).filter((x) => !(x.kind === c.kind && x.name === c.name));
-    setCategoriesByTopic((prev) => ({ ...prev, [c.topic]: remaining }));
+    const remaining = categories.filter((x) => !(x.kind === c.kind && x.name === c.name));
+    setCategories(remaining);
     if (active.topic === c.topic && active.kind === c.kind && active.name === c.name) {
       setActive(remaining[0] ?? { topic: c.topic, kind: DEFAULT_KIND, name: "" });
     } else if (selected && active.topic && (active.name || active.isTopicConfig)) {
       classify(text);
     }
-  }
-
-  function toggleTopicVisibility(topic: string) {
-    setHiddenTopics((prev) => {
-      const next = new Set(prev);
-      if (next.has(topic)) next.delete(topic);
-      else next.add(topic);
-      return next;
-    });
-  }
-
-  function toggleTopicExpanded(topic: string) {
-    setExpandedTopics((prev) => {
-      const next = new Set(prev);
-      if (next.has(topic)) next.delete(topic);
-      else next.add(topic);
-      // Folding every topic away clears the selection — reopening a (possibly different) topic
-      // afterward should start from "nothing selected", not silently resurface whatever was open
-      // before everything got minimized.
-      if (next.size === 0) setActive(NO_SELECTION);
-      return next;
-    });
   }
 
   async function classify(json: string, selection: Selection = active) {
@@ -442,13 +394,13 @@ export default function App() {
     }
   }
 
-  // Map/Tree/Categorize/Decision-tree switcher. Only the map view has no header row of its own to
-  // put this in — it's a full-bleed canvas — so it floats as an absolute top-right overlay there.
-  // The tree views (`DagView`) have their own header row full of field/category/variant dropdowns,
-  // so this gets passed into that row instead (`extraHeader`, pushed right via `margin-left: auto`)
-  // rather than absolutely overlaid on top of it, which is what used to cover up (or get covered
-  // by, depending on which dropdown happened to be wide that render) whatever sat at that row's
-  // right edge.
+  // Map/Tree/Categorize/Decision-tree/Sanitizers switcher. Only the map view has no header row of
+  // its own to put this in — it's a full-bleed canvas — so it floats as an absolute top-right
+  // overlay there. The tree views (`DagView`) have their own header row full of field/category/
+  // variant dropdowns, so this gets passed into that row instead (`extraHeader`, pushed right via
+  // `margin-left: auto`) rather than absolutely overlaid on top of it, which is what used to cover
+  // up (or get covered by, depending on which dropdown happened to be wide that render) whatever
+  // sat at that row's right edge.
   const viewSwitcher = (
     <div style={{ display: "flex", gap: 4 }}>
       <button
@@ -467,11 +419,9 @@ export default function App() {
         Map
       </button>
       <button
-        onClick={() => active.topic && setViewMode("tree")}
-        disabled={!active.topic}
+        onClick={() => setViewMode("tree")}
         style={{
           fontWeight: viewMode === "tree" ? 700 : 400,
-          opacity: active.topic ? 1 : 0.5,
           padding: "7px 12px",
           background: "rgba(255,255,255,0.85)",
           backdropFilter: "blur(6px)",
@@ -484,11 +434,9 @@ export default function App() {
         Producer
       </button>
       <button
-        onClick={() => active.topic && setViewMode("categorize")}
-        disabled={!active.topic}
+        onClick={() => setViewMode("categorize")}
         style={{
           fontWeight: viewMode === "categorize" ? 700 : 400,
-          opacity: active.topic ? 1 : 0.5,
           padding: "7px 12px",
           background: "rgba(255,255,255,0.85)",
           backdropFilter: "blur(6px)",
@@ -501,11 +449,9 @@ export default function App() {
         Categorize
       </button>
       <button
-        onClick={() => active.topic && setViewMode("decision-tree")}
-        disabled={!active.topic}
+        onClick={() => setViewMode("decision-tree")}
         style={{
           fontWeight: viewMode === "decision-tree" ? 700 : 400,
-          opacity: active.topic ? 1 : 0.5,
           padding: "7px 12px",
           background: "rgba(255,255,255,0.85)",
           backdropFilter: "blur(6px)",
@@ -518,11 +464,9 @@ export default function App() {
         Decision tree
       </button>
       <button
-        onClick={() => active.topic && setViewMode("sanitizers")}
-        disabled={!active.topic}
+        onClick={() => setViewMode("sanitizers")}
         style={{
           fontWeight: viewMode === "sanitizers" ? 700 : 400,
-          opacity: active.topic ? 1 : 0.5,
           padding: "7px 12px",
           background: "rgba(255,255,255,0.85)",
           backdropFilter: "blur(6px)",
@@ -540,36 +484,21 @@ export default function App() {
   return (
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
       <div style={{ flex: "1 1 auto", minWidth: 0, position: "relative" }}>
-        {viewMode === "tree" && active.topic ? (
-          <DagView
-            topic={active.topic}
-            category={active.isTopicConfig ? null : active.name || null}
-            mode="deriver"
-            extraHeader={viewSwitcher}
-          />
-        ) : viewMode === "categorize" && active.topic ? (
-          <DagView
-            topic={active.topic}
-            category={active.isTopicConfig ? null : active.name || null}
-            mode="category"
-            extraHeader={viewSwitcher}
-          />
-        ) : viewMode === "decision-tree" && active.topic ? (
-          <DagView
-            topic={active.topic}
-            category={active.isTopicConfig ? null : active.name || null}
-            mode="decision-tree"
-            extraHeader={viewSwitcher}
-          />
-        ) : viewMode === "sanitizers" && active.topic ? (
-          <DagView topic={active.topic} mode="sanitizer" extraHeader={viewSwitcher} />
+        {viewMode === "tree" ? (
+          <DagView topic={topic} category={active.isTopicConfig ? null : active.name || null} mode="deriver" extraHeader={viewSwitcher} />
+        ) : viewMode === "categorize" ? (
+          <DagView topic={topic} category={active.isTopicConfig ? null : active.name || null} mode="category" extraHeader={viewSwitcher} />
+        ) : viewMode === "decision-tree" ? (
+          <DagView topic={topic} category={active.isTopicConfig ? null : active.name || null} mode="decision-tree" extraHeader={viewSwitcher} />
+        ) : viewMode === "sanitizers" ? (
+          <DagView topic={topic} mode="sanitizer" extraHeader={viewSwitcher} />
         ) : (
           <Map
             bounds={bounds}
             data={data}
             cutPoints={cutPoints}
             topicColors={topicColors}
-            hiddenTopics={hiddenTopics}
+            hiddenTopics={NO_HIDDEN_TOPICS}
             isolateCategory={isolateCategory}
             focusTarget={focusTarget}
             focusTick={focusTick}
@@ -759,14 +688,19 @@ export default function App() {
             gap: 8,
           }}
         >
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {collapsed ? active.topic || "topics" : "topics"}
+          {!collapsed && (
+            <Link href="/" style={{ color: "var(--muted)", fontSize: 12, textDecoration: "none", flexShrink: 0 }} title="Back to config picker">
+              ← configs
+            </Link>
+          )}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textAlign: collapsed ? "left" : "right" }}>
+            {collapsed ? topic : `${config} / ${topic}`}
           </span>
           <button onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Expand" : "Minimize"}>
             {collapsed ? "◀" : "▶"}
           </button>
         </div>
-        {!collapsed && configs.length > 0 && (
+        {!collapsed && (
           <div
             style={{
               padding: "8px 12px",
@@ -778,15 +712,11 @@ export default function App() {
               gap: 8,
             }}
           >
-            <span style={{ color: "var(--muted)" }}>config</span>
-            <select
-              value={currentConfig}
-              onChange={(e) => switchConfig(e.target.value)}
-              style={{ flex: 1, minWidth: 0 }}
-            >
-              {configs.map((config) => (
-                <option key={config} value={config}>
-                  {config}
+            <span style={{ color: "var(--muted)" }}>topic</span>
+            <select value={topic} onChange={(e) => onTopicChange(e.target.value)} style={{ flex: 1, minWidth: 0 }}>
+              {topics.map((t) => (
+                <option key={t} value={t}>
+                  {t}
                 </option>
               ))}
             </select>
@@ -795,143 +725,90 @@ export default function App() {
         {!collapsed && (
           <>
             <div style={{ borderBottom: "1px solid var(--border)", height: topicsListHeight, flexShrink: 0, overflowY: "auto" }}>
-              {topics.map((topic) => {
-                const expanded = expandedTopics.has(topic);
-                const cats = categoriesByTopic[topic] ?? [];
-                return (
-                  <div key={topic}>
-                    <div
-                      className="row"
-                      onClick={() => toggleTopicExpanded(topic)}
-                      style={{
-                        padding: "8px 12px",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 13,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        opacity: hiddenTopics.has(topic) ? 0.4 : 1,
-                        background: "#f7f8fa",
-                      }}
-                    >
-                      <button
-                        className="icon-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleTopicVisibility(topic);
-                        }}
-                        title={hiddenTopics.has(topic) ? `Show ${topic}` : `Hide ${topic}`}
-                        style={{ lineHeight: 1 }}
-                      >
-                        {hiddenTopics.has(topic) ? "🚫" : "👁"}
-                      </button>
-                      <span style={{ color: "var(--muted)" }}>{expanded ? "▾" : "▸"}</span>
-                      <span
-                        style={{
-                          display: "inline-block",
-                          width: 10,
-                          height: 10,
-                          borderRadius: "50%",
-                          background: topicColors[topic],
-                          flexShrink: 0,
-                        }}
-                      />
-                      <span style={{ flex: 1 }}>{topic}</span>
-                      <span style={{ color: "var(--muted)" }}>{cats.length}</span>
-                    </div>
-                    {expanded && (
-                      <div style={{ paddingLeft: 16 }}>
-                        <div
-                          className="row"
-                          onClick={() => {
-                            setActive({ topic, kind: "", name: "", isTopicConfig: true });
-                            if (viewMode === "map") {
-                              setManualSelect(true);
-                              setFocusTick((t) => t + 1);
-                            }
-                          }}
-                          style={{
-                            padding: "7px 12px",
-                            fontFamily: "var(--font-mono)",
-                            fontSize: 13,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            borderRadius: "var(--radius-sm)",
-                            background: active.topic === topic && active.isTopicConfig ? "var(--accent-soft)" : "transparent",
-                          }}
-                        >
-                          topic.json
-                        </div>
-                        <div style={{ display: "flex", padding: "6px 12px", gap: 6 }}>
-                          <input
-                            value={newNameByTopic[topic] ?? ""}
-                            onChange={(e) => setNewNameByTopic((prev) => ({ ...prev, [topic]: e.target.value }))}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") addCategory(topic);
-                            }}
-                            placeholder={`new category in ${topic}`}
-                            style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13 }}
-                          />
-                          <button onClick={() => addCategory(topic)} title="Add category">
-                            +
-                          </button>
-                        </div>
-                        {cats.map((c) => (
-                          <div
-                            key={`${c.kind}/${c.name}`}
-                            className="row"
-                            onClick={() => {
-                              if (active.topic === c.topic && active.kind === c.kind && active.name === c.name) {
-                                setActive(NO_SELECTION);
-                                if (viewMode === "map") setManualSelect(false);
-                              } else {
-                                setActive(c);
-                                if (viewMode === "map") {
-                                  setManualSelect(true);
-                                  setFocusTick((t) => t + 1);
-                                }
-                              }
-                            }}
-                            style={{
-                              padding: "7px 12px",
-                              fontFamily: "var(--font-mono)",
-                              fontSize: 13,
-                              cursor: "pointer",
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 6,
-                              borderRadius: "var(--radius-sm)",
-                              background: c.topic === active.topic && c.kind === active.kind && c.name === active.name ? "var(--accent-soft)" : "transparent",
-                            }}
-                          >
-                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {c.kind}/{c.name}
-                            </span>
-                            <button
-                              className="icon-btn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                deleteCategory(c);
-                              }}
-                              title={`Delete ${c.kind}/${c.name}`}
-                              style={{ lineHeight: 1 }}
-                            >
-                              ×
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              <div
+                className="row"
+                onClick={() => {
+                  setActive({ topic, kind: "", name: "", isTopicConfig: true });
+                  if (viewMode === "map") {
+                    setManualSelect(true);
+                    setFocusTick((t) => t + 1);
+                  }
+                }}
+                style={{
+                  padding: "7px 12px",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  borderRadius: "var(--radius-sm)",
+                  background: active.isTopicConfig ? "var(--accent-soft)" : "transparent",
+                }}
+              >
+                topic.json
+              </div>
+              <div style={{ display: "flex", padding: "6px 12px", gap: 6 }}>
+                <input
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") addCategory();
+                  }}
+                  placeholder={`new category in ${topic}`}
+                  style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13 }}
+                />
+                <button onClick={addCategory} title="Add category">
+                  +
+                </button>
+              </div>
+              {categories.map((c) => (
+                <div
+                  key={`${c.kind}/${c.name}`}
+                  className="row"
+                  onClick={() => {
+                    if (!active.isTopicConfig && active.kind === c.kind && active.name === c.name) {
+                      setActive({ topic, kind: DEFAULT_KIND, name: "" });
+                      setManualSelect(false);
+                    } else {
+                      setActive(c);
+                      if (viewMode === "map") {
+                        setManualSelect(true);
+                        setFocusTick((t) => t + 1);
+                      }
+                    }
+                  }}
+                  style={{
+                    padding: "7px 12px",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 13,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    borderRadius: "var(--radius-sm)",
+                    background: !active.isTopicConfig && c.kind === active.kind && c.name === active.name ? "var(--accent-soft)" : "transparent",
+                  }}
+                >
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {c.kind}/{c.name}
+                  </span>
+                  <button
+                    className="icon-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteCategory(c);
+                    }}
+                    title={`Delete ${c.kind}/${c.name}`}
+                    style={{ lineHeight: 1 }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
             </div>
-            {active.topic && (active.name || active.isTopicConfig) && (
+            {active.name || active.isTopicConfig ? (
               <>
                 <Divider axis="y" onMouseDown={(e) => beginResize(e, "y", topicsListHeight, setTopicsListHeight, 80, 640)} />
                 <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -946,14 +823,14 @@ export default function App() {
                       borderBottom: "1px solid var(--border)",
                     }}
                   >
-                    {active.isTopicConfig ? `${active.topic}/topic.json` : `${active.topic}/${active.kind}/${active.name}.json`}
+                    {active.isTopicConfig ? `${topic}/topic.json` : `${topic}/${active.kind}/${active.name}.json`}
                   </div>
                   <div style={{ flex: 1, minHeight: 0 }}>
                     <Editor value={text} onChange={setText} />
                   </div>
                 </div>
               </>
-            )}
+            ) : null}
             {error && (
               <div
                 style={{

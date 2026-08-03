@@ -60,24 +60,37 @@ export class ApiError extends Error {
 //   (see `selectWay`) — when set, the pipeline filters on `osm_id = currentWayId` rather than the
 //   bbox spatial query, so it runs on exactly the searched-for way and nothing else nearby (see
 //   `--way-id` in `src/config.rs`/`src/live_source.rs`). Cleared by a manual bbox selection.
-// - `currentConfigName`/`currentConfigDir`: the config directory currently being edited/run
-//   against. This is always a scratch copy under the OS temp dir, never the real configs/* tree —
-//   the editor copies a config into it once (on first selection, or on switching), and all
-//   reads/writes/pipeline runs happen against the copy. Edits made in the live editor are
-//   therefore discarded when the dev server restarts and never touch the repo's actual configs/*.
+// - `currentConfigName`: which `configs/*` directory is selected — just a name, no copy (see
+//   `listTopicsForConfig`, which reads the real tree directly; there's nothing left that needs a
+//   full multi-topic scratch copy now that the pipeline only ever runs against one topic at a
+//   time — see `currentTopicDir` below).
+// - `currentTopicName`/`currentTopicDir`: the one topic currently being edited/run against.
+//   `currentTopicDir` is a scratch copy under the OS temp dir containing ONLY that topic's
+//   subdirectory plus `currentConfigName`'s shared root-level files (`macros.json`,
+//   `sanitizers.json`, etc. — see `switchTopic`) — never the real configs/* tree, and never the
+//   other topics in that config. This is what every file read/write and pipeline/dag_json
+//   invocation resolves against. Edits made in the live editor are therefore discarded when the
+//   dev server restarts and never touch the repo's actual configs/*.
 const globalState = globalThis as unknown as {
   __liveEditor?: {
     currentBounds: [number, number, number, number] | null;
     currentWayId: string | null;
     currentConfigName: string | null;
-    currentConfigDir: string | null;
+    currentTopicName: string | null;
+    currentTopicDir: string | null;
   };
 };
-const state = (globalState.__liveEditor ??= { currentBounds: null, currentWayId: null, currentConfigName: null, currentConfigDir: null });
+const state = (globalState.__liveEditor ??= {
+  currentBounds: null,
+  currentWayId: null,
+  currentConfigName: null,
+  currentTopicName: null,
+  currentTopicDir: null,
+});
 
 // A config is any non-`_`-prefixed directory directly under CONFIGS_ROOT (configs/tilda,
-// configs/osmnx, configs/public_transport, ...) — same discovery rule as listTopics() below, one
-// level up.
+// configs/osmnx, configs/public_transport, ...) — same discovery rule as listTopicsForConfig()
+// below, one level up.
 export async function listConfigs(): Promise<string[]> {
   const entries = await fs.readdir(CONFIGS_ROOT, { withFileTypes: true });
   return entries
@@ -86,19 +99,47 @@ export async function listConfigs(): Promise<string[]> {
     .sort();
 }
 
-async function loadConfigCopy(name: string): Promise<string> {
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-config-"));
-  const dest = path.join(workDir, name);
-  await fs.cp(path.join(CONFIGS_ROOT, name), dest, { recursive: true });
-  return dest;
+// A topic is any non-`_`-prefixed directory directly under a config dir — same discovery rule the
+// Rust side uses (see TopicRunner::load_all). Reads the real `configs/<config>/` tree directly
+// (read-only, no copy) — this only ever needs to enumerate names for the topic dropdown/
+// `switchTopic` validation, never to serve file content, so there's nothing to isolate a scratch
+// copy for here.
+export async function listTopicsForConfig(config: string): Promise<string[]> {
+  const entries = await fs.readdir(path.join(CONFIGS_ROOT, config), { withFileTypes: true });
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
+    .map((e) => e.name)
+    .sort();
 }
 
-export async function ensureConfigSelected(): Promise<string> {
-  if (state.currentConfigDir) return state.currentConfigDir;
-  const configs = await listConfigs();
-  state.currentConfigName = configs[0];
-  state.currentConfigDir = await loadConfigCopy(configs[0]);
-  return state.currentConfigDir;
+// Topics of whichever config is currently selected — see `listTopicsForConfig`.
+export async function listTopics(): Promise<string[]> {
+  return listTopicsForConfig(requireConfig());
+}
+
+function requireConfig(): string {
+  if (!state.currentConfigName) {
+    throw new ApiError(409, "no config selected — pick one from the start page first");
+  }
+  return state.currentConfigName;
+}
+
+function requireTopicDir(): string {
+  if (!state.currentTopicDir) {
+    throw new ApiError(409, "no topic selected — pick a config and topic first");
+  }
+  return state.currentTopicDir;
+}
+
+// Confirms `topic` is the currently active one (a cheap state-equality check — replaces the old
+// "does this directory exist under the config copy" scan now that exactly one topic is ever in
+// play) and returns the scratch dir it lives under.
+function requireCurrentTopic(topic: string): string {
+  const dir = requireTopicDir();
+  if (topic !== state.currentTopicName) {
+    throw new ApiError(400, `topic '${topic}' is not the currently selected topic ('${state.currentTopicName}')`);
+  }
+  return dir;
 }
 
 function run(bin: string, args: string[], env?: Record<string, string>): Promise<{ ok: true; stdout: string } | { ok: false; message: string }> {
@@ -220,7 +261,7 @@ async function runPipeline(
   target: { wayId: string } | { bounds: [number, number, number, number] },
   outDir: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const configDir = await ensureConfigSelected();
+  const configDir = requireTopicDir();
   const filterArgs = "wayId" in target ? ["--way-id", target.wayId] : ["--bbox", target.bounds.join(",")];
   const result = await run(
     PIPELINE_BIN,
@@ -243,37 +284,63 @@ async function runPipeline(
   return result.ok ? { ok: true } : result;
 }
 
-// A topic is any non-`_`-prefixed directory directly under the current config dir — same
-// discovery rule the Rust side uses (see TopicRunner::load_all), so nothing here needs to
-// hardcode topic names.
-export async function listTopics(): Promise<string[]> {
-  const configDir = await ensureConfigSelected();
-  const entries = await fs.readdir(configDir, { withFileTypes: true });
-  return entries
-    .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
-    .map((e) => e.name)
-    .sort();
-}
-
+// Selecting a config no longer implies picking (or copying) a topic — that's `switchTopic`'s job,
+// called separately once the topic dropdown has something to select. Best-effort-cleans the
+// previous topic's scratch dir, same reasoning as `switchTopic`'s own cleanup.
 export async function switchConfig(config: string): Promise<void> {
   if (!(await listConfigs()).includes(config)) {
     throw new ApiError(400, `unknown config '${config}'`);
   }
   state.currentConfigName = config;
-  state.currentConfigDir = await loadConfigCopy(config);
+  state.currentTopicName = null;
+  const prevDir = state.currentTopicDir;
+  state.currentTopicDir = null;
+  if (prevDir) fs.rm(prevDir, { recursive: true, force: true }).catch(() => {});
+}
+
+// Builds a scratch dir containing ONLY `topic`'s subtree plus the current config's shared
+// root-level files (`macros.json`/`producers.json`/`sanitizers.json`/`units.json`/
+// `value_sets.json` — whichever actually exist; matched by "is a file, not a directory" rather
+// than a hardcoded name list, since every topic is a directory and every shared file lives flat
+// at the config root, per `TopicRunner::load`'s own file layout). This is the "run this topic as
+// if it were its own config" piece: `--config-dir` ends up pointing at a dir containing exactly
+// one topic subdirectory, so the pipeline/dag_json classify only that topic, not its siblings.
+export async function switchTopic(topic: string): Promise<void> {
+  const config = requireConfig();
+  const topics = await listTopicsForConfig(config);
+  if (!topics.includes(topic)) {
+    throw new ApiError(400, `unknown topic '${topic}' in config '${config}'`);
+  }
+  const configSrc = path.join(CONFIGS_ROOT, config);
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-topic-"));
+
+  const rootEntries = await fs.readdir(configSrc, { withFileTypes: true });
+  await Promise.all(
+    rootEntries
+      .filter((e) => !e.isDirectory())
+      .map((e) => fs.copyFile(path.join(configSrc, e.name), path.join(workDir, e.name))),
+  );
+  await fs.cp(path.join(configSrc, topic), path.join(workDir, topic), { recursive: true });
+
+  const prevDir = state.currentTopicDir;
+  state.currentTopicName = topic;
+  state.currentTopicDir = workDir;
+  // Not load-bearing if this fails (OS temp cleanup is a fallback) — just avoids unbounded scratch
+  // dir accumulation across topic switches within one long-running dev server.
+  if (prevDir) fs.rm(prevDir, { recursive: true, force: true }).catch(() => {});
 }
 
 export async function getConfigs(): Promise<{ configs: string[]; current: string | null }> {
-  await ensureConfigSelected();
   return { configs: await listConfigs(), current: state.currentConfigName };
 }
 
 // The pipeline itself joins tag rows to edge geometries (by osm_id) and reprojects back to WGS84
-// — see src/output/geojson.rs — so this just reads its per-topic output back (a newline-delimited
-// GeoJSON Feature stream, RFC 8142) and merges every topic into one FeatureCollection, stamping a
-// `topic` property onto each feature/cut point since category *names* aren't unique across topics
-// (e.g. osmnx's bike/walk/drive all use "all"). Cut points are interleaved into the same stream,
-// tagged `properties.kind` of `"cut"`/`"endpoint"` (see geojson.rs), and split back out here.
+// — see src/output/geojson.rs — so this just reads its output back (a newline-delimited GeoJSON
+// Feature stream per topic, RFC 8142). `topics` is always a single-element array today (exactly
+// one topic ever runs — see `switchTopic`), but the merge-N-topics shape is kept as-is rather than
+// collapsed to one, since it's already correct and `properties.topic` stamping still matters for
+// `Map.tsx`'s `isolateCategory`/`focusTarget` filters. Cut points are interleaved into the same
+// stream, tagged `properties.kind` of `"cut"`/`"endpoint"` (see geojson.rs), and split back out here.
 async function readMergedFeatureCollections(outDir: string, topics: string[]) {
   const features: GeoJSON.Feature[] = [];
   const cutPoints: GeoJSON.Feature[] = [];
@@ -324,8 +391,8 @@ async function categoryIdsInFile(filePath: string): Promise<string[]> {
 // physical file that defines it — either `<id>.json` directly, or a family file whose `categories`
 // array contains a variant producing that id.
 async function categoryFilePath(topic: string, kind: string, name: string): Promise<string> {
-  const configDir = await ensureConfigSelected();
-  const dir = path.join(configDir, topic, kind);
+  const topicDir = requireCurrentTopic(topic);
+  const dir = path.join(topicDir, topic, kind);
   let entries: string[] = [];
   try {
     entries = await fs.readdir(dir);
@@ -353,8 +420,8 @@ export function isValidSegment(s: string): boolean {
 }
 
 async function topicFilePath(topic: string) {
-  const configDir = await ensureConfigSelected();
-  return path.join(configDir, topic, "topic.json");
+  const topicDir = requireCurrentTopic(topic);
+  return path.join(topicDir, topic, "topic.json");
 }
 
 // Re-runs the pipeline — against the searched-for way if one is selected (`currentWayId`,
@@ -375,7 +442,7 @@ export async function runPipelineAndRespond(): Promise<unknown> {
     throw new ApiError(400, result.message);
   }
   try {
-    const fc = await readMergedFeatureCollections(outDir, await listTopics());
+    const fc = await readMergedFeatureCollections(outDir, [state.currentTopicName!]);
     return { ...fc, pipelineMs };
   } catch (err) {
     throw new ApiError(500, String(err));
@@ -385,7 +452,7 @@ export async function runPipelineAndRespond(): Promise<unknown> {
 }
 
 export async function getCategories(topic: string): Promise<{ categories: { kind: string; name: string }[] }> {
-  const topicDir = path.join(await ensureConfigSelected(), topic);
+  const topicDir = path.join(requireCurrentTopic(topic), topic);
   const kinds = ["way", "node", "relation"];
   const categories: { kind: string; name: string }[] = [];
   for (const kind of kinds) {
@@ -439,9 +506,6 @@ export async function classifyCategory(topic: string, kind: string, name: string
   if (![topic, kind, name].every(isValidSegment)) {
     throw new ApiError(400, "topic/kind/name must be non-empty and not '.', '..', or contain a path separator");
   }
-  if (!(await listTopics()).includes(topic)) {
-    throw new ApiError(400, `unknown topic '${topic}'`);
-  }
   try {
     JSON.parse(json);
   } catch (err) {
@@ -463,9 +527,6 @@ export async function getTopicJson(topic: string): Promise<{ json: string }> {
 }
 
 export async function setTopicJson(topic: string, json: string): Promise<unknown> {
-  if (!(await listTopics()).includes(topic)) {
-    throw new ApiError(400, `unknown topic '${topic}'`);
-  }
   try {
     JSON.parse(json);
   } catch (err) {
@@ -488,11 +549,8 @@ export async function getDag(
   idx: string | null,
 ): Promise<unknown> {
   const dagMode = { dag: "deriver", "categorize-dag": "category", "decision-tree-dag": "decision-tree", "sanitizer-dag": "sanitizer" }[routeMode];
-  if (!(await listTopics()).includes(topic)) {
-    throw new ApiError(400, `unknown topic '${topic}'`);
-  }
-  const configDir = await ensureConfigSelected();
-  const dagArgs = [configDir, topic, dagMode, name ?? "list"];
+  const topicDir = requireCurrentTopic(topic);
+  const dagArgs = [topicDir, topic, dagMode, name ?? "list"];
   if (idx != null) dagArgs.push(idx);
   const result = await run(DAG_JSON_BIN, dagArgs);
   if (!result.ok) throw new ApiError(500, result.message);

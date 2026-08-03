@@ -3,7 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Tilda Live Category Editor",
+  title: "OSMnexus Live Editor",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

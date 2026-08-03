@@ -27,9 +27,10 @@ This also starts a `db` (PostGIS) container. Before the editor has anything to s
 region's ways into it once (see `docker-compose.yml`'s comment on the `db` service for the exact
 command) — the editor's bbox selection queries that table, it doesn't parse the PBF itself.
 
-Open http://localhost:5173, draw a bbox on the map (bounded by `MAX_BBOX_M`, default 10000m), and
-it queries that bbox from Postgres, runs the pipeline, and renders the result. Edit a category/topic
-JSON and save to re-run and re-render.
+Open http://localhost:5173: pick a config on the start page, pick a topic from the dropdown, then
+draw a bbox on the map (bounded by `MAX_BBOX_M`, default 10000m) — it queries that bbox from
+Postgres, runs the pipeline, and renders the result. Edit a category/topic JSON and save to re-run
+and re-render.
 
 Environment variables:
 
@@ -53,33 +54,50 @@ until that's updated.
 ## How it works
 
 It's a thin wrapper around the same [`osmnexus`](../README.md) binary: saving an edit shells out
-to the release build with `--source postgis --bbox <the selected bbox> --config-dir <the selected
-configs/* dir> --output geojsonseq`, then the map reloads the resulting `<topic>.geojsonseq` files.
+to the release build with `--source postgis --bbox <the selected bbox> --config-dir <a scratch dir
+containing only the selected topic> --output geojsonseq`, then the map reloads the resulting
+`<topic>.geojsonseq` file.
 
-A **config selector** (top of the topics panel) lists every directory under `configs/` (`tilda`,
-`osmnx`, `public_transport`, ...) and lets you switch between them; whichever one is selected is
-what saves write to and what the pipeline runs against — a private copy, not the repo's actual
-files.
+**Config and topic selection is two pages, not a sidebar picker:**
+- `/` (the start page, `app/page.tsx`) lists every directory under `configs/` (`tilda`, `osmnx`,
+  `public_transport`, ...) — pick one to go to `/editor/<config>`.
+- `/editor/<config>` (`app/editor/[config]/page.tsx`) shows a topic dropdown, defaulting to the
+  config's first topic; the current topic is reflected as `?topic=` in the URL, so refresh/back/
+  sharing a link preserves your place. Picking a config no longer auto-selects one for you (there's
+  no more "silently opens whichever config happened to be first"); picking a topic is mandatory
+  before the editor UI itself renders.
+- **Each topic is run as if it were its own config.** Picking a topic (`POST /api/topic-select`,
+  `switchTopic` in `lib/liveEditor.ts`) copies *only* that topic's subdirectory plus the config's
+  shared root-level files (`macros.json`, `sanitizers.json`, `producers.json`, `units.json`,
+  `value_sets.json` — whichever exist) into a fresh scratch dir, and every pipeline/`dag_json`
+  invocation for that topic points `--config-dir` at it. Editing `bikelanes` in a config that also
+  has `roads` no longer pays for classifying `roads` on every single edit — confirmed against
+  `TopicRunner::load_all`/`src/paths.rs`, which never assumed a config-dir holds more than one
+  topic in the first place.
 
 It's a Next.js (App Router) app — a real Next.js server, not the old Vite-dev-server-plugin hack:
 
-- **`app/api/**/route.ts`** — one route handler per endpoint (listing/switching configs, recording
-  a bbox selection, listing topics/categories, reading/writing a category or topic's JSON file,
-  re-running the pipeline after every write, and plotting a topic's output `Producer` trees via
-  `dag_json`). Business logic lives in **`lib/liveEditor.ts`**, which every route handler imports;
-  its module state (current bbox/config) is pinned to `globalThis` because Next.js compiles each
-  route file into its own module graph — see that file's own comment for why a plain module-level
-  variable silently doesn't work here.
-- **`components/App.tsx`** / **`Map.tsx`** / **`Editor.tsx`** / **`DagView.tsx`** — the React UI
-  (all client components — `"use client"`): a MapLibre map for bbox selection and rendering
-  classified features, a CodeMirror JSON editor for the selected topic/category file (the "Text"
-  tab), and an `@xyflow/react` graph view (`DagView`, reused across four tabs — Producer/
+- **`app/api/**/route.ts`** — one route handler per endpoint (selecting a config, selecting a
+  topic, recording a bbox selection, listing topics/categories, reading/writing a category or
+  topic's JSON file, re-running the pipeline after every write, and plotting a topic's output
+  `Producer` trees via `dag_json`). Business logic lives in **`lib/liveEditor.ts`**, which every
+  route handler imports; its module state (current bbox/config/topic) is pinned to `globalThis`
+  because Next.js compiles each route file into its own module graph — see that file's own comment
+  for why a plain module-level variable silently doesn't work here.
+- **`components/LiveEditor.tsx`** / **`Map.tsx`** / **`Editor.tsx`** / **`DagView.tsx`** — the
+  React UI (all client components — `"use client"`): a MapLibre map for bbox selection and
+  rendering classified features, a CodeMirror JSON editor for the selected topic/category file (the
+  "Text" tab), and an `@xyflow/react` graph view (`DagView`, reused across four tabs — Producer/
   Categorize/Decision tree/Sanitizers) that plots the selected topic's output-field `Producer`
   trees (each field's `Match`/`Extract`/`Const`/... tree, with the `Sanitizer` chain hanging off
   any `Extract` leaf inline), or, standalone, one named sanitizer's own mapping/replace/builtin
   chain (`src/dag.rs`'s `sanitizer_dag`, `dag_json`'s `sanitizer` mode) — same node/edge JSON shape
-  either way, so `DagView` needed no new rendering code, just a fourth `mode`.
-- **`app/layout.tsx`** / **`app/page.tsx`** — the root shell; `page.tsx` just renders `App`.
+  either way, so `DagView` needed no new rendering code, just a fourth `mode`. `LiveEditor` (the
+  main UI, everything but the map/category/JSON-editor/tree machinery being config/topic-aware
+  itself) takes `config`/`topics`/`topic`/`onTopicChange` as props from `app/editor/[config]/page.tsx`
+  rather than discovering them itself — the page owns the URL, so it owns selection.
+- **`app/layout.tsx`** / **`app/page.tsx`** — the root shell; `page.tsx` is now the start page
+  (a server component — no client JS needed just to list configs and link to them).
 - **`fixtures/tiny.osm.pbf`** — the default base extract when no larger one is mounted (see
   `BASE_PBF_PATH` above).
 
@@ -92,8 +110,8 @@ ways" pass loads a whole region's ways (tags + geometry) into a `live_raw`/`live
 ## Editing configs
 
 Topics and categories are plain JSON files under `<config>/<topic>/` (e.g.
-`../configs/tilda/bikelanes/`), where `<config>` is whichever directory is picked in the config
-selector:
+`../configs/tilda/bikelanes/`), where `<config>` is whichever directory is picked on the start
+page:
 
 - `topic.json` — table name, transforms, osm fields, sanitizers, deriver bindings.
 - `way/*.json`, `node/*.json`, `relation/*.json` — one file per category.
