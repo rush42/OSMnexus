@@ -110,5 +110,28 @@
       { "key": "tracktype",  "sanitize": "tracktype_to_smoothness", "annotate": { "source": "tracktype_to_smoothness", "confidence": "medium" } },
       { "key": "mtb:scale",  "sanitize": "mtb_scale_to_smoothness", "annotate": { "source": "mtb:scale_to_smoothness", "confidence": "medium" } }
     ]
-  }
+  },
+  "name": {
+    "fallback": [
+      { "key": "name" },
+      { "parent": { "key": "name" } }
+    ]
+  },
+  "oneway:bicycle": {
+    "fallback": [
+      { "key": "oneway:bicycle" },
+      { "parent": { "key": "oneway:bicycle" } }
+    ]
+  },
+  "is_directed": {
+    "rules": [
+      { "when": { "tag": "oneway", "in": ["yes", "-1"] }, "value": true }
+    ],
+    "default": false
+  },
+  "informal": { "parent": { "key": "informal" } },
+  "covered": { "parent": { "key": "covered" } },
+  "operator_type": { "parent": { "key": "operator_type" } },
+  "mapillary": { "parent": { "key": "mapillary" } },
+  "surface:colour": { "keys": ["surface:colour", "surface:color"] }
 }

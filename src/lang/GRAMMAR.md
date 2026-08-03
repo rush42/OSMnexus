@@ -158,7 +158,12 @@ Rule = { "when": Filter, "value": Producer }
 ## `outputs` (topic.json)
 
 Each entry in `topic.json`'s `outputs` map resolves to a `Producer`, trying
-these shapes in order:
+these shapes in order. There is no inline-`Producer` shape — any real logic
+(a `Match`, `fallback`, `parent` wrap, etc.) must be named once in this
+topic's `producers.json` and referenced by name here, the same rule
+`sanitize:` already follows (see `Sanitizer`'s own doc): a typo'd name fails
+loudly at load time instead of being buried inline where nothing else can
+reference it.
 
 ```
 outputs.<name> =
@@ -172,10 +177,9 @@ outputs.<name> =
       // sanitizer shorthand (no key/keys/fallback/rules present):
       // Extract{ keys: in or [<name>] } piped through sanitize "name",
       // wrapped per "from" (obj default / parent / parent_or_obj)
-
-  | Producer
-      // full inline producer (any other object shape)
 ```
+
+Any other object shape (an inline `Producer`) is a load-time error.
 
 ## `transforms.json`
 

@@ -4,18 +4,7 @@
     "way": ["line"]
   },
   "outputs": {
-    "name": {
-      "fallback": [
-        {
-          "key": "name"
-        },
-        {
-          "parent": {
-            "key": "name"
-          }
-        }
-      ]
-    },
+    "name": "name",
     "surface": "surface",
     "smoothness": "smoothness",
     "width": {
@@ -31,56 +20,15 @@
       "from": "parent_or_obj"
     },
     "oneway": "oneway",
-    "oneway:bicycle": {
-      "fallback": [
-        {
-          "key": "oneway:bicycle"
-        },
-        {
-          "parent": {
-            "key": "oneway:bicycle"
-          }
-        }
-      ]
-    },
+    "oneway:bicycle": "oneway:bicycle",
     "traffic_sign": {
       "name": "traffic_sign"
     },
-    "is_directed": {
-      "rules": [
-        {
-          "when": {
-            "tag": "oneway",
-            "in": [
-              "yes",
-              "-1"
-            ]
-          },
-          "value": true
-        }
-      ],
-      "default": false
-    },
-    "informal": {
-      "parent": {
-        "key": "informal"
-      }
-    },
-    "covered": {
-      "parent": {
-        "key": "covered"
-      }
-    },
-    "operator_type": {
-      "parent": {
-        "key": "operator_type"
-      }
-    },
-    "mapillary": {
-      "parent": {
-        "key": "mapillary"
-      }
-    },
+    "is_directed": "is_directed",
+    "informal": "informal",
+    "covered": "covered",
+    "operator_type": "operator_type",
+    "mapillary": "mapillary",
     "segregated": true,
     "bicycle": true,
     "foot": true,
@@ -99,12 +47,7 @@
     "buffer:left": true,
     "buffer:right": true,
     "buffer:both": true,
-    "surface:colour": {
-      "keys": [
-        "surface:colour",
-        "surface:color"
-      ]
-    },
+    "surface:colour": "surface:colour",
     "separation_left": {
       "name": "separation",
       "in": [
