@@ -43,10 +43,14 @@ services:
       - PGDATABASE=${PGDATABASE:-postgres}
       - PGUSER=${PGUSER:-postgres}
       - PGPASSWORD=${PGPASSWORD:-postgres}
-      # Host-built dev-fast binaries instead of the image's baked-in (release) ones — the repo
-      # bind mount above makes them visible in the container too. Rebuild after Rust changes with
-      # `cargo build --profile dev-fast --bin osmnexus --bin dag_json` (see root CLAUDE.md); no
-      # image rebuild needed, and dev-fast rebuilds in ~seconds vs. --release's 60s+.
+      # Host-built binaries instead of the image's baked-in ones — the repo bind mount above makes
+      # them visible in the container too. Defaults to release (`cargo build --release --bin
+      # osmnexus --bin dag_json`) since dev-fast (opt-level=0) is ~10-15x slower at runtime, which
+      # shows up directly as live-editor request latency. Swap to the dev-fast lines below while
+      # actively iterating on Rust code — `cargo build --profile dev-fast --bin osmnexus --bin
+      # dag_json` rebuilds in ~seconds vs. --release's 60s+ — then swap back before judging perf.
+      # - PIPELINE_BIN_PATH=/repo/target/release/osmnexus
+      # - DAG_JSON_BIN_PATH=/repo/target/release/dag_json
       - PIPELINE_BIN_PATH=/repo/target/dev-fast/osmnexus
       - DAG_JSON_BIN_PATH=/repo/target/dev-fast/dag_json
     ports:
