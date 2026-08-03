@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::{MatchOrigin, Producer, Rule};
-use crate::lang::sanitize::{AtomicJson, ReplaceRule, Sanitizer, StrOrVec};
+use crate::lang::sanitize::{AtomicJson, Builtin, ReplaceRule, Sanitizer, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
 
@@ -261,7 +261,9 @@ impl<'de> Deserialize<'de> for Sanitizer {
                 on_miss: Some("keep".to_owned()),
             },
             StepJson::Replace { replace } => Sanitizer::Replace { replace },
-            StepJson::Builtin(name) => Sanitizer::Builtin(name),
+            StepJson::Builtin(name) => Sanitizer::Builtin(
+                Builtin::from_name(&name).ok_or_else(|| serde::de::Error::custom(format!("unknown built-in sanitizer: {name}")))?,
+            ),
         })
     }
 }

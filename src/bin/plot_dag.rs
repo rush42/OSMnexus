@@ -196,6 +196,6 @@ fn step_label(step: &Sanitizer) -> String {
             format!("mapping\n{} entries\non_miss: {:?}", mapping.len(), on_miss.as_deref().unwrap_or("drop"))
         }
         Sanitizer::Replace { replace } => format!("replace\n{} rule(s)", replace.len()),
-        Sanitizer::Builtin(name) => format!("builtin: {name}"),
+        Sanitizer::Builtin(b) => format!("builtin: {}", b.name()),
     }
 }

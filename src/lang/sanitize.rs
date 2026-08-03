@@ -15,6 +15,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -26,18 +27,18 @@ fn identity(raw: &str) -> Value {
 }
 
 /// `name` not found in `sanitizers` falls back to a built-in alias (`Sanitizer::Builtin`, e.g.
-/// `"parse_length"`) rather than erroring — mirrors the pre-inlining fallback
-/// (`None => apply_builtin(name, raw)`). A truly unrecognized name still isn't caught until
-/// `apply_builtin` runs (it has no load-time name registry of its own, just one built-in), so it
-/// warns-and-drops per row rather than failing to load — the same looseness the built-in fallback
-/// always had. The one piece of by-name sanitizer resolution logic, shared by
+/// `"parse_length"`) rather than erroring; a name that isn't a named sanitizer *or* a known
+/// built-in fails loudly here, at load time (`Builtin` is a closed enum, not a passthrough
+/// `String`). The one piece of by-name sanitizer resolution logic, shared by
 /// `topic::load::inline_sanitize_refs` (JSON-level `sanitize: "name"`) and
 /// `topic::spec::resolve_output_entry` (the sanitizer-shorthand `{ "name": ... }` output entry,
 /// which never goes through JSON inlining since it isn't spelled as a `sanitize:` field).
-pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> Vec<Sanitizer> {
+pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Vec<Sanitizer>> {
     match sanitizers.get(name) {
-        Some(chain) => chain.clone(),
-        None => vec![Sanitizer::Builtin(name.to_owned())],
+        Some(chain) => Ok(chain.clone()),
+        None => Builtin::from_name(name)
+            .map(|b| vec![Sanitizer::Builtin(b)])
+            .with_context(|| format!("`{name}` is not a named sanitizer or a built-in")),
     }
 }
 
@@ -144,9 +145,42 @@ pub enum Sanitizer {
     /// next sees the result — sed-like). A general, country-agnostic alternative to a hardcoded
     /// normalizer (e.g. the former `traffic_sign` builtin). Never drops.
     Replace { replace: Vec<ReplaceRule> },
-    /// A built-in Rust transform as a (terminal) chain step, e.g. `"parse_length"`. Lets a data
-    /// chain end in an algorithmic, possibly non-string transform.
-    Builtin(String),
+    /// A built-in Rust transform as a (terminal) chain step. Lets a data chain end in an
+    /// algorithmic, possibly non-string transform.
+    Builtin(Builtin),
+}
+
+/// The registry of built-in Rust sanitize transforms — every name a `sanitize:`/`Builtin` JSON
+/// string can resolve to. A closed enum (not a `String`) so an unrecognized name is a load-time
+/// error (`resolve_named_sanitizer`, `parser`'s `Sanitizer` `Deserialize` impl) rather than a
+/// per-row runtime warn-and-drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Builtin {
+    ParseLength,
+}
+
+impl Builtin {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "parse_length" => Some(Builtin::ParseLength),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Builtin::ParseLength => "parse_length",
+        }
+    }
+
+    fn apply(self, raw: &str) -> Option<Value> {
+        match self {
+            // `parse_length` is the lone built-in: universal unit arithmetic, not a finite table.
+            // Everything else (incl. the former `traffic_sign` country normalizer) lives in
+            // sanitizers.json — as mapping/cases/filter/replace chains.
+            Builtin::ParseLength => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
+        }
+    }
 }
 
 /// The `Serialize` counterpart to `parser`'s hand-written `Sanitizer` `Deserialize` — canonical shapes
@@ -174,7 +208,7 @@ impl serde::Serialize for Sanitizer {
                 m.serialize_entry("replace", replace)?;
                 m.end()
             }
-            Sanitizer::Builtin(name) => serializer.serialize_str(name),
+            Sanitizer::Builtin(b) => serializer.serialize_str(b.name()),
         }
     }
 }
@@ -227,7 +261,7 @@ impl Sanitizer {
                 let out = replace.iter().fold(Cow::Borrowed(v), |s, r| r.apply(s));
                 Some(Value::String(out.into_owned()))
             }
-            Sanitizer::Builtin(name) => apply_builtin(name, v),
+            Sanitizer::Builtin(b) => b.apply(v),
         }
     }
 }
@@ -239,20 +273,6 @@ fn apply_on_miss(on_miss: Option<&str>, v: &str) -> Option<Value> {
         Some("keep") => Some(Value::String(v.to_owned())),
         Some("drop") | None => None,
         Some(constant) => Some(Value::String(constant.to_owned())),
-    }
-}
-
-// ── Built-in registry ───────────────────────────────────────────────────
-
-/// Apply a named built-in `&str -> atomic` transform. Returns None when the value is rejected
-/// (not in an allowed set / unparseable).
-pub fn apply_builtin(name: &str, raw: &str) -> Option<Value> {
-    match name {
-        "parse_length" => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
-        // `parse_length` is the lone built-in: universal unit arithmetic, not a finite table.
-        // Everything else (incl. the former `traffic_sign` country normalizer) lives in
-        // sanitizers.json — as mapping/cases/filter/replace chains.
-        other => { tracing::warn!("unknown built-in atomic transform: {other}"); None }
     }
 }
 

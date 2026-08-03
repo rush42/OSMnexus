@@ -215,8 +215,8 @@ pub struct Field {
 /// - `true` — verbatim extract of the identically-named tag: `"surface": true` desugars to
 ///   `{ output: "surface", source: { key: "surface" } }`.
 /// - a JSON string — a named reference into `producer_lib` (the topic's `producers.json`),
-///   resolved once here rather than falling back silently on a miss (unlike
-///   `resolve_named_sanitizer`'s builtin fallback) — a typo'd name should fail loudly at load time.
+///   resolved once here with no fallback on a miss (unlike `resolve_named_sanitizer`, which falls
+///   back to a `Builtin` lookup before failing) — a typo'd name should fail loudly at load time.
 /// - an object shaped `{ name, in?, from? }` (no `key`/`keys`/`fallback`/`rules` — those
 ///   uniquely identify a full `Producer` instead): sugar for "read the first present of `in`
 ///   (default `[output]`) from `from` (default obj), clean it with the `name` sanitizer." The
@@ -253,7 +253,8 @@ pub fn resolve_output_entry(
         let extract = Producer::Extract {
             extract: Extract::Candidates {
                 keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
-                sanitize: resolve_named_sanitizer(&r.name, sanitizers),
+                sanitize: resolve_named_sanitizer(&r.name, sanitizers)
+                    .with_context(|| format!("topic outputs.{output}"))?,
             },
             annotate: Map::new(),
         };

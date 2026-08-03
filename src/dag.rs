@@ -208,7 +208,7 @@ fn step_label(step: &Sanitizer) -> String {
                 .collect();
             lines.join("\n")
         }
-        Sanitizer::Builtin(name) => format!("Builtin\nname: {name}"),
+        Sanitizer::Builtin(b) => format!("Builtin\nname: {}", b.name()),
     }
 }
 

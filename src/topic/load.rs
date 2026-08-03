@@ -98,7 +98,7 @@ pub fn inline_sanitize_refs(value: Value, sanitizers: &HashMap<String, Vec<Sanit
             .map(|(k, v)| {
                 let v = if k == "sanitize" {
                     match v {
-                        Value::String(name) => serde_json::to_value(resolve_named_sanitizer(&name, sanitizers))?,
+                        Value::String(name) => serde_json::to_value(resolve_named_sanitizer(&name, sanitizers)?)?,
                         other => anyhow::bail!(
                             "`sanitize` must be a named reference (a string), not an inline chain: {other}"
                         ),
