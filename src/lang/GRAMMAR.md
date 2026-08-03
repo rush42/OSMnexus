@@ -19,32 +19,21 @@ one `Extract` 1:1, so it's never a separate sibling field.
 
 ```
 Extract =
-  { "keys": [String, ...], "sanitize"?: SanitizeRef }   // aka "first_tag" (legacy alias) — first key found wins
-  | { "key": String, "sanitize"?: SanitizeRef }          // aka "tag" (legacy alias)
+  { "keys": [String, ...], "sanitize"?: String }   // aka "first_tag" (legacy alias) — first key found wins
+  | { "key": String, "sanitize"?: String }          // aka "tag" (legacy alias)
 ```
 
-## SanitizeRef
+`sanitize`, when present, is always a name looked up in `sanitizers.json` —
+there is no inline-chain form, and every sanitizer has exactly one
+definition. A `sanitize:` field that isn't a bare string is a load-time
+error.
+
+## sanitizers.json
 
 ```
-SanitizeRef =
-  String                           // name, looked up in sanitizers.json
-```
-
-Always a name — there is no inline-chain form. Every sanitizer chain has
-exactly one definition, in `sanitizers.json`; a `sanitize:` field that isn't a
-bare string is a load-time error. Not a `Sanitizer` itself (see below) — it's
-resolved away to one before any Rust type ever sees it.
-
-## SanitizerChain / Sanitizer
-
-`sanitizers.json` maps each name to a `SanitizerChain` — an ordered chain of
-`Sanitizer` steps applied to a raw value. (Matches the Rust naming exactly:
-`Sanitizer` = one step, `Vec<Sanitizer>` = a chain.)
-
-```
-SanitizerChain =
-  [Sanitizer, ...]                 // explicit chain
-  | Sanitizer                      // sugar: single-step chain
+sanitizers.json = { String: Sanitizer | [Sanitizer, ...] }
+                                    // one entry per name; single step or
+                                    // explicit chain, applied in order
 
 Sanitizer =
   { "mapping": {String: JSON, ...}, "on_miss"?: String }
@@ -218,7 +207,7 @@ TransformStep =
   | { "drop": Filter }
       // Drop: discard the current object when Filter matches
 
-  | { "output": String, "directed": { "key": String, "from"?: "obj" | "parent", "sanitize"?: SanitizeRef } }
+  | { "output": String, "directed": { "key": String, "from"?: "obj" | "parent", "sanitize"?: String } }
       // DirectedExtract: side-aware tag read (used with left/right split ways).
       // "from" is the narrower Obj/Parent vocabulary, not the general TagSet —
       // identified by its required "directed" field, checked before TagRule
@@ -267,10 +256,9 @@ StripPrefix, `unnest` → Unnest, `drop` → Drop, `directed` → DirectedExtrac
 
 - `Extract` — `src/lang/extract.rs`
 - `Filter` — `src/lang/filter.rs`
-- `SanitizerChain` / `Sanitizer` — `src/lang/sanitize.rs` (`Sanitizer` = one step, `Vec<Sanitizer>`
-  = a chain, matching the grammar names exactly). `SanitizeRef` (the field-level name reference)
-  isn't a distinct Rust type — a named `sanitize: "<name>"` reference is resolved as a JSON-tree
-  rewrite, `topic::load::inline_sanitize_refs`, before any Rust type ever sees it
+- `Sanitizer` — `src/lang/sanitize.rs` (one step; `Vec<Sanitizer>` is a chain, matching the grammar
+  name exactly). A `sanitize:` field's name reference isn't a distinct Rust type — it's resolved
+  as a JSON-tree rewrite, `topic::load::inline_sanitize_refs`, before any Rust type ever sees it
 - `Producer` / `Rule` — `src/lang/producer.rs`, `src/lang/classifier.rs`
 - `DirectedExtract` — `src/topic/spec.rs` (`TransformSpec::DirectedExtract`),
   `src/categorize/transform.rs` (`InputTransform::DirectedExtract`, `DirectedFrom`)
