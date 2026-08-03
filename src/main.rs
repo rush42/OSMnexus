@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cfg.source {
         config::Source::Pbf => anyhow::ensure!(!cfg.pbf_file.is_empty(), "a .osm.pbf file is required for --source pbf"),
-        config::Source::Postgis => anyhow::ensure!(cfg.bbox.is_some(), "--bbox is required for --source postgis"),
+        config::Source::Postgis => anyhow::ensure!(cfg.bbox.is_some() || cfg.way_id.is_some(), "--bbox or --way-id is required for --source postgis"),
     }
 
     osmnexus::traffic::set_left_hand_traffic(cfg.left_hand_traffic);

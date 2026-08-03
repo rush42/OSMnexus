@@ -133,6 +133,16 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [extractMs, setExtractMs] = useState<number | null>(null);
   const [pipelineMs, setPipelineMs] = useState<number | null>(null);
+  const [wayIdQuery, setWayIdQuery] = useState("");
+  const [wayIdError, setWayIdError] = useState<string | null>(null);
+  // The osm_id last found via search — drives Map's highlight layer. Cleared on a fresh manual
+  // bbox drag so a stale highlight doesn't linger after navigating elsewhere.
+  const [highlightWayId, setHighlightWayId] = useState<string | null>(null);
+  // Set only when a searched way didn't come back classified in the pipeline's own output — its
+  // raw geometry + tags (from `/api/way/:id/select`), rendered gray on the map instead of colored,
+  // so a way search always shows *something* even for a way no category currently matches. Cleared once
+  // classified, or on a fresh manual bbox drag.
+  const [unmatchedWayFeature, setUnmatchedWayFeature] = useState<GeoJSON.Feature | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -298,6 +308,56 @@ export default function App() {
       } else {
         setError(body.error || "Unknown error");
       }
+    } finally {
+      setExtracting(false);
+    }
+  }
+
+  // Wraps selectBbox for a manual shift-drag (as opposed to a way search, which manages bounds/
+  // highlight itself in searchWay) — clears any stale search state.
+  function onMapBboxSelected(box: [number, number, number, number]) {
+    setHighlightWayId(null);
+    setUnmatchedWayFeature(null);
+    selectBbox(box);
+  }
+
+  // Looks a way up by id and runs the pipeline filtered to exactly that way — the Rust side's
+  // `--way-id` (see `src/live_source.rs`) does an indexed `osm_id =` lookup instead of a bbox
+  // spatial query, so nothing else nearby gets pulled in or classified alongside it. A search
+  // intentionally bypasses the normal category-edit flow (`classify`/`active`) so it never touches
+  // whatever category happens to be open in the sidebar.
+  async function searchWay() {
+    const id = wayIdQuery.trim();
+    if (!id) return;
+    setWayIdError(null);
+    setUnmatchedWayFeature(null);
+    setExtracting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/way/${encodeURIComponent(id)}/select`);
+      const body = await res.json();
+      if (!res.ok) {
+        setWayIdError(body.error || `Way ${id} not found`);
+        return;
+      }
+      setBounds(body.bounds);
+      setSelected(true);
+      setData(body);
+      setCutPoints(body.cutPoints ?? null);
+      setPipelineMs(body.pipelineMs ?? null);
+
+      const wayNum = Number(id);
+      const matched = (body.features as GeoJSON.Feature[] | undefined)?.some((f) => f.properties?.osm_id === wayNum);
+      setHighlightWayId(id);
+      if (!matched) {
+        setUnmatchedWayFeature({
+          type: "Feature",
+          geometry: body.wayGeometry,
+          properties: { osm_id: wayNum, unclassified: true, ...body.wayTags },
+        });
+      }
+    } catch {
+      setWayIdError("Search failed");
     } finally {
       setExtracting(false);
     }
@@ -515,54 +575,115 @@ export default function App() {
             focusTick={focusTick}
             followSelection={followSelection}
             showNodes={showNodes}
-            onBboxSelected={selectBbox}
+            highlightWayId={highlightWayId}
+            unmatchedWayFeature={unmatchedWayFeature}
+            onBboxSelected={onMapBboxSelected}
           />
         )}
         {viewMode === "map" && (
-          <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8 }}>
-            <label
-              style={{
-                padding: "7px 12px",
-                background: "rgba(255,255,255,0.85)",
-                backdropFilter: "blur(6px)",
-                color: "var(--text)",
-                fontFamily: "var(--font-ui)",
-                fontSize: 13,
-                borderRadius: "var(--radius)",
-                boxShadow: "var(--shadow)",
-                border: "1px solid var(--border)",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                cursor: "pointer",
-                userSelect: "none",
-              }}
-            >
-              <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
-              Show intersections
-            </label>
-            <label
-              style={{
-                padding: "7px 12px",
-                background: "rgba(255,255,255,0.85)",
-                backdropFilter: "blur(6px)",
-                color: "var(--text)",
-                fontFamily: "var(--font-ui)",
-                fontSize: 13,
-                borderRadius: "var(--radius)",
-                boxShadow: "var(--shadow)",
-                border: "1px solid var(--border)",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                cursor: "pointer",
-                userSelect: "none",
-              }}
-            >
-              <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
-              Follow selection
-            </label>
-            {viewSwitcher}
+          <div style={{ position: "absolute", top: 12, left: 12, right: 12, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={wayIdQuery}
+                  onChange={(e) => {
+                    setWayIdQuery(e.target.value);
+                    setWayIdError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") searchWay();
+                  }}
+                  placeholder="search way id"
+                  style={{
+                    padding: "7px 12px",
+                    background: "rgba(255,255,255,0.85)",
+                    backdropFilter: "blur(6px)",
+                    color: "var(--text)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 13,
+                    borderRadius: "var(--radius)",
+                    boxShadow: "var(--shadow)",
+                    border: "1px solid var(--border)",
+                    width: 160,
+                  }}
+                />
+                <button
+                  onClick={searchWay}
+                  style={{
+                    padding: "7px 12px",
+                    background: "rgba(255,255,255,0.85)",
+                    backdropFilter: "blur(6px)",
+                    borderRadius: "var(--radius)",
+                    boxShadow: "var(--shadow)",
+                    border: "1px solid var(--border)",
+                  }}
+                  title="Jump to this way id"
+                >
+                  Go
+                </button>
+              </div>
+              {wayIdError && (
+                <div
+                  style={{
+                    padding: "6px 10px",
+                    background: "var(--danger-bg)",
+                    color: "var(--danger-text)",
+                    border: "1px solid #f5c2c0",
+                    borderRadius: "var(--radius-sm)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    maxWidth: 260,
+                  }}
+                >
+                  {wayIdError}
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <label
+                style={{
+                  padding: "7px 12px",
+                  background: "rgba(255,255,255,0.85)",
+                  backdropFilter: "blur(6px)",
+                  color: "var(--text)",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  borderRadius: "var(--radius)",
+                  boxShadow: "var(--shadow)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
+                Show intersections
+              </label>
+              <label
+                style={{
+                  padding: "7px 12px",
+                  background: "rgba(255,255,255,0.85)",
+                  backdropFilter: "blur(6px)",
+                  color: "var(--text)",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  borderRadius: "var(--radius)",
+                  boxShadow: "var(--shadow)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <input type="checkbox" checked={followSelection} onChange={(e) => setFollowSelection(e.target.checked)} />
+                Follow selection
+              </label>
+              {viewSwitcher}
+            </div>
           </div>
         )}
         {viewMode === "map" && (!selected || extracting) && (

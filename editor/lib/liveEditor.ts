@@ -56,6 +56,10 @@ export class ApiError extends Error {
 //
 // - `currentBounds`: the bbox currently in use for the map/pipeline. Starts out unset until the
 //   user picks one.
+// - `currentWayId`: set instead of (alongside, for map display) `currentBounds` by a way-id search
+//   (see `selectWay`) — when set, the pipeline filters on `osm_id = currentWayId` rather than the
+//   bbox spatial query, so it runs on exactly the searched-for way and nothing else nearby (see
+//   `--way-id` in `src/config.rs`/`src/live_source.rs`). Cleared by a manual bbox selection.
 // - `currentConfigName`/`currentConfigDir`: the config directory currently being edited/run
 //   against. This is always a scratch copy under the OS temp dir, never the real configs/* tree —
 //   the editor copies a config into it once (on first selection, or on switching), and all
@@ -64,11 +68,12 @@ export class ApiError extends Error {
 const globalState = globalThis as unknown as {
   __liveEditor?: {
     currentBounds: [number, number, number, number] | null;
+    currentWayId: string | null;
     currentConfigName: string | null;
     currentConfigDir: string | null;
   };
 };
-const state = (globalState.__liveEditor ??= { currentBounds: null, currentConfigName: null, currentConfigDir: null });
+const state = (globalState.__liveEditor ??= { currentBounds: null, currentWayId: null, currentConfigName: null, currentConfigDir: null });
 
 // A config is any non-`_`-prefixed directory directly under CONFIGS_ROOT (configs/tilda,
 // configs/osmnx, configs/public_transport, ...) — same discovery rule as listTopics() below, one
@@ -136,6 +141,52 @@ async function baseTableBounds(): Promise<[number, number, number, number]> {
   return bbox as [number, number, number, number];
 }
 
+// The bbox, tags, and WGS84 geometry of a single way, looked up by osm_id — the bbox query reuses
+// the `{table}_osm_id_idx` btree index (see `src/db/schema.rs`), same cost class as
+// `baseTableBounds`'s full-extent query. `osmId` is validated as an integer before being
+// interpolated, since `psqlQuery` has no parameterized-query path (see `baseTableBounds` above,
+// which does the same). Tags/geometry are fetched separately (rather than packed into one
+// comma-joined row like `baseTableBounds`) since a GeoJSON geometry can itself contain commas;
+// `chr(30)` (ASCII unit separator) is used as the field delimiter there instead, since it can't
+// appear in `produced`'s or `ST_AsGeoJSON`'s text output.
+export async function findWay(osmId: string): Promise<{ bbox: [number, number, number, number]; geometry: unknown; tags: Record<string, unknown> }> {
+  if (!/^-?\d+$/.test(osmId)) throw new ApiError(400, "way id must be an integer");
+  const bboxRow = await psqlQuery(
+    `SELECT ST_XMin(e)||','||ST_YMin(e)||','||ST_XMax(e)||','||ST_YMax(e) ` +
+      `FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) e FROM ${SOURCE_TABLE}_geom WHERE osm_id = ${osmId}) s`,
+  );
+  const bbox = bboxRow.split(",").map(Number);
+  if (bbox.length !== 4 || bbox.some((n) => Number.isNaN(n))) {
+    throw new ApiError(404, `way ${osmId} not found in ${SOURCE_TABLE}_geom`);
+  }
+  const detailRow = await psqlQuery(
+    `SELECT t.produced::text || chr(30) || ST_AsGeoJSON(ST_Transform(g.geom, 4326)) ` +
+      `FROM ${SOURCE_TABLE} t JOIN ${SOURCE_TABLE}_geom g ON g.osm_id = t.osm_id WHERE t.osm_id = ${osmId} LIMIT 1`,
+  );
+  const sep = detailRow.indexOf("\x1e");
+  if (sep === -1) throw new ApiError(500, `could not read tags/geometry for way ${osmId}`);
+  let tags: Record<string, unknown> = {};
+  try {
+    tags = JSON.parse(detailRow.slice(0, sep));
+  } catch {
+    // Malformed/absent `produced` JSON shouldn't block showing the geometry — falls back to {}.
+  }
+  const geometry = JSON.parse(detailRow.slice(sep + 1));
+  return { bbox: bbox as [number, number, number, number], geometry, tags };
+}
+
+// Looks a way up, selects it (see `selectWay`), and runs the pipeline against exactly that way —
+// the single request the way-search UI needs. Returns the merged multi-topic FeatureCollection
+// plus the way's own bbox/geometry/tags, so the frontend can both display whatever the pipeline
+// classified it as *and*, if the pipeline didn't classify it into anything, fall back to rendering
+// its raw geometry/tags directly (see `App.tsx`'s `searchWay`).
+export async function searchAndRunWay(osmId: string): Promise<unknown> {
+  const way = await findWay(osmId);
+  selectWay(osmId, way.bbox);
+  const pipelineResult = (await runPipelineAndRespond()) as Record<string, unknown>;
+  return { ...pipelineResult, bounds: way.bbox, wayGeometry: way.geometry, wayTags: way.tags };
+}
+
 export async function getBounds(): Promise<{ bounds: [number, number, number, number]; selected: boolean; maxBboxM: number }> {
   if (state.currentBounds) return { bounds: state.currentBounds, selected: true, maxBboxM: MAX_BBOX_M };
   try {
@@ -149,13 +200,28 @@ export async function getBounds(): Promise<{ bounds: [number, number, number, nu
 // Selecting a bbox used to shell out to `osmium extract` (cut a fresh PBF slice, then re-parse it
 // from scratch on every single edit). Now it's just recording the bounds — the pipeline queries
 // `SOURCE_TABLE`/`SOURCE_TABLE`_geom for exactly this bbox on every run instead (see `runPipeline`).
+// Clears `currentWayId` — a fresh manual bbox drag supersedes any earlier way-id search.
 export function selectBbox(bounds: [number, number, number, number]): { bounds: [number, number, number, number] } {
   state.currentBounds = bounds;
+  state.currentWayId = null;
   return { bounds: state.currentBounds };
 }
 
-async function runPipeline(bounds: [number, number, number, number], outDir: string): Promise<{ ok: true } | { ok: false; message: string }> {
+// A way-id search: records both the way's own osm_id (which the pipeline filters on directly, see
+// `runPipeline`) and a bbox around it (bounds are still useful to the frontend for `fitBounds` even
+// though the pipeline itself ignores them whenever `currentWayId` is set).
+export function selectWay(osmId: string, bounds: [number, number, number, number]): { bounds: [number, number, number, number] } {
+  state.currentBounds = bounds;
+  state.currentWayId = osmId;
+  return { bounds: state.currentBounds };
+}
+
+async function runPipeline(
+  target: { wayId: string } | { bounds: [number, number, number, number] },
+  outDir: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
   const configDir = await ensureConfigSelected();
+  const filterArgs = "wayId" in target ? ["--way-id", target.wayId] : ["--bbox", target.bounds.join(",")];
   const result = await run(
     PIPELINE_BIN,
     [
@@ -163,8 +229,7 @@ async function runPipeline(bounds: [number, number, number, number], outDir: str
       "postgis",
       "--source-table",
       SOURCE_TABLE,
-      "--bbox",
-      bounds.join(","),
+      ...filterArgs,
       "--config-dir",
       configDir,
       "--output",
@@ -292,16 +357,19 @@ async function topicFilePath(topic: string) {
   return path.join(configDir, topic, "topic.json");
 }
 
-// Re-runs the pipeline against the current bbox and returns the merged multi-topic
-// FeatureCollection — shared by the category-edit and topic-config-edit endpoints, which only
-// differ in which file they write beforehand.
+// Re-runs the pipeline — against the searched-for way if one is selected (`currentWayId`,
+// filtering `t.osm_id = ...` directly in SQL, see `live_source.rs`), otherwise against the current
+// bbox — and returns the merged multi-topic FeatureCollection. Shared by the category-edit and
+// topic-config-edit endpoints (which only differ in which file they write beforehand) and by the
+// way-search endpoint (`/api/way/:id/select`), which writes nothing.
 export async function runPipelineAndRespond(): Promise<unknown> {
-  if (!state.currentBounds) {
+  if (!state.currentWayId && !state.currentBounds) {
     throw new ApiError(400, "no bbox selected yet: pick a bbox on the map first");
   }
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-editor-"));
   const t0 = performance.now();
-  const result = await runPipeline(state.currentBounds, outDir);
+  const target = state.currentWayId ? { wayId: state.currentWayId } : { bounds: state.currentBounds! };
+  const result = await runPipeline(target, outDir);
   const pipelineMs = Math.round(performance.now() - t0);
   if (!result.ok) {
     throw new ApiError(400, result.message);

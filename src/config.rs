@@ -108,9 +108,16 @@ pub struct Config {
     pub source: Source,
 
     /// Bbox filter for `--source postgis`, as `min_lon,min_lat,max_lon,max_lat` (WGS84). Required
-    /// when `--source postgis` is set; ignored otherwise.
+    /// when `--source postgis` is set and `way_id` isn't, ignored otherwise.
     #[arg(long)]
     pub bbox: Option<String>,
+
+    /// Restricts `--source postgis` to a single way (`t.osm_id = way_id`) instead of every way
+    /// intersecting `bbox` — the live editor's way-search feature, which wants to run the pipeline
+    /// on exactly the searched-for way and nothing else nearby. Takes priority over `bbox` when
+    /// both are set.
+    #[arg(long)]
+    pub way_id: Option<i64>,
 
     /// Table holding the "all ways" pass's raw tag rows for `--source postgis` (its geometry
     /// sibling is `{source_table}_geom`, per `schema::way_geom_table`) — the output `table` of

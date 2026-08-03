@@ -59,25 +59,43 @@ struct RawWay {
     length_m: f64,
 }
 
-/// Query every way of `source_table`/`source_table`_geom intersecting `bbox`, in WGS84.
-async fn fetch_ways(cfg: &Config, bbox: &Bbox) -> anyhow::Result<Vec<RawWay>> {
+/// Query ways from `source_table`/`source_table`_geom, in WGS84 — every way intersecting `bbox`,
+/// or (when `way_id` is set) exactly that one way and nothing else, via an indexed `osm_id =`
+/// lookup (`{table}_osm_id_idx`, see `src/db/schema.rs`) instead of the bbox spatial filter. The
+/// latter backs the live editor's way-search feature, which wants the pipeline to run on precisely
+/// the searched-for way — not every other way that happens to share its bbox.
+async fn fetch_ways(cfg: &Config, way_id: Option<i64>, bbox: &Bbox) -> anyhow::Result<Vec<RawWay>> {
     let pool = build_pool(cfg)?;
     let client = pool.get().await.context("connecting to source database")?;
 
     let geom_table = format!("{}_geom", cfg.source_table);
-    let sql = format!(
-        "SELECT t.osm_id, t.produced, ST_AsEWKB(g.geom) AS geom_ewkb, ST_Length(g.geom) AS length_m \
-         FROM {tags} t \
-         JOIN {geom} g ON g.osm_id = t.osm_id \
-         WHERE ST_Intersects(g.geom, ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 3857))",
-        tags = cfg.source_table,
-        geom = geom_table,
-    );
-
-    let rows = client
-        .query(&sql, &[&bbox.min_lon, &bbox.min_lat, &bbox.max_lon, &bbox.max_lat])
-        .await
-        .with_context(|| format!("querying {} / {geom_table} for bbox", cfg.source_table))?;
+    let rows = if let Some(id) = way_id {
+        let sql = format!(
+            "SELECT t.osm_id, t.produced, ST_AsEWKB(g.geom) AS geom_ewkb, ST_Length(g.geom) AS length_m \
+             FROM {tags} t \
+             JOIN {geom} g ON g.osm_id = t.osm_id \
+             WHERE t.osm_id = $1",
+            tags = cfg.source_table,
+            geom = geom_table,
+        );
+        client
+            .query(&sql, &[&id])
+            .await
+            .with_context(|| format!("querying {} / {geom_table} for way_id {id}", cfg.source_table))?
+    } else {
+        let sql = format!(
+            "SELECT t.osm_id, t.produced, ST_AsEWKB(g.geom) AS geom_ewkb, ST_Length(g.geom) AS length_m \
+             FROM {tags} t \
+             JOIN {geom} g ON g.osm_id = t.osm_id \
+             WHERE ST_Intersects(g.geom, ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 3857))",
+            tags = cfg.source_table,
+            geom = geom_table,
+        );
+        client
+            .query(&sql, &[&bbox.min_lon, &bbox.min_lat, &bbox.max_lon, &bbox.max_lat])
+            .await
+            .with_context(|| format!("querying {} / {geom_table} for bbox", cfg.source_table))?
+    };
 
     Ok(rows
         .into_iter()
@@ -104,11 +122,17 @@ pub async fn run(
     plan: Arc<GeometryPlan>,
     writers: Arc<crate::output::sinks::TableWriters>,
 ) -> anyhow::Result<usize> {
-    let bbox_str = cfg.bbox.as_deref().context("--source postgis requires --bbox")?;
-    let bbox = Bbox::parse(bbox_str)?;
+    // `way_id` takes priority: a way-search run needs no bbox at all (see `fetch_ways`), but
+    // `Bbox::parse` still wants *some* string to satisfy its signature, so a dummy placeholder is
+    // used and never actually read in that branch.
+    let bbox = match (cfg.way_id, cfg.bbox.as_deref()) {
+        (Some(_), _) => Bbox { min_lon: 0.0, min_lat: 0.0, max_lon: 0.0, max_lat: 0.0 },
+        (None, Some(bbox_str)) => Bbox::parse(bbox_str)?,
+        (None, None) => anyhow::bail!("--source postgis requires --bbox or --way-id"),
+    };
 
     let t0 = std::time::Instant::now();
-    let ways = fetch_ways(cfg, &bbox).await?;
+    let ways = fetch_ways(cfg, cfg.way_id, &bbox).await?;
     info!("Fetched {} ways from {} in {:.2}s", ways.len(), cfg.source_table, t0.elapsed().as_secs_f32());
 
     let n = ways.len();

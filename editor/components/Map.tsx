@@ -6,6 +6,9 @@ import maplibregl from "maplibre-gl";
 const SOURCE_ID = "live-editor-features";
 const CUT_POINTS_SOURCE_ID = "live-editor-cut-points";
 const DRAW_SOURCE_ID = "bbox-draw";
+// Holds a single feature: a searched-for way the pipeline didn't classify into any category (see
+// `unmatchedWayFeature`) — rendered gray, separately from the colored `SOURCE_ID` layers.
+const SEARCH_FALLBACK_SOURCE_ID = "search-way-fallback";
 
 const CUT_POINT_COLOR_EXPRESSION = [
   "match",
@@ -153,6 +156,8 @@ export default function Map({
   focusTick,
   followSelection,
   showNodes,
+  highlightWayId,
+  unmatchedWayFeature,
   onBboxSelected,
 }: {
   bounds: [number, number, number, number] | null;
@@ -174,6 +179,15 @@ export default function Map({
   // yanking the viewport away each time, when they'd rather navigate manually.
   followSelection: boolean;
   showNodes: boolean;
+  // The osm_id found via the sidebar's way-id search, if any — drives the highlight layer below.
+  // Every classified feature carries `properties.osm_id` (stamped in `src/output/geojson.rs`), so
+  // no extra data plumbing is needed to find the match once `data` includes it.
+  highlightWayId: string | null;
+  // A searched-for way that came back unclassified from the pipeline (no category matched it) —
+  // its raw geometry + OSM tags, rendered gray via SEARCH_FALLBACK_SOURCE_ID instead of the normal
+  // colored feature layers, so a search always shows *something* even with no matching category.
+  // `null` whenever the last search's way *was* classified (the normal highlight layer covers it).
+  unmatchedWayFeature: GeoJSON.Feature | null;
   onBboxSelected: (bounds: [number, number, number, number]) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -218,6 +232,40 @@ export default function Map({
         paint: { "circle-color": FALLBACK_COLOR, "circle-radius": 5 },
       });
 
+      // Way-search highlight — a distinct outline drawn on top of the regular feature layers,
+      // filtered to a single osm_id. Starts matching nothing (filter set in the highlightWayId
+      // effect below); kept as an always-present layer rather than added/removed so its paint
+      // config doesn't need to be duplicated at add-time.
+      map.addLayer({
+        id: `${SOURCE_ID}-highlight-line`,
+        type: "line",
+        source: SOURCE_ID,
+        filter: ["==", ["get", "osm_id"], -1],
+        paint: { "line-color": "#ffdd00", "line-width": 7, "line-opacity": 0.7 },
+      });
+      map.addLayer({
+        id: `${SOURCE_ID}-highlight-point`,
+        type: "circle",
+        source: SOURCE_ID,
+        filter: ["all", ["==", ["geometry-type"], "Point"], ["==", ["get", "osm_id"], -1]],
+        paint: { "circle-color": "#ffdd00", "circle-radius": 9, "circle-opacity": 0.5 },
+      });
+
+      map.addSource(SEARCH_FALLBACK_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({
+        id: `${SEARCH_FALLBACK_SOURCE_ID}-line`,
+        type: "line",
+        source: SEARCH_FALLBACK_SOURCE_ID,
+        paint: { "line-color": "#888888", "line-width": 4, "line-dasharray": [1, 1] },
+      });
+      map.addLayer({
+        id: `${SEARCH_FALLBACK_SOURCE_ID}-point`,
+        type: "circle",
+        source: SEARCH_FALLBACK_SOURCE_ID,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: { "circle-color": "#888888", "circle-radius": 5 },
+      });
+
       map.addSource(CUT_POINTS_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
       map.addLayer({
         id: `${CUT_POINTS_SOURCE_ID}-halo`,
@@ -240,7 +288,7 @@ export default function Map({
       });
 
       const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: "320px" });
-      const featureLayers = [`${SOURCE_ID}-line`, `${SOURCE_ID}-point`];
+      const featureLayers = [`${SOURCE_ID}-line`, `${SOURCE_ID}-point`, `${SEARCH_FALLBACK_SOURCE_ID}-line`, `${SEARCH_FALLBACK_SOURCE_ID}-point`];
       const showPopup = (e: maplibregl.MapLayerMouseEvent) => {
         const feature = e.features?.[0];
         if (!feature) return;
@@ -325,6 +373,12 @@ export default function Map({
     (mapRef.current!.getSource(SOURCE_ID) as maplibregl.GeoJSONSource).setData(data);
   }, [ready, data]);
 
+  useEffect(() => {
+    if (!ready) return;
+    const fc: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: unmatchedWayFeature ? [unmatchedWayFeature] : [] };
+    (mapRef.current!.getSource(SEARCH_FALLBACK_SOURCE_ID) as maplibregl.GeoJSONSource).setData(fc);
+  }, [ready, unmatchedWayFeature]);
+
   // Fits the view to the selected topic's or category's own features on every click (including
   // re-clicking the already-active one — see `focusTick`'s doc comment). Reads `data` via a ref
   // rather than a dependency so it doesn't refit on every unrelated data refresh (e.g. re-classify
@@ -342,6 +396,34 @@ export default function Map({
     if (!bounds.isEmpty()) mapRef.current!.fitBounds(bounds, { padding: 40, maxZoom: 18, duration: 300 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, followSelection, focusTarget, focusTick]);
+
+  // Fits the view to the searched-for way once it shows up in `data` (classified case) or via
+  // `unmatchedWayFeature` (unclassified case), and updates the highlight layers' filter. Reads
+  // `data` via the ref (see the focusTarget effect above) so it only refits right after a search,
+  // not on every unrelated data refresh.
+  useEffect(() => {
+    if (!ready) return;
+    const wayOsmId = highlightWayId != null ? Number(highlightWayId) : -1;
+    const highlightFilter = ["==", ["get", "osm_id"], wayOsmId] as unknown as maplibregl.ExpressionSpecification;
+    const highlightPointFilter = ["all", ["==", ["geometry-type"], "Point"], highlightFilter] as unknown as maplibregl.ExpressionSpecification;
+    mapRef.current!.setFilter(`${SOURCE_ID}-highlight-line`, highlightFilter);
+    mapRef.current!.setFilter(`${SOURCE_ID}-highlight-point`, highlightPointFilter);
+    if (highlightWayId == null) return;
+    const bounds = new maplibregl.LngLatBounds();
+    const fc = dataRef.current;
+    let found = false;
+    if (fc) {
+      for (const feature of fc.features) {
+        if (feature.properties?.osm_id !== wayOsmId) continue;
+        found = true;
+        forEachCoordinate(feature.geometry, (lon, lat) => bounds.extend([lon, lat]));
+      }
+    }
+    if (!found && unmatchedWayFeature) {
+      forEachCoordinate(unmatchedWayFeature.geometry, (lon, lat) => bounds.extend([lon, lat]));
+    }
+    if (!bounds.isEmpty()) mapRef.current!.fitBounds(bounds, { padding: 60, maxZoom: 18, duration: 300 });
+  }, [ready, highlightWayId, data, unmatchedWayFeature]);
 
   useEffect(() => {
     if (!ready) return;
