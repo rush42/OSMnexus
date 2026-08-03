@@ -434,10 +434,10 @@ pub fn find_all_topic_overlaps() -> anyhow::Result<Vec<(String, Vec<Overlap>)>> 
         let topic_macros = load_topic_macros(&dir)
             .map_err(|e| anyhow::anyhow!("loading {topic} macros: {e}"))?;
         let raw_macros = crate::topic::load::merge(&shared_macros, &topic_macros);
-        let resolved_macros = resolve_macros(&raw_macros, &sanitizers)
+        let resolved_macros = resolve_macros(&raw_macros)
             .map_err(|e| anyhow::anyhow!("resolving {topic} macros: {e}"))?;
         let macros: HashMap<String, Filter> = resolved_macros.iter()
-            .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
+            .map(|(k, v)| Ok((k.clone(), serde_json::from_value(crate::topic::load::inline_sanitize_refs(v.clone(), &sanitizers)?)?)))
             .collect::<anyhow::Result<_>>()
             .map_err(|e: anyhow::Error| anyhow::anyhow!("parsing {topic} resolved macros: {e}"))?;
 

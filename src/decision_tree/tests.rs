@@ -47,9 +47,9 @@ fn tree_matches_linear() {
       let sanitizers = load_topic_sanitizers(&dir, config_root).expect("load sanitizers");
       let topic_macros = load_topic_macros(&dir).expect("topic macros");
       let raw_macros = merge(&shared_macros, &topic_macros);
-      let resolved_macros = resolve_macros(&raw_macros, &sanitizers).expect("resolve macros");
+      let resolved_macros = resolve_macros(&raw_macros).expect("resolve macros");
       let macros: HashMap<String, Filter> = resolved_macros.iter()
-          .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
+          .map(|(k, v)| Ok((k.clone(), serde_json::from_value(crate::topic::load::inline_sanitize_refs(v.clone(), &sanitizers)?)?)))
           .collect::<anyhow::Result<_>>()
           .expect("parse resolved macros");
       for (kind, mut cats) in load_topic_categories(&dir, &resolved_macros, &macros, &sanitizers).expect("load categories") {

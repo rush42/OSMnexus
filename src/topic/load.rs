@@ -149,15 +149,19 @@ pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<Map<S
     read_macros(&config_root.join("macros.json"))
 }
 
-/// Recursively macro-inline (and sanitizer-inline) every entry in `raw_macros` against itself, so
-/// a macro body referencing another macro is expanded too. The result is what `inline_macro_refs`
-/// needs elsewhere (a fully macro-free JSON per name) — see `topic::runner::TopicRunner::load`.
-pub fn resolve_macros(raw_macros: &Map<String, Value>, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Map<String, Value>> {
+/// Recursively macro-inline every entry in `raw_macros` against itself, so a macro body
+/// referencing another macro is expanded too. The result is what `inline_macro_refs` needs
+/// elsewhere (a fully macro-free JSON per name) — see `topic::runner::TopicRunner::load`.
+/// Only inlines macro-in-macro refs — `sanitize:` references inside a macro body are deliberately
+/// left as names. This table is later spliced (`inline_macro_refs`) into other raw documents
+/// (`topic.json`, `producers.json`, category files) which each still go through their own
+/// `resolve_refs`/`inline_sanitize_refs` pass; resolving `sanitize:` here too would mean those
+/// downstream passes see an already-resolved chain (not a string) at a spliced `sanitize:` site and
+/// reject it as an anonymous inline chain. Callers that need a fully sanitizer-resolved `Filter`
+/// straight from this table (e.g. `macros_filter`) must run `inline_sanitize_refs` themselves.
+pub fn resolve_macros(raw_macros: &Map<String, Value>) -> anyhow::Result<Map<String, Value>> {
     raw_macros.iter()
-        .map(|(name, def)| {
-            let expanded = inline_macro_refs(def.clone(), raw_macros, &mut vec![name.clone()])?;
-            Ok((name.clone(), inline_sanitize_refs(expanded, sanitizers)?))
-        })
+        .map(|(name, def)| Ok((name.clone(), inline_macro_refs(def.clone(), raw_macros, &mut vec![name.clone()])?)))
         .collect()
 }
 

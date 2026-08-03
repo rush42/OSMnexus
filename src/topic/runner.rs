@@ -8,7 +8,7 @@ use crate::lang::filter::Filter;
 use crate::lang::producer::Producer;
 use crate::categorize::transform::TransformStep;
 use crate::topic::load::{
-    inline_shared_producers, load_shared_macros, load_shared_producers, load_topic_categories,
+    inline_shared_producers, inline_sanitize_refs, load_shared_macros, load_shared_producers, load_topic_categories,
     load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge, resolve_macros, resolve_refs,
 };
 use crate::topic::pipeline::build_topic_rows;
@@ -189,13 +189,14 @@ impl TopicRunner {
         let shared_macros = load_shared_macros(&config_root).with_context(|| "loading shared macros.json")?;
         let topic_macros = load_topic_macros(&base)?;
         let raw_macros = merge(&shared_macros, &topic_macros);
-        let resolved_macros = resolve_macros(&raw_macros, &sanitizers)
+        let resolved_macros = resolve_macros(&raw_macros)
             .with_context(|| format!("resolving macros for topics/{name}"))?;
-        // The same table, deserialized to `Filter` — used only to seed each `CategoriesFile`'s
-        // `macros` (whose `build_order` `Skip`-sink `excludes` entries name a macro directly, not
-        // through a condition, so they're never touched by JSON-level macro inlining).
+        // The same table, additionally sanitizer-resolved and deserialized to `Filter` — used only
+        // to seed each `CategoriesFile`'s `macros` (whose `build_order` `Skip`-sink `excludes`
+        // entries name a macro directly, not through a condition, so they're never touched by
+        // JSON-level macro inlining).
         let macros: HashMap<String, Filter> = resolved_macros.iter()
-            .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
+            .map(|(k, v)| Ok((k.clone(), serde_json::from_value(inline_sanitize_refs(v.clone(), &sanitizers)?)?)))
             .collect::<anyhow::Result<_>>()
             .with_context(|| format!("parsing resolved macros for topics/{name}"))?;
 
