@@ -106,18 +106,24 @@ function hashColor(key: string): string {
 // Producer/Categorize/Decision-tree/Sanitizers tree tabs — for exactly one (config, topic) pair at
 // a time. `config`/`topics`/`topic`/`onTopicChange` come from the parent route
 // (`app/editor/[config]/page.tsx`), which owns config/topic selection via the URL (so refresh/
-// back/shared links work) and has already POSTed `/api/config` + `/api/topic-select` server-side
-// before this component ever mounts — this component only ever deals with the one already-selected
-// topic, never a config picker or a multi-topic accordion (that's the start page's job now).
+// back/shared links work) and has already POSTed `/api/config` server-side before this component
+// ever mounts — this component only ever deals with one config's topics, never a config picker or a
+// multi-topic accordion (that's the start page's job now). `topicReady` is `false` for the stretch
+// between clicking a new topic and the parent's own `/api/topic-select` POST for it resolving; this
+// component stays mounted through that (its topic-scoped effect below waits on `topicReady` rather
+// than the parent unmounting/remounting it), so the map keeps showing the outgoing topic's features
+// instead of the whole view flashing to a loading screen and back on every switch.
 export default function LiveEditor({
   config,
   topics,
   topic,
+  topicReady,
   onTopicChange,
 }: {
   config: string;
   topics: string[];
   topic: string;
+  topicReady: boolean;
   onTopicChange: (topic: string) => void;
 }) {
   const [bounds, setBounds] = useState<[number, number, number, number] | null>(null);
@@ -201,33 +207,38 @@ export default function LiveEditor({
       const d = await r.json();
       await classify(d.json, { topic, kind: "", name: "", isTopicConfig: true });
     } catch {
-      // Ignore — the map just stays empty until the user picks something.
+      // A genuine failure (as opposed to the topic-switch effect below just not clearing
+      // proactively anymore, see its own comment) — the previous topic's features would otherwise
+      // linger on the map mislabeled as the new topic's.
+      setData(null);
+      setCutPoints(null);
     }
   }
 
   // Resets every category-scoped piece of state (the previous topic's categories/selection don't
   // apply to the new one) and reloads — mirrors what the old multi-topic `switchConfig` used to
-  // reset, now scoped to a topic change instead of a config change. The parent page
-  // (`app/editor/[config]/page.tsx`) only ever passes a `topic` prop once its own
-  // `/api/topic-select` POST for it has resolved, so `loadCategories`/`loadInitialMap` are safe to
-  // fire immediately for the normal single-tab case. The server's "currently selected topic"
-  // (`liveEditor.ts`'s `state`) is a single process-wide global, though, not per-session — a second
-  // tab (or an in-flight request from before this tab's own last switch) can still flip it out from
-  // under this fetch, so `loadCategories` guards its response defensively rather than assuming the
-  // server still agrees by the time it replies (`loadInitialMap`'s try/catch already no-ops on any
-  // fetch failure, so it needs no equivalent guard).
+  // reset, now scoped to a topic change instead of a config change. Waits on `topicReady`
+  // (see this component's own doc) rather than firing the instant `topic` changes: `topic` itself
+  // updates as soon as the user picks a new one (so the sidebar/dropdown reflect the pick right
+  // away), but the parent's `/api/topic-select` POST for it is still in flight at that point, and
+  // the server's "currently selected topic" (`liveEditor.ts`'s `state`) is a single process-wide
+  // global — firing early would 400. `topicReady` flipping true re-runs this effect (it's in the
+  // dependency list) once that POST has actually resolved, without this component ever unmounting
+  // in between (that's what used to force `data` back to empty and made every switch look like a
+  // full reload — see `loadInitialMap`'s doc). `loadCategories` still guards its own response
+  // defensively for the one case this doesn't cover: a second tab flipping the same global mid-fetch.
   useEffect(() => {
+    if (!topicReady) return;
     setCategories([]);
     setActive({ topic, kind: DEFAULT_KIND, name: "" });
     setManualSelect(false);
     setNewName("");
     setError(null);
-    setData(null);
     setCutPoints(null);
     loadCategories();
     loadInitialMap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topic]);
+  }, [topic, topicReady]);
 
   useEffect(() => {
     // Loading a selection's text sets `text` and `active` in the same render, which also fires the
@@ -275,7 +286,12 @@ export default function LiveEditor({
     [manualSelect, active.topic, active.name, active.isTopicConfig],
   );
 
-  const topicColors = useMemo(() => ({ [topic]: hashColor(topic) }), [topic]);
+  // Keyed off every topic in this config, not just the currently-selected one — `data` on the map
+  // can briefly still belong to the outgoing topic while a switch is in flight (`topicReady`'s doc
+  // above), and `Map`'s `colorExpression` falls back to a neutral red for any `topic` property it
+  // has no color for. A single-entry `{ [topic]: ... }` map used to hit that fallback for exactly
+  // that stretch, flashing every line red until the new topic's data replaced the old.
+  const topicColors = useMemo(() => Object.fromEntries(topics.map((t) => [t, hashColor(t)])), [topics]);
 
   async function addCategory() {
     const name = newName.trim();

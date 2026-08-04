@@ -109,7 +109,12 @@ export default function EditorPage() {
       </div>
     );
   }
-  if (!topics || !topicParam || readyTopic !== topicParam) {
+  // Only the very first selection ever (for this config) blocks on `readyTopic` here — once
+  // `LiveEditor` has mounted at least once, later topic switches keep it mounted and pass
+  // `readyTopic === topicParam` through as its own `topicReady` prop instead, so it can wait out a
+  // switch internally (map staying on the outgoing topic meanwhile) rather than this page unmounting
+  // it back to a blank "Loading…" screen and losing all that state on every switch.
+  if (!topics || !topicParam || readyTopic === null) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)" }}>
         Loading…
@@ -117,5 +122,13 @@ export default function EditorPage() {
     );
   }
 
-  return <LiveEditor config={config} topics={topics} topic={topicParam} onTopicChange={onTopicChange} />;
+  return (
+    <LiveEditor
+      config={config}
+      topics={topics}
+      topic={topicParam}
+      topicReady={readyTopic === topicParam}
+      onTopicChange={onTopicChange}
+    />
+  );
 }
