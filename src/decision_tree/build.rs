@@ -13,7 +13,7 @@ use crate::lang::filter::Filter;
 
 /// Stop branching once a candidate set shrinks to this size — below this, the eval cost of a leaf
 /// walk is already cheap, so a further branch's overhead isn't worth the diminishing prune.
-const LEAF_MAX: usize = 2;
+pub(super) const LEAF_MAX: usize = 2;
 
 /// An order-node index paired with two expressions, both simplified so far along this build path
 /// (see `kleene::simplify`): `residual` is `cond_i ∧ ¬cond_1 ∧ … ∧ ¬cond_{i-1}` (first-match's own
@@ -26,7 +26,7 @@ const LEAF_MAX: usize = 2;
 /// build's pruning. Both fold in lockstep off the same just-decided fact (see `fold_candidates`), so
 /// `own` stays exactly as reduced as `residual` — just without the redundant-at-eval-time prior
 /// negations.
-type Candidate = (usize, Expr, Expr);
+pub(super) type Candidate = (usize, Expr, Expr);
 
 /// Build a discrimination net over an already-ordered list of `Filter` conditions — `categorize`'s
 /// compiled category/skip `order` (excludes-topo-sorted first) and a `Producer::Match`'s own `rules`
@@ -48,6 +48,15 @@ type Candidate = (usize, Expr, Expr);
 ///   runtime walk (`super::resolve_first`) tries every surviving candidate in order, not just the
 ///   first match, to replicate `match_rules`'s "keep going if it produced nothing" exactly.
 pub fn build(conditions: &[Filter], max_depth: usize, assume_match_is_final: bool) -> DecisionTree {
+    let all = initial_candidates(conditions, assume_match_is_final);
+    build_rec(all, &mut FxHashSet::default(), &mut FxHashSet::default(), 0, max_depth)
+}
+
+/// The `residual`/`own` prologue `build` folds into `build_rec` — split out so an alternate search
+/// over the same candidate space (`decision_tree::optimal`, test-only) can start from exactly the
+/// same starting state `build`'s greedy heuristic does, rather than risk a second, drifting copy of
+/// this logic.
+pub(super) fn initial_candidates(conditions: &[Filter], assume_match_is_final: bool) -> Vec<Candidate> {
     let exprs: Vec<Expr> = conditions.iter().map(|f| to_nnf(filter_to_expr(f))).collect();
 
     let residuals: Vec<Expr> = if assume_match_is_final {
@@ -65,10 +74,9 @@ pub fn build(conditions: &[Filter], max_depth: usize, assume_match_is_final: boo
         exprs.clone()
     };
 
-    let all: Vec<Candidate> = residuals.into_iter().zip(exprs).enumerate()
+    residuals.into_iter().zip(exprs).enumerate()
         .map(|(i, (residual, own))| (i, residual, own))
-        .collect();
-    build_rec(all, &mut FxHashSet::default(), &mut FxHashSet::default(), 0, max_depth)
+        .collect()
 }
 
 /// Build an `And` of `parts` (each already NNF), flattening nested `And`s and collapsing to
@@ -120,7 +128,7 @@ fn conjoin(parts: Vec<Expr>) -> Expr {
 /// `kleene::keep_for` answers without `fold_candidates`' `simplify` allocating a new `Expr` per
 /// candidate — worth avoiding since it runs at every node just to pick a branch, most of which are
 /// never taken.
-fn key_children(candidates: &[Candidate], key: &BranchKey, values: &[String]) -> Vec<Vec<Candidate>> {
+pub(super) fn key_children(candidates: &[Candidate], key: &BranchKey, values: &[String]) -> Vec<Vec<Candidate>> {
     std::iter::once(fold_candidates(candidates, &|p| decide_wildcard(p, key, values)))
         .chain(values.iter().map(|v| fold_candidates(candidates, &|p| decide_value(p, key, v))))
         .collect()
@@ -129,7 +137,7 @@ fn key_children(candidates: &[Candidate], key: &BranchKey, values: &[String]) ->
 /// The `(on_true, on_false)` candidate sets an `Atom(atom)` branch would split `candidates` into —
 /// `key_children`'s counterpart for the other `BranchChoice` kind, same sharing rationale (used by
 /// `build_rec` only; `best_single_branch` scores atoms via cheap `keep_for` counting, same as keys).
-fn atom_children(candidates: &[Candidate], atom: &Predicate) -> (Vec<Candidate>, Vec<Candidate>) {
+pub(super) fn atom_children(candidates: &[Candidate], atom: &Predicate) -> (Vec<Candidate>, Vec<Candidate>) {
     let b = |cond: bool| if cond { K::T } else { K::F };
     let on_true = fold_candidates(candidates, &|p| if p == atom { b(true) } else { K::U });
     let on_false = fold_candidates(candidates, &|p| if p == atom { b(false) } else { K::U });
@@ -271,7 +279,7 @@ fn lookahead_branch(
 /// appearing in a positive Eq/FirstTagIn atom, plus the `side`/`has_parent`/`prefix`/`infix`
 /// sentinels wherever those predicates appear at all. Shared by `best_single_branch` and
 /// `lookahead_branch`.
-fn branch_key_candidates(candidates: &[Candidate], used: &FxHashSet<BranchKey>) -> FxHashSet<BranchKey> {
+pub(super) fn branch_key_candidates(candidates: &[Candidate], used: &FxHashSet<BranchKey>) -> FxHashSet<BranchKey> {
     let mut tags: FxHashSet<BranchKey> = FxHashSet::default();
     for (_, e, _) in candidates {
         collect_branch_keys(e, &mut |k| {
@@ -281,6 +289,22 @@ fn branch_key_candidates(candidates: &[Candidate], used: &FxHashSet<BranchKey>) 
         });
     }
     tags
+}
+
+/// Candidate atoms: total (non-Eq) predicates — `Contains`, `StartsWith`, `EndsWith`, `Num`,
+/// `Exists`, `HasKeyPrefix` — either polarity, since a missing tag decides them outright (false)
+/// rather than leaving them unknown. Shared by `best_single_branch` and the test-only optimal
+/// search (`decision_tree::optimal`), same rationale as `branch_key_candidates`.
+pub(super) fn eligible_atoms(candidates: &[Candidate], used_atoms: &FxHashSet<Predicate>) -> FxHashSet<Predicate> {
+    let mut atoms: FxHashSet<Predicate> = FxHashSet::default();
+    for (_, e, _) in candidates {
+        collect_atom_candidates(e, &mut |p| {
+            if !used_atoms.contains(p) {
+                atoms.insert(p.clone());
+            }
+        });
+    }
+    atoms
 }
 
 /// The best single branch (tag/context key, or atom) whose worst-case child is smallest, alongside
@@ -308,18 +332,7 @@ fn best_single_branch(
         }
     }
 
-    // Candidate atoms: total (non-Eq) predicates — `Contains`, `StartsWith`, `EndsWith`, `Num`,
-    // `Exists`, `HasKeyPrefix` — either polarity, since a missing tag decides them outright (false)
-    // rather than leaving them unknown.
-    let mut atoms: FxHashSet<Predicate> = FxHashSet::default();
-    for (_, e, _) in candidates {
-        collect_atom_candidates(e, &mut |p| {
-            if !used_atoms.contains(p) {
-                atoms.insert(p.clone());
-            }
-        });
-    }
-    for atom in atoms {
+    for atom in eligible_atoms(candidates, used_atoms) {
         let b = |cond: bool| if cond { K::T } else { K::F };
         let t = candidates.iter().filter(|(_, e, _)| keep_for(e, &|p| if p == &atom { b(true) } else { K::U })).count();
         let f = candidates.iter().filter(|(_, e, _)| keep_for(e, &|p| if p == &atom { b(false) } else { K::U })).count();
@@ -335,7 +348,7 @@ fn best_single_branch(
 
 /// All exact-eq values of `key` across the candidate conditions. For the `side`/`has_parent`
 /// sentinels the domain is fixed and known up front (no need to scan conditions for it).
-fn eligible_values(candidates: &[Candidate], key: &BranchKey) -> Vec<String> {
+pub(super) fn eligible_values(candidates: &[Candidate], key: &BranchKey) -> Vec<String> {
     match key {
         BranchKey::Sentinel(SIDE_KEY) => return vec!["left".to_string(), "right".to_string(), "self".to_string()],
         BranchKey::Sentinel(HAS_PARENT_KEY) => return vec!["false".to_string(), "true".to_string()],

@@ -48,6 +48,8 @@ mod runtime;
 mod walkers;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod optimal;
 
 use rustc_hash::FxHashMap;
 
