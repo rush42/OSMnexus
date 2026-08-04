@@ -345,12 +345,49 @@ pub fn load_topic_sanitizers(
         let raw: HashMap<String, Value> = serde_json::from_str(&std::fs::read_to_string(path)?)
             .with_context(|| format!("parsing {}", path.display()))?;
         raw.into_iter()
-            .map(|(name, v)| Ok((name, parse_sanitize_chain(v).with_context(|| format!("parsing {}", path.display()))?)))
+            .map(|(name, v)| {
+                check_mapping_bijection(&name, &v).with_context(|| format!("parsing {}", path.display()))?;
+                Ok((name, parse_sanitize_chain(v).with_context(|| format!("parsing {}", path.display()))?))
+            })
             .collect()
     };
     let shared = read(&config_root.join("sanitizers.json"))?;
     let local = read(&topic_dir.join("sanitizers.json"))?;
     Ok(merge(&shared, &local))
+}
+
+/// Reject a hand-authored `mapping` step whose table isn't a strict bijection (two or more input
+/// keys pointing at the same non-null output value) — that shape must be spelled `cases` instead
+/// (see `GRAMMAR.md`'s `Sanitizer` section). Checked here, on the *raw* JSON straight off disk,
+/// rather than in `Sanitizer`'s own `Deserialize` impl: that impl is also used to re-parse an
+/// already-resolved chain spliced back into filter/producer JSON by `inline_sanitize_refs` (which
+/// always re-serializes through `mapping`, even for a chain that was originally authored as
+/// `cases` — see that fn's own doc), so checking there would reject legitimate `cases`-sourced
+/// collapsing the second time it's parsed. Operates only on `sanitizers.json`'s own top-level
+/// (single step or array of steps; a step is never itself nested further), so no recursion is
+/// needed.
+fn check_mapping_bijection(name: &str, v: &Value) -> anyhow::Result<()> {
+    let steps: Vec<&Value> = match v {
+        Value::Array(items) => items.iter().collect(),
+        other => vec![other],
+    };
+    for step in steps {
+        let Some(mapping) = step.get("mapping").and_then(Value::as_object) else { continue };
+        let mut by_value: HashMap<String, Vec<&str>> = HashMap::new();
+        for (k, val) in mapping {
+            if !val.is_null() {
+                by_value.entry(val.to_string()).or_default().push(k);
+            }
+        }
+        if let Some((value, mut keys)) = by_value.into_iter().find(|(_, keys)| keys.len() > 1) {
+            keys.sort_unstable();
+            anyhow::bail!(
+                "sanitizer '{name}': mapping keys {keys:?} all map to {value} — a `mapping` must be \
+                 a strict one-input-per-output table; express many-to-one collapsing with `cases` instead"
+            );
+        }
+    }
+    Ok(())
 }
 
 // ── Shared producers ─────────────────────────────────────────────────────────

@@ -268,25 +268,10 @@ impl<'de> Deserialize<'de> for Sanitizer {
         D: Deserializer<'de>,
     {
         Ok(match StepJson::deserialize(deserializer)? {
-            StepJson::Mapping { mapping, on_miss } => {
-                let mapping: std::collections::BTreeMap<String, Option<AtomicJson>> =
-                    mapping.into_iter().map(|(k, v)| Ok((k, mapping_entry(v)?))).collect::<Result<_, D::Error>>()?;
-                let mut by_value: HashMap<&AtomicJson, Vec<&str>> = HashMap::new();
-                for (k, v) in &mapping {
-                    if let Some(v) = v {
-                        by_value.entry(v).or_default().push(k);
-                    }
-                }
-                if let Some((value, keys)) = by_value.into_iter().find(|(_, keys)| keys.len() > 1) {
-                    let mut keys = keys;
-                    keys.sort_unstable();
-                    return Err(serde::de::Error::custom(format!(
-                        "mapping: {keys:?} all map to {value:?} — a `mapping` must be a strict \
-                         one-input-per-output table; express many-to-one collapsing with `cases` instead"
-                    )));
-                }
-                Sanitizer::Mapping { mapping, on_miss }
-            }
+            StepJson::Mapping { mapping, on_miss } => Sanitizer::Mapping {
+                mapping: mapping.into_iter().map(|(k, v)| Ok((k, mapping_entry(v)?))).collect::<Result<_, D::Error>>()?,
+                on_miss,
+            },
             StepJson::Cases { cases, on_miss } => Sanitizer::Mapping {
                 mapping: cases.into_iter()
                     .flat_map(|(output, inputs)| {
