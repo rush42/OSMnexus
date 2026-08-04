@@ -24,12 +24,13 @@ const PIPELINE_BIN = process.env.PIPELINE_BIN_PATH || path.join(REPO_DIR, "targe
 // Emits a topic's output Producer trees as node/edge JSON for the tree view — see `src/bin/dag_json.rs`.
 const DAG_JSON_BIN = process.env.DAG_JSON_BIN_PATH || path.join(REPO_DIR, "target", "release", "dag_json");
 const CONFIGS_ROOT = path.join(REPO_DIR, "configs");
-// The table an "all ways" (+ nodes, as of the node-support pass) ingest loaded a whole region into
-// — tags in `SOURCE_TABLE`, way geometry in `SOURCE_TABLE`_geom, node geometry in
-// `SOURCE_TABLE`_point (see `configs/live_raw/topic.json` and `fetchFeatures` below). A bbox
-// selection is a spatial query against these tables, not an `osmium extract` + full PBF reparse.
-// Relations aren't ingested/queried yet — a topic needing relation geometry produces no features
-// through this source.
+// The table an "all ways + nodes + relations" ingest loaded a whole region into — tags in
+// `SOURCE_TABLE`, way geometry in `SOURCE_TABLE`_geom, node geometry in `SOURCE_TABLE`_point (see
+// `configs/live_raw/topic.json` and `fetchFeatures` below). A bbox selection is a spatial query
+// against these tables, not an `osmium extract` + full PBF reparse. A relation has no geometry
+// table of its own — `fetchFeatures` approximates one from `relation_members` instead (see that
+// query's own doc) — real assembled relation geometry (multipolygon ring handling, in particular)
+// isn't supported through this source.
 const SOURCE_TABLE = process.env.LIVE_SOURCE_TABLE || "live_raw";
 // DB connection for the bounds/way-select queries below (`psqlQuery`/`fetchFeatures`) — the
 // pipeline subprocess itself no longer talks to Postgres (see `src/csv_source.rs`).
@@ -319,8 +320,9 @@ export async function findWay(osmId: string): Promise<{ bbox: [number, number, n
 // the wire format, `linestringFromEwkb`/`pointFromEwkb` decode the geometry, mirroring
 // `src/geom/primitives.rs`.
 //
-// Relations aren't queried here yet (see `SOURCE_TABLE`'s own doc) — only ways and, for a bbox
-// selection, nodes.
+// Relations get a cheap approximation, not real geometry (see the bounds branch below) — no member
+// assembly/ring-ordering, just whichever of a relation's member ways happen to already be in the
+// bbox.
 async function fetchFeatures(
   target: { wayId: string } | { bounds: [number, number, number, number] },
 ): Promise<{ tagsCsv: string; geometry: Map<string, GeoJSON.Geometry> }> {
@@ -361,6 +363,51 @@ async function fetchFeatures(
       type: "Point",
       coordinates: pointFromEwkb(buf),
     }));
+
+    // Relations: no real assembled geometry (`geom::relation`'s inner/outer-ring multipolygon
+    // logic, member ordering/dissolving) — `live_raw`'s topic.json declares `"relation": true` in
+    // `accept_all` but nothing under `geometry`, so `main.rs`'s relation pass only ever writes tag
+    // rows + `relation_members` links (see that table's own doc, `src/db/schema.rs`), never a
+    // `{table}_relation_geom`/`_relation_polygon` table. Good enough for a bbox-scoped editor
+    // preview of a line relation (e.g. a train route) — not accurate for a polygon relation, which
+    // this can't distinguish outer rings from inner ones for.
+    //
+    // `relation_members` is a single global table (not `SOURCE_TABLE`-prefixed — see its own doc),
+    // joined to the way geometry table with the same bbox filter as the way query above so this
+    // reuses those already-decoded `W:<id>` entries in `geometry` instead of a second geometry
+    // fetch: a relation's shown shape is the `MultiLineString` of whichever of its member ways are
+    // already in `geometry` from that fetch — a member way outside the bbox is simply omitted, so a
+    // long route shows only its bbox-visible segments, same spirit as everything else here being
+    // bbox-scoped.
+    const memberBuf = await psqlCopyBinary(
+      `COPY (SELECT m.relation_osm_id, m.way_osm_id FROM relation_members m ` +
+        `JOIN ${SOURCE_TABLE}_geom g ON g.osm_id = m.way_osm_id WHERE ST_Intersects(g.geom, ${envelope})) TO STDOUT (FORMAT binary)`,
+    );
+    const memberWays = new Map<string, string[]>();
+    for (const [relField, wayField] of parseCopyBinary(memberBuf)) {
+      const relId = relField!.readBigInt64BE(0).toString();
+      const wayId = wayField!.readBigInt64BE(0).toString();
+      if (!memberWays.has(relId)) memberWays.set(relId, []);
+      memberWays.get(relId)!.push(wayId);
+    }
+    if (memberWays.size > 0) {
+      // `relId`s came straight off a binary `int8` COPY column above, never user input — safe to
+      // interpolate the same way `findWay`/`baseTableBounds` already trust a validated `osm_id`.
+      const relIds = [...memberWays.keys()].join(",");
+      const buf = await psqlCopyBinary(
+        `COPY (SELECT osm_id, produced::text FROM ${SOURCE_TABLE} WHERE osm_type = 'R' AND osm_id IN (${relIds})) TO STDOUT (FORMAT binary)`,
+      );
+      for (const [osmIdField, tagsField] of parseCopyBinary(buf)) {
+        const osmId = osmIdField!.readBigInt64BE(0).toString();
+        const coords = (memberWays.get(osmId) ?? [])
+          .map((w) => geometry.get(`W:${w}`))
+          .filter((g): g is GeoJSON.LineString => g?.type === "LineString")
+          .map((g) => g.coordinates);
+        if (coords.length === 0) continue; // every member way's own geometry was missing/undecodable
+        tagsCsv += csvLine([osmId, "R", tagsField!.toString("utf8")]);
+        geometry.set(`R:${osmId}`, { type: "MultiLineString", coordinates: coords });
+      }
+    }
   }
   return { tagsCsv, geometry };
 }

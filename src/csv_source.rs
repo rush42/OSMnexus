@@ -18,9 +18,10 @@
 //!
 //! CSV schema (no header row), one line per element: `osm_id,osm_type,tags_json`, where `osm_type`
 //! is `ElementKind::osm_type()`'s own `N`/`W`/`R` and `tags_json` is a JSON object of the element's
-//! already-resolved tags (e.g. Postgres's `produced` column, `::text`). `R` is accepted at the CSV
-//! level (same code as everywhere else `osm_type` appears) but every caller today only ever sends
-//! `N`/`W` rows — the live editor's postgis source doesn't query relations yet.
+//! already-resolved tags (e.g. Postgres's `produced` column, `::text`). A relation row classifies
+//! against its own tags exactly like a node/way row does — this module never touches
+//! `relation_members` or any member-way geometry, that's `fetchFeatures`' job, entirely on the
+//! `editor/lib/liveEditor.ts` side (see its own doc for how it approximates a relation's shape).
 
 use std::borrow::Cow;
 use std::sync::Arc;
