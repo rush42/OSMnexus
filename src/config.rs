@@ -5,6 +5,11 @@ use clap::Parser;
 /// Default max branch depth of the `categorize` discrimination net (`decision_tree`).
 /// The single source of truth for this default — also read by `decision_tree` as the fallback for
 /// callers (e.g. tests) that build a tree without going through CLI parsing.
+/// Tried raising this to 10 for `bikelanes/way`'s benefit (smaller worst-case/avg leaf size: 14→12,
+/// 5.07→3.59) but measured ~30% *slower* end-to-end on a real Brandenburg run (Pass A 18.0s→24.8s,
+/// total 26.8s→35.0s, cache-warm-controlled) — building the larger tree (554→970 nodes) apparently
+/// costs more than the smaller leaves save at this data volume. Reverted; leaf-size metrics don't
+/// predict real throughput here, so don't raise this without benchmarking end-to-end again.
 pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
 
 #[derive(Parser, Debug)]
