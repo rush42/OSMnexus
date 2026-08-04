@@ -37,8 +37,12 @@ sanitizers.json = { String: Sanitizer | [Sanitizer, ...] }
 
 Sanitizer =
   { "mapping": {String: JSON, ...}, "on_miss"?: String }
+      // strict: every non-null value must appear at most once across the
+      // table (load-time error otherwise) — many inputs collapsing to one
+      // output must be expressed with "cases" instead
   | { "cases": {String: [String,...] , ...}, "on_miss"?: String }
-      // sugar: inverted-lookup mapping — desugars to "mapping"
+      // sugar: inverted-lookup mapping (many inputs -> one output allowed)
+      // — desugars to "mapping", exempt from the bijection rule above
   | { "filter": [String, ...] }
       // sugar: keep value iff member of set — desugars to "mapping" (on_miss: drop)
   | { "drop": [String, ...] }

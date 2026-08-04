@@ -211,11 +211,9 @@
     ]
   },
   "smoothness_norm": {
-    "mapping": {
-      "very_good": "excellent",
-      "impassable": "very_bad",
-      "horrible": "very_bad",
-      "very_horrible": "very_bad"
+    "cases": {
+      "excellent": "very_good",
+      "very_bad": ["impassable", "horrible", "very_horrible"]
     },
     "on_miss": "drop"
   },
@@ -316,10 +314,8 @@
     "on_miss": "drop"
   },
   "mtb_scale_to_smoothness": {
-    "mapping": {
-      "0": "bad",
-      "0+": "bad",
-      "0-": "bad"
+    "cases": {
+      "bad": ["0", "0+", "0-"]
     },
     "on_miss": "very_bad"
   }
