@@ -41,7 +41,7 @@ pub enum TagSet {
     /// Strict parent way: nothing if the object has no parent (matches old osm `parent`).
     Parent,
     /// Parent way, falling back to the object's own tags when there is no parent
-    /// (matches the old yes_flag `source: parent`). Commits to the parent tagset when a
+    /// (matches the old to_bool `source: parent`). Commits to the parent tagset when a
     /// parent exists — distinct from a `fallback:[{parent},{obj}]`, which would also fall
     /// through when the parent merely lacks the key.
     ParentOrObj,

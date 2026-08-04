@@ -29,10 +29,10 @@
   ],
   "outputs": {
     "bridge": {
-      "sanitizer": "yes_flag"
+      "sanitizer": "to_bool"
     },
     "tunnel": {
-      "sanitizer": "yes_flag"
+      "sanitizer": "to_bool"
     }
   },
   "defaults": {

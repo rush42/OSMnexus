@@ -32,11 +32,11 @@
       "sanitizer": "parse_length"
     },
     "bridge": {
-      "sanitizer": "yes_flag",
+      "sanitizer": "to_bool",
       "from": "parent_or_obj"
     },
     "tunnel": {
-      "sanitizer": "yes_flag",
+      "sanitizer": "to_bool",
       "from": "parent_or_obj"
     },
     "oneway": "oneway",

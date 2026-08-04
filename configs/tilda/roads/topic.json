@@ -19,10 +19,10 @@
   ],
   "outputs": {
     "bridge": {
-      "sanitizer": "yes_flag"
+      "sanitizer": "to_bool"
     },
     "tunnel": {
-      "sanitizer": "yes_flag"
+      "sanitizer": "to_bool"
     },
     "traffic_sign": {
       "sanitizer": "traffic_sign"

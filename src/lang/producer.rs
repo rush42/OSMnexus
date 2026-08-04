@@ -179,7 +179,7 @@ pub enum Producer {
     /// `None` when there is no parent. The `Filter`-side sibling of this (`Filter::Parent`)
     /// documents the same shape in more detail.
     ///
-    /// A parent-or-obj read (matching the old `TagSet::ParentOrObj`/yes_flag `source: parent`)
+    /// A parent-or-obj read (matching the old `TagSet::ParentOrObj`/to_bool `source: parent`)
     /// isn't a variant here — it's JSON-parse sugar (`parser::parent_or_obj`) for
     /// `Match{rules: [{when: HasParent(true), value: Parent(p)}, {when: HasParent(false), value:
     /// p}]}`. That's not the same as `{"fallback": [Parent(p), p]}`: `Match`'s rule search

@@ -1,6 +1,6 @@
 {
   "temporary": { "mapping": { "yes": "temporary" }, "on_miss": "drop" },
-  "yes_flag": { "mapping": { "yes": true }, "on_miss": "drop" },
+  "to_bool": { "mapping": { "yes": true }, "on_miss": "drop" },
   "traffic_sign": [
     { "drop": [""] },
     { "cases": { "none": ["no", "none"] }, "on_miss": "keep" },
