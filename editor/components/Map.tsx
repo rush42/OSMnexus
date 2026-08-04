@@ -305,9 +305,18 @@ export default function Map({
 
       const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: "320px" });
       const featureLayers = [`${SOURCE_ID}-line`, `${SOURCE_ID}-point`, `${SEARCH_FALLBACK_SOURCE_ID}-line`, `${SEARCH_FALLBACK_SOURCE_ID}-point`];
+      // `addTo` on an already-open popup can internally `remove()` (and so fire `close`) itself when
+      // moving it to a newly clicked feature — without this guard that would immediately clear the
+      // highlight `showPopup` just set for that new feature, right after setting it.
+      let suppressNextClose = false;
+      popup.on("close", () => {
+        if (suppressNextClose) return;
+        setClickedWayId(null);
+      });
       const showPopup = (e: maplibregl.MapLayerMouseEvent) => {
         const feature = e.features?.[0];
         if (!feature) return;
+        suppressNextClose = true;
         setClickedWayId(feature.geometry.type === "LineString" ? Number(feature.properties?.osm_id) : null);
         const rows = Object.entries(feature.properties ?? {})
           .map(([k, v]) => `<tr><td style="color:#888;padding-right:8px;">${k}</td><td>${v}</td></tr>`)
@@ -316,6 +325,7 @@ export default function Map({
           .setLngLat(e.lngLat)
           .setHTML(`<table style="font:12px monospace;border-collapse:collapse;">${rows}</table>`)
           .addTo(map);
+        suppressNextClose = false;
       };
       map.on("click", featureLayers, showPopup);
       map.on("mouseenter", featureLayers, () => (map.getCanvas().style.cursor = "pointer"));
