@@ -135,6 +135,7 @@ fn main() -> Result<()> {
                 // stays cheap even when some field's tree is huge.
                 let mut names: Vec<String> = runner.default_outputs.iter().map(|f| f.output.clone())
                     .chain(runner.category_outputs.values().flatten().map(|f| f.output.clone()))
+                    .filter(|name| !runner.passthrough_outputs.contains(name))
                     .collect();
                 names.sort();
                 names.dedup();

@@ -66,6 +66,14 @@ pub struct TopicRunner {
     /// value, using `default_outputs` directly. Disjoint from `categories`'s keys (`load` rejects
     /// a kind declaring both a category directory and `accept_all`).
     pub accept_all: std::collections::HashSet<ElementKind>,
+    /// Output names whose topic-level entry is the bare `true` "copy this tag verbatim" shorthand
+    /// (an inline `"<tag>": true` or one folded in from `passthrough_tags` — see
+    /// `TopicSpec::passthrough_tags`) rather than an authored producer. Once resolved, such an entry
+    /// is a `Producer::Extract` indistinguishable in shape from a hand-written single-key extract,
+    /// so this has to be captured pre-resolution — used to keep passthrough tags out of
+    /// `bin/dag_json`'s "Producer" picker list, where showing them (there's no real producer tree
+    /// to plot) is just noise.
+    pub passthrough_outputs: std::collections::HashSet<String>,
 }
 
 /// Resolve one topic's or category's raw `outputs` map (already merged by key, category winning)
@@ -284,6 +292,12 @@ impl TopicRunner {
             );
         }
 
+        // Every bare-`true` entry at this point (inline `"<tag>": true` or folded-in
+        // `passthrough_tags`) is a passthrough, not an authored producer — captured now, before
+        // `resolve_outputs` turns it into a `Producer::Extract` indistinguishable from a real one.
+        let passthrough_outputs: std::collections::HashSet<String> =
+            topic_outputs.iter().filter(|(_, v)| **v == Value::Bool(true)).map(|(k, _)| k.clone()).collect();
+
         // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
         // category id missing from `category_outputs` (shouldn't normally happen; see below).
         let mut default_outputs = merge_default_fields(
@@ -330,6 +344,7 @@ impl TopicRunner {
             category_outputs,
             pass_through_all_tags,
             accept_all,
+            passthrough_outputs,
         })
     }
 
