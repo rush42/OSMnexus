@@ -1,5 +1,6 @@
 {
   "table": "drive",
+  "accept_all": { "way": true },
   "geometry": {
     "way": ["line"]
   },
