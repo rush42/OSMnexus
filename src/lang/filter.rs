@@ -97,8 +97,8 @@ impl Filter {
         }
         match self {
             Filter::Bool(b) => b.to_string(),
-            Filter::And { and } => and.iter().map(Filter::describe).collect::<Vec<_>>().join(" and "),
-            Filter::Or { or } => format!("({})", or.iter().map(Filter::describe).collect::<Vec<_>>().join(" or ")),
+            Filter::And { and } => and.iter().map(Filter::describe).collect::<Vec<_>>().join("\nand\n"),
+            Filter::Or { or } => format!("({})", or.iter().map(Filter::describe).collect::<Vec<_>>().join("\nor\n")),
             Filter::Not { not } => format!("not ({})", not.describe()),
             Filter::InSet { extract, in_set } => format!("{} in {in_set}", maybe_sanitized(extract)),
             Filter::In { extract, r#in } => format!("{} in [{}]", maybe_sanitized(extract), r#in.join(", ")),

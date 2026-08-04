@@ -53,6 +53,10 @@ function DagNodeBox({ data }: NodeProps) {
   // component itself never needs to know about folding, just render whatever label it's handed.
   const [typeLine, ...argLines] = (data.label as string).split("\n");
   const foldable = data.foldable === true;
+  // A "rule" node's remaining lines are its condition (`Filter::describe`, wrapped at every `and`/
+  // `or` junctor) — centered, since it reads as prose, not left-bound key/value argument pairs like
+  // every other kind's remaining lines (Extract's `key: ...`, Mapping's entries, ...).
+  const argsCentered = data.kind === "rule";
   return (
     <>
       <Handle type="target" position={Position.Top} style={hidden} />
@@ -63,7 +67,7 @@ function DagNodeBox({ data }: NodeProps) {
       {argLines.length > 0 && (
         <div
           style={{
-            textAlign: "left",
+            textAlign: argsCentered ? "center" : "left",
             marginTop: 4,
             ...(foldable ? { cursor: "pointer" } : {}),
           }}
@@ -406,6 +410,7 @@ export default function DagView({
         position: positions.get(n.id) ?? { x: 0, y: 0 },
         data: {
           label,
+          kind: n.kind,
           foldable,
           onToggle: foldable
             ? () =>
