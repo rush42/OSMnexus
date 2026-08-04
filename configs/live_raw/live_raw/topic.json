@@ -1,8 +1,9 @@
 {
   "table": "live_raw",
-  "accept_all": { "way": true },
+  "accept_all": { "way": true, "node": true },
   "outputs": true,
   "geometry": {
-    "way": ["line"]
+    "way": ["line"],
+    "node": ["point"]
   }
 }

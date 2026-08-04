@@ -12,7 +12,7 @@ import path from "node:path";
 import os from "node:os";
 
 import { csvLine, parseCsv } from "./csv";
-import { linestringFromEwkb } from "./ewkb";
+import { linestringFromEwkb, pointFromEwkb } from "./ewkb";
 import { parseCopyBinary } from "./pgBinaryCopy";
 
 const EDITOR_DIR = path.resolve(process.cwd());
@@ -24,11 +24,14 @@ const PIPELINE_BIN = process.env.PIPELINE_BIN_PATH || path.join(REPO_DIR, "targe
 // Emits a topic's output Producer trees as node/edge JSON for the tree view — see `src/bin/dag_json.rs`.
 const DAG_JSON_BIN = process.env.DAG_JSON_BIN_PATH || path.join(REPO_DIR, "target", "release", "dag_json");
 const CONFIGS_ROOT = path.join(REPO_DIR, "configs");
-// The table an "all ways" pass loaded a whole region into (tags in `SOURCE_TABLE`, geometry in
-// `SOURCE_TABLE`_geom — see `configs/live_raw/topic.json` and `fetchWays` below). A bbox
-// selection is a spatial query against this table, not an `osmium extract` + full PBF reparse.
+// The table an "all ways" (+ nodes, as of the node-support pass) ingest loaded a whole region into
+// — tags in `SOURCE_TABLE`, way geometry in `SOURCE_TABLE`_geom, node geometry in
+// `SOURCE_TABLE`_point (see `configs/live_raw/topic.json` and `fetchFeatures` below). A bbox
+// selection is a spatial query against these tables, not an `osmium extract` + full PBF reparse.
+// Relations aren't ingested/queried yet — a topic needing relation geometry produces no features
+// through this source.
 const SOURCE_TABLE = process.env.LIVE_SOURCE_TABLE || "live_raw";
-// DB connection for the bounds/way-select queries below (`psqlQuery`/`fetchWays`) — the
+// DB connection for the bounds/way-select queries below (`psqlQuery`/`fetchFeatures`) — the
 // pipeline subprocess itself no longer talks to Postgres (see `src/csv_source.rs`).
 const PG_ENV = {
   PGHOST: process.env.PGHOST || "",
@@ -61,7 +64,7 @@ export class ApiError extends Error {
 // - `currentBounds`: the bbox currently in use for the map/pipeline. Starts out unset until the
 //   user picks one.
 // - `currentWayId`: set instead of (alongside, for map display) `currentBounds` by a way-id search
-//   (see `selectWay`) — when set, `fetchWays` queries `t.osm_id = currentWayId` rather than the
+//   (see `selectWay`) — when set, `fetchFeatures` queries `t.osm_id = currentWayId` rather than the
 //   bbox spatial query, so the pipeline runs on exactly the searched-for way and nothing else
 //   nearby. Cleared by a manual bbox selection.
 // - `currentConfigName`: which `configs/*` directory is selected — just a name, no copy (see
@@ -161,7 +164,7 @@ async function peakRssKb(pid: number): Promise<number | null> {
 }
 
 // `stdin`, when given, is written to the child's stdin and the stream is closed — used to hand
-// the pipeline binary a CSV way stream (see `fetchWays`/`runPipeline`) without a temp file.
+// the pipeline binary a CSV way stream (see `fetchFeatures`/`runPipeline`) without a temp file.
 // `trackMemory` polls the child's peak RSS (see `peakRssKb`) while it runs — off by default since
 // most callers (`psql`, etc.) don't care and the poll loop is needless overhead for them.
 function run(
@@ -295,13 +298,17 @@ export async function findWay(osmId: string): Promise<{ bbox: [number, number, n
   return { bbox: bbox as [number, number, number, number], geometry, tags };
 }
 
-// Selects the ways the pipeline should run on (bbox spatial query, or a single `t.osm_id =` lookup
-// for a way-id search) and returns two things pulled from one query: `tagsCsv` — `osm_id,tags_json`
-// per way, the exact schema `src/csv_source.rs` parses off the pipeline's stdin — and `geometry`, a
-// `osm_id -> WGS84 GeoJSON geometry` map this module keeps to itself. The pipeline never sees
-// geometry at all for this source (see `src/csv_source.rs`'s own doc for why): `--source csv`
-// classifies tags only, so joining the classified rows back to a way's shape is this module's job,
-// done in `buildFeatureCollections` after the pipeline returns.
+// Selects the elements the pipeline should run on (bbox spatial query, or a single `t.osm_id =`
+// lookup for a way-id search — way-only by construction, see the `wayId` branch below) and returns
+// two things pulled from those queries: `tagsCsv` — `osm_id,osm_type,tags_json` per element, the
+// exact schema `src/csv_source.rs` parses off the pipeline's stdin — and `geometry`, a
+// `"<osm_type>:<osm_id>" -> WGS84 GeoJSON geometry` map this module keeps to itself. Keyed on the
+// `osm_type`/`osm_id` pair rather than bare `osm_id` since OSM node and way ids are independent
+// numbering spaces — a node and a way can share a numeric id, and a plain `osm_id` key would let one
+// silently clobber the other's geometry in this map. The pipeline never sees geometry at all for
+// this source (see `src/csv_source.rs`'s own doc for why): `--source csv` classifies tags only, so
+// joining the classified rows back to an element's shape is this module's job, done in
+// `buildFeatureCollections` after the pipeline returns.
 //
 // Fetched via `FORMAT binary` rather than `FORMAT csv` + `ST_AsGeoJSON` (an earlier version of
 // this function): a CSV/GeoJSON round trip means comma/quote-escaping every `tags_json` field and,
@@ -309,30 +316,51 @@ export async function findWay(osmId: string): Promise<{ bbox: [number, number, n
 // the pipeline itself stopped handling geometry (see `src/csv_source.rs`'s doc for that change).
 // Binary COPY sends `produced` as raw UTF-8 bytes (no CSV escaping) and geometry as raw EWKB (16
 // bytes/point, `ST_AsEWKB`) instead of GeoJSON's ~40+ ASCII bytes/point — `parseCopyBinary` unwraps
-// the wire format, `linestringFromEwkb` decodes the geometry, mirroring `src/geom/primitives.rs`.
-async function fetchWays(
+// the wire format, `linestringFromEwkb`/`pointFromEwkb` decode the geometry, mirroring
+// `src/geom/primitives.rs`.
+//
+// Relations aren't queried here yet (see `SOURCE_TABLE`'s own doc) — only ways and, for a bbox
+// selection, nodes.
+async function fetchFeatures(
   target: { wayId: string } | { bounds: [number, number, number, number] },
 ): Promise<{ tagsCsv: string; geometry: Map<string, GeoJSON.Geometry> }> {
-  const selectCols = "t.osm_id, t.produced::text, ST_AsEWKB(g.geom)";
-  const from = `${SOURCE_TABLE} t JOIN ${SOURCE_TABLE}_geom g ON g.osm_id = t.osm_id`;
-  let where: string;
-  if ("wayId" in target) {
-    if (!/^-?\d+$/.test(target.wayId)) throw new ApiError(400, "way id must be an integer");
-    where = `t.osm_id = ${target.wayId}`;
-  } else {
-    const [minLon, minLat, maxLon, maxLat] = target.bounds;
-    where = `ST_Intersects(g.geom, ST_Transform(ST_MakeEnvelope(${minLon}, ${minLat}, ${maxLon}, ${maxLat}, 4326), 3857))`;
-  }
-  const buf = await psqlCopyBinary(`COPY (SELECT ${selectCols} FROM ${from} WHERE ${where}) TO STDOUT (FORMAT binary)`);
   const geometry = new Map<string, GeoJSON.Geometry>();
   let tagsCsv = "";
-  for (const [osmIdField, tagsField, geomField] of parseCopyBinary(buf)) {
-    const osmId = osmIdField!.readBigInt64BE(0).toString();
-    const tagsJson = tagsField!.toString("utf8");
-    tagsCsv += csvLine([osmId, tagsJson]);
-    if (geomField) {
-      geometry.set(osmId, { type: "LineString", coordinates: linestringFromEwkb(geomField) });
+
+  async function fetchOne(
+    geomTable: string,
+    osmType: "W" | "N",
+    where: string,
+    decode: (buf: Buffer) => GeoJSON.Geometry,
+  ): Promise<void> {
+    const selectCols = "t.osm_id, t.produced::text, ST_AsEWKB(g.geom)";
+    const from = `${SOURCE_TABLE} t JOIN ${geomTable} g ON g.osm_id = t.osm_id AND t.osm_type = '${osmType}'`;
+    const buf = await psqlCopyBinary(`COPY (SELECT ${selectCols} FROM ${from} WHERE ${where}) TO STDOUT (FORMAT binary)`);
+    for (const [osmIdField, tagsField, geomField] of parseCopyBinary(buf)) {
+      const osmId = osmIdField!.readBigInt64BE(0).toString();
+      const tagsJson = tagsField!.toString("utf8");
+      tagsCsv += csvLine([osmId, osmType, tagsJson]);
+      if (geomField) geometry.set(`${osmType}:${osmId}`, decode(geomField));
     }
+  }
+
+  if ("wayId" in target) {
+    if (!/^-?\d+$/.test(target.wayId)) throw new ApiError(400, "way id must be an integer");
+    await fetchOne(`${SOURCE_TABLE}_geom`, "W", `t.osm_id = ${target.wayId}`, (buf) => ({
+      type: "LineString",
+      coordinates: linestringFromEwkb(buf),
+    }));
+  } else {
+    const [minLon, minLat, maxLon, maxLat] = target.bounds;
+    const envelope = `ST_Transform(ST_MakeEnvelope(${minLon}, ${minLat}, ${maxLon}, ${maxLat}, 4326), 3857)`;
+    await fetchOne(`${SOURCE_TABLE}_geom`, "W", `ST_Intersects(g.geom, ${envelope})`, (buf) => ({
+      type: "LineString",
+      coordinates: linestringFromEwkb(buf),
+    }));
+    await fetchOne(`${SOURCE_TABLE}_point`, "N", `ST_Intersects(g.geom, ${envelope})`, (buf) => ({
+      type: "Point",
+      coordinates: pointFromEwkb(buf),
+    }));
   }
   return { tagsCsv, geometry };
 }
@@ -385,7 +413,7 @@ async function runPipeline(
   { ok: true; geometry: Map<string, GeoJSON.Geometry>; peakRssKb: number | null } | { ok: false; message: string }
 > {
   const configDir = requireTopicDir();
-  const { tagsCsv, geometry } = await fetchWays(target);
+  const { tagsCsv, geometry } = await fetchFeatures(target);
   const result = await run(
     PIPELINE_BIN,
     ["--source", "csv", "--config-dir", configDir, "--output", "csv", "--out-dir", outDir, "--linear-classify"],
@@ -460,15 +488,16 @@ export async function getConfigs(): Promise<{ configs: string[]; current: string
 
 // The pipeline classifies tags only now (see `src/csv_source.rs`) and writes `<topic>.csv` — plain
 // tag rows, `TAG_COLUMNS` = `osm_id,osm_type,id,category,produced,annotations,meta` (see
-// `src/output/rows.rs`), no geometry. This module joins those rows back to `geometry` (the WGS84
-// map `fetchWays` built from the same query that produced the pipeline's input) to reproduce the
-// `Feature` shape `src/output/geojson.rs` used to build server-side — mirrors `base_properties`
-// there: `osm_id`/`id` always present, `category` only when non-empty (an `accept_all` kind's
-// unmatched rows have none), then `produced`/`annotations` spread in as ordinary properties.
-// `topics` is always a single-element array today (exactly one topic ever runs — see
-// `switchTopic`), but the merge-N-topics shape is kept as-is since `properties.topic` stamping
-// still matters for `Map.tsx`'s `isolateCategory`/`focusTarget` filters. No cut points: those are a
-// PBF-path/graph-edge concept (see geojson.rs) this way-only, line-geometry-only source never had.
+// `src/output/rows.rs`), no geometry. This module joins those rows back to `geometry` (the
+// `"<osm_type>:<osm_id>" -> WGS84 GeoJSON geometry` map `fetchFeatures` built from the same query
+// that produced the pipeline's input) to reproduce the `Feature` shape `src/output/geojson.rs` used
+// to build server-side — mirrors `base_properties` there: `osm_id`/`id` always present, `category`
+// only when non-empty (an `accept_all` kind's unmatched rows have none), then
+// `produced`/`annotations` spread in as ordinary properties. `topics` is always a single-element
+// array today (exactly one topic ever runs — see `switchTopic`), but the merge-N-topics shape is
+// kept as-is since `properties.topic` stamping still matters for `Map.tsx`'s
+// `isolateCategory`/`focusTarget` filters. No cut points: those are a PBF-path/graph-edge concept
+// (see geojson.rs) this way/node, line/point-geometry-only source never had.
 async function buildFeatureCollections(outDir: string, topics: string[], geometry: Map<string, GeoJSON.Geometry>) {
   const features: GeoJSON.Feature[] = [];
   for (const topic of topics) {
@@ -479,9 +508,9 @@ async function buildFeatureCollections(outDir: string, topics: string[], geometr
       continue; // topic produced no rows for this extract
     }
     const rows = parseCsv(text).slice(1); // drop the header line (osm_id,osm_type,id,category,produced,annotations,meta)
-    for (const [osmId, , id, category, producedJson, annotationsJson] of rows) {
-      const geom = geometry.get(osmId);
-      if (!geom) continue; // shouldn't happen — every row's osm_id came from the same `geometry` map
+    for (const [osmId, osmType, id, category, producedJson, annotationsJson] of rows) {
+      const geom = geometry.get(`${osmType}:${osmId}`);
+      if (!geom) continue; // shouldn't happen — every row's osm_id/osm_type pair came from the same `geometry` map
       const properties: GeoJSON.GeoJsonProperties = { topic, osm_id: Number(osmId), id };
       if (category) properties.category = category;
       Object.assign(properties, JSON.parse(producedJson), JSON.parse(annotationsJson));
@@ -563,7 +592,7 @@ async function topicFilePath(topic: string, file: TopicLevelFile = "topic.json")
 }
 
 // Re-runs the pipeline — against the searched-for way if one is selected (`currentWayId`,
-// filtering `t.osm_id = ...` directly in `fetchWays`'s SQL), otherwise against the current
+// filtering `t.osm_id = ...` directly in `fetchFeatures`'s SQL), otherwise against the current
 // bbox — and returns the merged multi-topic FeatureCollection. Shared by the category-edit and
 // topic-config-edit endpoints (which only differ in which file they write beforehand) and by the
 // way-search endpoint (`/api/way/:id/select`), which writes nothing.
