@@ -181,6 +181,13 @@ function layoutTree(
   const heights = new Map(nodes.map((n) => [n.id, heightFor(n.label)]));
   const treeEdges = edges.filter((e) => kindOf.get(e.target) !== "annotate");
   const annotateEdges = edges.filter((e) => kindOf.get(e.target) === "annotate");
+  // An owner's annotate node rides beside it (see loop below), so `place()` must reserve that extra
+  // horizontal space too — otherwise the next sibling's subtree is laid out as if the owner were its
+  // bare `width`, and the annotation ends up occluded under that sibling.
+  const annotationExtra = new Map<string, number>();
+  for (const e of annotateEdges) {
+    annotationExtra.set(e.source, (widths.get(e.target) ?? NODE_W) + ANNOTATE_GAP_X);
+  }
 
   const childrenOf = new Map<string, string[]>();
   for (const e of treeEdges) {
@@ -198,19 +205,24 @@ function layoutTree(
   function place(id: string, depth: number): [left: number, right: number] {
     depthOf.set(id, depth);
     const width = widths.get(id) ?? NODE_W;
+    const ownWidth = width + (annotationExtra.get(id) ?? 0);
     const children = childrenOf.get(id) ?? [];
     let left: number;
     if (children.length === 0) {
       left = nextX;
-      nextX += width + GAP_X;
+      nextX += ownWidth + GAP_X;
     } else {
       const spans = children.map((c) => place(c, depth + 1));
       const spanLeft = spans[0][0];
       const spanRight = spans[spans.length - 1][1];
       left = (spanLeft + spanRight) / 2 - width / 2;
+      // A centered parent's own annotation can hang past the space its children's leaves already
+      // reserved in `nextX` (nothing else claims space on this node's behalf) — push `nextX` out so
+      // the next subtree over doesn't get placed under it.
+      nextX = Math.max(nextX, left + ownWidth + GAP_X);
     }
     positions.set(id, { x: left, y: 0 });
-    return [left, left + width];
+    return [left, left + ownWidth];
   }
   // The tree's root is whichever node is never a `treeEdges` target — not necessarily `nodes[0]`:
   // `src/tree.rs`'s `render_chain` creates an `Extract` leaf's own node before the sanitize steps
@@ -440,7 +452,10 @@ export default function DagView({
       source: e.source,
       target: e.target,
       ...(kindOf.get(e.target) === "annotate" ? { sourceHandle: "right", targetHandle: "left" } : {}),
-      label: e.label || undefined,
+      // The "annotate" label doesn't fit in the short connector to an annotate node (`ANNOTATE_GAP_X`
+      // is only 40px) and ends up hidden under the node it's supposed to label — the dashed border and
+      // adjacent placement already say "annotation", so skip the label there.
+      label: kindOf.get(e.target) === "annotate" ? undefined : e.label || undefined,
       type: "dagEdge",
       style: { stroke: "#9aa1ac", strokeWidth: 1.5 },
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#9aa1ac" },

@@ -63,7 +63,10 @@ fn annotate_node(g: &mut DagGraph, owner: &str, annotate: &Map<String, Value>) {
     if annotate.is_empty() {
         return;
     }
-    let label = annotate.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n");
+    let label = std::iter::once("Annotate".to_owned())
+        .chain(annotate.iter().map(|(k, v)| format!("{k}: {v}")))
+        .collect::<Vec<_>>()
+        .join("\n");
     let node = g.node(label, "annotate");
     g.edge(owner, &node, "annotate");
 }
