@@ -1,8 +1,11 @@
-//! Builds one `<table>.geojsonseq` newline-delimited GeoJSON Feature stream (RFC 8142) per topic
-//! from the CSV output `--output geojsonseq` shares with `--output csv` (`{table}.csv` tag rows +
-//! this topic's own geometry table(s), see `db::schema`'s
+//! Builds GeoJSON output per topic from the CSV output `--output geojson`/`geojsonseq` shares with
+//! `--output csv` (`{table}.csv` tag rows + this topic's own geometry table(s), see `db::schema`'s
 //! `way_geom_table`/`point_table`/`polygon_table`/`relation_*_table`) — for local tooling (e.g. the
-//! live editor) that wants one self-contained file instead of a table pair.
+//! live editor) that wants one self-contained file instead of a table pair. Two sinks share the same
+//! `build_features` collection step and differ only in framing: `write_geojson_from_csv` wraps them
+//! in one `{table}.geojson` `FeatureCollection` (simple, but buffers the whole topic in memory and
+//! isn't streamable); `write_geojsonseq_from_csv` writes one `{table}.geojsonseq` Feature object per
+//! line (RFC 8142) instead.
 //! Falls back to the shared `edges.csv` graph table for a topic that declared `"way": ["graph"]`
 //! instead of `["line"]` — that's the one shape not stored per-topic (see `EDGE_TABLE`'s own doc) —
 //! surfacing each way's intersection-split segments plus two kinds of cut-point Feature interleaved
@@ -169,14 +172,148 @@ fn base_properties(record: &csv::StringRecord, osm_id: i64) -> Map<String, Value
     properties
 }
 
-/// Reads `{table}.csv` (per `tables`) plus whichever of this topic's own geometry tables exist
+/// Reads `{table}.csv` plus whichever of this topic's own geometry tables exist
 /// (`{table}_geom`/`_point`/`_polygon` for way/node shapes, `{table}_relation_geom`/
 /// `_relation_point`/`_relation_polygon` for relation shapes, or the shared `edges.csv`/`nodes.csv`
-/// for a topic that declared `"way": ["graph"]` instead) and writes `{table}.geojsonseq` alongside
-/// them: one GeoJSON `Feature` object per line (RFC 8142), cut points interleaved in with
-/// `properties.kind` set to `"cut"`/`"endpoint"`.
-pub fn write_geojsonseq_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
+/// for a topic that declared `"way": ["graph"]` instead) and collects this topic's GeoJSON
+/// `Feature`s, cut points interleaved in with `properties.kind` set to `"cut"`/`"endpoint"`.
+/// Shared by both sink framings — see the module doc.
+fn build_features(
+    out_dir: &Path,
+    table: &str,
+    edges: &HashMap<i64, Vec<EdgeGeom>>,
+    relation_members: &HashMap<i64, Vec<i64>>,
+) -> anyhow::Result<Vec<Value>> {
     debug_assert_eq!(TAG_COLUMNS, "osm_id,osm_type,id,category,produced,annotations,meta");
+    let way_geom = read_way_geom(&out_dir.join(format!("{table}_geom.csv")))?;
+    let way_point = read_point_geom(&out_dir.join(format!("{table}_point.csv")))?;
+    let way_polygon = read_polygon_geom(&out_dir.join(format!("{table}_polygon.csv")))?;
+    let relation_geom = read_way_geom(&out_dir.join(format!("{table}_relation_geom.csv")))?;
+    let relation_point = read_point_geom(&out_dir.join(format!("{table}_relation_point.csv")))?;
+    let relation_polygon = read_polygon_geom(&out_dir.join(format!("{table}_relation_polygon.csv")))?;
+
+    let mut reader = csv::Reader::from_path(out_dir.join(format!("{table}.csv")))?;
+    let mut features = Vec::new();
+
+    for result in reader.records() {
+        let record = result?;
+        let osm_id: i64 = record[0].parse()?;
+        let osm_type = &record[1];
+
+        match osm_type {
+            "R" => {
+                if let Some(coordinates) = relation_geom.as_ref().and_then(|m| m.get(&osm_id)) {
+                    features.push(json!({
+                        "type": "Feature",
+                        "geometry": { "type": "LineString", "coordinates": coordinates },
+                        "properties": base_properties(&record, osm_id),
+                    }));
+                } else if let Some(coordinates) = relation_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
+                    features.push(json!({
+                        "type": "Feature",
+                        "geometry": { "type": "Polygon", "coordinates": [coordinates] },
+                        "properties": base_properties(&record, osm_id),
+                    }));
+                } else if let Some(coordinates) = relation_point.as_ref().and_then(|m| m.get(&osm_id)) {
+                    features.push(json!({
+                        "type": "Feature",
+                        "geometry": { "type": "Point", "coordinates": coordinates },
+                        "properties": base_properties(&record, osm_id),
+                    }));
+                } else if let Some(way_ids) = relation_members.get(&osm_id) {
+                    // Graph-shape fallback: no per-topic relation geometry table, stitch the
+                    // shared graph's edges for this relation's member ways instead.
+                    let segments: Vec<&EdgeGeom> =
+                        way_ids.iter().filter_map(|way_id| edges.get(way_id)).flatten().collect();
+                    let properties = base_properties(&record, osm_id);
+                    for segment in &segments {
+                        let mut properties = properties.clone();
+                        properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));
+                        features.push(json!({
+                            "type": "Feature",
+                            "geometry": { "type": "LineString", "coordinates": segment.coordinates },
+                            "properties": properties,
+                        }));
+                    }
+                }
+            }
+            "N" => {
+                let Some(coordinates) = way_point.as_ref().and_then(|m| m.get(&osm_id)) else { continue };
+                features.push(json!({
+                    "type": "Feature",
+                    "geometry": { "type": "Point", "coordinates": coordinates },
+                    "properties": base_properties(&record, osm_id),
+                }));
+            }
+            _ => {
+                if let Some(coordinates) = way_geom.as_ref().and_then(|m| m.get(&osm_id)) {
+                    features.push(json!({
+                        "type": "Feature",
+                        "geometry": { "type": "LineString", "coordinates": coordinates },
+                        "properties": base_properties(&record, osm_id),
+                    }));
+                } else if let Some(coordinates) = way_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
+                    features.push(json!({
+                        "type": "Feature",
+                        "geometry": { "type": "Polygon", "coordinates": [coordinates] },
+                        "properties": base_properties(&record, osm_id),
+                    }));
+                } else if let Some(coordinates) = way_point.as_ref().and_then(|m| m.get(&osm_id)) {
+                    features.push(json!({
+                        "type": "Feature",
+                        "geometry": { "type": "Point", "coordinates": coordinates },
+                        "properties": base_properties(&record, osm_id),
+                    }));
+                } else if let Some(segments) = edges.get(&osm_id) {
+                    // Graph-shape fallback (see module doc): split into intersection segments,
+                    // surfacing the shared node between consecutive segments as a cut point.
+                    let properties = base_properties(&record, osm_id);
+                    for segment in segments {
+                        let mut properties = properties.clone();
+                        properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));
+                        features.push(json!({
+                            "type": "Feature",
+                            "geometry": { "type": "LineString", "coordinates": segment.coordinates },
+                            "properties": properties,
+                        }));
+                    }
+                    for segment in segments.iter().skip(1) {
+                        if let Some(&start) = segment.coordinates.first() {
+                            features.push(json!({
+                                "type": "Feature",
+                                "geometry": { "type": "Point", "coordinates": start },
+                                "properties": { "osm_id": osm_id, "kind": "cut" },
+                            }));
+                        }
+                    }
+                    // The way's own two ends — never a "cut" (that's reserved for splits
+                    // *within* this way, see above), but still worth surfacing since they may
+                    // coincide with another way's endpoint or a cut point of its own.
+                    if let Some(first) = segments.first().and_then(|s| s.coordinates.first()) {
+                        features.push(json!({
+                            "type": "Feature",
+                            "geometry": { "type": "Point", "coordinates": first },
+                            "properties": { "osm_id": osm_id, "kind": "endpoint" },
+                        }));
+                    }
+                    if let Some(last) = segments.last().and_then(|s| s.coordinates.last()) {
+                        features.push(json!({
+                            "type": "Feature",
+                            "geometry": { "type": "Point", "coordinates": last },
+                            "properties": { "osm_id": osm_id, "kind": "endpoint" },
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(features)
+}
+
+/// Reads each of `tables`' CSV output (see `build_features`) and writes `{table}.geojsonseq`
+/// alongside them: one GeoJSON `Feature` object per line (RFC 8142).
+pub fn write_geojsonseq_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
     let edges_path = out_dir.join("edges.csv");
     let edges = if edges_path.exists() { read_edges(&edges_path)? } else { HashMap::new() };
     let members_path = out_dir.join("relation_members.csv");
@@ -184,129 +321,7 @@ pub fn write_geojsonseq_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::R
         if members_path.exists() { read_relation_members(&members_path)? } else { HashMap::new() };
 
     for table in tables {
-        let way_geom = read_way_geom(&out_dir.join(format!("{table}_geom.csv")))?;
-        let way_point = read_point_geom(&out_dir.join(format!("{table}_point.csv")))?;
-        let way_polygon = read_polygon_geom(&out_dir.join(format!("{table}_polygon.csv")))?;
-        let relation_geom = read_way_geom(&out_dir.join(format!("{table}_relation_geom.csv")))?;
-        let relation_point = read_point_geom(&out_dir.join(format!("{table}_relation_point.csv")))?;
-        let relation_polygon = read_polygon_geom(&out_dir.join(format!("{table}_relation_polygon.csv")))?;
-
-        let mut reader = csv::Reader::from_path(out_dir.join(format!("{table}.csv")))?;
-        let mut features = Vec::new();
-
-        for result in reader.records() {
-            let record = result?;
-            let osm_id: i64 = record[0].parse()?;
-            let osm_type = &record[1];
-
-            match osm_type {
-                "R" => {
-                    if let Some(coordinates) = relation_geom.as_ref().and_then(|m| m.get(&osm_id)) {
-                        features.push(json!({
-                            "type": "Feature",
-                            "geometry": { "type": "LineString", "coordinates": coordinates },
-                            "properties": base_properties(&record, osm_id),
-                        }));
-                    } else if let Some(coordinates) = relation_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
-                        features.push(json!({
-                            "type": "Feature",
-                            "geometry": { "type": "Polygon", "coordinates": [coordinates] },
-                            "properties": base_properties(&record, osm_id),
-                        }));
-                    } else if let Some(coordinates) = relation_point.as_ref().and_then(|m| m.get(&osm_id)) {
-                        features.push(json!({
-                            "type": "Feature",
-                            "geometry": { "type": "Point", "coordinates": coordinates },
-                            "properties": base_properties(&record, osm_id),
-                        }));
-                    } else if let Some(way_ids) = relation_members.get(&osm_id) {
-                        // Graph-shape fallback: no per-topic relation geometry table, stitch the
-                        // shared graph's edges for this relation's member ways instead.
-                        let segments: Vec<&EdgeGeom> =
-                            way_ids.iter().filter_map(|way_id| edges.get(way_id)).flatten().collect();
-                        let properties = base_properties(&record, osm_id);
-                        for segment in &segments {
-                            let mut properties = properties.clone();
-                            properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));
-                            features.push(json!({
-                                "type": "Feature",
-                                "geometry": { "type": "LineString", "coordinates": segment.coordinates },
-                                "properties": properties,
-                            }));
-                        }
-                    }
-                }
-                "N" => {
-                    let Some(coordinates) = way_point.as_ref().and_then(|m| m.get(&osm_id)) else { continue };
-                    features.push(json!({
-                        "type": "Feature",
-                        "geometry": { "type": "Point", "coordinates": coordinates },
-                        "properties": base_properties(&record, osm_id),
-                    }));
-                }
-                _ => {
-                    if let Some(coordinates) = way_geom.as_ref().and_then(|m| m.get(&osm_id)) {
-                        features.push(json!({
-                            "type": "Feature",
-                            "geometry": { "type": "LineString", "coordinates": coordinates },
-                            "properties": base_properties(&record, osm_id),
-                        }));
-                    } else if let Some(coordinates) = way_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
-                        features.push(json!({
-                            "type": "Feature",
-                            "geometry": { "type": "Polygon", "coordinates": [coordinates] },
-                            "properties": base_properties(&record, osm_id),
-                        }));
-                    } else if let Some(coordinates) = way_point.as_ref().and_then(|m| m.get(&osm_id)) {
-                        features.push(json!({
-                            "type": "Feature",
-                            "geometry": { "type": "Point", "coordinates": coordinates },
-                            "properties": base_properties(&record, osm_id),
-                        }));
-                    } else if let Some(segments) = edges.get(&osm_id) {
-                        // Graph-shape fallback (see module doc): split into intersection segments,
-                        // surfacing the shared node between consecutive segments as a cut point.
-                        let properties = base_properties(&record, osm_id);
-                        for segment in segments {
-                            let mut properties = properties.clone();
-                            properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));
-                            features.push(json!({
-                                "type": "Feature",
-                                "geometry": { "type": "LineString", "coordinates": segment.coordinates },
-                                "properties": properties,
-                            }));
-                        }
-                        for segment in segments.iter().skip(1) {
-                            if let Some(&start) = segment.coordinates.first() {
-                                features.push(json!({
-                                    "type": "Feature",
-                                    "geometry": { "type": "Point", "coordinates": start },
-                                    "properties": { "osm_id": osm_id, "kind": "cut" },
-                                }));
-                            }
-                        }
-                        // The way's own two ends — never a "cut" (that's reserved for splits
-                        // *within* this way, see above), but still worth surfacing since they may
-                        // coincide with another way's endpoint or a cut point of its own.
-                        if let Some(first) = segments.first().and_then(|s| s.coordinates.first()) {
-                            features.push(json!({
-                                "type": "Feature",
-                                "geometry": { "type": "Point", "coordinates": first },
-                                "properties": { "osm_id": osm_id, "kind": "endpoint" },
-                            }));
-                        }
-                        if let Some(last) = segments.last().and_then(|s| s.coordinates.last()) {
-                            features.push(json!({
-                                "type": "Feature",
-                                "geometry": { "type": "Point", "coordinates": last },
-                                "properties": { "osm_id": osm_id, "kind": "endpoint" },
-                            }));
-                        }
-                    }
-                }
-            }
-        }
-
+        let features = build_features(out_dir, table, &edges, &relation_members)?;
         let mut writer = std::io::BufWriter::new(std::fs::File::create(
             out_dir.join(format!("{table}.geojsonseq")),
         )?);
@@ -314,6 +329,24 @@ pub fn write_geojsonseq_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::R
             serde_json::to_writer(&mut writer, feature)?;
             writer.write_all(b"\n")?;
         }
+    }
+    Ok(())
+}
+
+/// Reads each of `tables`' CSV output (see `build_features`) and writes `{table}.geojson`
+/// alongside them: a single `{"type": "FeatureCollection", "features": [...]}` object — simpler to
+/// consume whole than `geojsonseq`, at the cost of buffering the whole topic in memory.
+pub fn write_geojson_from_csv(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
+    let edges_path = out_dir.join("edges.csv");
+    let edges = if edges_path.exists() { read_edges(&edges_path)? } else { HashMap::new() };
+    let members_path = out_dir.join("relation_members.csv");
+    let relation_members =
+        if members_path.exists() { read_relation_members(&members_path)? } else { HashMap::new() };
+
+    for table in tables {
+        let features = build_features(out_dir, table, &edges, &relation_members)?;
+        let feature_collection = json!({ "type": "FeatureCollection", "features": features });
+        std::fs::write(out_dir.join(format!("{table}.geojson")), serde_json::to_vec(&feature_collection)?)?;
     }
     Ok(())
 }

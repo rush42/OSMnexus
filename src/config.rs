@@ -66,13 +66,16 @@ pub struct Config {
     pub db_writers: usize,
 
     /// Output backend: `pg` (COPY into PostGIS), `csv` (one file per tag table + geometries.csv),
-    /// or `geojsonseq` (same CSV files, plus one `<table>.geojsonseq` newline-delimited GeoJSON
-    /// Feature stream per topic — RFC 8142 — built by joining tag rows to edge geometries on
-    /// `osm_id`; for local tooling like the live editor).
+    /// `geojson` (same CSV files, plus one `<table>.geojson` `FeatureCollection` per topic), or
+    /// `geojsonseq` (same CSV files, plus one `<table>.geojsonseq` newline-delimited GeoJSON
+    /// Feature stream per topic — RFC 8142). Both GeoJSON variants are built by joining tag rows to
+    /// edge geometries on `osm_id`, for local tooling like the live editor; `geojsonseq` streams
+    /// without buffering the whole topic, `geojson` is simpler to consume whole.
     #[arg(long, value_enum, default_value_t = Output::Pg)]
     pub output: Output,
 
-    /// Directory for CSV/GeoJSONSeq output (created if missing). Only used with `--output csv`/`geojsonseq`.
+    /// Directory for CSV/GeoJSON(Seq) output (created if missing). Only used with `--output
+    /// csv`/`geojson`/`geojsonseq`.
     #[arg(long, default_value = "out")]
     pub out_dir: String,
 
@@ -119,8 +122,10 @@ pub enum Source {
 pub enum Output {
     Pg,
     Csv,
-    #[value(name = "geojsonseq")]
+    #[value(name = "geojson")]
     GeoJson,
+    #[value(name = "geojsonseq")]
+    GeoJsonSeq,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]

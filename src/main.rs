@@ -164,6 +164,12 @@ async fn main() -> anyhow::Result<()> {
         Output::GeoJson => {
             std::fs::create_dir_all(&cfg.out_dir)
                 .with_context(|| format!("creating output dir {}", cfg.out_dir))?;
+            info!("GeoJSON output → {}/ (one {{topic}}.geojson FeatureCollection per topic)", cfg.out_dir);
+            (None, 1)
+        }
+        Output::GeoJsonSeq => {
+            std::fs::create_dir_all(&cfg.out_dir)
+                .with_context(|| format!("creating output dir {}", cfg.out_dir))?;
             info!("GeoJSONSeq output → {}/ (one {{topic}}.geojsonseq Feature stream per topic)", cfg.out_dir);
             (None, 1)
         }
@@ -356,6 +362,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cfg.output == Output::GeoJson {
+        info!("Building GeoJSON from CSV output...");
+        output::geojson::write_geojson_from_csv(&out_dir, &tables)?;
+        for table in &tables {
+            info!("Wrote {}/{table}.geojson", cfg.out_dir);
+        }
+    }
+
+    if cfg.output == Output::GeoJsonSeq {
         info!("Building GeoJSONSeq from CSV output...");
         output::geojson::write_geojsonseq_from_csv(&out_dir, &tables)?;
         for table in &tables {

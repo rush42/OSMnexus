@@ -44,7 +44,7 @@ impl<T: CsvRow + Send + Sync + 'static> Shard<T> {
             let (tx, rx) = mpsc::channel::<Vec<T>>(WRITER_CHAN_CAP);
             let h = match output {
                 Output::Pg => tokio::spawn(copy_writer::<T>(pool.clone().unwrap(), table.to_owned(), columns, rx)),
-                Output::Csv | Output::GeoJson => tokio::spawn(csv_writer::<T>(out_dir.join(format!("{table}.csv")), columns, rx)),
+                Output::Csv | Output::GeoJson | Output::GeoJsonSeq => tokio::spawn(csv_writer::<T>(out_dir.join(format!("{table}.csv")), columns, rx)),
             };
             handles.push(h);
             senders.push(tx);
@@ -320,7 +320,7 @@ pub async fn write_rows_once<R: CsvRow + Send + Sync + 'static>(
     let (tx, rx) = mpsc::channel(1);
     let handle = match output {
         Output::Pg => tokio::spawn(copy_writer::<R>(pool.clone().unwrap(), table.to_owned(), columns, rx)),
-        Output::Csv | Output::GeoJson => {
+        Output::Csv | Output::GeoJson | Output::GeoJsonSeq => {
             tokio::spawn(csv_writer::<R>(out_dir.join(format!("{table}.csv")), columns, rx))
         }
     };

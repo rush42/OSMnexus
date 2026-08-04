@@ -81,7 +81,8 @@ One extracted graph; each topic is a disjoint attribute layer over it.
 
 All of the above are built **in-process** during the streaming pass (or, for relations, from a
 second lightweight resolution of their member ways' coordinates) — there's no Postgres post-import
-SQL step for geometry, so every output backend (`pg`, `csv`, `geojsonseq`) produces the same tables.
+SQL step for geometry, so every output backend (`pg`, `csv`, `geojson`, `geojsonseq`) produces the
+same tables.
 The one exception is the routing graph (`"geometry": { "way": ["graph"] }`), which is still built as
 a post-load SQL step against the already-loaded shared `edges` table — see below.
 
@@ -186,8 +187,8 @@ Add `RUST_LOG=info` in front of either command for per-phase timings.
 |---|---|---|
 | `<pbf_file>` (or `PBF_FILE`) | — | input `.osm.pbf` |
 | `--config-dir <path>` | `configs/tilda` | topic config folder to run (e.g. [`configs/osmnx`](configs/osmnx)) |
-| `--output <backend>` | `pg` | `pg` (COPY into PostGIS), `csv` (one file per tag table + geometry tables), or `geojsonseq` (same CSVs, plus one `<topic>.geojsonseq` newline-delimited GeoJSON Feature stream per topic) |
-| `--out-dir <path>` | `out` | directory for CSV/GeoJSONSeq output (`--output csv`/`geojsonseq` only) |
+| `--output <backend>` | `pg` | `pg` (COPY into PostGIS), `csv` (one file per tag table + geometry tables), `geojson` (same CSVs, plus one `<topic>.geojson` `FeatureCollection` per topic), or `geojsonseq` (same CSVs, plus one `<topic>.geojsonseq` newline-delimited GeoJSON Feature stream per topic) |
+| `--out-dir <path>` | `out` | directory for CSV/GeoJSON(Seq) output (`--output csv`/`geojson`/`geojsonseq` only) |
 | `--create-index` | off | build indexes after load (the split-geom GiST can dominate runtime; `pg` only) |
 | `--topic-edges <mode>` | `pgrouting` | shape of `{topic}_edge` for topics declaring `"geometry": { "way": ["graph"] }`; `pgrouting` (routing columns only) or `all` (+ joined tag columns) — see [Per-topic geometry outputs](#per-topic-geometry-outputs-topicjsons-geometry) (`pg` only) |
 | `--db-writers <k>` | `4` | parallel COPY connections per table, rows round-robined (`pg` only) |
@@ -197,14 +198,15 @@ Add `RUST_LOG=info` in front of either command for per-phase timings.
 | `--tree-max-depth <n>` | `6` | max branch depth of the categorization decision tree; deeper prunes more aggressively at the cost of build time |
 | `--linear-classify` | off | bypass the compiled decision tree and classify by walking each topic's `categories.json` `order` linearly instead — for debugging/perf comparison against the tree-based classifier |
 
-The `csv`/`geojsonseq` backends write the same schema as `pg` — `<topic>.csv` (tag tables),
-`edges.csv`, and any opted-in geometry tables — with a header row, JSON columns as quoted CSV, and
-geometry as hex-encoded EWKB. Load it anywhere (DuckDB, `ogr2ogr`, `COPY … FROM`, pandas, a graph
-library via the `osm_id`/`start_id`/`end_id` edge list). `geojsonseq` additionally joins each
-topic's tag rows to edge geometries (by `osm_id`) and reprojects to WGS84, writing one
-`<topic>.geojsonseq` newline-delimited GeoJSON Feature stream (RFC 8142) per topic — cut points
-interleaved in, tagged `properties.kind` of `"cut"`/`"endpoint"` — used by the
-[live editor](editor/).
+The `csv`/`geojson`/`geojsonseq` backends write the same schema as `pg` — `<topic>.csv` (tag
+tables), `edges.csv`, and any opted-in geometry tables — with a header row, JSON columns as quoted
+CSV, and geometry as hex-encoded EWKB. Load it anywhere (DuckDB, `ogr2ogr`, `COPY … FROM`, pandas, a
+graph library via the `osm_id`/`start_id`/`end_id` edge list). `geojson`/`geojsonseq` additionally
+join each topic's tag rows to edge geometries (by `osm_id`) and reproject to WGS84 — cut points
+interleaved in, tagged `properties.kind` of `"cut"`/`"endpoint"` — writing either one
+`<topic>.geojson` `FeatureCollection` (simple, but buffers the whole topic in memory) or one
+`<topic>.geojsonseq` newline-delimited GeoJSON Feature stream (RFC 8142, streams without buffering).
+The live editor uses `geojsonseq`.
 
 Database connection uses the standard libpq env vars, overridable per flag: `PGHOST`/`--db-host`
 (empty → Unix socket, peer auth), `PGDATABASE`/`--db-name`, `PGUSER`/`--db-user`,
