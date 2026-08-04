@@ -1,6 +1,5 @@
 pub mod categorize;
 pub mod config;
-pub mod dag;
 pub mod db;
 pub mod decision_tree;
 pub mod geom;
@@ -13,5 +12,6 @@ pub mod paths;
 pub mod processing;
 pub mod topic;
 pub mod traffic;
+pub mod tree;
 pub mod units;
 pub mod value_sets;

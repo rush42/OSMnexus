@@ -79,7 +79,7 @@ pub enum Filter {
 impl Filter {
     /// A short, human-readable rendering (`surface == sett`, `a and b`, `highway in [...]`) — not
     /// the `Debug` dump, which is precise but unreadable at a glance (e.g. in the live editor's
-    /// deriver tree view, `dag::render_producer`). Not meant to round-trip back into JSON or `eval`
+    /// deriver tree view, `tree::render_producer`). Not meant to round-trip back into JSON or `eval`
     /// — purely for display.
     pub fn describe(&self) -> String {
         fn key(extract: &Extract) -> String {

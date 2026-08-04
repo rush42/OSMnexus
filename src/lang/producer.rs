@@ -117,7 +117,7 @@ pub(crate) fn empty_annotations() -> &'static Map<String, Value> {
 /// Why a `Producer::Match` exists — a real authored rule table, or the runtime shape one of the
 /// JSON sugars (`fallback`/`parent_or_obj`/`tag_or`) or a Rust-side synthesis (`topic::runner`'s
 /// `default_value_producer`/`as_fallback_pair`) folds into. Purely informational — `eval`/`resolve`
-/// never branch on it, only display code does (see `dag::render_producer`): a `Fallback`
+/// never branch on it, only display code does (see `tree::render_producer`): a `Fallback`
 /// match's rules are always `when: true` by construction, so describing that condition on every
 /// rule node is noise — what actually distinguishes each branch is its priority, not a predicate.
 /// `parent_or_obj` and `tag_or` are just `Fallback` under a different JSON spelling — their rules

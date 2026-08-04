@@ -24,7 +24,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
 
-use osmnexus::dag::{self, category_condition_dag, decision_tree_dag, producer_dag, sanitizer_dag, DagGraph};
+use osmnexus::tree::{self, category_condition_dag, decision_tree_dag, producer_dag, sanitizer_dag, DagGraph};
 use osmnexus::lang::producer::Producer;
 use osmnexus::topic::load::load_topic_sanitizers;
 use osmnexus::topic::runner::TopicRunner;
@@ -117,12 +117,12 @@ fn main() -> Result<()> {
                 // order `order` (and therefore the runtime first-match walk) already uses, so the
                 // picker reflects the actual evaluation order rather than an arbitrary one.
                 None => {
-                    let names = (0..cats.order.len()).map(|i| dag::order_label(cats, i)).collect();
+                    let names = (0..cats.order.len()).map(|i| tree::order_label(cats, i)).collect();
                     println!("{}", serde_json::to_string(&ListResponse { topic: topic_name, names })?);
                 }
                 Some(idx) => {
                     ensure!(idx < cats.order.len(), "order index {idx} out of range for kind '{selector}'");
-                    let label = dag::order_label(cats, idx);
+                    let label = tree::order_label(cats, idx);
                     let variant = Variant { labels: vec![label.clone()], graph: category_condition_dag(cats, idx) };
                     let resp = GraphResponse { topic: topic_name, name: label, variants: vec![variant] };
                     println!("{}", serde_json::to_string(&resp)?);
