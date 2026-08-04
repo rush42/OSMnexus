@@ -123,16 +123,22 @@ pub fn build_topic_rows<'a>(
         // is gone (redundant with the parent's own `highway` tag, already reachable through
         // `ectx.parent_tags`).
         let mut annotations = ectx.annotations.clone();
-        if runner.pass_through_all_tags {
-            // `"outputs": true` (see `topic::spec::OutputsSpec`) — every tag verbatim, no per-field
-            // `Producer` evaluation at all.
-            produced.extend(ectx.obj_tags.iter().map(|(k, v)| (k.to_string(), Value::String(v.to_string()))));
-        } else {
-            let outputs = category_id
-                .as_ref()
-                .and_then(|id| runner.category_outputs.get(id))
-                .unwrap_or(&runner.default_outputs);
-            eval_fields(outputs, &ectx, &mut produced, &mut annotations);
+        let outputs = category_id
+            .as_ref()
+            .and_then(|id| runner.category_outputs.get(id))
+            .unwrap_or(&runner.default_outputs);
+        eval_fields(outputs, &ectx, &mut produced, &mut annotations);
+        if runner.pass_through_remaining_tags {
+            // `"outputs": true` or a `null` `passthrough_tags` entry (see
+            // `TopicRunner::pass_through_remaining_tags`'s own doc) — every raw tag `eval_fields`
+            // above didn't already produce a value for, verbatim. `outputs: true` means `outputs`
+            // was empty to begin with, so this ends up filling every key in that case. `.entry(...)
+            // .or_insert_with(...)` rather than `.extend(...)`: an explicit output (named
+            // passthrough or a real derived field) always wins over the wildcard's raw value for
+            // the same key, never the other way around.
+            for (k, v) in ectx.obj_tags.iter() {
+                produced.entry(k.to_string()).or_insert_with(|| Value::String(v.to_string()));
+            }
         }
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the

@@ -55,12 +55,14 @@ pub struct TopicRunner {
     /// category's effective defaults can still differ from the topic's even with no `outputs`
     /// override).
     pub category_outputs: HashMap<String, Vec<Field>>,
-    /// Set when `topic.json`'s `outputs` is the bare `true` shorthand (`OutputsSpec::is_all`) —
-    /// every tag on the element is copied into `produced` verbatim, bypassing `default_outputs`/
-    /// `category_outputs` and `pipeline::eval_fields` entirely. `default_outputs`/`category_outputs`
-    /// are still built (empty, since `OutputsSpec::into_fields_map` treats `All` as `{}`) so this
-    /// stays a pure additive fast path rather than a second code shape callers need to branch on.
-    pub pass_through_all_tags: bool,
+    /// Set when `topic.json`'s `outputs` is the bare `true` shorthand (`OutputsSpec::is_all`) or
+    /// `passthrough_tags` carries a bare `null` entry (`TopicSpec::passthrough_tags`'s own doc) —
+    /// either way, every raw tag `eval_fields` didn't already produce a value for gets copied into
+    /// `produced` verbatim (`topic::pipeline::build_topic_rows`). `outputs: true` needs no separate
+    /// bypass path: `OutputsSpec::into_fields_map` treats `All` as `{}`, so `default_outputs`/
+    /// `category_outputs` are already empty in that case — running `eval_fields` over zero fields
+    /// costs nothing, and this one flag then fills every key either way.
+    pub pass_through_remaining_tags: bool,
     /// Kinds flagged in `topic.json`'s `"accept_all"` (see `TopicSpec::accept_all`) — every
     /// (non-excluded) element of this kind is emitted with no category match and no `category`
     /// value, using `default_outputs` directly. Disjoint from `categories`'s keys (`load` rejects
@@ -272,14 +274,18 @@ impl TopicRunner {
 
         // `true` here means "pass every tag through verbatim" (see `OutputsSpec`) — read before
         // `spec.outputs` is consumed into a plain fields map below, since it isn't itself a `Field`
-        // shape `resolve_outputs` can produce.
-        let pass_through_all_tags = spec.outputs.is_all();
+        // shape `resolve_outputs` can produce. Same flag a bare `null` entry in `passthrough_tags`
+        // sets (see `pass_through_remaining_tags`'s own doc for why one flag covers both) — setting
+        // both is redundant, not conflicting, so no error either way.
+        let mut pass_through_remaining_tags = spec.outputs.is_all();
         let mut topic_outputs = spec.outputs.clone().into_fields_map();
 
         // `passthrough_tags` is sugar for a batch of `"<tag>": true` outputs entries (see
         // `TopicSpec::passthrough_tags`) — folded in here, before any resolving, so the rest of
-        // this function never needs to know the two shapes exist.
-        for tag in &spec.passthrough_tags {
+        // this function never needs to know the two shapes exist. A bare `null` entry has no name
+        // to fold under, so it sets `pass_through_remaining_tags` directly instead.
+        pass_through_remaining_tags |= spec.passthrough_tags.iter().any(Option::is_none);
+        for tag in spec.passthrough_tags.iter().flatten() {
             anyhow::ensure!(
                 topic_outputs.insert(tag.clone(), Value::Bool(true)).is_none(),
                 "topics/{name}/topic.json: '{tag}' is in both passthrough_tags and outputs",
@@ -336,7 +342,7 @@ impl TopicRunner {
             default_outputs,
             linear_classify,
             category_outputs,
-            pass_through_all_tags,
+            pass_through_remaining_tags,
             accept_all,
             passthrough_outputs,
         })

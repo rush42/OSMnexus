@@ -186,6 +186,15 @@ Any other object shape (an inline `Producer`) is a load-time error.
 batch of `"<tag>": true` entries, folded into `outputs` at load time. A tag
 named in both `passthrough_tags` and `outputs` is a load-time error.
 
+A bare `null` entry (`passthrough_tags: [..., null]`) is a wildcard: every
+raw tag not already produced by `outputs` (or a named `passthrough_tags`
+entry) is copied through verbatim too, applied *after* every named output —
+so an explicit output always wins over the wildcard for the same key. Unlike
+`outputs: true` (which replaces per-field evaluation entirely, see above),
+this is additive: real derived fields and a catch-all for everything else
+can coexist. Combining `null` here with `outputs: true` is a load-time error
+(redundant).
+
 ## `transforms.json`
 
 A pipeline of steps run over raw tags before classification, split into

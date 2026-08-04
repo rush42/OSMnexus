@@ -33,8 +33,17 @@ pub struct TopicSpec {
     /// topic with many untouched passthrough tags doesn't have to sprinkle `true` throughout its
     /// `outputs` map. Folded into `outputs` at load time (`TopicRunner::load`); a tag named here
     /// that's also an explicit `outputs` key is a load-time error rather than a silent shadow.
+    ///
+    /// A bare `null` entry is a wildcard: "every tag not already claimed by `outputs` or a named
+    /// entry here" — for a topic that wants a handful of *derived* fields plus everything else
+    /// verbatim, which `outputs: true` (`OutputsSpec::All`) can't express (that's *only* every raw
+    /// tag, no room for a computed field alongside). Unlike a named entry, a `null` here can't be
+    /// folded into a fixed `outputs` key (there's no name to fold it under) — `TopicRunner::load`
+    /// pulls it out into `pass_through_remaining_tags` instead, applied at row-build time after
+    /// every named output has already run, so an explicit output always wins over the wildcard's
+    /// raw value for the same key. Redundant (and a load-time error) alongside `outputs: true`.
     #[serde(default)]
-    pub passthrough_tags: Vec<String>,
+    pub passthrough_tags: Vec<Option<String>>,
     /// Optional Filter condition evaluated against raw way tags before categorization.
     /// If the condition matches, the way is skipped entirely for this topic.
     /// Uses the same Filter JSON syntax as category conditions.
@@ -84,10 +93,9 @@ impl AcceptAllSpec {
 
 /// `topic.json`'s top-level `outputs`: normally a `{field: producer}` map, but a bare `true`/
 /// `false` is also accepted — `false` behaves exactly like `{}` (no fields; `into_fields_map`
-/// treats both the same way), while `true` means "pass every tag through verbatim" and is read
-/// via `is_all` into `TopicRunner::pass_through_all_tags`, which bypasses per-field `Field`
-/// evaluation entirely (see `pipeline::eval_fields`'s call site) rather than expanding to one
-/// `Field` per possible tag.
+/// treats both the same way), while `true` means "pass every tag through verbatim" and is read via
+/// `is_all` into `TopicRunner::pass_through_remaining_tags` (same flag a `null` `passthrough_tags`
+/// entry sets — see that field's own doc) rather than expanding to one `Field` per possible tag.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum OutputsSpec {
