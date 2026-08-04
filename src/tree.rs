@@ -181,9 +181,16 @@ pub fn sanitizer_dag(name: &str, chain: &[Sanitizer]) -> DagGraph {
 fn step_label(step: &Sanitizer) -> String {
     match step {
         Sanitizer::Mapping { mapping, on_miss } => {
-            let entries = mapping.iter().map(|(k, v)| match v {
-                Some(v) => format!("{k} -> {}", v.clone().into_value()),
-                None => format!("{k} -> (drop)"),
+            // `k` is always a raw tag value (plain `String`) — quoted the same way `v`'s own
+            // `serde_json::Value` Display already quotes a string output, so both sides of the
+            // arrow follow one consistent "quoted iff string" rule instead of the input silently
+            // looking unquoted/bare while the output does its own thing.
+            let entries = mapping.iter().map(|(k, v)| {
+                let k = serde_json::Value::String(k.clone());
+                match v {
+                    Some(v) => format!("{k} -> {}", v.clone().into_value()),
+                    None => format!("{k} -> (drop)"),
+                }
             });
             let lines: Vec<String> = std::iter::once("Mapping".to_owned())
                 .chain(entries)
