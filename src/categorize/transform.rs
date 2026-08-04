@@ -639,12 +639,7 @@ mod run_transform_steps_tests {
                 InputTransform::Drop { when: Filter::TagsEmpty { tags_empty: true } },
                 InputTransform::TagRule {
                     output: "highway".to_owned(),
-                    source: Producer::Match {
-                        rules: Vec::new(),
-                        default: Some(Value::String("cycleway".to_owned())),
-                        annotate: Map::new(),
-                        tree: None,
-                    },
+                    source: Producer::Const { value: Value::String("cycleway".to_owned()), annotate: Map::new() },
                 },
             ]).collect();
             TransformStep::Clone(CloneStep {
