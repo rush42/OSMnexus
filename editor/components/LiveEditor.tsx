@@ -118,10 +118,7 @@ export default function LiveEditor({
   const [maxBboxM, setMaxBboxM] = useState(DEFAULT_MAX_BBOX_M);
   const [extracting, setExtracting] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
-  // Defaults to topic.json — that's where producers/rules/fallbacks/defaults are authored, so the
-  // editing pane on the right has something directly relevant to show/edit as soon as a topic loads,
-  // instead of staying blank until the user manually clicks a category or "topic.json" themselves.
-  const [active, setActive] = useState<Selection>({ topic, kind: "", name: "", isTopicConfig: true });
+  const [active, setActive] = useState<Selection>({ topic, kind: DEFAULT_KIND, name: "" });
   // Bumped on every category click (see Map's `focusTick` doc comment) — separate from `active`
   // itself since re-clicking the already-active category doesn't change `active.topic`/`.name`,
   // but should still refocus the map on it.
@@ -199,7 +196,7 @@ export default function LiveEditor({
   // so `loadCategories`/`loadInitialMap` are safe to fire immediately.
   useEffect(() => {
     setCategories([]);
-    setActive({ topic, kind: "", name: "", isTopicConfig: true });
+    setActive({ topic, kind: DEFAULT_KIND, name: "" });
     setManualSelect(false);
     setNewName("");
     setError(null);
