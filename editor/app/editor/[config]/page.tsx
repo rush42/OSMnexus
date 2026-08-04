@@ -20,14 +20,25 @@ export default function EditorPage() {
   const topicParam = searchParams.get("topic");
 
   const [topics, setTopics] = useState<string[] | null>(null);
-  const [topicReady, setTopicReady] = useState(false);
+  // The topic `/api/topic-select` last succeeded for — compared against `topicParam` below rather
+  // than a plain ready boolean. A boolean would go stale across a topic change: React re-renders
+  // this page with the new `topicParam` (from the `router.replace` in effect 2) while the old
+  // `true` is still sitting in state, since resetting it only happens inside that same effect,
+  // which — for child components — commits *after* `LiveEditor`'s own effects (React runs child
+  // effects before parent effects). `LiveEditor` fires its topic-keyed fetches (`loadCategories`)
+  // the instant it sees the new `topic` prop, so with a boolean it would briefly believe the new
+  // topic was ready and query the server before `/api/topic-select` for it had even been sent —
+  // the server still has the *previous* topic selected at that point, so every such request 400s.
+  // Comparing against the specific topic instead closes that window: it only reads as ready once
+  // this effect's own POST for *that* topic has actually resolved.
+  const [readyTopic, setReadyTopic] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 1. Validate + select the config, then list its topics.
   useEffect(() => {
     let ignore = false;
     setTopics(null);
-    setTopicReady(false);
+    setReadyTopic(null);
     setError(null);
     (async () => {
       const configsRes = await fetch("/api/configs").then((r) => r.json());
@@ -70,7 +81,6 @@ export default function EditorPage() {
       return; // effect re-runs once the URL update lands and topicParam matches
     }
     let ignore = false;
-    setTopicReady(false);
     fetch("/api/topic-select", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -81,7 +91,7 @@ export default function EditorPage() {
         res.json().then((body) => setError(body.error || "Failed to select topic")).catch(() => setError("Failed to select topic"));
         return;
       }
-      setTopicReady(true);
+      setReadyTopic(chosen);
     });
     return () => {
       ignore = true;
@@ -99,7 +109,7 @@ export default function EditorPage() {
       </div>
     );
   }
-  if (!topics || !topicReady || !topicParam) {
+  if (!topics || !topicParam || readyTopic !== topicParam) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)" }}>
         Loading…

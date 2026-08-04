@@ -184,7 +184,13 @@ export default function LiveEditor({
   function loadCategories() {
     fetch(`/api/categories/${encodeURIComponent(topic)}`)
       .then((r) => r.json())
-      .then((d: { categories: { kind: string; name: string }[] }) => {
+      .then((d: { categories: { kind: string; name: string }[] } | { error: string }) => {
+        // A 400 here (`{error}`, no `categories`) means the server's currently-selected topic
+        // doesn't match `topic` yet — e.g. this fired before `/api/topic-select` for it landed.
+        // Leave `categories` as whatever it already was rather than crashing on `.map`; the caller
+        // that's driving topic selection (`app/editor/[config]/page.tsx`) re-renders once the real
+        // topic is ready, which re-fires this with a `topic` the server actually agrees with.
+        if ("error" in d) return;
         setCategories(d.categories.map((c) => ({ topic, ...c })));
       });
   }
@@ -201,9 +207,15 @@ export default function LiveEditor({
 
   // Resets every category-scoped piece of state (the previous topic's categories/selection don't
   // apply to the new one) and reloads — mirrors what the old multi-topic `switchConfig` used to
-  // reset, now scoped to a topic change instead of a config change. The server side
-  // (`/api/topic-select`) has already run by the time `topic` changes here (see the parent page),
-  // so `loadCategories`/`loadInitialMap` are safe to fire immediately.
+  // reset, now scoped to a topic change instead of a config change. The parent page
+  // (`app/editor/[config]/page.tsx`) only ever passes a `topic` prop once its own
+  // `/api/topic-select` POST for it has resolved, so `loadCategories`/`loadInitialMap` are safe to
+  // fire immediately for the normal single-tab case. The server's "currently selected topic"
+  // (`liveEditor.ts`'s `state`) is a single process-wide global, though, not per-session — a second
+  // tab (or an in-flight request from before this tab's own last switch) can still flip it out from
+  // under this fetch, so `loadCategories` guards its response defensively rather than assuming the
+  // server still agrees by the time it replies (`loadInitialMap`'s try/catch already no-ops on any
+  // fetch failure, so it needs no equivalent guard).
   useEffect(() => {
     setCategories([]);
     setActive({ topic, kind: DEFAULT_KIND, name: "" });
