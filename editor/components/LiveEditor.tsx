@@ -425,6 +425,21 @@ export default function LiveEditor({
         Map
       </button>
       <button
+        onClick={() => setViewMode("sanitizers")}
+        style={{
+          fontWeight: viewMode === "sanitizers" ? 700 : 400,
+          padding: "7px 12px",
+          background: "rgba(255,255,255,0.85)",
+          backdropFilter: "blur(6px)",
+          borderRadius: "var(--radius)",
+          boxShadow: "var(--shadow)",
+          border: "1px solid var(--border)",
+        }}
+        title="List this topic's named sanitizers (shared + topic-local) and plot each one's mapping/replace chain"
+      >
+        Sanitizers
+      </button>
+      <button
         onClick={() => setViewMode("tree")}
         style={{
           fontWeight: viewMode === "tree" ? 700 : 400,
@@ -468,21 +483,6 @@ export default function LiveEditor({
         title="Plot the compiled discrimination net that prunes categorize's first-match walk"
       >
         Decision tree
-      </button>
-      <button
-        onClick={() => setViewMode("sanitizers")}
-        style={{
-          fontWeight: viewMode === "sanitizers" ? 700 : 400,
-          padding: "7px 12px",
-          background: "rgba(255,255,255,0.85)",
-          backdropFilter: "blur(6px)",
-          borderRadius: "var(--radius)",
-          boxShadow: "var(--shadow)",
-          border: "1px solid var(--border)",
-        }}
-        title="List this topic's named sanitizers (shared + topic-local) and plot each one's mapping/replace chain"
-      >
-        Sanitizers
       </button>
     </div>
   );
