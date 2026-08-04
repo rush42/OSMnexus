@@ -1,6 +1,6 @@
 {
   "road": {
-    "rules": [
+    "match": [
       { "when": { "tag": "bicycle_road", "eq": "yes" }, "value": "bicycle_road" },
 
       { "when": { "and": [ { "tag": "highway", "eq": "service" }, { "tag": "service", "eq": "driveway" }, { "tag": "emergency", "in": ["yes", "designated"] } ] }, "value": "service_emergency_access" },

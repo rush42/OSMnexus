@@ -2,7 +2,7 @@
   "way": [
     {
       "output": "highway",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -16,7 +16,7 @@
     },
     {
       "output": "lifecycle",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -84,19 +84,19 @@
     },
     {
       "output": "construction",
-      "rules": [
+      "match": [
         { "when": { "tag": "lifecycle", "eq": "construction" }, "value": null }
       ]
     },
     {
       "output": "access",
-      "rules": [
+      "match": [
         { "when": { "tag": "lifecycle", "in": ["construction_no_access", "blocked"] }, "value": null }
       ]
     },
     {
       "output": "bicycle",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -110,7 +110,7 @@
     },
     {
       "output": "foot",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -124,20 +124,20 @@
     },
     {
       "output": "oneway:bicycle",
-      "rules": [
+      "match": [
         { "when": { "tag": "cycleway", "in": ["opposite", "opposite_lane", "opposite_track"] }, "value": "no" }
       ]
     },
     {
       "output": "cycleway:left",
-      "rules": [
+      "match": [
         { "when": { "tag": "cycleway", "eq": "opposite_lane" }, "value": "lane" },
         { "when": { "tag": "cycleway", "eq": "opposite_track" }, "value": "track" }
       ]
     },
     {
       "output": "cycleway",
-      "rules": [
+      "match": [
         { "when": { "tag": "cycleway", "in": ["opposite", "opposite_lane", "opposite_track"] }, "value": null }
       ]
     },
@@ -149,13 +149,13 @@
     },
     {
       "output": "cycleway:both",
-      "rules": [
+      "match": [
         { "when": { "tag": "cycleway", "eq": "no" }, "value": { "tag": "cycleway" } }
       ]
     },
     {
       "output": "cycleway",
-      "rules": [
+      "match": [
         { "when": { "tag": "cycleway", "eq": "no" }, "value": null }
       ]
     },
@@ -166,7 +166,7 @@
     },
     {
       "output": "traffic_sign",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -199,7 +199,7 @@
               ]
             }
           },
-          { "output": "highway", "rules": [], "default": "cycleway" },
+          { "output": "highway", "match": [], "default": "cycleway" },
           { "output": "cycleway:lanes", "directed": { "key": "cycleway:lanes", "from": "parent" } },
           { "output": "bicycle:lanes", "directed": { "key": "bicycle:lanes", "from": "parent" } },
           { "output": "traffic_sign", "directed": { "key": "traffic_sign", "from": "obj" } }
@@ -216,7 +216,7 @@
           { "unnest": "cycleway", "infix": "both", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "unnest": "cycleway", "infix": "right", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "drop": { "tags_empty": true } },
-          { "output": "highway", "rules": [], "default": "cycleway" },
+          { "output": "highway", "match": [], "default": "cycleway" },
           { "output": "cycleway:lanes", "directed": { "key": "cycleway:lanes", "from": "parent" } },
           { "output": "bicycle:lanes", "directed": { "key": "bicycle:lanes", "from": "parent" } },
           { "output": "traffic_sign", "directed": { "key": "traffic_sign", "from": "obj" } }
@@ -233,7 +233,7 @@
           { "unnest": "sidewalk", "infix": "both", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "unnest": "sidewalk", "infix": "left", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "drop": { "tags_empty": true } },
-          { "output": "highway", "rules": [], "default": "footway" },
+          { "output": "highway", "match": [], "default": "footway" },
           { "output": "traffic_sign", "directed": { "key": "traffic_sign", "from": "obj" } }
         ]
       }
@@ -248,7 +248,7 @@
           { "unnest": "sidewalk", "infix": "both", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "unnest": "sidewalk", "infix": "right", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "drop": { "tags_empty": true } },
-          { "output": "highway", "rules": [], "default": "footway" },
+          { "output": "highway", "match": [], "default": "footway" },
           { "output": "traffic_sign", "directed": { "key": "traffic_sign", "from": "obj" } }
         ]
       }

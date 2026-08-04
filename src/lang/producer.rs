@@ -3,9 +3,10 @@
 //! `TagSet`) and result (`Produced`) types it evaluates over. Two branch shapes (`Match`, `Parent`)
 //! and two leaf/read shapes (`Extract` — a plain key/candidate-list tag read — and `Const`) —
 //! everything else is JSON-only sugar, folded into one of these by `parser`'s hand-written `Deserialize` impl
-//! (`fallback`, `parent_or_obj`, the `{"tag": ..., "or"?: ...}` shorthand) so it never
-//! exists as a `Producer` value here, not even transiently (see `parser`'s own doc for why that
-//! folding lives in its own module rather than inline in this one). A named reference — a macro,
+//! (`parent_or_obj`, the `{"tag": ..., "or"?: ...}` shorthand, `Rule`'s bare-`Producer` shorthand
+//! for an always-true rule) so it never exists as a `Producer` value here, not even transiently
+//! (see `parser`'s own doc for why that folding lives in its own module rather than inline in this
+//! one). A named reference — a macro,
 //! a `sanitize: "<name>"`, a *shared* classifier table (`{ "shared": "<name>" }`) — is never a
 //! `Producer` concept either: all three are resolved away as a `serde_json::Value`-tree rewrite
 //! (`topic::load::inline_macro_refs`/`inline_sanitize_refs`/`inline_shared_producers`) before any
@@ -14,7 +15,6 @@
 
 use std::sync::OnceLock;
 
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::decision_tree::{self, DecisionTree};
@@ -23,9 +23,10 @@ use crate::lang::filter::{self, Filter};
 use crate::osm::types::RawTags;
 
 /// One classifier rule — `when`/`value` are already-resolved `Filter`/`Producer` (no macro or
-/// named-sanitizer reference can reach here; see their own docs), so a plain derive suffices, no
-/// hand-written `parser` impl needed. What `match_rules` evaluates.
-#[derive(Debug, Clone, Deserialize)]
+/// named-sanitizer reference can reach here; see their own docs). What `match_rules` evaluates.
+/// `Deserialize` isn't derived directly — `parser`'s hand-written impl disambiguates the on-disk
+/// shorthand shapes (same treatment `Producer`/`Filter` get; see this module's own doc for why).
+#[derive(Debug, Clone)]
 pub struct Rule {
     pub when: Filter,
     pub value: Producer,
@@ -115,10 +116,10 @@ pub(crate) fn empty_annotations() -> &'static Map<String, Value> {
 }
 
 /// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see `parser`'s
-/// hand-written `Deserialize` impl (targeting this type directly) for the `fallback` JSON shape
-/// that folds into `Match` at parse time and so never appears here. `Deserialize` isn't derived
-/// directly — deliberately, so a stray `#[derive(Deserialize)]` here can't reintroduce a shape
-/// `parser` doesn't know about. Every named reference (`Match` rules' macros, `Extract`'s
+/// hand-written `Deserialize` impl (targeting this type directly) for the `parent_or_obj`/`tag`+
+/// `or` JSON sugar that folds into `Match` at parse time and so never appears here. `Deserialize`
+/// isn't derived directly — deliberately, so a stray `#[derive(Deserialize)]` here can't
+/// reintroduce a shape `parser` doesn't know about. Every named reference (`Match` rules' macros, `Extract`'s
 /// `sanitize`) is resolved away before this type is ever deserialized (see this module's own doc),
 /// so `eval` never does a registry lookup.
 #[derive(Debug, Clone)]
@@ -132,7 +133,7 @@ pub enum Producer {
     /// `annotate` is the provenance a rule whose value produces an *empty* `annotate` of its own
     /// (chiefly `Const`, which has no way to spell one) inherits when it produces. With no `default`,
     /// returns `None` when no rule matches — letting a category const default or an enclosing
-    /// fallback branch supply the value. Must be tried before `Extract` below, since `rules` is a
+    /// `match` branch supply the value. Must be tried before `Extract` below, since `rules` is a
     /// required field and so unambiguously distinguishes it. Always reads `ctx.obj_tags` — wrap in
     /// `Parent` (or `parser::parent_or_obj`) to read the parent way's tags instead.
     ///

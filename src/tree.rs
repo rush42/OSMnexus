@@ -98,7 +98,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
             // Each rule is its own branch, and its value producer (which may itself be a further
             // `Match`) hangs off that node so the tree actually branches instead of cramming every
             // rule into one node's text. Every rule is numbered by priority order — a rule whose
-            // condition is trivially `true` (a desugared `fallback`/`parent_or_obj`/`tag`+`or`
+            // condition is trivially `true` (a bare-shorthand `match` item, or a desugared `parent_or_obj`/`tag`+`or`
             // branch) shows just its number, since describing an always-true condition is noise.
             for (i, r) in rules.iter().enumerate() {
                 let rule_label = if matches!(r.when, Filter::Bool(true)) {

@@ -1,6 +1,6 @@
 {
   "oneway": {
-    "rules": [
+    "match": [
       { "when": { "tag": "oneway:bicycle", "eq": "yes" }, "value": "yes" },
       { "when": { "and": [ { "tag": "oneway:bicycle", "eq": "no" }, { "tag": "oneway", "eq": "yes" } ] }, "value": "car_not_bike" },
       { "when": { "tag": "oneway:bicycle", "eq": "no" }, "value": "no" },
@@ -10,7 +10,7 @@
   },
   "road": { "parent_or_obj": { "shared": "road" } },
   "traffic_mode_left": {
-    "rules": [
+    "match": [
       { "when": { "or": [
           { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
@@ -19,7 +19,7 @@
     ]
   },
   "traffic_mode_right": {
-    "rules": [
+    "match": [
       { "when": { "or": [
           { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
@@ -28,7 +28,7 @@
     ]
   },
   "traffic_mode_left_from_parking_both": {
-    "rules": [
+    "match": [
       { "when": { "or": [
           { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
@@ -38,7 +38,7 @@
     ]
   },
   "traffic_mode_right_from_parking_both": {
-    "rules": [
+    "match": [
       { "when": { "or": [
           { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
@@ -48,7 +48,7 @@
     ]
   },
   "traffic_mode_left_from_parking_directional": {
-    "rules": [
+    "match": [
       { "when": { "or": [
           { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
@@ -59,7 +59,7 @@
     ]
   },
   "traffic_mode_right_from_parking_directional": {
-    "rules": [
+    "match": [
       { "when": { "or": [
           { "first_tag": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode", "exists": true },
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
@@ -70,15 +70,15 @@
     ]
   },
   "lifecycle": {
-    "fallback": [
+    "match": [
       { "key": "temporary", "sanitize": "temporary" },
       { "key": "lifecycle" },
       { "parent": { "key": "lifecycle" } }
     ]
   },
   "surface": {
-    "fallback": [
-      { "rules": [
+    "match": [
+      { "match": [
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
@@ -87,14 +87,14 @@
     ]
   },
   "surface_from_parent": {
-    "fallback": [
-      { "rules": [
+    "match": [
+      { "match": [
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
         ], "annotate": { "source": "tag", "confidence": "high" } },
       { "key": "surface", "sanitize": "surface_normalize", "annotate": { "source": "tag", "confidence": "high" } },
-      { "parent": { "rules": [
+      { "parent": { "match": [
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.08 } ] }, "value": "mosaic_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "lte": 0.13 } ] }, "value": "small_sett" },
           { "when": { "and": [ { "tag": "surface", "eq": "sett" }, { "key": "sett:length", "sanitize": "parse_length", "gt": 0.13 } ] }, "value": "large_sett" }
@@ -103,7 +103,7 @@
     ]
   },
   "smoothness": {
-    "fallback": [
+    "match": [
       { "key": "smoothness", "sanitize": "smoothness_direct", "annotate": { "source": "tag",            "confidence": "high" } },
       { "key": "smoothness", "sanitize": "smoothness_norm",   "annotate": { "source": "tag_normalized", "confidence": "high" } },
       { "key": "surface",    "sanitize": "surface_to_smoothness",   "annotate": { "source": "surface_to_smoothness",   "confidence": "medium" } },
@@ -112,19 +112,19 @@
     ]
   },
   "name": {
-    "fallback": [
+    "match": [
       { "key": "name" },
       { "parent": { "key": "name" } }
     ]
   },
   "oneway:bicycle": {
-    "fallback": [
+    "match": [
       { "key": "oneway:bicycle" },
       { "parent": { "key": "oneway:bicycle" } }
     ]
   },
   "is_directed": {
-    "rules": [
+    "match": [
       { "when": { "tag": "oneway", "in": ["yes", "-1"] }, "value": true }
     ],
     "default": false

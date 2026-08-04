@@ -228,7 +228,7 @@ pub struct Field {
 /// - a JSON string — a named reference into `producer_lib` (the topic's `producers.json`),
 ///   resolved once here with no fallback on a miss (unlike `resolve_named_sanitizer`, which falls
 ///   back to a `Builtin` lookup before failing) — a typo'd name should fail loudly at load time.
-/// - an object shaped `{ sanitizer, in?, from? }` (no `key`/`keys`/`fallback`/`rules` — those would
+/// - an object shaped `{ sanitizer, in?, from? }` (no `key`/`keys`/`match` — those would
 ///   identify a full `Producer` instead, rejected below): sugar for "read the first present of
 ///   `in` (default `[output]`) from `from` (default obj), clean it with the named sanitizer." The
 ///   map key supplies the output/default-input name, so unlike the old list-based sanitizer sugar
@@ -243,7 +243,7 @@ pub fn resolve_output_entry(
 ) -> anyhow::Result<Producer> {
     let is_sanitizer_shorthand = matches!(&value, Value::Object(m) if m.contains_key("sanitizer")
         && !m.contains_key("key") && !m.contains_key("keys")
-        && !m.contains_key("fallback") && !m.contains_key("rules"));
+        && !m.contains_key("match"));
 
     let source = if is_sanitizer_shorthand {
         #[derive(Deserialize)]
@@ -565,7 +565,7 @@ mod transforms_spec_tests {
                   { "unnest": "cycleway", "infix": "both", "record_infix_as": "_infix" },
                   { "unnest": "cycleway", "infix": "left", "record_infix_as": "_infix" },
                   { "drop": { "tags_empty": true } },
-                  { "output": "highway", "rules": [], "default": "cycleway" }
+                  { "output": "highway", "match": [], "default": "cycleway" }
                 ]
               }
             }

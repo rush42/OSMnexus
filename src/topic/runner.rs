@@ -114,11 +114,10 @@ fn default_value_producer(v: &Value) -> Producer {
     Producer::Const { value, annotate }
 }
 
-/// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the
-/// `Fallback`-shaped result `resolve()` would produce from `{ "fallback": [primary, default] }`,
+/// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the same
+/// shape `resolve()` would produce from `{ "match": [primary, default] }`'s bare-item shorthand,
 /// built directly since this runs after `resolve_outputs` already resolved both producers (a
-/// second `resolve` pass isn't needed, and `Producer::Fallback` itself is JSON-parse sugar only —
-/// see `Producer::eval`).
+/// second `resolve` pass isn't needed).
 fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
     let rule = |value: Producer| crate::lang::producer::Rule { when: Filter::Bool(true), value };
     Producer::Match {

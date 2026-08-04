@@ -66,15 +66,23 @@ pub fn parent_or_obj(p: Producer) -> Producer {
 }
 
 /// The JSON shapes `Producer` accepts: `Match`/`Extract` verbatim, `Parent` wrapping any nested
-/// `Producer` shape to scope it to the parent way's tags, `Fallback`'s `fallback` and
-/// `ParentOrObj`'s `parent_or_obj` sugar (both folded into an equivalent `Match` in `Deserialize`
-/// below, so a `Producer` value is never observably either), and
+/// `Producer` shape to scope it to the parent way's tags, `ParentOrObj`'s `parent_or_obj` sugar
+/// (folded into an equivalent `Match` in `Deserialize` below, so a `Producer` value is never
+/// observably one), and
 /// `Tag`'s `{"tag": ..., "or"?: ...}` shorthand (folds into a plain `Extract`, or — when `or` is
 /// present — a `Match` using its own `default` for the "or" branch; neither ever exists as its own
 /// runtime variant); a bare literal needs no sugar here at all, since `Const`'s a real variant that
 /// deserializes straight from a bare JSON value. Untagged, tried in this order
 /// (more-specific/required-field shapes before `Extract`, whose fields are all optional and so
 /// would otherwise match everything first, and before `Const`, the bare-JSON catch-all).
+///
+/// `Match`'s `match` array accepts a mix of bare producers (implicit `when: true` — a plain
+/// ordered fallback chain, `["a", "b", "c"]`) and `{"when"?, "value"}` objects (a real condition)
+/// — see `Rule`'s own `Deserialize` impl. There's deliberately no separate `fallback` primitive:
+/// it was the exact same runtime shape (an all-`when: true` `Match`; see `producer::match_rules`
+/// for why a matching-but-empty rule doesn't stop the search, which is what makes the equivalence
+/// exact) spelled as its own JSON keyword, so it collapsed into `Match`'s own array shorthand
+/// instead of staying a second variant here.
 ///
 /// A direction-sensitive read (`{ "directed": {...} }`) is deliberately NOT a `Producer` shape —
 /// see `categorize::transform::InputTransform::DirectedExtract`'s own doc for why it moved to its
@@ -87,11 +95,6 @@ enum ProducerJson {
     /// Scope to the parent's tags, falling back to the object's own when there's no parent — see
     /// `parent_or_obj` for the `Match`+`Parent` equivalence this desugars to.
     ParentOrObj { parent_or_obj: Box<Producer> },
-    /// Try each branch in order; the first one that produces anything wins, carrying its own
-    /// branch-level `annotate`. Desugars to an all-`when: true` `Match` (see `producer::match_rules`
-    /// for why a matching-but-empty rule doesn't stop the search — that's what makes this
-    /// equivalence exact).
-    Fallback { fallback: Vec<Producer> },
     /// Copy a tag's own value (e.g. fall back to the raw `highway` value), or — when `or` is
     /// present — that literal instead if the tag is absent.
     Tag {
@@ -100,6 +103,7 @@ enum ProducerJson {
         or: Option<Value>,
     },
     Match {
+        #[serde(rename = "match")]
         rules: Vec<Rule>,
         #[serde(default)] default: Option<Value>,
         #[serde(default)] annotate: Map<String, Value>,
@@ -122,12 +126,6 @@ impl<'de> Deserialize<'de> for Producer {
         Ok(match ProducerJson::deserialize(deserializer)? {
             ProducerJson::Parent { parent } => Producer::Parent(parent),
             ProducerJson::ParentOrObj { parent_or_obj: inner } => parent_or_obj(*inner),
-            ProducerJson::Fallback { fallback } => Producer::Match {
-                rules: fallback.into_iter().map(|value| Rule { when: Filter::Bool(true), value }).collect(),
-                default: None,
-                annotate: Map::new(),
-                tree: None,
-            },
             ProducerJson::Tag { tag, or: None } => {
                 Producer::Extract { extract: Extract::Value { key: tag, sanitize: Vec::new() }, annotate: Map::new() }
             }
@@ -153,6 +151,38 @@ impl<'de> Deserialize<'de> for Producer {
                 Producer::Extract { extract, annotate }
             }
             ProducerJson::Const(value) => Producer::Const { value, annotate: Map::new() },
+        })
+    }
+}
+
+/// `Rule` (used inside `Match`'s `match` array) accepts two on-disk shapes: `{"when"?, "value"}`
+/// (an omitted `when` defaults to always-true), or a bare `Producer` as shorthand for
+/// `{"value": <that>}` with no condition at all — this is what lets a `match` array double as a
+/// plain ordered fallback chain (`["a", "b", "c"]`, no `when` anywhere) without a separate
+/// `fallback` primitive; see `ProducerJson`'s own doc for why that primitive was folded away.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RuleJson {
+    Full {
+        #[serde(default = "always_true_filter")]
+        when: Filter,
+        value: Producer,
+    },
+    Bare(Producer),
+}
+
+fn always_true_filter() -> Filter {
+    Filter::Bool(true)
+}
+
+impl<'de> Deserialize<'de> for Rule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match RuleJson::deserialize(deserializer)? {
+            RuleJson::Full { when, value } => Rule { when, value },
+            RuleJson::Bare(value) => Rule { when: always_true_filter(), value },
         })
     }
 }

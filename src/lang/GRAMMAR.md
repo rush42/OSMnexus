@@ -116,16 +116,14 @@ Producer =
       // sugar: try against obj tags; if no parent, fall back — desugars to a
       // 2-rule Match guarded by "has_parent"
 
-  | { "fallback": [Producer, ...] }
-      // sugar: first producer that yields a value wins — desugars to a Match
-      // whose rules are all `when: true`, one per producer, "rules"-order
-
   | { "tag": String, "or"?: JSON }
       // sugar for Extract{key: tag}; with "or" present, a 1-rule Match, "default": or
 
-  | { "rules": [Rule, ...], "default"?: JSON, "annotate"?: {String: JSON} }
+  | { "match": [Rule, ...], "default"?: JSON, "annotate"?: {String: JSON} }
       // Match: first matching rule wins; a rule that matches but yields
-      // nothing does NOT stop the search (this is what "fallback" desugars into)
+      // nothing does NOT stop the search. A bare Producer in the array
+      // (no "when"/"value" wrapper) is shorthand for an always-true rule,
+      // so a plain ordered fallback chain is just { "match": [a, b, c] }
 
   | { <Extract fields>, "annotate"?: {String: JSON} }
       // Extract (tried after all the above, whose fields are all optional
@@ -152,14 +150,17 @@ has nowhere to hang one) — as a `Match` rule's value it inherits the enclosing
 ### Rule (used inside `Match`)
 
 ```
-Rule = { "when": Filter, "value": Producer }
+Rule = { "when"?: Filter, "value": Producer }
+     | Producer
+         // bare shorthand for { "value": Producer } with no condition
+         // (an omitted "when" also defaults to always-true)
 ```
 
 ## `outputs` (topic.json)
 
 Each entry in `topic.json`'s `outputs` map resolves to a `Producer`, trying
 these shapes in order. There is no inline-`Producer` shape — any real logic
-(a `Match`, `fallback`, `parent` wrap, etc.) must be named once in this
+(a `Match`, `parent` wrap, etc.) must be named once in this
 topic's `producers.json` and referenced by name here, the same rule
 `sanitize:` already follows (see `Sanitizer`'s own doc): a typo'd name fails
 loudly at load time instead of being buried inline where nothing else can
@@ -174,7 +175,7 @@ outputs.<name> =
       // named lookup: <name'> must exist in this topic's producers.json
 
   | { "sanitizer": String, "in"?: [String,...], "from"?: TagSet }
-      // sanitizer shorthand (no key/keys/fallback/rules present):
+      // sanitizer shorthand (no key/keys/match present):
       // Extract{ keys: in or [<name>] } piped through sanitize "sanitizer",
       // wrapped per "from" (obj default / parent / parent_or_obj)
 ```
@@ -234,16 +235,16 @@ StripPrefix, `unnest` → Unnest, `drop` → Drop, `directed` → DirectedExtrac
 ```json
 {
   "lifecycle": {
-    "fallback": [
+    "match": [
       { "key": "temporary", "sanitize": "temporary" },
       { "key": "lifecycle" },
       { "parent": { "key": "lifecycle" } }
     ]
   },
   "surface": {
-    "fallback": [
+    "match": [
       {
-        "rules": [
+        "match": [
           {
             "when": { "and": [
               { "tag": "surface", "eq": "sett" },

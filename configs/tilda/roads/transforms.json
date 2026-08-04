@@ -2,7 +2,7 @@
   "way": [
     {
       "output": "highway",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -16,7 +16,7 @@
     },
     {
       "output": "lifecycle",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -84,19 +84,19 @@
     },
     {
       "output": "construction",
-      "rules": [
+      "match": [
         { "when": { "tag": "lifecycle", "eq": "construction" }, "value": null }
       ]
     },
     {
       "output": "access",
-      "rules": [
+      "match": [
         { "when": { "tag": "lifecycle", "in": ["construction_no_access", "blocked"] }, "value": null }
       ]
     },
     {
       "output": "bicycle",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -110,7 +110,7 @@
     },
     {
       "output": "foot",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
@@ -129,7 +129,7 @@
     },
     {
       "output": "traffic_sign",
-      "rules": [
+      "match": [
         {
           "when": {
             "and": [
