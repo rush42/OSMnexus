@@ -545,9 +545,21 @@ export function isValidSegment(s: string): boolean {
   return s.length > 0 && s !== "." && s !== ".." && !s.includes("/") && !s.includes("\\") && !s.includes("\0");
 }
 
-async function topicFilePath(topic: string) {
+// The topic-level (not per-category) JSON files a topic directory can have — `topic.json` always,
+// `producers.json`/`sanitizers.json` optionally (a topic-local named producer/sanitizer library,
+// merged with the config-root-level shared one on load — see `topic::load::load_topic_sanitizers`/
+// `topic::runner::load`'s `producers_path` handling). Whitelisted since the file segment comes
+// straight off the URL (`/api/topic/:topic/:file`).
+const TOPIC_LEVEL_FILES = ["topic.json", "producers.json", "sanitizers.json"] as const;
+export type TopicLevelFile = (typeof TOPIC_LEVEL_FILES)[number];
+
+export function isTopicLevelFile(s: string): s is TopicLevelFile {
+  return (TOPIC_LEVEL_FILES as readonly string[]).includes(s);
+}
+
+async function topicFilePath(topic: string, file: TopicLevelFile = "topic.json") {
   const topicDir = requireCurrentTopic(topic);
-  return path.join(topicDir, topic, "topic.json");
+  return path.join(topicDir, topic, file);
 }
 
 // Re-runs the pipeline — against the searched-for way if one is selected (`currentWayId`,
@@ -643,22 +655,25 @@ export async function classifyCategory(topic: string, kind: string, name: string
   return runPipelineAndRespond();
 }
 
-export async function getTopicJson(topic: string): Promise<{ json: string }> {
+export async function getTopicJson(topic: string, file: TopicLevelFile = "topic.json"): Promise<{ json: string }> {
   try {
-    const json = await fs.readFile(await topicFilePath(topic), "utf-8");
+    const json = await fs.readFile(await topicFilePath(topic, file), "utf-8");
     return { json };
   } catch (err) {
+    // `producers.json`/`sanitizers.json` are optional (a topic with no topic-local overrides
+    // just has neither file) — `topic.json` itself is required, so a missing one is a real 404.
+    if (file !== "topic.json") return { json: "{}" };
     throw new ApiError(404, String(err));
   }
 }
 
-export async function setTopicJson(topic: string, json: string): Promise<unknown> {
+export async function setTopicJson(topic: string, json: string, file: TopicLevelFile = "topic.json"): Promise<unknown> {
   try {
     JSON.parse(json);
   } catch (err) {
-    throw new ApiError(400, `topic JSON is invalid: ${(err as Error).message}`);
+    throw new ApiError(400, `${file} is invalid: ${(err as Error).message}`);
   }
-  await fs.writeFile(await topicFilePath(topic), json, "utf-8");
+  await fs.writeFile(await topicFilePath(topic, file), json, "utf-8");
   return runPipelineAndRespond();
 }
 

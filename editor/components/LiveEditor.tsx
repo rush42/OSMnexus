@@ -82,9 +82,16 @@ function Divider({ axis, onMouseDown }: { axis: "x" | "y"; onMouseDown: (e: Reac
 }
 
 type Category = { topic: string; kind: string; name: string };
-// A "selection" is either a category (kind/name point at a way/node/relation category file) or the
-// topic's own topic.json (table/exclude_condition/osm_fields) — same editor pane, different file.
-type Selection = Category & { isTopicConfig?: boolean };
+// A topic-level (not per-category) JSON file — `topic.json` (table/exclude_condition/osm_fields),
+// or a topic-local named producer/sanitizer library, both optional and merged with the
+// config-root-level shared one on load (see `src/topic/load.rs`'s `load_topic_sanitizers`/
+// `src/topic/runner.rs`'s `producers_path` handling). Mirrors `TopicLevelFile` in
+// `lib/liveEditor.ts`.
+const TOPIC_LEVEL_FILES = ["topic.json", "producers.json", "sanitizers.json"] as const;
+type TopicLevelFile = (typeof TOPIC_LEVEL_FILES)[number];
+// A "selection" is either a category (kind/name point at a way/node/relation category file) or one
+// of the topic's own top-level files — same editor pane, different file.
+type Selection = Category & { isTopicConfig?: boolean; topicFile?: TopicLevelFile };
 
 // Deterministic (not reshuffled every render) but effectively-random hue per key, so the current
 // topic gets a stable color on the map without needing a maintained palette.
@@ -209,7 +216,8 @@ export default function LiveEditor({
 
   useEffect(() => {
     if (active.isTopicConfig) {
-      fetch(`/api/topic/${encodeURIComponent(active.topic)}`)
+      const file = active.topicFile ?? "topic.json";
+      fetch(`/api/topic/${encodeURIComponent(active.topic)}/${file}`)
         .then((r) => r.json())
         .then((d) => setText(d.json))
         .catch(() => setText("{}"));
@@ -378,7 +386,7 @@ export default function LiveEditor({
       return;
     }
     const res = selection.isTopicConfig
-      ? await fetch(`/api/topic/${encodeURIComponent(selection.topic)}`, {
+      ? await fetch(`/api/topic/${encodeURIComponent(selection.topic)}/${selection.topicFile ?? "topic.json"}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ json }),
@@ -733,30 +741,33 @@ export default function LiveEditor({
         {!collapsed && (
           <>
             <div style={{ borderBottom: "1px solid var(--border)", height: topicsListHeight, flexShrink: 0, overflowY: "auto" }}>
-              <div
-                className="row"
-                onClick={() => {
-                  setActive({ topic, kind: "", name: "", isTopicConfig: true });
-                  if (viewMode === "map") {
-                    setManualSelect(true);
-                    setFocusTick((t) => t + 1);
-                  }
-                }}
-                style={{
-                  padding: "7px 12px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  borderRadius: "var(--radius-sm)",
-                  background: active.isTopicConfig ? "var(--accent-soft)" : "transparent",
-                }}
-              >
-                topic.json
-              </div>
+              {TOPIC_LEVEL_FILES.map((file) => (
+                <div
+                  key={file}
+                  className="row"
+                  onClick={() => {
+                    setActive({ topic, kind: "", name: "", isTopicConfig: true, topicFile: file });
+                    if (viewMode === "map") {
+                      setManualSelect(true);
+                      setFocusTick((t) => t + 1);
+                    }
+                  }}
+                  style={{
+                    padding: "7px 12px",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    borderRadius: "var(--radius-sm)",
+                    background: active.isTopicConfig && (active.topicFile ?? "topic.json") === file ? "var(--accent-soft)" : "transparent",
+                  }}
+                >
+                  {file}
+                </div>
+              ))}
               <div style={{ display: "flex", padding: "6px 12px", gap: 6 }}>
                 <input
                   value={newName}
@@ -831,7 +842,7 @@ export default function LiveEditor({
                       borderBottom: "1px solid var(--border)",
                     }}
                   >
-                    {active.isTopicConfig ? `${topic}/topic.json` : `${topic}/${active.kind}/${active.name}.json`}
+                    {active.isTopicConfig ? `${topic}/${active.topicFile ?? "topic.json"}` : `${topic}/${active.kind}/${active.name}.json`}
                   </div>
                   <div style={{ flex: 1, minHeight: 0 }}>
                     <Editor value={text} onChange={setText} />
