@@ -24,7 +24,7 @@ use serde_json::{Map, Value};
 
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
-use crate::lang::producer::{MatchOrigin, Producer, Rule};
+use crate::lang::producer::{Producer, Rule};
 use crate::lang::sanitize::{AtomicJson, Builtin, ReplaceRule, Sanitizer, StrOrVec};
 
 // ── Producer ─────────────────────────────────────────────────────────────────
@@ -51,9 +51,8 @@ pub enum TagSet {
 /// rather than existing as its own variant. Used by `ProducerJson::ParentOrObj`'s `parent_or_obj`
 /// JSON sugar, `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`, and Rust-side synthesis
 /// (`topic::runner`) that composes already-resolved producers — all three build/compose plain
-/// `Producer` values now, no separate as-parsed tier. Its two rules are `when: true`, tried in
-/// priority order like any other `Fallback` (see `MatchOrigin::Fallback`), so it carries that
-/// same origin rather than one of its own.
+/// `Producer` values now, no separate as-parsed tier. Its two rules are tried in priority order
+/// like any other `Match`.
 pub fn parent_or_obj(p: Producer) -> Producer {
     Producer::Match {
         rules: vec![
@@ -62,7 +61,6 @@ pub fn parent_or_obj(p: Producer) -> Producer {
         ],
         default: None,
         annotate: Map::new(),
-        origin: MatchOrigin::Fallback,
         tree: None,
     }
 }
@@ -128,7 +126,6 @@ impl<'de> Deserialize<'de> for Producer {
                 rules: fallback.into_iter().map(|value| Rule { when: Filter::Bool(true), value }).collect(),
                 default: None,
                 annotate: Map::new(),
-                origin: MatchOrigin::Fallback,
                 tree: None,
             },
             ProducerJson::Tag { tag, or: None } => {
@@ -141,11 +138,10 @@ impl<'de> Deserialize<'de> for Producer {
                 }],
                 default: Some(or),
                 annotate: Map::new(),
-                origin: MatchOrigin::Fallback,
                 tree: None,
             },
             ProducerJson::Match { rules, default, annotate } => {
-                Producer::Match { rules, default, annotate, origin: MatchOrigin::Rules, tree: None }
+                Producer::Match { rules, default, annotate, tree: None }
             }
             ProducerJson::Extract { key, keys, sanitize, annotate } => {
                 let extract = match (key, keys) {

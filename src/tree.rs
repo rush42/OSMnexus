@@ -12,7 +12,7 @@ use crate::categorize::categories::{CategoriesFile, OrderedNode};
 use crate::decision_tree::DecisionTree;
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
-use crate::lang::producer::{MatchOrigin, Producer};
+use crate::lang::producer::Producer;
 use crate::lang::sanitize::{ReplaceAt, Sanitizer};
 
 #[derive(Serialize)]
@@ -80,35 +80,28 @@ pub fn producer_dag(producer: &Producer) -> DagGraph {
 
 fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
     match p {
-        Producer::Match { rules: _, default, annotate, origin: MatchOrigin::Default, tree: _ } => {
+        Producer::Match { rules, default: Some(d), annotate, tree: _ } if rules.is_empty() => {
             // No real branching — a `defaults` JSON entry bundled straight into a producer
             // (`topic::runner::default_value_producer`), always empty `rules`. Shown as a plain
             // literal, not a one-branch "match" wrapper around nothing.
-            let d = default.as_ref().expect("MatchOrigin::Default always carries a default");
             let label = format!("Default\n{}", truncate(&d.to_string(), 40));
             let node = g.node(label, "const");
             annotate_node(g, &node, annotate);
             node
         }
-        Producer::Match { rules, default, annotate, origin, tree: _ } => {
-            // `Fallback` matches always have `when: true` on every rule by construction (see
-            // `MatchOrigin`'s own doc) — describing a condition that's always "true" is noise, so
-            // those show priority order instead of the (uninformative) condition text.
-            let label = match origin {
-                MatchOrigin::Rules => "Match".to_owned(),
-                MatchOrigin::Fallback => "Fallback".to_owned(),
-                MatchOrigin::Default => unreachable!("handled above"),
-            };
-            let node = g.node(label, "match");
+        Producer::Match { rules, default, annotate, tree: _ } => {
+            let node = g.node("Match".to_owned(), "match");
             annotate_node(g, &node, annotate);
             // Each rule is its own branch, and its value producer (which may itself be a further
             // `Match`) hangs off that node so the tree actually branches instead of cramming every
-            // rule into one node's text.
+            // rule into one node's text. Every rule is numbered by priority order — a rule whose
+            // condition is trivially `true` (a desugared `fallback`/`parent_or_obj`/`tag`+`or`
+            // branch) shows just its number, since describing an always-true condition is noise.
             for (i, r) in rules.iter().enumerate() {
-                let rule_label = if matches!(origin, MatchOrigin::Fallback) {
+                let rule_label = if matches!(r.when, Filter::Bool(true)) {
                     format!("Option {}", i + 1)
                 } else {
-                    truncate(&r.when.describe(), 120)
+                    format!("Option {}\n{}", i + 1, truncate(&r.when.describe(), 120))
                 };
                 let rule_node = g.node(rule_label, "rule");
                 g.edge(&node, &rule_node, "");

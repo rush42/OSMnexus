@@ -107,7 +107,6 @@ fn default_value_producer(v: &Value) -> Producer {
         rules: Vec::new(),
         default: Some(value),
         annotate,
-        origin: crate::lang::producer::MatchOrigin::Default,
         tree: None,
     }
 }
@@ -123,7 +122,6 @@ fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
         rules: vec![rule(primary), rule(default_source)],
         default: None,
         annotate: Map::new(),
-        origin: crate::lang::producer::MatchOrigin::Fallback,
         tree: None,
     }
 }

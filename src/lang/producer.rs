@@ -114,29 +114,6 @@ pub(crate) fn empty_annotations() -> &'static Map<String, Value> {
     EMPTY.get_or_init(Map::new)
 }
 
-/// Why a `Producer::Match` exists — a real authored rule table, or the runtime shape one of the
-/// JSON sugars (`fallback`/`parent_or_obj`/`tag_or`) or a Rust-side synthesis (`topic::runner`'s
-/// `default_value_producer`/`as_fallback_pair`) folds into. Purely informational — `eval`/`resolve`
-/// never branch on it, only display code does (see `tree::render_producer`): a `Fallback`
-/// match's rules are always `when: true` by construction, so describing that condition on every
-/// rule node is noise — what actually distinguishes each branch is its priority, not a predicate.
-/// `parent_or_obj` and `tag_or` are just `Fallback` under a different JSON spelling — their rules
-/// aren't gated equally either, they're tried in priority order the same way — so they share this
-/// one variant rather than getting their own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MatchOrigin {
-    /// Authored directly as `{"rules": [...], ...}` — a real rule table, not folded from anything.
-    #[default]
-    Rules,
-    /// Desugared from `{"fallback": [...]}`, `{"parent_or_obj": ...}`, or `{"tag": ..., "or": ...}`
-    /// (`parser`), or built directly by `topic::runner::as_fallback_pair` — every rule `when: true`,
-    /// first branch that produces anything wins.
-    Fallback,
-    /// Built directly from a `defaults` JSON entry (`topic::runner::default_value_producer`) — no
-    /// rules at all, just a `default`.
-    Default,
-}
-
 /// A value producer: `Match` (a rule table) or `Extract` (a leaf tag read) — see `parser`'s
 /// hand-written `Deserialize` impl (targeting this type directly) for the `fallback` JSON shape
 /// that folds into `Match` at parse time and so never appears here. `Deserialize` isn't derived
@@ -168,8 +145,6 @@ pub enum Producer {
         rules: Vec<Rule>,
         default: Option<Value>,
         annotate: Map<String, Value>,
-        /// Display-only provenance — see `MatchOrigin`'s own doc.
-        origin: MatchOrigin,
         /// A discrimination net over `rules`' own `when` conditions (`decision_tree::build` with
         /// `assume_match_is_final: false` — see its own doc for why `Producer::Match` needs that
         /// mode, not `categorize`'s), or `None` for a rule table too small to be worth it. Always
@@ -304,7 +279,6 @@ mod classify_bool_tests {
             }],
             default: Some(Value::Bool(false)),
             annotate: Map::new(),
-            origin: MatchOrigin::Rules,
             tree: None,
         };
         match from {

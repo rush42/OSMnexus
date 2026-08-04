@@ -24,7 +24,7 @@ use crate::value_sets::value_set;
 /// declaration order, more-specific/required-field shapes before catch-alls) rather than derived
 /// directly here — see this module's own doc for why. No `Macro` variant — see this module's own
 /// doc for where `{"macro": ...}` is resolved instead.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Filter {
     /// A literal `true`/`false` — e.g. for topics (like osmnx's) whose whole filter already lives
     /// in `exclude_condition`, so a category just wants "match everything that reached here":
