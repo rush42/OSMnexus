@@ -166,6 +166,9 @@ export default function LiveEditor({
   // classified, or on a fresh manual bbox drag.
   const [unmatchedWayFeature, setUnmatchedWayFeature] = useState<GeoJSON.Feature | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The text last loaded for the current `active` selection — see the load effect below for why the
+  // debounced autosave effect needs this to tell a real edit apart from a bare selection switch.
+  const loadedTextRef = useRef<string>("");
 
   // Bbox is independent of which topic is selected — fetched once, not on topic change.
   useEffect(() => {
@@ -215,22 +218,33 @@ export default function LiveEditor({
   }, [topic]);
 
   useEffect(() => {
+    // Loading a selection's text sets `text` and `active` in the same render, which also fires the
+    // debounced autosave effect below (it depends on `text`) — `loadedTextRef` lets that effect tell
+    // "the user actually edited this" apart from "we just switched files/categories and `text` moved
+    // to the new selection's own content", so switching away from an unsaved edit within the debounce
+    // window can't blow the stale text onto whatever's now `active` (e.g. clicking producers.json,
+    // where a missing file loads as "{}", then clicking back to topic.json before the timer fires
+    // used to overwrite topic.json with that stale "{}").
+    const load = (json: string) => {
+      loadedTextRef.current = json;
+      setText(json);
+    };
     if (active.isTopicConfig) {
       const file = active.topicFile ?? "topic.json";
       fetch(`/api/topic/${encodeURIComponent(active.topic)}/${file}`)
         .then((r) => r.json())
-        .then((d) => setText(d.json))
-        .catch(() => setText("{}"));
+        .then((d) => load(d.json))
+        .catch(() => load("{}"));
       return;
     }
     if (!active.topic || !active.name) {
-      setText(NEW_CATEGORY_JSON);
+      load(NEW_CATEGORY_JSON);
       return;
     }
     fetch(`/api/category/${encodeURIComponent(active.topic)}/${encodeURIComponent(active.kind)}/${encodeURIComponent(active.name)}`)
       .then((r) => r.json())
-      .then((d) => setText(d.json))
-      .catch(() => setText(NEW_CATEGORY_JSON));
+      .then((d) => load(d.json))
+      .catch(() => load(NEW_CATEGORY_JSON));
   }, [active]);
 
   // Memoized so identity only changes when the selected category actually does — an inline object
@@ -257,6 +271,7 @@ export default function LiveEditor({
     setNewName("");
     const category = { topic, kind: DEFAULT_KIND, name };
     setActive(category);
+    loadedTextRef.current = NEW_CATEGORY_JSON;
     setText(NEW_CATEGORY_JSON);
     await classify(NEW_CATEGORY_JSON, category);
     loadCategories();
@@ -352,6 +367,7 @@ export default function LiveEditor({
 
   useEffect(() => {
     if (!text || !active.topic || (!active.name && !active.isTopicConfig)) return;
+    if (text === loadedTextRef.current) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       classify(text);
