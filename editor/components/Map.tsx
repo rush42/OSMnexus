@@ -204,6 +204,11 @@ export default function Map({
   // Depending on `ready` state instead means React itself re-runs every effect when it flips, with no
   // manual event-listener race possible.
   const [ready, setReady] = useState(false);
+  // The linestring the user last clicked on the map — distinct from `highlightWayId` (search-driven,
+  // any geometry type): this is purely a click-to-highlight affordance, local to the map since
+  // nothing outside it currently needs to know about it. Cleared on a click that misses every
+  // feature layer.
+  const [clickedWayId, setClickedWayId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -251,6 +256,17 @@ export default function Map({
         paint: { "circle-color": "#ffdd00", "circle-radius": 9, "circle-opacity": 0.5 },
       });
 
+      // Click highlight — a distinct outline for whichever linestring the user last clicked, same
+      // filtered-overlay-layer pattern as the way-search highlight above but scoped to LineStrings
+      // and kept visually distinct so the two selections don't collide.
+      map.addLayer({
+        id: `${SOURCE_ID}-click-highlight-line`,
+        type: "line",
+        source: SOURCE_ID,
+        filter: ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "osm_id"], -1]],
+        paint: { "line-color": "#ff3388", "line-width": 6, "line-opacity": 0.8 },
+      });
+
       map.addSource(SEARCH_FALLBACK_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
       map.addLayer({
         id: `${SEARCH_FALLBACK_SOURCE_ID}-line`,
@@ -292,6 +308,7 @@ export default function Map({
       const showPopup = (e: maplibregl.MapLayerMouseEvent) => {
         const feature = e.features?.[0];
         if (!feature) return;
+        setClickedWayId(feature.geometry.type === "LineString" ? Number(feature.properties?.osm_id) : null);
         const rows = Object.entries(feature.properties ?? {})
           .map(([k, v]) => `<tr><td style="color:#888;padding-right:8px;">${k}</td><td>${v}</td></tr>`)
           .join("");
@@ -303,6 +320,11 @@ export default function Map({
       map.on("click", featureLayers, showPopup);
       map.on("mouseenter", featureLayers, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", featureLayers, () => (map.getCanvas().style.cursor = ""));
+      // A click that misses every feature layer clears the click-highlight instead of leaving it
+      // stuck on whatever was last clicked.
+      map.on("click", (e: maplibregl.MapMouseEvent) => {
+        if (map.queryRenderedFeatures(e.point, { layers: featureLayers }).length === 0) setClickedWayId(null);
+      });
 
       map.addSource(DRAW_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
       map.addLayer({
@@ -424,6 +446,13 @@ export default function Map({
     }
     if (!bounds.isEmpty()) mapRef.current!.fitBounds(bounds, { padding: 60, maxZoom: 18, duration: 300 });
   }, [ready, highlightWayId, data, unmatchedWayFeature]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const wayOsmId = clickedWayId ?? -1;
+    const filter = ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "osm_id"], wayOsmId]] as unknown as maplibregl.ExpressionSpecification;
+    mapRef.current!.setFilter(`${SOURCE_ID}-click-highlight-line`, filter);
+  }, [ready, clickedWayId]);
 
   useEffect(() => {
     if (!ready) return;
