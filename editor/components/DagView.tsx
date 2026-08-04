@@ -26,7 +26,7 @@ type ListResponse = { topic: string; names: string[] };
 type GraphResponse = { topic: string; name: string; variants: Variant[] };
 
 // Mirrors the node-fill colors `src/bin/plot_dag.rs` uses for the DOT rendering, keyed on the
-// `kind` string `osmnexus::dag::DagNode` stamps (see `src/dag.rs`) — paired with a matching border
+// `kind` string `osmnexus::tree::DagNode` stamps (see `src/tree.rs`) — paired with a matching border
 // tone so nodes read as soft, tinted cards rather than flat fills with a generic gray outline.
 const KIND_COLOR: Record<string, { bg: string; border: string }> = {
   match: { bg: "#e9f5e0", border: "#a9d18e" },
@@ -48,16 +48,28 @@ function DagNodeBox({ data }: NodeProps) {
   const hidden = { opacity: 0 } as const;
   // First line is the node's type (e.g. "Extract", "Mapping") — centered, since it's a heading, not
   // a value. Remaining lines are that type's own arguments (key/value pairs, counts) — left-bound.
+  // `data.label` is already the fold-adjusted text (see `foldedLabel` in `DagView`) — a `Mapping`
+  // step with more than 3 entries arrives here pre-truncated, with a trailing hint line, so this
+  // component itself never needs to know about folding, just render whatever label it's handed.
   const [typeLine, ...argLines] = (data.label as string).split("\n");
+  const foldable = data.foldable === true;
   return (
     <>
       <Handle type="target" position={Position.Top} style={hidden} />
       <Handle type="source" position={Position.Bottom} style={hidden} />
       <Handle type="target" position={Position.Left} id="left" style={hidden} />
       <Handle type="source" position={Position.Right} id="right" style={hidden} />
-      <div style={{ textAlign: "center", fontWeight: 600 }}>{typeLine}</div>
+      <div style={{ textAlign: "center", fontWeight: 600, ...(foldable ? { cursor: "pointer" } : {}) }}>{typeLine}</div>
       {argLines.length > 0 && (
-        <div style={{ textAlign: "left", marginTop: 4 }}>{argLines.join("\n")}</div>
+        <div
+          style={{
+            textAlign: "left",
+            marginTop: 4,
+            ...(foldable ? { cursor: "pointer" } : {}),
+          }}
+        >
+          {argLines.join("\n")}
+        </div>
       )}
     </>
   );
@@ -101,6 +113,26 @@ function DagEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targe
 
 const EDGE_TYPES = { dagEdge: DagEdge };
 
+// A node with more than this many argument lines (e.g. a `Mapping` step's entries, `src/tree.rs`'s
+// `step_label`) folds down to this many plus a "+N more" hint line by default — a full mapping
+// table otherwise dwarfs every other node in the tree and pushes the rest of the graph far enough
+// off-screen that `fitView` reads as mostly empty space. Click the node (`onNodeClick` below) to
+// toggle it back open.
+const FOLD_THRESHOLD = 3;
+
+// `label`'s already-truncated form (or `label` itself, unchanged, when it has too few argument
+// lines to bother folding) plus whether it's a candidate for folding at all — used both to size the
+// node (`widthFor`/`heightFor`/`layoutTree`) and as the text actually rendered (`DagNodeBox`), so
+// the two never disagree about how many lines a folded node takes up.
+function foldedLabel(label: string, expanded: boolean): { label: string; foldable: boolean } {
+  const [typeLine, ...argLines] = label.split("\n");
+  if (argLines.length <= FOLD_THRESHOLD) return { label, foldable: false };
+  if (expanded) return { label: [typeLine, ...argLines, "(click to collapse)"].join("\n"), foldable: true };
+  const shown = argLines.slice(0, FOLD_THRESHOLD);
+  const hidden = argLines.length - FOLD_THRESHOLD;
+  return { label: [typeLine, ...shown, `… +${hidden} more (click to expand)`].join("\n"), foldable: true };
+}
+
 const NODE_W = 260;
 const NODE_W_MAX = 480;
 const NODE_H = 90;
@@ -129,11 +161,11 @@ function heightFor(label: string): number {
   return Math.max(NODE_H, lines * LINE_H + NODE_PAD_Y);
 }
 
-// A `Producer`/`Sanitizer` tree from `src/dag.rs` is a strict tree (single root, each non-root node
+// A `Producer`/`Sanitizer` tree from `src/tree.rs` is a strict tree (single root, each non-root node
 // has exactly one incoming edge) — no need for a general graph-layout library. Post-order DFS: a
 // leaf claims the next free column, an internal node centers over its children's span.
 //
-// "annotate" nodes (src/dag.rs's `annotate_node`) are excluded from that DFS entirely — they're not
+// "annotate" nodes (src/tree.rs's `annotate_node`) are excluded from that DFS entirely — they're not
 // a step in the value's build flow, just a side note on their owner — and instead placed directly
 // beside it afterward, same row, one node-width to the right.
 function layoutTree(
@@ -177,7 +209,7 @@ function layoutTree(
     return [left, left + width];
   }
   // The tree's root is whichever node is never a `treeEdges` target — not necessarily `nodes[0]`:
-  // `src/dag.rs`'s `render_chain` creates an `Extract` leaf's own node before the sanitize steps
+  // `src/tree.rs`'s `render_chain` creates an `Extract` leaf's own node before the sanitize steps
   // that feed into it, so for a field whose top-level producer is a sanitized `Extract`, the first
   // node in the array is that leaf, not the chain's actual entry point.
   const hasIncoming = new Set(treeEdges.map((e) => e.target));
@@ -211,7 +243,7 @@ function layoutTree(
 
 // Plots the `Producer` tree behind a topic's output field (`mode: "deriver"`), or, per `ElementKind`
 // instead of per field, either its category picker (`mode: "category"` — one category's own
-// condition + what it excludes at a time, picked from its kind's priority order; see `src/dag.rs`'s
+// condition + what it excludes at a time, picked from its kind's priority order; see `src/tree.rs`'s
 // `category_condition_dag`) or its compiled discrimination net (`mode: "decision-tree"`). Fetches
 // are staged so `dag_json` only ever builds the one graph actually on screen rather than every
 // field's/category's, which was the dominant load-time cost for topics with many/large ones: the
@@ -240,7 +272,7 @@ export default function DagView({
   // `category` mode has a third level: `field` here is the *kind* (way/node/relation), and within
   // it a category is picked separately — one tree per category (its own condition + what it
   // excludes) instead of cramming every category for a kind into one "try these in order" tree, per
-  // `src/dag.rs`'s `category_condition_dag`. Names arrive already in the kind's priority order
+  // `src/tree.rs`'s `category_condition_dag`. Names arrive already in the kind's priority order
   // (`order`, the actual runtime first-match sequence) — never re-sorted, unlike `fieldNames`.
   const [categoryNames, setCategoryNames] = useState<string[] | null>(null);
   const [categoryIdx, setCategoryIdx] = useState(0);
@@ -321,11 +353,15 @@ export default function DagView({
           : null
         : `${endpoint}${encodeURIComponent(topic)}?name=${encodeURIComponent(field)}`;
     if (!url) return;
-    console.log("DEBUG fetching", url);
+    // Clear a stale error from a previous field/mode's failed fetch (e.g. the stale-field race the
+    // skip above mostly avoids, but not always: a `mode` change can still land here once with the
+    // old mode's field before `fieldNames` catches up) — otherwise the error screen below
+    // (`if (error) return header(...)`) stays up forever, hiding the dropdowns even once a good
+    // fetch would have replaced it.
+    setError(null);
     fetch(url)
       .then((r) => r.json())
       .then((d: GraphResponse | { error: string }) => {
-        console.log("DEBUG fetched", ignore, "error" in d, !("error" in d) && d.variants?.length);
         if (ignore) return;
         if ("error" in d) {
           setError(d.error);
@@ -349,16 +385,37 @@ export default function DagView({
     if (idx > 0) setVariantIdx(idx);
   }, [category, variants]);
 
+  // Which nodes (by id) have been clicked open past their default folded state — see
+  // `foldedLabel`/`FOLD_THRESHOLD`. Node ids are only unique within one graph, so a stale id from
+  // the last graph coincidentally matching one in a new graph would wrongly start it expanded;
+  // reset on every `variant` change to avoid that.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  useEffect(() => setExpandedIds(new Set()), [variant]);
+
   const { nodes, edges } = useMemo(() => {
     if (!variant) return { nodes: [] as Node[], edges: [] as Edge[] };
-    const { positions, widths } = layoutTree(variant.nodes, variant.edges);
+    const folded = new Map(variant.nodes.map((n) => [n.id, foldedLabel(n.label, expandedIds.has(n.id))]));
+    const layoutNodes = variant.nodes.map((n) => ({ ...n, label: folded.get(n.id)!.label }));
+    const { positions, widths } = layoutTree(layoutNodes, variant.edges);
     const nodes: Node[] = variant.nodes.map((n) => {
       const colors = KIND_COLOR[n.kind] ?? { bg: "#eee", border: "var(--border)" };
+      const { label, foldable } = folded.get(n.id)!;
       return {
         id: n.id,
         type: "dagNode",
         position: positions.get(n.id) ?? { x: 0, y: 0 },
-        data: { label: n.label },
+        data: {
+          label,
+          foldable,
+          onToggle: foldable
+            ? () =>
+                setExpandedIds((prev) => {
+                  const next = new Set(prev);
+                  next.has(n.id) ? next.delete(n.id) : next.add(n.id);
+                  return next;
+                })
+            : undefined,
+        },
         style: {
           background: colors.bg,
           border: n.kind === "annotate" ? `1.5px dashed ${colors.border}` : `1.5px solid ${colors.border}`,
@@ -384,7 +441,7 @@ export default function DagView({
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#9aa1ac" },
     }));
     return { nodes, edges };
-  }, [variant]);
+  }, [variant, expandedIds]);
 
   const header = (content: ReactNode) => (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -502,6 +559,11 @@ export default function DagView({
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
+          // Wired at the pane level rather than as a DOM `onClick` inside `DagNodeBox` — xyflow
+          // guarantees this fires on a node click regardless of `elementsSelectable`, where a
+          // handler attached deep inside the custom node renderer risks being swallowed by xyflow's
+          // own pointer/drag handling on the node wrapper.
+          onNodeClick={(_, node) => (node.data.onToggle as (() => void) | undefined)?.()}
           proOptions={{ hideAttribution: true }}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.5} color="#d8dbe0" />
