@@ -25,6 +25,9 @@ futures = "0.3"
 rustc-hash = "2"
 csv = "1"
 dhat = { version = "0.3.3", optional = true }
+memmap2 = "0.9"
+tempfile = "3"
+boomphf = "0.6"
 
 [dev-dependencies]
 criterion = "0.5"

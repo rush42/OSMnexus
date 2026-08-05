@@ -166,6 +166,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "boomphf"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617e2d952880a00583ddb9237ac3965732e8df6a92a8e7bcc054100ec467ec3b"
+dependencies = [
+ "crossbeam-utils",
+ "log",
+ "rayon",
+ "wyhash",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -213,7 +225,7 @@ checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
 dependencies = [
  "cfg-if",
  "cpufeatures",
- "rand_core",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -742,7 +754,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
- "rand_core",
+ "rand_core 0.10.1",
  "wasip2",
  "wasip3",
 ]
@@ -1088,6 +1100,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1193,6 +1214,7 @@ name = "osmnexus"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "boomphf",
  "bytes",
  "chrono",
  "clap",
@@ -1204,11 +1226,13 @@ dependencies = [
  "futures",
  "geo",
  "hex",
+ "memmap2 0.9.11",
  "osmpbf",
  "rayon",
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-postgres",
@@ -1224,7 +1248,7 @@ checksum = "5d689d6e9f254bbd63893ce00a27147e41fe94bf3abca70f85b5345afb3cb728"
 dependencies = [
  "byteorder",
  "flate2",
- "memmap2",
+ "memmap2 0.5.10",
  "protobuf",
  "protobuf-codegen",
  "rayon",
@@ -1436,8 +1460,14 @@ checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
 dependencies = [
  "chacha20",
  "getrandom 0.4.2",
- "rand_core",
+ "rand_core 0.10.1",
 ]
+
+[[package]]
+name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
 name = "rand_core"
@@ -2436,6 +2466,15 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "wyhash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf6e163c25e3fac820b4b453185ea2dea3b6a3e0a721d4d23d75bd33734c295"
+dependencies = [
+ "rand_core 0.6.4",
 ]
 
 [[package]]

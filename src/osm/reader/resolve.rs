@@ -18,8 +18,8 @@ use super::disk_coords::DiskNodeCoords;
 /// `geom::materialize` (outside `osm::reader`) resolves way/relation geometry from it.
 ///
 /// `Memory` is the default (fast, but resident for the whole run — see `geom::materialize`'s own
-/// doc on peak memory). `Disk` is the `--disk-node-store` opt-in, an mmap'd sorted record file — see
-/// `disk_coords`'s own doc.
+/// doc on peak memory). `Disk` is the `--disk-node-store` opt-in, an mmap'd MPHF-indexed record
+/// file — see `disk_coords`'s own doc.
 pub enum NodeCoords {
     Memory(FxHashMap<i64, (f32, f32, bool)>),
     Disk(DiskNodeCoords),
