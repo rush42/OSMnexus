@@ -17,6 +17,7 @@
 
 mod blob_index;
 mod disk_coords;
+mod disk_way_refs;
 mod fallback;
 mod memory_coords;
 mod resolve;
@@ -33,7 +34,7 @@ use blob_index::{build_blob_index, find_relation_section_start, find_way_section
 use fallback::stream_osm_fallback;
 pub use resolve::{resolve_geometry, NodeCoords};
 use sorted::{classify_and_index, classify_relations, collect_coords};
-pub use way_refs::EncodedRefs;
+pub use way_refs::{EncodedRefs, WayRefsStore};
 
 /// Everything geometry construction needs, once the "select" phase (relations → ways → nodes)
 /// finishes — see this module's own doc for why it's returned as one value instead of driven via
@@ -41,12 +42,13 @@ pub use way_refs::EncodedRefs;
 pub struct SelectionContext {
     /// Every node referenced by a `way_refs` entry (kept way or relation-member way alike).
     pub node_coords: NodeCoords,
-    /// `way_id -> (delta+varint-encoded node refs, per-topic keep mask)` — see `way_refs`'s own
-    /// module doc for why the refs aren't a plain `Vec<i64>`. `mask == 0` means the way was never
-    /// tag-kept by any topic — it's here purely because some kept relation in `rel_members`
-    /// references it, so its own shapes (line/point/polygon/graph) are never built, only its
-    /// coordinates are available for relation-geometry assembly.
-    pub way_refs: FxHashMap<i64, (EncodedRefs, u32)>,
+    /// Every kept/relation-member way's (delta+varint-encoded node refs, per-topic keep mask) — see
+    /// `way_refs`'s own module doc for why the refs aren't a plain `Vec<i64>`, and for why this is
+    /// an enum rather than a plain map (the `--disk-node-store` opt-in applies here too). `mask ==
+    /// 0` means the way was never tag-kept by any topic — it's here purely because some kept
+    /// relation in `rel_members` references it, so its own shapes (line/point/polygon/graph) are
+    /// never built, only its coordinates are available for relation-geometry assembly.
+    pub way_refs: WayRefsStore,
     /// `relation_id -> (member ways with role, per-topic keep mask)`, for every tag-kept relation
     /// (regardless of whether any topic wants relation geometry — that decision is
     /// `geom::materialize`'s, using a `GeometryPlan`, not this module's).
@@ -227,6 +229,7 @@ where
                 // map itself, for nothing.
                 drop(use_counts);
 
+                let way_refs = WayRefsStore::build(way_refs, disk_node_store)?;
                 return Ok(SelectionContext { node_coords, way_refs, rel_members, selected });
             }
             Err(e) => {

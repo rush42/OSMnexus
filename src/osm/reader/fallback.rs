@@ -13,7 +13,7 @@ use tracing::info;
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
 use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoordsBuilder};
-use super::way_refs::EncodedRefs;
+use super::way_refs::{EncodedRefs, WayRefsStore};
 use super::{Callbacks, SelectionContext};
 
 pub(super) fn stream_osm_fallback<CR, CW, CN>(
@@ -178,5 +178,6 @@ where
     // See the sorted path's own `drop(use_counts)` — nothing past here reads it.
     drop(use_counts);
 
+    let way_refs = WayRefsStore::build(way_refs, disk_node_store)?;
     Ok(SelectionContext { node_coords, way_refs, rel_members, selected })
 }

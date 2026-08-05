@@ -5,7 +5,6 @@
 //! inlined directly in `main.rs`'s reader callbacks. Pure computation, no I/O: callers (`main.rs`)
 //! still own routing the returned rows to writer channels and reporting counts.
 
-use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::geom::builders::{
@@ -16,7 +15,7 @@ use crate::geom::plan::GeometryPlan;
 use crate::geom::primitives::{haversine_length_m, project_line};
 use crate::geom::relation::assemble_rings;
 use crate::geom::rows::{EdgeRow, NodeRow, PointRow, PolygonRow, WayRow};
-use crate::osm::reader::{assign_node_ids, resolve_geometry, SelectionContext};
+use crate::osm::reader::{assign_node_ids, SelectionContext};
 use crate::osm::types::{MemberRole, OsmWay};
 
 /// Every shape a way can produce, already gated by `plan` — `None` for any shape no topic wants
@@ -183,23 +182,10 @@ where
     // Resolve every referenced way once — mask-!=0 ways (for their own shapes) and mask-0
     // relation-member-only ways (for relation-geometry assembly) alike. `resolve_geometry`
     // already applies the "too short to be a line" (<2 resolvable points) rule uniformly.
-    let resolved: FxHashMap<i64, OsmWay> = ctx
-        .way_refs
-        .par_iter()
-        .filter_map(|(&id, (refs, _))| {
-            let refs = refs.decode();
-            resolve_geometry(id, &refs, &ctx.node_coords, &ctx.selected).map(|w| (id, w))
-        })
-        .collect();
+    let resolved: FxHashMap<i64, OsmWay> = ctx.way_refs.resolve_all(&ctx.node_coords, &ctx.selected);
 
     let (node_ids, node_rows) = if plan.any_way_graph {
-        let endpoints: FxHashSet<i64> = ctx
-            .way_refs
-            .iter()
-            .filter(|(_, (_, mask))| *mask != 0)
-            .filter_map(|(_, (refs, _))| refs.first_last())
-            .flat_map(|(first, last)| [first, last])
-            .collect();
+        let endpoints: FxHashSet<i64> = ctx.way_refs.endpoints();
         let (ids, rows) = assign_node_ids(&ctx.node_coords, &endpoints, &ctx.selected);
         let node_rows = rows.into_iter().map(|(id, osm_id, lon, lat)| build_node_row(id, osm_id, lon as f64, lat as f64)).collect();
         (ids, node_rows)
@@ -207,11 +193,11 @@ where
         (FxHashMap::default(), Vec::new())
     };
 
-    ctx.way_refs
-        .par_iter()
-        .filter(|(_, (_, mask))| *mask != 0)
-        .filter_map(|(&id, (_, mask))| resolved.get(&id).map(|w| (id, *mask, way(w, &node_ids, plan))))
-        .for_each(|(id, mask, g)| route_way(id, mask, g));
+    ctx.way_refs.par_for_each_kept(|id, mask| {
+        if let Some(w) = resolved.get(&id) {
+            route_way(id, mask, way(w, &node_ids, plan));
+        }
+    });
 
     // A second coordinate copy, only for ways relation-geometry assembly actually needs — skip
     // entirely when no topic wants relation line/point/polygon (`relations()` would build nothing
