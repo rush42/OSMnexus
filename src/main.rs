@@ -211,6 +211,10 @@ async fn main() -> anyhow::Result<()> {
     // can't wait), and returns a `SelectionContext` once finished. Runs on the blocking pool
     // (CPU-bound rayon work).
     let pbf_file = cfg.pbf_file.clone();
+    let disk_node_store = cfg.disk_node_store;
+    if disk_node_store {
+        info!("--disk-node-store: node coordinates spilled to a sorted mmap'd temp file instead of an in-memory hashmap");
+    }
     // Shared, thread-safe state captured by the reader's callbacks (called from rayon workers).
     let producer_runners = runners.clone();
     let producer_plan = plan.clone();
@@ -293,6 +297,7 @@ async fn main() -> anyhow::Result<()> {
                 has_nodes,
                 classify_node: classify_node_cb,
             },
+            disk_node_store,
         )
     });
 

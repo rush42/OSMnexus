@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let t = Instant::now();
-    let ctx = stream_osm(&path, cb)?;
+    let ctx = stream_osm(&path, cb, false)?;
     let elapsed = t.elapsed();
     println!(
         "total: {:.2}s (node_coords={}, way_refs={}, rel_members={})",

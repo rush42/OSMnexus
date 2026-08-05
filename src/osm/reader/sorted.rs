@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
 use super::blob_index::decode_block;
-use super::resolve::{dense_node_data, node_data, rel_data, way_data, NodeCoords};
+use super::resolve::{dense_node_data, node_data, rel_data, way_data, NodeCoords, NodeCoordsBuilder};
 
 /// Relations pass — decode the relation region once (parallel). For every relation, extract its
 /// `RelData` and run `classify_rel` (side effect: emit relation tag rows + `relation_members`
@@ -143,6 +143,7 @@ pub(super) fn collect_coords<CN>(
     classify_nodes: bool,
     classify_node: &CN,
     extra_node_ids: &FxHashSet<i64>,
+    disk_node_store: bool,
 ) -> anyhow::Result<(NodeCoords, FxHashSet<i64>, u64)>
 where
     CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync,
@@ -162,8 +163,7 @@ where
     // practice. Re-measure that case before loosening the hint.
     let distinct_needed = use_counts.len()
         + extra_node_ids.iter().filter(|id| !use_counts.contains_key(id)).count();
-    let mut coords: NodeCoords =
-        FxHashMap::with_capacity_and_hasher(distinct_needed, Default::default());
+    let mut coords = NodeCoordsBuilder::with_capacity(disk_node_store, distinct_needed);
     let mut selected: FxHashSet<i64> = FxHashSet::default();
     let mut standalone_total: u64 = 0;
 
@@ -213,11 +213,11 @@ where
 
         for (chunk, sel, standalone) in per_blob {
             for (id, lon, lat, shared) in chunk {
-                coords.insert(id, (lon, lat, shared));
+                coords.insert(id, lon, lat, shared);
             }
             selected.extend(sel);
             standalone_total += standalone;
         }
     }
-    Ok((coords, selected, standalone_total))
+    Ok((coords.finish()?, selected, standalone_total))
 }

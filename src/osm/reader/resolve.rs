@@ -9,12 +9,79 @@ use tracing::info;
 
 use crate::osm::types::{MemberRole, NodeData, OsmWay, RawTags, RelData, WayData, WayMeta};
 
+use super::disk_coords::DiskNodeCoords;
+
 /// Node coordinate map for the geometry pass: `id → (lon, lat, shared)` where `shared` = the node
 /// is used by ≥2 filter-passing ways (an intersection cut-point). Folding the shared flag in here
 /// is what lets `use_counts` be dropped at the end of Pass B (both paths do so explicitly), so the
 /// geometry pass holds only this one map. Part of `SelectionContext` — public since
 /// `geom::materialize` (outside `osm::reader`) resolves way/relation geometry from it.
-pub type NodeCoords = FxHashMap<i64, (f32, f32, bool)>;
+///
+/// `Memory` is the default (fast, but resident for the whole run — see `geom::materialize`'s own
+/// doc on peak memory). `Disk` is the `--disk-node-store` opt-in, an mmap'd sorted record file — see
+/// `disk_coords`'s own doc.
+pub enum NodeCoords {
+    Memory(FxHashMap<i64, (f32, f32, bool)>),
+    Disk(DiskNodeCoords),
+}
+
+impl NodeCoords {
+    pub fn get(&self, id: i64) -> Option<(f32, f32, bool)> {
+        match self {
+            NodeCoords::Memory(m) => m.get(&id).copied(),
+            NodeCoords::Disk(d) => d.get(id),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            NodeCoords::Memory(m) => m.len(),
+            NodeCoords::Disk(d) => d.len(),
+        }
+    }
+
+    pub fn iter(&self) -> Box<dyn Iterator<Item = (i64, (f32, f32, bool))> + '_> {
+        match self {
+            NodeCoords::Memory(m) => Box::new(m.iter().map(|(&id, &v)| (id, v))),
+            NodeCoords::Disk(d) => Box::new(d.iter()),
+        }
+    }
+}
+
+/// Accumulates `(id, lon, lat, shared)` coordinate entries during Pass B / the fallback node scan,
+/// then produces a finished [`NodeCoords`] — in memory (a plain `FxHashMap`, insertion order
+/// preserved) or, with `disk: true`, spilled to a sorted mmap'd file (see `disk_coords`'s own doc).
+/// Both variants accept entries in any order; only the disk variant pays a sort to normalize it.
+pub enum NodeCoordsBuilder {
+    Memory(FxHashMap<i64, (f32, f32, bool)>),
+    Disk(Vec<(i64, f32, f32, bool)>),
+}
+
+impl NodeCoordsBuilder {
+    pub fn with_capacity(disk: bool, cap: usize) -> Self {
+        if disk {
+            NodeCoordsBuilder::Disk(Vec::with_capacity(cap))
+        } else {
+            NodeCoordsBuilder::Memory(FxHashMap::with_capacity_and_hasher(cap, Default::default()))
+        }
+    }
+
+    pub fn insert(&mut self, id: i64, lon: f32, lat: f32, shared: bool) {
+        match self {
+            NodeCoordsBuilder::Memory(m) => {
+                m.insert(id, (lon, lat, shared));
+            }
+            NodeCoordsBuilder::Disk(v) => v.push((id, lon, lat, shared)),
+        }
+    }
+
+    pub fn finish(self) -> anyhow::Result<NodeCoords> {
+        match self {
+            NodeCoordsBuilder::Memory(m) => Ok(NodeCoords::Memory(m)),
+            NodeCoordsBuilder::Disk(v) => Ok(NodeCoords::Disk(DiskNodeCoords::build(v)?)),
+        }
+    }
+}
 
 pub(super) fn log_node_summary(use_counts: &FxHashMap<i64, u32>, standalone_classified: u64) {
     let intersections = use_counts.values().filter(|&&c| c >= 2).count();
@@ -100,7 +167,7 @@ pub fn resolve_geometry(
     let mut pts: Vec<(f64, f64)> = Vec::with_capacity(node_refs.len());
     let mut kept: Vec<(i64, bool)> = Vec::with_capacity(node_refs.len());
     for &nid in node_refs {
-        if let Some(&(lon, lat, shared)) = coords.get(&nid) {
+        if let Some((lon, lat, shared)) = coords.get(nid) {
             pts.push((lon as f64, lat as f64));
             kept.push((nid, shared));
         }

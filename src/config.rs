@@ -115,6 +115,14 @@ pub struct Config {
     /// boundary.
     #[arg(long, value_enum, default_value_t = Source::Pbf)]
     pub source: Source,
+
+    /// Spill node coordinates to a sorted, `mmap`'d temp file instead of keeping them in an
+    /// in-memory hashmap for the whole run. Slower (a sort + disk I/O during Pass B/the node scan,
+    /// and page faults on lookup) but bounds the coordinate table's contribution to peak RSS on
+    /// large extracts, where it's normally resident throughout Pass B *and* the materialize phase
+    /// alongside `way_refs`/`resolved`. Output-format agnostic — not Postgres-specific.
+    #[arg(long, default_value_t = false)]
+    pub disk_node_store: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]

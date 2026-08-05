@@ -16,6 +16,7 @@
 //! geometry inputs are buffered and returned.
 
 mod blob_index;
+mod disk_coords;
 mod fallback;
 mod resolve;
 mod sorted;
@@ -98,7 +99,7 @@ pub fn assign_node_ids(
     let mut ids: FxHashMap<i64, i64> = FxHashMap::default();
     let mut nodes: Vec<(i64, i64, f32, f32)> = Vec::new();
     let mut next_id: i64 = 1;
-    for (&osm_id, &(lon, lat, shared)) in coords {
+    for (osm_id, (lon, lat, shared)) in coords.iter() {
         if shared || endpoints.contains(&osm_id) || selected.contains(&osm_id) {
             let id = next_id;
             next_id += 1;
@@ -122,7 +123,11 @@ pub fn assign_node_ids(
 ///     topics exist) classify node tags, collecting the selected-node set.
 ///
 /// Fallback (unsorted / boundary check fails / `PBF_FORCE_FALLBACK`): full parallel scans.
-pub fn stream_osm<CR, CW, CN>(path: &str, cb: Callbacks<CR, CW, CN>) -> anyhow::Result<SelectionContext>
+pub fn stream_osm<CR, CW, CN>(
+    path: &str,
+    cb: Callbacks<CR, CW, CN>,
+    disk_node_store: bool,
+) -> anyhow::Result<SelectionContext>
 where
     CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
     CW: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync + Send,
@@ -200,6 +205,7 @@ where
                 let t = std::time::Instant::now();
                 let (node_coords, selected, standalone_classified) = collect_coords(
                     &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &extra_node_ids,
+                    disk_node_store,
                 )?;
                 info!(
                     "[phase] Pass B (collect node coords{}): {:.1}s",
@@ -227,7 +233,7 @@ where
         warn!("PBF not declared Sort.Type_then_ID — using full-scan streaming reader");
     }
 
-    stream_osm_fallback(path, cb)
+    stream_osm_fallback(path, cb, disk_node_store)
 }
 
 /// Locate the `(way_start, rel_start)` region boundaries in a sorted file's blob list.

@@ -12,12 +12,13 @@ use tracing::info;
 
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
-use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoords};
+use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoordsBuilder};
 use super::{Callbacks, SelectionContext};
 
 pub(super) fn stream_osm_fallback<CR, CW, CN>(
     path: &str,
     cb: Callbacks<CR, CW, CN>,
+    disk_node_store: bool,
 ) -> anyhow::Result<SelectionContext>
 where
     CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
@@ -156,13 +157,12 @@ where
             },
         )
         .context("node scan parallel read")?;
-    let node_coords: NodeCoords = coords_vec
-        .into_iter()
-        .map(|(id, lon, lat)| {
-            let shared = use_counts.get(&id).copied().unwrap_or(0) > 1;
-            (id, (lon, lat, shared))
-        })
-        .collect();
+    let mut coords_builder = NodeCoordsBuilder::with_capacity(disk_node_store, coords_vec.len());
+    for (id, lon, lat) in coords_vec {
+        let shared = use_counts.get(&id).copied().unwrap_or(0) > 1;
+        coords_builder.insert(id, lon, lat, shared);
+    }
+    let node_coords = coords_builder.finish()?;
 
     log_node_summary(&use_counts, standalone_classified);
 
