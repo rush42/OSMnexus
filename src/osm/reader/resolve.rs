@@ -10,6 +10,7 @@ use tracing::info;
 use crate::osm::types::{MemberRole, NodeData, OsmWay, RawTags, RelData, WayData, WayMeta};
 
 use super::disk_coords::DiskNodeCoords;
+use super::memory_coords::MemoryNodeCoords;
 
 /// Node coordinate map for the geometry pass: `id → (lon, lat, shared)` where `shared` = the node
 /// is used by ≥2 filter-passing ways (an intersection cut-point). Folding the shared flag in here
@@ -17,18 +18,18 @@ use super::disk_coords::DiskNodeCoords;
 /// geometry pass holds only this one map. Part of `SelectionContext` — public since
 /// `geom::materialize` (outside `osm::reader`) resolves way/relation geometry from it.
 ///
-/// `Memory` is the default (fast, but resident for the whole run — see `geom::materialize`'s own
-/// doc on peak memory). `Disk` is the `--disk-node-store` opt-in, an mmap'd MPHF-indexed record
-/// file — see `disk_coords`'s own doc.
+/// Both variants are MPHF-indexed record stores (see each module's own doc) differing only in
+/// where the record array lives: `Memory` (default) keeps it resident; `Disk` (the
+/// `--disk-node-store` opt-in) spills it to an `mmap`'d temp file.
 pub enum NodeCoords {
-    Memory(FxHashMap<i64, (f32, f32, bool)>),
+    Memory(MemoryNodeCoords),
     Disk(DiskNodeCoords),
 }
 
 impl NodeCoords {
     pub fn get(&self, id: i64) -> Option<(f32, f32, bool)> {
         match self {
-            NodeCoords::Memory(m) => m.get(&id).copied(),
+            NodeCoords::Memory(m) => m.get(id),
             NodeCoords::Disk(d) => d.get(id),
         }
     }
@@ -42,43 +43,34 @@ impl NodeCoords {
 
     pub fn iter(&self) -> Box<dyn Iterator<Item = (i64, (f32, f32, bool))> + '_> {
         match self {
-            NodeCoords::Memory(m) => Box::new(m.iter().map(|(&id, &v)| (id, v))),
+            NodeCoords::Memory(m) => Box::new(m.iter()),
             NodeCoords::Disk(d) => Box::new(d.iter()),
         }
     }
 }
 
 /// Accumulates `(id, lon, lat, shared)` coordinate entries during Pass B / the fallback node scan,
-/// then produces a finished [`NodeCoords`] — in memory (a plain `FxHashMap`, insertion order
-/// preserved) or, with `disk: true`, spilled to a sorted mmap'd file (see `disk_coords`'s own doc).
-/// Both variants accept entries in any order; only the disk variant pays a sort to normalize it.
-pub enum NodeCoordsBuilder {
-    Memory(FxHashMap<i64, (f32, f32, bool)>),
-    Disk(Vec<(i64, f32, f32, bool)>),
+/// then produces a finished [`NodeCoords`] by handing the collected records to whichever backend's
+/// `build` — both build their MPHF from this exact record set, so entries can arrive in any order.
+pub struct NodeCoordsBuilder {
+    disk: bool,
+    records: Vec<(i64, f32, f32, bool)>,
 }
 
 impl NodeCoordsBuilder {
     pub fn with_capacity(disk: bool, cap: usize) -> Self {
-        if disk {
-            NodeCoordsBuilder::Disk(Vec::with_capacity(cap))
-        } else {
-            NodeCoordsBuilder::Memory(FxHashMap::with_capacity_and_hasher(cap, Default::default()))
-        }
+        NodeCoordsBuilder { disk, records: Vec::with_capacity(cap) }
     }
 
     pub fn insert(&mut self, id: i64, lon: f32, lat: f32, shared: bool) {
-        match self {
-            NodeCoordsBuilder::Memory(m) => {
-                m.insert(id, (lon, lat, shared));
-            }
-            NodeCoordsBuilder::Disk(v) => v.push((id, lon, lat, shared)),
-        }
+        self.records.push((id, lon, lat, shared));
     }
 
     pub fn finish(self) -> anyhow::Result<NodeCoords> {
-        match self {
-            NodeCoordsBuilder::Memory(m) => Ok(NodeCoords::Memory(m)),
-            NodeCoordsBuilder::Disk(v) => Ok(NodeCoords::Disk(DiskNodeCoords::build(v)?)),
+        if self.disk {
+            Ok(NodeCoords::Disk(DiskNodeCoords::build(self.records)?))
+        } else {
+            Ok(NodeCoords::Memory(MemoryNodeCoords::build(self.records)))
         }
     }
 }

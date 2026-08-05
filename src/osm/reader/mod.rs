@@ -18,6 +18,7 @@
 mod blob_index;
 mod disk_coords;
 mod fallback;
+mod memory_coords;
 mod resolve;
 mod sorted;
 
