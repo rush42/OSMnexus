@@ -124,11 +124,12 @@ impl Iterator for RefsIter<'_> {
 /// backend choice, so the backend split happens once, after that map is fully merged, rather than
 /// threading a builder through Pass A's accumulation itself.
 ///
-/// Exposes purpose-built methods for `geom::materialize`'s three access patterns (resolve every
-/// way's geometry, collect mask-!=0 endpoints, iterate mask-!=0 ways) instead of a generic
-/// iterator — `Memory`'s and `Disk`'s underlying iterators are different concrete types, and
+/// Exposes purpose-built methods for `geom::materialize`'s access patterns (resolve + route every
+/// mask-!=0 way, resolve one arbitrary way on demand, collect mask-!=0 endpoints) instead of a
+/// generic iterator — `Memory`'s and `Disk`'s underlying iterators are different concrete types, and
 /// erasing that behind `dyn ParallelIterator` isn't supported by rayon, so each method just
-/// branches once and lets both arms produce the same concrete result type.
+/// branches once and lets both arms produce the same concrete result type. Deliberately has no
+/// "resolve every way and cache it" method — see `par_route_kept`'s own doc for why.
 pub enum WayRefsStore {
     Memory(FxHashMap<i64, (EncodedRefs, u32)>),
     Disk(DiskWayRefs),
@@ -152,24 +153,48 @@ impl WayRefsStore {
         }
     }
 
-    /// Resolve every referenced way's geometry once, keyed by way id — mask-!=0 ways (for their own
-    /// shapes) and mask-0 relation-member-only ways (for relation-geometry assembly) alike.
-    pub fn resolve_all(&self, node_coords: &NodeCoords, selected: &FxHashSet<i64>) -> FxHashMap<i64, OsmWay> {
+    /// Resolve and route every mask-!=0 way's geometry, in parallel — resolved once, handed straight
+    /// to `f`, then dropped; no `resolved`-style cache of every kept way's geometry stays resident.
+    /// A way that's *also* a relation member gets resolved a second time by `resolve_one` when
+    /// relation-geometry assembly needs it — cheaper to redo than to keep the (typically much
+    /// larger, since most kept ways aren't relation members — see `geom::materialize::run`'s own
+    /// comment) full resolved set alive for that overlap's sake.
+    pub fn par_route_kept<F>(&self, node_coords: &NodeCoords, selected: &FxHashSet<i64>, f: F)
+    where
+        F: Fn(i64, u32, OsmWay) + Sync,
+    {
         match self {
             WayRefsStore::Memory(m) => m
                 .par_iter()
-                .filter_map(|(&id, (refs, _))| {
+                .filter(|(_, (_, mask))| *mask != 0)
+                .filter_map(|(&id, (refs, mask))| {
                     let refs = refs.decode();
-                    resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, w))
+                    resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, *mask, w))
                 })
-                .collect(),
+                .for_each(|(id, mask, w)| f(id, mask, w)),
             WayRefsStore::Disk(d) => d
                 .par_iter()
-                .filter_map(|(id, bytes, _)| {
+                .filter(|(_, _, mask)| *mask != 0)
+                .filter_map(|(id, bytes, mask)| {
                     let refs = decode_refs(bytes);
-                    resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, w))
+                    resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, mask, w))
                 })
-                .collect(),
+                .for_each(|(id, mask, w)| f(id, mask, w)),
+        }
+    }
+
+    /// Resolve one way's geometry on demand — for the small subset of ways (relation members) that
+    /// `par_route_kept` doesn't already cover, without paying to cache every way for their sake.
+    pub fn resolve_one(&self, id: i64, node_coords: &NodeCoords, selected: &FxHashSet<i64>) -> Option<OsmWay> {
+        match self {
+            WayRefsStore::Memory(m) => {
+                let (refs, _) = m.get(&id)?;
+                resolve_geometry(id, &refs.decode(), node_coords, selected)
+            }
+            WayRefsStore::Disk(d) => {
+                let (bytes, _) = d.get(id)?;
+                resolve_geometry(id, &decode_refs(bytes), node_coords, selected)
+            }
         }
     }
 
@@ -191,21 +216,6 @@ impl WayRefsStore {
         }
     }
 
-    /// Calls `f(way_id, mask)` for every mask-!=0 way, in parallel — `f` decides what (if anything)
-    /// to build/route from `resolved`, keeping `geom`-specific shape-building out of this module.
-    pub fn par_for_each_kept<F>(&self, f: F)
-    where
-        F: Fn(i64, u32) + Sync,
-    {
-        match self {
-            WayRefsStore::Memory(m) => {
-                m.par_iter().filter(|(_, (_, mask))| *mask != 0).for_each(|(&id, (_, mask))| f(id, *mask))
-            }
-            WayRefsStore::Disk(d) => {
-                d.par_iter().filter(|(_, _, mask)| *mask != 0).for_each(|(id, _, mask)| f(id, mask))
-            }
-        }
-    }
 }
 
 fn zigzag_encode(n: i64) -> u64 {

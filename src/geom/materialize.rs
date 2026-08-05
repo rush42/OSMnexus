@@ -179,11 +179,6 @@ pub fn run<F>(ctx: &SelectionContext, plan: &GeometryPlan, route_way: F) -> Mate
 where
     F: Fn(i64, u32, WayGeometry) + Sync,
 {
-    // Resolve every referenced way once — mask-!=0 ways (for their own shapes) and mask-0
-    // relation-member-only ways (for relation-geometry assembly) alike. `resolve_geometry`
-    // already applies the "too short to be a line" (<2 resolvable points) rule uniformly.
-    let resolved: FxHashMap<i64, OsmWay> = ctx.way_refs.resolve_all(&ctx.node_coords, &ctx.selected);
-
     let (node_ids, node_rows) = if plan.any_way_graph {
         let endpoints: FxHashSet<i64> = ctx.way_refs.endpoints();
         let (ids, rows) = assign_node_ids(&ctx.node_coords, &endpoints, &ctx.selected);
@@ -193,25 +188,27 @@ where
         (FxHashMap::default(), Vec::new())
     };
 
-    ctx.way_refs.par_for_each_kept(|id, mask| {
-        if let Some(w) = resolved.get(&id) {
-            route_way(id, mask, way(w, &node_ids, plan));
-        }
+    // Resolve + route every mask-!=0 way's own shapes — resolved once, routed, dropped; no cache of
+    // every kept way's geometry stays resident (see `WayRefsStore::par_route_kept`'s own doc).
+    ctx.way_refs.par_route_kept(&ctx.node_coords, &ctx.selected, |id, mask, w| {
+        route_way(id, mask, way(&w, &node_ids, plan));
     });
 
-    // A second coordinate copy, only for ways relation-geometry assembly actually needs — skip
-    // entirely when no topic wants relation line/point/polygon (`relations()` would build nothing
-    // from it either way), and even then only clone the subset of `resolved` that's an actual
-    // relation member, not every kept way (relation members are typically a small fraction of
-    // `resolved` — e.g. `roads`-sized configs keep millions of ways but reference far fewer of them
-    // from any relation).
+    // Relation-geometry assembly needs its own coordinate copy — skip entirely when no topic wants
+    // relation line/point/polygon (`relations()` would build nothing from it either way), and even
+    // then resolve only the (typically small — see `par_route_kept`'s own doc) subset of ways that
+    // are actual relation members, redoing `resolve_geometry` for any that were already resolved
+    // above rather than caching every kept way's geometry just to avoid that overlap's redundant work.
     let want_relation_geom = !plan.relation_line_topics.is_empty()
         || !plan.relation_point_topics.is_empty()
         || !plan.relation_polygon_topics.is_empty();
     let way_coords: FxHashMap<i64, Vec<(f64, f64)>> = if want_relation_geom && !ctx.rel_members.is_empty() {
         let member_way_ids: FxHashSet<i64> =
             ctx.rel_members.values().flat_map(|(members, _)| members.iter().map(|&(w, _)| w)).collect();
-        resolved.iter().filter(|(id, _)| member_way_ids.contains(id)).map(|(&id, w)| (id, w.coords.clone())).collect()
+        member_way_ids
+            .iter()
+            .filter_map(|&id| ctx.way_refs.resolve_one(id, &ctx.node_coords, &ctx.selected).map(|w| (id, w.coords)))
+            .collect()
     } else {
         FxHashMap::default()
     };
