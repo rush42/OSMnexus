@@ -12,6 +12,7 @@ use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
 use super::blob_index::decode_block;
 use super::resolve::{dense_node_data, node_data, rel_data, way_data, NodeCoords, NodeCoordsBuilder};
+use super::way_refs::EncodedRefs;
 
 /// Relations pass — decode the relation region once (parallel). For every relation, extract its
 /// `RelData` and run `classify_rel` (side effect: emit relation tag rows + `relation_members`
@@ -60,17 +61,17 @@ pub(super) fn classify_and_index<C>(
     way_offsets: &[ByteOffset],
     classify: &C,
     extra_way_ids: &FxHashSet<i64>,
-) -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, FxHashMap<i64, (Vec<i64>, u32)>)>
+) -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, FxHashMap<i64, (EncodedRefs, u32)>)>
 where
     C: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync,
 {
     way_offsets
         .par_iter()
-        .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, FxHashMap<i64, (Vec<i64>, u32)>)> {
+        .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, FxHashMap<i64, (EncodedRefs, u32)>)> {
             let block = decode_block(mmap, off)?;
             let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
             let mut endpoints: FxHashSet<i64> = FxHashSet::default();
-            let mut way_refs: FxHashMap<i64, (Vec<i64>, u32)> = FxHashMap::default();
+            let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
             for group in block.groups() {
                 for way in group.ways() {
                     let wd = way_data(&way);
@@ -89,7 +90,7 @@ where
                             endpoints.insert(last);
                         }
                     }
-                    way_refs.insert(wd.id, (wd.node_refs, kept_mask.unwrap_or(0)));
+                    way_refs.insert(wd.id, (EncodedRefs::encode(&wd.node_refs), kept_mask.unwrap_or(0)));
                 }
             }
             Ok((counts, endpoints, way_refs))

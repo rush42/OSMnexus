@@ -186,7 +186,10 @@ where
     let resolved: FxHashMap<i64, OsmWay> = ctx
         .way_refs
         .par_iter()
-        .filter_map(|(&id, (refs, _))| resolve_geometry(id, refs, &ctx.node_coords, &ctx.selected).map(|w| (id, w)))
+        .filter_map(|(&id, (refs, _))| {
+            let refs = refs.decode();
+            resolve_geometry(id, &refs, &ctx.node_coords, &ctx.selected).map(|w| (id, w))
+        })
         .collect();
 
     let (node_ids, node_rows) = if plan.any_way_graph {
@@ -194,8 +197,8 @@ where
             .way_refs
             .iter()
             .filter(|(_, (_, mask))| *mask != 0)
-            .filter_map(|(_, (refs, _))| Some([*refs.first()?, *refs.last()?]))
-            .flatten()
+            .filter_map(|(_, (refs, _))| refs.first_last())
+            .flat_map(|(first, last)| [first, last])
             .collect();
         let (ids, rows) = assign_node_ids(&ctx.node_coords, &endpoints, &ctx.selected);
         let node_rows = rows.into_iter().map(|(id, osm_id, lon, lat)| build_node_row(id, osm_id, lon as f64, lat as f64)).collect();

@@ -13,6 +13,7 @@ use tracing::info;
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
 use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoordsBuilder};
+use super::way_refs::EncodedRefs;
 use super::{Callbacks, SelectionContext};
 
 pub(super) fn stream_osm_fallback<CR, CW, CN>(
@@ -59,14 +60,14 @@ where
     let (use_counts, endpoints, way_refs): (
         FxHashMap<i64, u32>,
         FxHashSet<i64>,
-        FxHashMap<i64, (Vec<i64>, u32)>,
+        FxHashMap<i64, (EncodedRefs, u32)>,
     ) = ElementReader::from_path(path)
         .context("opening PBF for way scan")?
         .par_map_reduce(
             |element| {
                 let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
                 let mut endpoints: FxHashSet<i64> = FxHashSet::default();
-                let mut way_refs: FxHashMap<i64, (Vec<i64>, u32)> = FxHashMap::default();
+                let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
                 if let Element::Way(way) = element {
                     let wd = way_data(&way);
                     let kept_mask = (cb.classify_way)(&wd);
@@ -81,7 +82,7 @@ where
                                 endpoints.insert(last);
                             }
                         }
-                        way_refs.insert(wd.id, (wd.node_refs, kept_mask.unwrap_or(0)));
+                        way_refs.insert(wd.id, (EncodedRefs::encode(&wd.node_refs), kept_mask.unwrap_or(0)));
                     }
                 }
                 (counts, endpoints, way_refs)
@@ -103,7 +104,7 @@ where
     let extra_node_ids: FxHashSet<i64> = way_refs
         .iter()
         .filter(|(_, (_, mask))| *mask == 0)
-        .flat_map(|(_, (refs, _))| refs.iter().copied())
+        .flat_map(|(_, (refs, _))| refs.iter())
         .collect();
     info!("Fallback scan 2 (parallel): collect node coords{}...", if cb.has_nodes { " + classify nodes" } else { "" });
     let (coords_vec, selected, standalone_classified): (Vec<(i64, f32, f32)>, FxHashSet<i64>, u64) =

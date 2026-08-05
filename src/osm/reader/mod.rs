@@ -21,6 +21,7 @@ mod fallback;
 mod memory_coords;
 mod resolve;
 mod sorted;
+mod way_refs;
 
 use anyhow::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -32,6 +33,7 @@ use blob_index::{build_blob_index, find_relation_section_start, find_way_section
 use fallback::stream_osm_fallback;
 pub use resolve::{resolve_geometry, NodeCoords};
 use sorted::{classify_and_index, classify_relations, collect_coords};
+pub use way_refs::EncodedRefs;
 
 /// Everything geometry construction needs, once the "select" phase (relations → ways → nodes)
 /// finishes — see this module's own doc for why it's returned as one value instead of driven via
@@ -39,11 +41,12 @@ use sorted::{classify_and_index, classify_relations, collect_coords};
 pub struct SelectionContext {
     /// Every node referenced by a `way_refs` entry (kept way or relation-member way alike).
     pub node_coords: NodeCoords,
-    /// `way_id -> (raw node refs, per-topic keep mask)`. `mask == 0` means the way was never
+    /// `way_id -> (delta+varint-encoded node refs, per-topic keep mask)` — see `way_refs`'s own
+    /// module doc for why the refs aren't a plain `Vec<i64>`. `mask == 0` means the way was never
     /// tag-kept by any topic — it's here purely because some kept relation in `rel_members`
     /// references it, so its own shapes (line/point/polygon/graph) are never built, only its
     /// coordinates are available for relation-geometry assembly.
-    pub way_refs: FxHashMap<i64, (Vec<i64>, u32)>,
+    pub way_refs: FxHashMap<i64, (EncodedRefs, u32)>,
     /// `relation_id -> (member ways with role, per-topic keep mask)`, for every tag-kept relation
     /// (regardless of whether any topic wants relation geometry — that decision is
     /// `geom::materialize`'s, using a `GeometryPlan`, not this module's).
@@ -201,7 +204,7 @@ where
                 let extra_node_ids: FxHashSet<i64> = way_refs
                     .iter()
                     .filter(|(_, (_, mask))| *mask == 0)
-                    .flat_map(|(_, (refs, _))| refs.iter().copied())
+                    .flat_map(|(_, (refs, _))| refs.iter())
                     .collect();
                 let t = std::time::Instant::now();
                 let (node_coords, selected, standalone_classified) = collect_coords(
