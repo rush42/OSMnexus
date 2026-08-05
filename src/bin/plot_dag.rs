@@ -39,12 +39,12 @@ fn main() -> Result<()> {
 
     // field -> repr(producer) -> (one instance, labels of who produces it this way)
     let mut by_field: HashMap<String, HashMap<String, (&Producer, Vec<String>)>> = HashMap::new();
-    for field in &runner.default_outputs {
+    for field in &runner.default_producers {
         let repr = format!("{:?}", field.source);
         by_field.entry(field.output.clone()).or_default()
             .entry(repr).or_insert((&field.source, Vec::new())).1.push("default".to_owned());
     }
-    for (category, fields) in &runner.category_outputs {
+    for (category, fields) in &runner.category_producers {
         for field in fields {
             let repr = format!("{:?}", field.source);
             by_field.entry(field.output.clone()).or_default()

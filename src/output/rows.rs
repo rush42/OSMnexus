@@ -34,7 +34,7 @@ pub struct TopicRow {
     pub category: Option<String>,
     /// Every non-underscore-prefixed output (the former separate `osm`/`sanitized`/`derived`
     /// columns — all three were always the same `Producer`-evaluation mechanism, just different
-    /// JSON shorthands for declaring one entry in one `outputs` map; see `TopicSpec::outputs`).
+    /// JSON shorthands for declaring one entry in one `producers` map; see `TopicSpec::producers`).
     pub produced: Map<String, Value>,
     /// Engine-attached bookkeeping about `produced`, not itself a topic-authored output: side-split
     /// context (`_side`/`_prefix`/`_infix`, stamped by `topic::pipeline::build_topic_rows`/each `Clone`)

@@ -73,7 +73,7 @@
       }
     }
   },
-  "outputs": {
+  "producers": {
     "surface": "surface_from_parent"
   }
 }

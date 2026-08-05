@@ -12,7 +12,7 @@ use crate::topic::load::{
     load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge, resolve_macros, resolve_refs,
 };
 use crate::topic::pipeline::build_topic_rows;
-use crate::topic::spec::{resolve_output_entry, Field, GeometryShape, TopicSpec, TransformsSpec};
+use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, TopicSpec, TransformsSpec};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::output::rows::TopicRow;
 use crate::output::types::OsmMeta;
@@ -38,34 +38,34 @@ pub struct TopicRunner {
     /// `TopicSpec` deserializes it (see `TopicRunner::load`). Held here (taken out of `spec`, not
     /// duplicated) so the runtime pipeline (`topic::pipeline::build_topic_rows`) reads it directly.
     pub exclude_condition: Option<Filter>,
-    /// Topic-default fields (`spec.outputs`, resolved, with topic-level `defaults` folded in as
+    /// Topic-default fields (`spec.producers`, resolved, with topic-level `defaults` folded in as
     /// each default's lowest-priority `Fallback` branch — see `merge_default_fields`) — the
-    /// fallback used if a category id somehow isn't in `category_outputs` (shouldn't normally
+    /// fallback used if a category id somehow isn't in `category_producers` (shouldn't normally
     /// happen: every category gets its own entry at load time below).
-    pub default_outputs: Vec<Field>,
+    pub default_producers: Vec<Field>,
     /// Mirrors `Config::linear_classify` — when set, `build_topic_rows` calls `categorize_linear`
     /// instead of `categorize`, bypassing the decision tree entirely (see `categorize::categories`).
     pub linear_classify: bool,
-    /// Per-category effective outputs: the topic's `outputs` map merged with the category's own
-    /// `outputs` overrides (category wins, by key — plain JSON-object merge, see `TopicSpec::outputs`),
+    /// Per-category effective producers: the topic's `producers` map merged with the category's own
+    /// `producers` overrides (category wins, by key — plain JSON-object merge, see `TopicSpec::producers`),
     /// then resolved into `Producer`s, with the category's effective (topic ⊕ category) `defaults`
     /// folded in as a trailing fallback branch on each default's output — so a default
     /// is just the lowest-priority producer for its key, evaluated by the same `eval_fields` pass
     /// as any other output. Present for every category (unlike a plain override map, every
-    /// category's effective defaults can still differ from the topic's even with no `outputs`
+    /// category's effective defaults can still differ from the topic's even with no `producers`
     /// override).
-    pub category_outputs: HashMap<String, Vec<Field>>,
-    /// Set when `topic.json`'s `outputs` is the bare `true` shorthand (`OutputsSpec::is_all`) or
+    pub category_producers: HashMap<String, Vec<Field>>,
+    /// Set when `topic.json`'s `producers` is the bare `true` shorthand (`ProducersSpec::is_all`) or
     /// `passthrough_tags` carries a bare `null` entry (`TopicSpec::passthrough_tags`'s own doc) —
     /// either way, every raw tag `eval_fields` didn't already produce a value for gets copied into
-    /// `produced` verbatim (`topic::pipeline::build_topic_rows`). `outputs: true` needs no separate
-    /// bypass path: `OutputsSpec::into_fields_map` treats `All` as `{}`, so `default_outputs`/
-    /// `category_outputs` are already empty in that case — running `eval_fields` over zero fields
+    /// `produced` verbatim (`topic::pipeline::build_topic_rows`). `producers: true` needs no separate
+    /// bypass path: `ProducersSpec::into_fields_map` treats `All` as `{}`, so `default_producers`/
+    /// `category_producers` are already empty in that case — running `eval_fields` over zero fields
     /// costs nothing, and this one flag then fills every key either way.
     pub pass_through_remaining_tags: bool,
     /// Kinds flagged in `topic.json`'s `"accept_all"` (see `TopicSpec::accept_all`) — every
     /// (non-excluded) element of this kind is emitted with no category match and no `category`
-    /// value, using `default_outputs` directly. Disjoint from `categories`'s keys (`load` rejects
+    /// value, using `default_producers` directly. Disjoint from `categories`'s keys (`load` rejects
     /// a kind declaring both a category directory and `accept_all`).
     pub accept_all: std::collections::HashSet<ElementKind>,
     /// Output names whose topic-level entry is the bare `true` "copy this tag verbatim" shorthand
@@ -75,15 +75,15 @@ pub struct TopicRunner {
     /// so this has to be captured pre-resolution — used to keep passthrough tags out of
     /// `bin/dag_json`'s "Producer" picker list, where showing them (there's no real producer tree
     /// to plot) is just noise.
-    pub passthrough_outputs: std::collections::HashSet<String>,
+    pub passthrough_producers: std::collections::HashSet<String>,
 }
 
-/// Resolve one topic's or category's raw `outputs` map (already merged by key, category winning)
-/// into a `Vec<Field>` — the actual payoff of keying `outputs` by name: no more `apply_overrides`/
-/// `resolve_bindings`/`check_unique_outputs` Vec-scanning, just one merge then one resolve pass.
+/// Resolve one topic's or category's raw `producers` map (already merged by key, category winning)
+/// into a `Vec<Field>` — the actual payoff of keying `producers` by name: no more `apply_overrides`/
+/// `resolve_bindings`/`check_unique_producers` Vec-scanning, just one merge then one resolve pass.
 /// Duplicate keys can't arise (JSON object keys are inherently unique per map), so no separate
 /// uniqueness check is needed either.
-fn resolve_outputs(
+fn resolve_producers(
     raw: Map<String, Value>,
     producer_lib: &HashMap<String, Producer>,
     sanitizers: &HashMap<String, Vec<crate::lang::sanitize::Sanitizer>>,
@@ -91,7 +91,7 @@ fn resolve_outputs(
 ) -> anyhow::Result<Vec<Field>> {
     raw.into_iter()
         .map(|(output, value)| {
-            let source = resolve_output_entry(&output, value, producer_lib, sanitizers)
+            let source = resolve_producer_entry(&output, value, producer_lib, sanitizers)
                 .with_context(|| context.to_owned())?;
             Ok(Field { output, source })
         })
@@ -104,7 +104,7 @@ fn resolve_outputs(
 /// elsewhere); any other JSON is a bare literal with no companions. Just a `Const` — it
 /// unconditionally "produces"; the default value is only ever *reached* via the two-rule `Fallback`
 /// `as_fallback_pair` wraps it in when nothing higher-priority did. Built directly as a `Producer`
-/// value (not JSON) after `resolve_outputs` has already run, so it deliberately bypasses
+/// value (not JSON) after `resolve_producers` has already run, so it deliberately bypasses
 /// `Producer::resolve` — fine here since it carries no macro/sanitizer references to resolve.
 fn default_value_producer(v: &Value) -> Producer {
     let (value, annotate) = match v {
@@ -118,7 +118,7 @@ fn default_value_producer(v: &Value) -> Producer {
 
 /// Wrap `primary`/`default_source` as an unconditional (`when: true`) two-rule `Match` — the same
 /// shape `resolve()` would produce from `{ "match": [primary, default] }`'s bare-item shorthand,
-/// built directly since this runs after `resolve_outputs` already resolved both producers (a
+/// built directly since this runs after `resolve_producers` already resolved both producers (a
 /// second `resolve` pass isn't needed).
 fn as_fallback_pair(primary: Producer, default_source: Producer) -> Producer {
     let rule = |value: Producer| crate::lang::producer::Rule { when: Filter::Bool(true), value };
@@ -203,9 +203,9 @@ impl TopicRunner {
             .with_context(|| format!("parsing resolved macros for topics/{name}"))?;
 
         // `topic.json`, fully macro/sanitizer-resolved before it's ever deserialized into
-        // `TopicSpec` — so `exclude_condition` lands as a plain `Option<Filter>` and `outputs`'/
+        // `TopicSpec` — so `exclude_condition` lands as a plain `Option<Filter>` and `producers`'/
         // `defaults`' values (still untyped `Value`s at this level) already carry no unresolved
-        // reference either, letting `resolve_outputs` below skip a further resolve pass.
+        // reference either, letting `resolve_producers` below skip a further resolve pass.
         let raw_topic: Value = serde_json::from_str(
             &std::fs::read_to_string(base.join("topic.json"))
                 .with_context(|| format!("reading topics/{name}/topic.json"))?,
@@ -272,65 +272,65 @@ impl TopicRunner {
             .map(TransformsSpec::into_pipelines)
             .unwrap_or_default();
 
-        // `true` here means "pass every tag through verbatim" (see `OutputsSpec`) — read before
-        // `spec.outputs` is consumed into a plain fields map below, since it isn't itself a `Field`
-        // shape `resolve_outputs` can produce. Same flag a bare `null` entry in `passthrough_tags`
+        // `true` here means "pass every tag through verbatim" (see `ProducersSpec`) — read before
+        // `spec.producers` is consumed into a plain fields map below, since it isn't itself a `Field`
+        // shape `resolve_producers` can produce. Same flag a bare `null` entry in `passthrough_tags`
         // sets (see `pass_through_remaining_tags`'s own doc for why one flag covers both) — setting
         // both is redundant, not conflicting, so no error either way.
-        let mut pass_through_remaining_tags = spec.outputs.is_all();
-        let mut topic_outputs = spec.outputs.clone().into_fields_map();
+        let mut pass_through_remaining_tags = spec.producers.is_all();
+        let mut topic_producers = spec.producers.clone().into_fields_map();
 
-        // `passthrough_tags` is sugar for a batch of `"<tag>": true` outputs entries (see
+        // `passthrough_tags` is sugar for a batch of `"<tag>": true` producers entries (see
         // `TopicSpec::passthrough_tags`) — folded in here, before any resolving, so the rest of
         // this function never needs to know the two shapes exist. A bare `null` entry has no name
         // to fold under, so it sets `pass_through_remaining_tags` directly instead.
         pass_through_remaining_tags |= spec.passthrough_tags.iter().any(Option::is_none);
         for tag in spec.passthrough_tags.iter().flatten() {
             anyhow::ensure!(
-                topic_outputs.insert(tag.clone(), Value::Bool(true)).is_none(),
-                "topics/{name}/topic.json: '{tag}' is in both passthrough_tags and outputs",
+                topic_producers.insert(tag.clone(), Value::Bool(true)).is_none(),
+                "topics/{name}/topic.json: '{tag}' is in both passthrough_tags and producers",
             );
         }
 
         // Every bare-`true` entry at this point (inline `"<tag>": true` or folded-in
         // `passthrough_tags`) is a passthrough, not an authored producer — captured now, before
-        // `resolve_outputs` turns it into a `Producer::Extract` indistinguishable from a real one.
-        let passthrough_outputs: std::collections::HashSet<String> =
-            topic_outputs.iter().filter(|(_, v)| **v == Value::Bool(true)).map(|(k, _)| k.clone()).collect();
+        // `resolve_producers` turns it into a `Producer::Extract` indistinguishable from a real one.
+        let passthrough_producers: std::collections::HashSet<String> =
+            topic_producers.iter().filter(|(_, v)| **v == Value::Bool(true)).map(|(k, _)| k.clone()).collect();
 
-        // Topic-default outputs, topic-level `defaults` folded in — the defensive fallback for a
-        // category id missing from `category_outputs` (shouldn't normally happen; see below).
-        let mut default_outputs = merge_default_fields(
-            resolve_outputs(
-                topic_outputs.clone(), &producer_lib, &sanitizers,
-                &format!("topics/{name}/topic.json: outputs"),
+        // Topic-default producers, topic-level `defaults` folded in — the defensive fallback for a
+        // category id missing from `category_producers` (shouldn't normally happen; see below).
+        let mut default_producers = merge_default_fields(
+            resolve_producers(
+                topic_producers.clone(), &producer_lib, &sanitizers,
+                &format!("topics/{name}/topic.json: producers"),
             )?,
             &spec.defaults,
         );
 
-        // Precompute per-category effective outputs (topic `outputs` ⊕ category `outputs`,
-        // merged by key before resolving — see `TopicSpec::outputs`) and effective `defaults`
+        // Precompute per-category effective producers (topic `producers` ⊕ category `producers`,
+        // merged by key before resolving — see `TopicSpec::producers`) and effective `defaults`
         // folded in (`merge_default_fields`), across every kind. Every category gets an entry,
-        // even with no `outputs` override: its effective defaults can still differ from the
+        // even with no `producers` override: its effective defaults can still differ from the
         // topic's. Category ids are expected unique within a topic (they're file stems); a node
         // and a way category sharing a stem would collide here — keep stems distinct per topic.
-        let mut category_outputs = HashMap::new();
+        let mut category_producers = HashMap::new();
         for cats in categories.values() {
             for cat in &cats.categories {
-                let raw = merge(&topic_outputs, &cat.outputs);
-                let fields = resolve_outputs(
+                let raw = merge(&topic_producers, &cat.producers);
+                let fields = resolve_producers(
                     raw, &producer_lib, &sanitizers,
-                    &format!("topics/{name}: category '{}' outputs", cat.id),
+                    &format!("topics/{name}: category '{}' producers", cat.id),
                 )?;
                 let defaults = merge(&spec.defaults, &cat.defaults);
-                category_outputs.insert(cat.id.clone(), merge_default_fields(fields, &defaults));
+                category_producers.insert(cat.id.clone(), merge_default_fields(fields, &defaults));
             }
         }
 
         // Compile a discrimination net into any `Producer::Match` with enough rules to be worth it
         // (see `Producer::compile_trees`/`MATCH_TREE_MIN_RULES`) — every field's producer is fully
         // macro/sanitizer/shared-reference-resolved by now, so this is safe to run once, here.
-        for field in default_outputs.iter_mut().chain(category_outputs.values_mut().flatten()) {
+        for field in default_producers.iter_mut().chain(category_producers.values_mut().flatten()) {
             field.source.compile_trees(tree_max_depth);
         }
 
@@ -339,12 +339,12 @@ impl TopicRunner {
             categories,
             pipelines,
             exclude_condition,
-            default_outputs,
+            default_producers,
             linear_classify,
-            category_outputs,
+            category_producers,
             pass_through_remaining_tags,
             accept_all,
-            passthrough_outputs,
+            passthrough_producers,
         })
     }
 
@@ -452,7 +452,7 @@ mod producer_tree_tests {
             .expect("load roads topic");
 
         let mut checked_any_field = false;
-        for field in runner.default_outputs.iter().chain(runner.category_outputs.values().flatten()) {
+        for field in runner.default_producers.iter().chain(runner.category_producers.values().flatten()) {
             let mut compiled = Vec::new();
             find_compiled_matches(&field.source, &mut compiled);
             if compiled.is_empty() {

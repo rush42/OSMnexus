@@ -215,7 +215,7 @@ pub fn load_topic_categories(
 
 /// Load all `*.json` category files (sorted) in one kind subfolder into a `CategoriesFile`. Each
 /// file is either a single category (id = file stem, as before) or a *family*: a base object
-/// carrying shared `condition`/`excludes`/`defaults`/`outputs` plus a `categories` array of
+/// carrying shared `condition`/`excludes`/`defaults`/`producers` plus a `categories` array of
 /// variants, each expanded into its own category by `expand_family` (id = `<stem>_<name>`).
 pub fn load_categories_dir(
     dir: &std::path::Path,
@@ -247,9 +247,9 @@ pub fn load_categories_dir(
 /// Expand one category file's raw JSON into one or more flat category objects, each carrying its
 /// own `id`. A plain object (no `categories` key) is a single category, unchanged apart from
 /// getting `id: <stem>` — today's behavior. A `categories` array turns the file into a *family*:
-/// the object's own `condition`/`excludes`/`defaults`/`outputs` become the shared base, and each
+/// the object's own `condition`/`excludes`/`defaults`/`producers` become the shared base, and each
 /// array entry is a variant merged over that base — `condition` ANDed, `excludes` unioned,
-/// `defaults`/`outputs` key-merged (variant wins) — with `id: <stem>_<variant name>`, so ids stay
+/// `defaults`/`producers` key-merged (variant wins) — with `id: <stem>_<variant name>`, so ids stay
 /// identical to what today's one-category-per-file layout would produce for the same names.
 fn expand_family(stem: &str, mut obj: Value) -> anyhow::Result<Vec<Value>> {
     let Some(map) = obj.as_object_mut() else {
@@ -261,12 +261,12 @@ fn expand_family(stem: &str, mut obj: Value) -> anyhow::Result<Vec<Value>> {
         return Ok(vec![obj]);
     };
 
-    let base = map; // remaining keys after removing `categories`: condition/excludes/defaults/outputs/...
+    let base = map; // remaining keys after removing `categories`: condition/excludes/defaults/producers/...
     let base_condition = base.get("condition").cloned();
     let base_excludes: Vec<Value> =
         base.get("excludes").and_then(Value::as_array).cloned().unwrap_or_default();
     let base_defaults = base.get("defaults").and_then(Value::as_object).cloned().unwrap_or_default();
-    let base_outputs = base.get("outputs").and_then(Value::as_object).cloned().unwrap_or_default();
+    let base_producers = base.get("producers").and_then(Value::as_object).cloned().unwrap_or_default();
 
     variants.into_iter().map(|variant| {
         let mut variant = variant;
@@ -300,9 +300,9 @@ fn expand_family(stem: &str, mut obj: Value) -> anyhow::Result<Vec<Value>> {
         if let Some(Value::Object(over)) = vmap.remove("defaults") {
             defaults = merge(&defaults, &over);
         }
-        let mut outputs = base_outputs.clone();
-        if let Some(Value::Object(over)) = vmap.remove("outputs") {
-            outputs = merge(&outputs, &over);
+        let mut producers = base_producers.clone();
+        if let Some(Value::Object(over)) = vmap.remove("producers") {
+            producers = merge(&producers, &over);
         }
 
         let mut result = Map::new();
@@ -314,8 +314,8 @@ fn expand_family(stem: &str, mut obj: Value) -> anyhow::Result<Vec<Value>> {
         if !defaults.is_empty() {
             result.insert("defaults".to_owned(), Value::Object(defaults));
         }
-        if !outputs.is_empty() {
-            result.insert("outputs".to_owned(), Value::Object(outputs));
+        if !producers.is_empty() {
+            result.insert("producers".to_owned(), Value::Object(producers));
         }
         // Any other variant-specific keys (forward-compatible) pass through untouched.
         for (k, v) in vmap.iter() {
@@ -412,7 +412,7 @@ pub fn load_shared_producers(config_root: &std::path::Path) -> anyhow::Result<Ma
 /// happens once here, at topic-directory-read time, on raw JSON — the same treatment shared
 /// macros/sanitizers get (see `merge`) — so `Producer`'s own `Deserialize` never has to represent
 /// a shared-table reference at all. Errors loudly on an unknown name, same as a producer-library
-/// name miss (`spec::resolve_output_entry`).
+/// name miss (`spec::resolve_producer_entry`).
 pub fn inline_shared_producers(value: Value, shared: &Map<String, Value>) -> anyhow::Result<Value> {
     Ok(match value {
         Value::Object(mut obj) => match obj.get("shared").cloned() {

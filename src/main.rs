@@ -93,10 +93,10 @@ async fn main() -> anyhow::Result<()> {
 
     for r in &runners {
         info!(
-            "Loaded topic '{}' ({} categories, {} outputs)",
+            "Loaded topic '{}' ({} categories, {} producers)",
             r.table(),
             r.categories.values().map(|c| c.categories.len()).sum::<usize>(),
-            r.default_outputs.len(),
+            r.default_producers.len(),
         );
         for (kind, cats) in &r.categories {
             let s = cats.tree.stats();

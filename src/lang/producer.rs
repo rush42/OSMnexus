@@ -1,5 +1,5 @@
 //! The `Producer` engine — a small tree of variants that evaluates one output's value (the one
-//! mechanism behind every `outputs` entry, `TopicSpec::outputs`) plus the context (`ExtractCtx`/
+//! mechanism behind every `producers` entry, `TopicSpec::producers`) plus the context (`ExtractCtx`/
 //! `TagSet`) and result (`Produced`) types it evaluates over. Two branch shapes (`Match`, `Parent`)
 //! and two leaf/read shapes (`Extract` — a plain key/candidate-list tag read — and `Const`) —
 //! everything else is JSON-only sugar, folded into one of these by `parser`'s hand-written `Deserialize` impl

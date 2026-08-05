@@ -40,7 +40,7 @@
       }
     }
   },
-  "outputs": {
+  "producers": {
     "surface": "surface_from_parent",
     "traffic_mode_left": "traffic_mode_left_from_parking_directional",
     "traffic_mode_right": "traffic_mode_right_from_parking_directional"

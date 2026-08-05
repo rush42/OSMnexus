@@ -19,7 +19,7 @@
     "service_uncategorized",
     "unspecified_road"
   ],
-  "outputs": {
+  "producers": {
     "minzoom": "track_minzoom"
   }
 }

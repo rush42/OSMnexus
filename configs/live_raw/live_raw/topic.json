@@ -1,7 +1,7 @@
 {
   "table": "live_raw",
   "accept_all": { "way": true, "node": true, "relation": true },
-  "outputs": true,
+  "producers": true,
   "geometry": {
     "way": ["line"],
     "node": ["point"]

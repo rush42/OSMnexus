@@ -6,7 +6,7 @@
 //! splices the resolved chain's own JSON (via `Sanitizer`'s `Serialize` impl below) into place at
 //! load time, before any `Filter`/`Producer` JSON is deserialized, so `sanitize:` always
 //! deserializes straight into `Vec<Sanitizer>` (see `resolve_named_sanitizer`, the one piece of
-//! by-name lookup logic, shared by that inlining pass and `topic::spec::resolve_output_entry`'s
+//! by-name lookup logic, shared by that inlining pass and `topic::spec::resolve_producer_entry`'s
 //! own by-name shorthand). `Sanitizer` doesn't derive `Deserialize` here — its JSON sugar (a bare
 //! single step instead of an array; `cases`/`filter`/`drop` as sugar for `mapping`, only on the way
 //! in) is folded in by hand-written impls in `parser`, kept separate from the runtime types/eval
@@ -31,7 +31,7 @@ fn identity(raw: &str) -> Value {
 /// built-in fails loudly here, at load time (`Builtin` is a closed enum, not a passthrough
 /// `String`). The one piece of by-name sanitizer resolution logic, shared by
 /// `topic::load::inline_sanitize_refs` (JSON-level `sanitize: "name"`) and
-/// `topic::spec::resolve_output_entry` (the sanitizer-shorthand `{ "sanitizer": ... }` output entry,
+/// `topic::spec::resolve_producer_entry` (the sanitizer-shorthand `{ "sanitizer": ... }` output entry,
 /// which never goes through JSON inlining since it isn't spelled as a `sanitize:` field).
 pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Vec<Sanitizer>> {
     match sanitizers.get(name) {

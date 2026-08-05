@@ -10,7 +10,7 @@ use super::schema::EDGE_TABLE;
 /// Static SQL template — `table` is always one of the Rust-provided topic table identifiers
 /// already trusted throughout `schema.rs` (never user/OSM-derived), so this is not an
 /// injection surface. The two jsonb keys read (`cost`, `is_directed`) are fixed literals, read
-/// from `produced` (every topic output — see `TopicSpec::outputs` — lands there).
+/// from `produced` (every topic output — see `TopicSpec::producers` — lands there).
 /// `cost` is split proportionally by segment share (`length_m / total_length_m`) so a way
 /// split into several edge segments doesn't get an unfair per-meter discount.
 /// `reverse_cost = -1` follows the pgRouting convention for "unusable in that direction".

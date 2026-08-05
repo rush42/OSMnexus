@@ -17,7 +17,7 @@ use crate::output::{rows::TopicRow, types::OsmMeta};
 /// When a value carries provenance, also emit `<output>_source` / `<output>_confidence` into
 /// `annotations` — engine bookkeeping about how `produced`'s values came about, not itself a
 /// topic-authored output (see `TopicRow::annotations`). Every field's `output` is unique within
-/// `fields` (guaranteed by construction — see `runner::resolve_outputs`, built from a JSON map
+/// `fields` (guaranteed by construction — see `runner::resolve_producers`, built from a JSON map
 /// keyed by output), so later fields never race earlier ones for the same key: a const default
 /// reaches `produced` only via a field whose own producer is a `Fallback` ending in that const
 /// (see `runner::merge_const_fields`), which is why no separate "did the const survive" tracking
@@ -96,7 +96,7 @@ pub fn build_topic_rows<'a>(
     let mut rows = Vec::new();
     let mut emit = |ectx: ExtractCtx| {
         // `accept_all` kinds (`categories` is `None`) skip category matching entirely — every
-        // element is kept, with no `category` value and `default_outputs` as its outputs.
+        // element is kept, with no `category` value and `default_producers` as its producers.
         let category_id = match categories {
             Some(cats) => {
                 let category = if runner.linear_classify {
@@ -112,8 +112,8 @@ pub fn build_topic_rows<'a>(
             None => None,
         };
 
-        // This category's effective outputs (topic `outputs` ⊕ category `outputs`, see
-        // `TopicSpec::outputs`), plus this category's effective `defaults` (folded in as each
+        // This category's effective producers (topic `producers` ⊕ category `producers`, see
+        // `TopicSpec::producers`), plus this category's effective `defaults` (folded in as each
         // default's lowest-priority `Fallback` branch — see `runner::merge_default_fields`), share
         // one column and one eval pass.
         let mut produced = Map::new();
@@ -123,15 +123,15 @@ pub fn build_topic_rows<'a>(
         // is gone (redundant with the parent's own `highway` tag, already reachable through
         // `ectx.parent_tags`).
         let mut annotations = ectx.annotations.clone();
-        let outputs = category_id
+        let producers = category_id
             .as_ref()
-            .and_then(|id| runner.category_outputs.get(id))
-            .unwrap_or(&runner.default_outputs);
-        eval_fields(outputs, &ectx, &mut produced, &mut annotations);
+            .and_then(|id| runner.category_producers.get(id))
+            .unwrap_or(&runner.default_producers);
+        eval_fields(producers, &ectx, &mut produced, &mut annotations);
         if runner.pass_through_remaining_tags {
-            // `"outputs": true` or a `null` `passthrough_tags` entry (see
+            // `"producers": true` or a `null` `passthrough_tags` entry (see
             // `TopicRunner::pass_through_remaining_tags`'s own doc) — every raw tag `eval_fields`
-            // above didn't already produce a value for, verbatim. `outputs: true` means `outputs`
+            // above didn't already produce a value for, verbatim. `producers: true` means `producers`
             // was empty to begin with, so this ends up filling every key in that case. `.entry(...)
             // .or_insert_with(...)` rather than `.extend(...)`: an explicit output (named
             // passthrough or a real derived field) always wins over the wildcard's raw value for

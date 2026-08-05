@@ -23,7 +23,7 @@
     "tracks",
     "layer"
   ],
-  "outputs": {
+  "producers": {
     "bridge": {
       "sanitizer": "to_bool"
     },

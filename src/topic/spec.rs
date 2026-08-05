@@ -1,5 +1,5 @@
 //! The JSON schema types a topic's `topic.json` (plus, optionally, `transforms.json` — see
-//! `TransformsSpec`) deserialize into, plus `resolve_output_entry`, which turns one raw `outputs`
+//! `TransformsSpec`) deserialize into, plus `resolve_producer_entry`, which turns one raw `producers`
 //! map value into a resolved `Field`. Pure load-time data model — no per-object evaluation lives
 //! here.
 
@@ -21,27 +21,27 @@ pub struct TopicSpec {
     /// One entry per output field, keyed by output name — replaces the former separate
     /// `osm_fields`/`sanitizers`/`derivers` lists, all of which produced the same
     /// `Field{output, source: Producer}` shape and are now just different value shapes of one
-    /// `outputs` map (see `resolve_output_entry`). A category can override any subset of these by
-    /// declaring its own `outputs` map, merged over the topic's by key (category wins). Also
-    /// accepts a bare `true`/`false` in place of the map (see `OutputsSpec`) — `true` means "pass
+    /// `producers` map (see `resolve_producer_entry`). A category can override any subset of these by
+    /// declaring its own `producers` map, merged over the topic's by key (category wins). Also
+    /// accepts a bare `true`/`false` in place of the map (see `ProducersSpec`) — `true` means "pass
     /// every tag through verbatim", for scratch/inspection topics that don't want to enumerate
     /// fields.
     #[serde(default)]
-    pub outputs: OutputsSpec,
-    /// Sugar for a batch of `"<tag>": true` entries in `outputs` (verbatim extract of the
-    /// identically-named tag — see `resolve_output_entry`) pulled out into their own list, so a
+    pub producers: ProducersSpec,
+    /// Sugar for a batch of `"<tag>": true` entries in `producers` (verbatim extract of the
+    /// identically-named tag — see `resolve_producer_entry`) pulled out into their own list, so a
     /// topic with many untouched passthrough tags doesn't have to sprinkle `true` throughout its
-    /// `outputs` map. Folded into `outputs` at load time (`TopicRunner::load`); a tag named here
-    /// that's also an explicit `outputs` key is a load-time error rather than a silent shadow.
+    /// `producers` map. Folded into `producers` at load time (`TopicRunner::load`); a tag named here
+    /// that's also an explicit `producers` key is a load-time error rather than a silent shadow.
     ///
-    /// A bare `null` entry is a wildcard: "every tag not already claimed by `outputs` or a named
+    /// A bare `null` entry is a wildcard: "every tag not already claimed by `producers` or a named
     /// entry here" — for a topic that wants a handful of *derived* fields plus everything else
-    /// verbatim, which `outputs: true` (`OutputsSpec::All`) can't express (that's *only* every raw
+    /// verbatim, which `producers: true` (`ProducersSpec::All`) can't express (that's *only* every raw
     /// tag, no room for a computed field alongside). Unlike a named entry, a `null` here can't be
-    /// folded into a fixed `outputs` key (there's no name to fold it under) — `TopicRunner::load`
+    /// folded into a fixed `producers` key (there's no name to fold it under) — `TopicRunner::load`
     /// pulls it out into `pass_through_remaining_tags` instead, applied at row-build time after
     /// every named output has already run, so an explicit output always wins over the wildcard's
-    /// raw value for the same key. Redundant (and a load-time error) alongside `outputs: true`.
+    /// raw value for the same key. Redundant (and a load-time error) alongside `producers: true`.
     #[serde(default)]
     pub passthrough_tags: Vec<Option<String>>,
     /// Optional Filter condition evaluated against raw way tags before categorization.
@@ -53,14 +53,14 @@ pub struct TopicSpec {
     /// the same key overrides them). Categories override per-key via their own `defaults`.
     #[serde(default)]
     pub defaults: serde_json::Map<String, serde_json::Value>,
-    /// Which geometry outputs this topic wants, per element kind — replaces the old global
+    /// Which geometry producers this topic wants, per element kind — replaces the old global
     /// `--emit-way-geometries`/`--emit-relation-geometries`/`--topic-edges` CLI flags with a
     /// per-topic declaration. See `GeometryShape`.
     #[serde(default)]
     pub geometry: GeometrySpec,
     /// Per-kind "no subcategorization" opt-out from the `topics/<name>/{node,way,relation}/`
     /// category-file convention — a kind flagged here accepts every (non-`exclude_condition`-
-    /// matched) element straight through the topic's own `outputs`/`defaults`, with no category
+    /// matched) element straight through the topic's own `producers`/`defaults`, with no category
     /// directory to load and no `category` value in its output rows (see `TopicRow::category`).
     /// Replaces the old workaround of writing a single trivial `{"condition": true}` category file
     /// per kind (e.g. `buildings/way/building.json`) just to opt out of subcategorization.
@@ -91,34 +91,34 @@ impl AcceptAllSpec {
     }
 }
 
-/// `topic.json`'s top-level `outputs`: normally a `{field: producer}` map, but a bare `true`/
+/// `topic.json`'s top-level `producers`: normally a `{field: producer}` map, but a bare `true`/
 /// `false` is also accepted — `false` behaves exactly like `{}` (no fields; `into_fields_map`
 /// treats both the same way), while `true` means "pass every tag through verbatim" and is read via
 /// `is_all` into `TopicRunner::pass_through_remaining_tags` (same flag a `null` `passthrough_tags`
 /// entry sets — see that field's own doc) rather than expanding to one `Field` per possible tag.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-pub enum OutputsSpec {
+pub enum ProducersSpec {
     All(bool),
     Fields(Map<String, Value>),
 }
 
-impl Default for OutputsSpec {
+impl Default for ProducersSpec {
     fn default() -> Self {
-        OutputsSpec::Fields(Map::new())
+        ProducersSpec::Fields(Map::new())
     }
 }
 
-impl OutputsSpec {
+impl ProducersSpec {
     pub fn into_fields_map(self) -> Map<String, Value> {
         match self {
-            OutputsSpec::All(_) => Map::new(),
-            OutputsSpec::Fields(m) => m,
+            ProducersSpec::All(_) => Map::new(),
+            ProducersSpec::Fields(m) => m,
         }
     }
 
     pub fn is_all(&self) -> bool {
-        matches!(self, OutputsSpec::All(true))
+        matches!(self, ProducersSpec::All(true))
     }
 }
 
@@ -128,17 +128,17 @@ impl OutputsSpec {
 /// combinations that don't make sense for a kind (e.g. a node can't have a `Line`).
 #[derive(Debug, Deserialize, Default)]
 pub struct GeometrySpec {
-    /// Geometry outputs for this topic's nodes. `Point` emits the node's own point row; `Graph`
+    /// Geometry producers for this topic's nodes. `Point` emits the node's own point row; `Graph`
     /// forces a cut point in the shared routing graph at this node (even at way use-count 1) for
     /// every way passing through it — independent of `Point`, and independent of whether any *other*
     /// topic's ways want the graph at all (moot if none do; see `GeometryPlan::node_graph_mask`).
     /// A topic can declare either, both, or neither.
     #[serde(default)]
     pub node: Vec<GeometryShape>,
-    /// Geometry outputs for this topic's ways.
+    /// Geometry producers for this topic's ways.
     #[serde(default)]
     pub way: Vec<GeometryShape>,
-    /// Geometry outputs for this topic's relations — built from its member ways' already-resolved
+    /// Geometry producers for this topic's relations — built from its member ways' already-resolved
     /// geometry (see `geom::relation::resolve_relation_ways`), no SQL post-processing needed.
     #[serde(default)]
     pub relation: Vec<GeometryShape>,
@@ -216,8 +216,8 @@ mod geometry_spec_tests {
     }
 }
 
-/// One produced field: `{ output, source: Producer }`. The resolved form every `outputs` map
-/// entry (see `resolve_output_entry`) turns into — used for the topic's own fields and every
+/// One produced field: `{ output, source: Producer }`. The resolved form every `producers` map
+/// entry (see `resolve_producer_entry`) turns into — used for the topic's own fields and every
 /// category's effective fields alike, all sharing one eval path (`pipeline::eval_fields`).
 #[derive(Debug, Clone)]
 pub struct Field {
@@ -225,9 +225,9 @@ pub struct Field {
     pub source: Producer,
 }
 
-/// Resolve one raw `outputs` map value (topic- or category-level, already merged by key) into a
+/// Resolve one raw `producers` map value (topic- or category-level, already merged by key) into a
 /// `Field`. Three value shapes, tried in this order — no inline `Producer` shape (a full `Match`/
-/// `fallback`/etc. written straight into `outputs`): every output is either the identically-named
+/// `fallback`/etc. written straight into `producers`): every output is either the identically-named
 /// tag, or a name, so any real logic is authored once, named, in `producers.json` (same rule
 /// `sanitize:` already follows — see `sanitize.rs`'s own doc — a typo'd name fails loudly at load
 /// time instead of being buried inline where nothing else can reference it):
@@ -243,7 +243,7 @@ pub struct Field {
 ///   there's no redundant `tag` field. This is the one shape whose sanitizer name is never spelled
 ///   as a `sanitize:` field, so it's the one place here that still resolves a name directly
 ///   (`resolve_named_sanitizer`) rather than relying on `topic::load`'s JSON-level inlining.
-pub fn resolve_output_entry(
+pub fn resolve_producer_entry(
     output: &str,
     value: Value,
     producer_lib: &HashMap<String, Producer>,
@@ -263,12 +263,12 @@ pub fn resolve_output_entry(
             from: TagSet,
         }
         let r: SanitizerRepr = serde_json::from_value(value)
-            .with_context(|| format!("topic outputs.{output}"))?;
+            .with_context(|| format!("topic producers.{output}"))?;
         let extract = Producer::Extract {
             extract: Extract::Candidates {
                 keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
                 sanitize: resolve_named_sanitizer(&r.sanitizer, sanitizers)
-                    .with_context(|| format!("topic outputs.{output}"))?,
+                    .with_context(|| format!("topic producers.{output}"))?,
             },
             annotate: Map::new(),
         };
@@ -283,12 +283,12 @@ pub fn resolve_output_entry(
                 extract: Extract::Value { key: output.to_owned(), sanitize: Vec::new() },
                 annotate: Map::new(),
             },
-            Value::Bool(false) => anyhow::bail!("topic outputs.{output}: `false` is not a valid entry"),
+            Value::Bool(false) => anyhow::bail!("topic producers.{output}: `false` is not a valid entry"),
             Value::String(name) => producer_lib.get(&name).cloned().ok_or_else(|| {
-                anyhow::anyhow!("topic outputs.{output}: producer '{name}' not found in producers.json")
+                anyhow::anyhow!("topic producers.{output}: producer '{name}' not found in producers.json")
             })?,
             other => anyhow::bail!(
-                "topic outputs.{output}: must be `true`, a named producers.json reference, or the \
+                "topic producers.{output}: must be `true`, a named producers.json reference, or the \
                  sanitizer shorthand `{{ sanitizer, in?, from? }}` — not an inline producer: {other}"
             ),
         }

@@ -133,9 +133,9 @@ fn main() -> Result<()> {
             if selector == "list" {
                 // Field names only — no `Producer` repr formatting, no `producer_dag` walks, so this
                 // stays cheap even when some field's tree is huge.
-                let mut names: Vec<String> = runner.default_outputs.iter().map(|f| f.output.clone())
-                    .chain(runner.category_outputs.values().flatten().map(|f| f.output.clone()))
-                    .filter(|name| !runner.passthrough_outputs.contains(name))
+                let mut names: Vec<String> = runner.default_producers.iter().map(|f| f.output.clone())
+                    .chain(runner.category_producers.values().flatten().map(|f| f.output.clone()))
+                    .filter(|name| !runner.passthrough_producers.contains(name))
                     .collect();
                 names.sort();
                 names.dedup();
@@ -145,11 +145,11 @@ fn main() -> Result<()> {
             // Same dedup `bin/plot_dag` does: producers sharing a repr for this field collapse into
             // one variant, labeled by who produces it that way — but only for the requested field.
             let mut by_repr: std::collections::HashMap<String, (&Producer, Vec<String>)> = std::collections::HashMap::new();
-            for field in runner.default_outputs.iter().filter(|f| f.output == selector) {
+            for field in runner.default_producers.iter().filter(|f| f.output == selector) {
                 let repr = format!("{:?}", field.source);
                 by_repr.entry(repr).or_insert((&field.source, Vec::new())).1.push("default".to_owned());
             }
-            for (category, fields) in &runner.category_outputs {
+            for (category, fields) in &runner.category_producers {
                 for field in fields.iter().filter(|f| f.output == selector) {
                     let repr = format!("{:?}", field.source);
                     by_repr.entry(repr).or_insert((&field.source, Vec::new())).1.push(category.clone());

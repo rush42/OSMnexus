@@ -22,11 +22,11 @@ pub struct CategoryDef {
     pub id: String,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
-    /// Per-category output overrides: merged over the topic's `outputs` map by key (category
+    /// Per-category output overrides: merged over the topic's `producers` map by key (category
     /// wins), before resolving into `Producer`s — e.g. re-sourcing `surface`/`smoothness` from
-    /// the parent highway. Same value shapes as `TopicSpec::outputs` (see `resolve_output_entry`).
+    /// the parent highway. Same value shapes as `TopicSpec::producers` (see `resolve_producer_entry`).
     #[serde(default)]
-    pub outputs: serde_json::Map<String, serde_json::Value>,
+    pub producers: serde_json::Map<String, serde_json::Value>,
     /// Per-category default values (override the topic-level `defaults` per key). Seeded into
     /// `produced` as the lowest-priority layer; any output producing the same key overrides them.
     #[serde(default)]

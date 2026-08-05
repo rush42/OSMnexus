@@ -24,7 +24,7 @@
     "buffer:right",
     "buffer:both"
   ],
-  "outputs": {
+  "producers": {
     "name": "name",
     "surface": "surface",
     "smoothness": "smoothness",
