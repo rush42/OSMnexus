@@ -32,6 +32,20 @@ impl EncodedRefs {
         EncodedRefs(buf.into_boxed_slice())
     }
 
+    /// Same encoding as `encode`, but takes deltas that are already computed — `osmpbf`'s
+    /// `Way::raw_refs()` hands back exactly this (the way's node refs as parsed off the wire,
+    /// before `Way::refs()`'s iterator sums them into absolute ids), so a caller with access to that
+    /// can skip both `Way::refs()`'s summation *and* `encode`'s re-subtraction, which are inverses
+    /// of each other and cancel out to redundant work when chained. Deltas are zigzag-encoded
+    /// as-is, no accumulation.
+    pub fn from_deltas(deltas: &[i64]) -> Self {
+        let mut buf = Vec::with_capacity(deltas.len() * 2);
+        for &delta in deltas {
+            write_varint(&mut buf, zigzag_encode(delta));
+        }
+        EncodedRefs(buf.into_boxed_slice())
+    }
+
     pub fn iter(&self) -> RefsIter<'_> {
         RefsIter { buf: &self.0, pos: 0, prev: 0 }
     }
@@ -118,6 +132,19 @@ mod tests {
         let ids: Vec<i64> = vec![100, 101, 102, 50, 50, 7_000_000_000, -3, 0, i64::MAX, i64::MIN];
         let encoded = EncodedRefs::encode(&ids);
         assert_eq!(encoded.decode(), ids);
+    }
+
+    #[test]
+    fn from_deltas_matches_encode() {
+        let ids: Vec<i64> = vec![100, 101, 102, 50, 50, 7_000_000_000, -3, 0];
+        let mut deltas = Vec::with_capacity(ids.len());
+        let mut prev = 0i64;
+        for &id in &ids {
+            deltas.push(id - prev);
+            prev = id;
+        }
+        assert_eq!(EncodedRefs::from_deltas(&deltas).decode(), ids);
+        assert_eq!(EncodedRefs::from_deltas(&deltas).decode(), EncodedRefs::encode(&ids).decode());
     }
 
     #[test]

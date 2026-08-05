@@ -102,10 +102,17 @@ fn extract_meta(info: osmpbf::Info) -> WayMeta {
 /// Extract a [`WayData`] from an osmpbf `Way`. `tags` borrows straight from the block's string
 /// table (`Cow::Borrowed`, no allocation) — an excluded way (kept by no topic) never pays for a
 /// tag clone at all; see `RawTags`'s own doc.
+///
+/// Carries no node refs: `classify` (the only consumer of `WayData`) is purely tag-driven, and the
+/// counts/endpoints/`EncodedRefs` bookkeeping that does need refs reads `way.raw_refs()` directly at
+/// the Pass A call site instead — `Way::raw_refs()`'s elided lifetime ties its slice to the `&self`
+/// borrow of that call, not to `Way<'a>`'s own `'a` (unlike `tags()`, which explicitly returns
+/// `'a`), so it can't be stashed into a struct returned from here; it has to be read inline where
+/// `way` itself is still in scope. See `way_refs`'s own doc for why that's also the more efficient
+/// path (skips `Way::refs()`'s delta-to-absolute summation entirely for the storage path).
 pub(super) fn way_data<'a>(way: &Way<'a>) -> WayData<'a> {
     let tags: RawTags<'a> = way.tags().map(|(k, v)| (Cow::Borrowed(k), Cow::Borrowed(v))).collect();
-    let refs: Vec<i64> = way.refs().collect();
-    WayData { id: way.id(), tags, node_refs: refs, meta: extract_meta(way.info()) }
+    WayData { id: way.id(), tags, meta: extract_meta(way.info()) }
 }
 
 /// Extract a [`RelData`] from an osmpbf `Relation`, keeping only its **way** members (id + role —

@@ -58,12 +58,12 @@ pub struct OsmWay {
     pub cut_points: Vec<(u32, i64)>,
 }
 
-/// A filter-passing way's tags + node refs + metadata, produced by the reader's single way-region
-/// decode (Pass A). Tag-only classification consumes this; the geometry pass keeps only `node_refs`.
+/// A filter-passing way's tags + metadata, produced by the reader's single way-region decode
+/// (Pass A) — purely what tag-only `classify` needs. Node refs aren't here: see `way_data`'s own
+/// doc for why they're read directly off `osmpbf::Way::raw_refs()` at the Pass A call site instead.
 pub struct WayData<'a> {
     pub id: i64,
     pub tags: RawTags<'a>,
-    pub node_refs: Vec<i64>,
     pub meta: WayMeta,
 }
 

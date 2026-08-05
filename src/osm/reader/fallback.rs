@@ -73,16 +73,24 @@ where
                     let kept_mask = (cb.classify_way)(&wd);
                     let is_extra = !extra_way_ids.is_empty() && extra_way_ids.contains(&wd.id);
                     if kept_mask.is_some() || is_extra {
+                        // Deltas straight off the wire (see `way_data`'s own doc) — accumulate to
+                        // absolute ids only where needed (counts/endpoints), pass deltas straight
+                        // through to `EncodedRefs` otherwise.
+                        let deltas = way.raw_refs();
                         if kept_mask.is_some() {
-                            for &id in &wd.node_refs {
-                                *counts.entry(id).or_insert(0) += 1;
+                            let mut cur = 0i64;
+                            let mut first = None;
+                            for &delta in deltas {
+                                cur += delta;
+                                first.get_or_insert(cur);
+                                *counts.entry(cur).or_insert(0) += 1;
                             }
-                            if let (Some(&first), Some(&last)) = (wd.node_refs.first(), wd.node_refs.last()) {
+                            if let Some(first) = first {
                                 endpoints.insert(first);
-                                endpoints.insert(last);
+                                endpoints.insert(cur);
                             }
                         }
-                        way_refs.insert(wd.id, (EncodedRefs::encode(&wd.node_refs), kept_mask.unwrap_or(0)));
+                        way_refs.insert(wd.id, (EncodedRefs::from_deltas(deltas), kept_mask.unwrap_or(0)));
                     }
                 }
                 (counts, endpoints, way_refs)
