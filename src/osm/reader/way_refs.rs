@@ -18,6 +18,7 @@ use rayon::prelude::*;
 use crate::osm::types::OsmWay;
 
 use super::resolve::{resolve_geometry, NodeCoords};
+use super::store::MphfArena;
 
 /// Delta+zigzag+varint encoded node-id list. `EncodedRefs::encode`/`iter` are the only way in/out —
 /// callers never see the byte layout.
@@ -96,16 +97,19 @@ impl Iterator for RefsIter<'_> {
     }
 }
 
-/// `SelectionContext::way_refs`'s storage — a resident `FxHashMap<i64, (EncodedRefs, u32)>`, wrapped
-/// so `geom::materialize`'s access patterns (resolve + route every mask-!=0 way, resolve one
-/// arbitrary way on demand, collect mask-!=0 endpoints) get purpose-built methods instead of reaching
-/// into the map directly. Deliberately has no "resolve every way and cache it" method — see
+/// `SelectionContext::way_refs`'s storage — an MPHF-indexed [`MphfArena`] (see `store`'s own doc
+/// for why this replaced a resident `FxHashMap<i64, (EncodedRefs, u32)>`), wrapped so
+/// `geom::materialize`'s access patterns (resolve + route every mask-!=0 way, resolve one arbitrary
+/// way on demand, collect mask-!=0 endpoints) get purpose-built methods instead of reaching into the
+/// arena directly. Deliberately has no "resolve every way and cache it" method — see
 /// `par_route_kept`'s own doc for why.
-pub struct WayRefsStore(FxHashMap<i64, (EncodedRefs, u32)>);
+pub struct WayRefsStore(MphfArena<u32>);
 
 impl WayRefsStore {
     pub fn build(map: FxHashMap<i64, (EncodedRefs, u32)>) -> Self {
-        WayRefsStore(map)
+        let records: Vec<(i64, Box<[u8]>, u32)> =
+            map.into_iter().map(|(id, (refs, mask))| (id, refs.0, mask)).collect();
+        WayRefsStore(MphfArena::build(records))
     }
 
     pub fn len(&self) -> usize {
@@ -124,10 +128,10 @@ impl WayRefsStore {
     {
         self.0
             .par_iter()
-            .filter(|(_, (_, mask))| *mask != 0)
-            .filter_map(|(&id, (refs, mask))| {
-                let refs = refs.decode();
-                resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, *mask, w))
+            .filter(|(_, _, mask)| *mask != 0)
+            .filter_map(|(id, bytes, mask)| {
+                let refs: Vec<i64> = iter_refs(bytes).collect();
+                resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, mask, w))
             })
             .for_each(|(id, mask, w)| f(id, mask, w));
     }
@@ -135,16 +139,22 @@ impl WayRefsStore {
     /// Resolve one way's geometry on demand — for the small subset of ways (relation members) that
     /// `par_route_kept` doesn't already cover, without paying to cache every way for their sake.
     pub fn resolve_one(&self, id: i64, node_coords: &NodeCoords, selected: &FxHashSet<i64>) -> Option<OsmWay> {
-        let (refs, _) = self.0.get(&id)?;
-        resolve_geometry(id, &refs.decode(), node_coords, selected)
+        let (bytes, _) = self.0.get(id)?;
+        let refs: Vec<i64> = iter_refs(bytes).collect();
+        resolve_geometry(id, &refs, node_coords, selected)
     }
 
     /// Every mask-!=0 way's first + last node id — the graph vertex candidate set.
     pub fn endpoints(&self) -> FxHashSet<i64> {
         self.0
             .iter()
-            .filter(|(_, (_, mask))| *mask != 0)
-            .filter_map(|(_, (refs, _))| refs.first_last())
+            .filter(|(_, _, mask)| *mask != 0)
+            .filter_map(|(_, bytes, _)| {
+                let mut it = iter_refs(bytes);
+                let first = it.next()?;
+                let last = it.last().unwrap_or(first);
+                Some((first, last))
+            })
             .flat_map(|(first, last)| [first, last])
             .collect()
     }

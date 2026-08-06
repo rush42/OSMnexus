@@ -18,18 +18,21 @@
 mod blob_index;
 mod fallback;
 mod memory_coords;
+mod rel_members;
 mod resolve;
 mod sorted;
+mod store;
 mod way_refs;
 
 use anyhow::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{info, warn};
 
-use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
+use crate::osm::types::{NodeData, RelData, WayData};
 
 use blob_index::{build_blob_index, find_relation_section_start, find_way_section_start, pbf_is_sorted};
 use fallback::stream_osm_fallback;
+pub use rel_members::RelMembers;
 pub use resolve::{resolve_geometry, NodeCoords};
 use sorted::{classify_and_index, classify_relations, collect_coords};
 pub use way_refs::{EncodedRefs, WayRefsStore};
@@ -49,7 +52,7 @@ pub struct SelectionContext {
     /// `relation_id -> (member ways with role, per-topic keep mask)`, for every tag-kept relation
     /// (regardless of whether any topic wants relation geometry — that decision is
     /// `geom::materialize`'s, using a `GeometryPlan`, not this module's).
-    pub rel_members: FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>,
+    pub rel_members: RelMembers,
     /// Node ids classified by a node topic that also declared `"geometry": {"node": ["graph"]}` —
     /// forced cut points even at use-count 1. A node classified only by point-only (or bare) node
     /// topics is not in here — see `GeometryPlan::node_graph_mask`.
@@ -223,7 +226,7 @@ where
                 // to do) costs the same order of memory as the coordinate map itself, for nothing.
                 drop(use_counts);
 
-                return Ok(SelectionContext { node_coords, way_refs, rel_members, selected });
+                return Ok(SelectionContext { node_coords, way_refs, rel_members: RelMembers::build(rel_members), selected });
             }
             Err(e) => {
                 warn!("ordered fast-path boundary check failed ({e:#}); falling back to full scan");

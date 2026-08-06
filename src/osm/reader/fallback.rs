@@ -12,6 +12,7 @@ use tracing::info;
 
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
+use super::rel_members::RelMembers;
 use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoordsBuilder, NodeRefCounts};
 use super::way_refs::{EncodedRefs, WayRefsStore};
 use super::{Callbacks, SelectionContext};
@@ -177,5 +178,5 @@ where
     drop(use_counts);
 
     let way_refs = WayRefsStore::build(way_refs);
-    Ok(SelectionContext { node_coords, way_refs, rel_members, selected })
+    Ok(SelectionContext { node_coords, way_refs, rel_members: RelMembers::build(rel_members), selected })
 }
