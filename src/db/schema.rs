@@ -32,6 +32,11 @@ pub const NODE_TABLE: &str = "nodes";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeomTableShape {
     LineString,
+    /// Relation-line tables only (see `geom::builders::build_relation_line_row`'s own doc): a
+    /// relation's member ways chained by shared endpoint frequently assemble into several
+    /// disconnected runs (branches, real mapping gaps), so relation lines carry all of them as one
+    /// `MultiLineString` row per relation instead of splitting into multiple rows.
+    MultiLineString,
     Point,
     Polygon,
 }
@@ -40,13 +45,14 @@ impl GeomTableShape {
     fn pg_type(self) -> &'static str {
         match self {
             GeomTableShape::LineString => "LineString",
+            GeomTableShape::MultiLineString => "MultiLineString",
             GeomTableShape::Point => "Point",
             GeomTableShape::Polygon => "Polygon",
         }
     }
 
     fn has_length(self) -> bool {
-        self == GeomTableShape::LineString
+        matches!(self, GeomTableShape::LineString | GeomTableShape::MultiLineString)
     }
 }
 

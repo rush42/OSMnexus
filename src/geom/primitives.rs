@@ -153,6 +153,38 @@ pub fn polygon_to_ewkb(polygon: &Polygon<f64>) -> Vec<u8> {
     buf
 }
 
+/// Decode a MultiLineString written by `to_multi_ewkb` back into its raw (still-projected)
+/// per-run coordinate lists.
+pub fn multilinestring_from_ewkb(bytes: &[u8]) -> anyhow::Result<Vec<Vec<(f64, f64)>>> {
+    anyhow::ensure!(bytes.len() >= 9, "EWKB too short for a MultiLineString header");
+    anyhow::ensure!(bytes[0] == 1, "only little-endian EWKB is supported");
+    let wkb_type = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
+    anyhow::ensure!(wkb_type == 0x2000_0005, "expected SRID-flagged MultiLineString, got type {wkb_type:#x}");
+    // bytes[5..9] is the SRID, already known to be 3857 by construction.
+    let num_lines = u32::from_le_bytes(bytes[9..13].try_into().unwrap()) as usize;
+    let mut pos = 13;
+    let mut lines = Vec::with_capacity(num_lines);
+    for _ in 0..num_lines {
+        anyhow::ensure!(bytes.len() >= pos + 9, "EWKB truncated in MultiLineString member header");
+        anyhow::ensure!(bytes[pos] == 1, "only little-endian EWKB is supported");
+        let member_type = u32::from_le_bytes(bytes[pos + 1..pos + 5].try_into().unwrap());
+        anyhow::ensure!(member_type == 2, "expected plain LineString member, got type {member_type:#x}");
+        let num_points = u32::from_le_bytes(bytes[pos + 5..pos + 9].try_into().unwrap()) as usize;
+        pos += 9;
+        anyhow::ensure!(bytes.len() >= pos + num_points * 16, "EWKB truncated in MultiLineString member points");
+        let mut coords = Vec::with_capacity(num_points);
+        for i in 0..num_points {
+            let off = pos + i * 16;
+            let x = f64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
+            let y = f64::from_le_bytes(bytes[off + 8..off + 16].try_into().unwrap());
+            coords.push((x, y));
+        }
+        pos += num_points * 16;
+        lines.push(coords);
+    }
+    Ok(lines)
+}
+
 /// Encode a projected (EPSG:3857) LineString as PostGIS EWKB with SRID.
 pub fn to_ewkb(line: &LineString<f64>) -> Vec<u8> {
     use std::io::Write;
@@ -175,4 +207,70 @@ pub fn to_ewkb(line: &LineString<f64>) -> Vec<u8> {
         buf.write_all(&c.y.to_le_bytes()).unwrap();
     }
     buf
+}
+
+/// Encode a set of projected (EPSG:3857) LineStrings as one PostGIS EWKB MultiLineString with SRID
+/// — the SRID flag/value lives only on the outer header, per-member sub-geometries are plain
+/// (unflagged) `LineString` WKB, same nesting `polygon_to_ewkb` uses for its rings.
+pub fn to_multi_ewkb(lines: &[LineString<f64>]) -> Vec<u8> {
+    use std::io::Write;
+
+    // WKB type for MultiLineString with SRID flag: 0x20000005
+    let wkb_type: u32 = 0x2000_0005;
+    let srid: i32 = 3857;
+    let plain_linestring_type: u32 = 2;
+    let num_lines = lines.len() as u32;
+
+    let total_points: usize = lines.iter().map(|l| l.0.len()).sum();
+    let mut buf: Vec<u8> = Vec::with_capacity(13 + 9 * lines.len() + 16 * total_points);
+    buf.write_all(&[1u8]).unwrap();
+    buf.write_all(&wkb_type.to_le_bytes()).unwrap();
+    buf.write_all(&srid.to_le_bytes()).unwrap();
+    buf.write_all(&num_lines.to_le_bytes()).unwrap();
+    for line in lines {
+        let coords: Vec<_> = line.coords().collect();
+        buf.write_all(&[1u8]).unwrap();
+        buf.write_all(&plain_linestring_type.to_le_bytes()).unwrap();
+        buf.write_all(&(coords.len() as u32).to_le_bytes()).unwrap();
+        for c in &coords {
+            buf.write_all(&c.x.to_le_bytes()).unwrap();
+            buf.write_all(&c.y.to_le_bytes()).unwrap();
+        }
+    }
+    buf
+}
+
+#[cfg(test)]
+mod multi_ewkb_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_multiple_runs() {
+        let lines = vec![
+            project_line(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]),
+            project_line(&[(10.0, 20.0), (30.0, 40.0)]),
+        ];
+        let encoded = to_multi_ewkb(&lines);
+        let decoded = multilinestring_from_ewkb(&encoded).unwrap();
+
+        let expected: Vec<Vec<(f64, f64)>> =
+            lines.iter().map(|l| l.coords().map(|c| (c.x, c.y)).collect()).collect();
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn round_trips_single_run() {
+        let lines = vec![project_line(&[(0.0, 0.0), (1.0, 1.0)])];
+        let encoded = to_multi_ewkb(&lines);
+        let decoded = multilinestring_from_ewkb(&encoded).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].len(), 2);
+    }
+
+    #[test]
+    fn rejects_wrong_type() {
+        let line = project_line(&[(0.0, 0.0), (1.0, 1.0)]);
+        let single_line_ewkb = to_ewkb(&line);
+        assert!(multilinestring_from_ewkb(&single_line_ewkb).is_err());
+    }
 }

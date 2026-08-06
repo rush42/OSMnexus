@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     // it's picked up — no code changes needed.
     osmnexus::paths::set_config_root(cfg.config_dir.clone());
     info!("Config directory: {}", cfg.config_dir.display());
-    let runners: Vec<TopicRunner> = TopicRunner::load_all(cfg.tree_max_depth, cfg.linear_classify)?;
+    let runners: Vec<TopicRunner> = TopicRunner::load_all(cfg.tree_max_depth)?;
 
     let tables: Vec<String> = runners.iter().map(|r| r.table().to_owned()).collect();
     let table_refs: Vec<&str> = tables.iter().map(String::as_str).collect();
@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|&i| (schema::way_geom_table(table_refs[i]), schema::GeomTableShape::LineString))
         .chain(plan.way_polygon_topics.iter().map(|&i| (schema::polygon_table(table_refs[i]), schema::GeomTableShape::Polygon)))
         .chain(plan.point_topics.iter().map(|&i| (schema::point_table(table_refs[i]), schema::GeomTableShape::Point)))
-        .chain(plan.relation_line_topics.iter().map(|&i| (schema::relation_geom_table(table_refs[i]), schema::GeomTableShape::LineString)))
+        .chain(plan.relation_line_topics.iter().map(|&i| (schema::relation_geom_table(table_refs[i]), schema::GeomTableShape::MultiLineString)))
         .chain(plan.relation_point_topics.iter().map(|&i| (schema::relation_point_table(table_refs[i]), schema::GeomTableShape::Point)))
         .chain(plan.relation_polygon_topics.iter().map(|&i| (schema::relation_polygon_table(table_refs[i]), schema::GeomTableShape::Polygon)))
         .collect();

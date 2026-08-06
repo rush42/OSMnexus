@@ -5,8 +5,9 @@
 
 use crate::geom::primitives::{
     centroid_of_line, haversine_length_m, point_to_ewkb, polygon_to_ewkb, project_line, project_polygon,
-    project_ring, to_ewkb, wgs84_to_3857,
+    project_ring, to_ewkb, to_multi_ewkb, wgs84_to_3857,
 };
+use crate::geom::relation::assemble_rings;
 use crate::geom::rows::{EdgeRow, NodeRow, PointRow, PolygonRow, WayRow};
 use crate::osm::types::OsmWay;
 use rustc_hash::FxHashMap;
@@ -107,19 +108,25 @@ pub fn build_way_polygon_row(way: &OsmWay) -> PolygonRow {
 }
 
 /// Build a relation's line row from its member ways' independently re-resolved coordinate
-/// sequences (see `geom::relation::resolve_relation_ways`), concatenated in member order. This is
-/// a simple concatenation, not a topological line-merge (`ST_LineMerge`'s old SQL behavior) —
-/// correct for the common case of an ordered route relation, but won't reorder out-of-sequence or
-/// reversed member ways. `None` if fewer than 2 points end up in the concatenation (e.g. every
-/// member way was missing/unresolvable).
+/// sequences (see `geom::relation::resolve_relation_ways`), chained into contiguous runs by
+/// `assemble_rings` — the same topological (shared-endpoint) chaining `build_relation_polygon_row`
+/// uses for rings, applied here without forcing closure. A route relation's member ways are
+/// frequently listed out of geographic order (branches, editor insertion order, genuinely disjoint
+/// segments), so naively concatenating them in member order draws a straight chord across every
+/// such gap; chaining by shared endpoint only connects ways that are actually adjacent. The result
+/// is a `MultiLineString` — one member per connected run — rather than one row per run, so a
+/// multi-branch route (or a route with real mapping gaps) still emits a single relation-line row
+/// instead of splitting into several. `None` if no run has at least 2 points (e.g. every member way
+/// was missing/unresolvable).
 pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -> Option<WayRow> {
-    let coords: Vec<(f64, f64)> = member_coords.iter().flatten().copied().collect();
-    if coords.len() < 2 {
+    let runs: Vec<Vec<(f64, f64)>> =
+        assemble_rings(member_coords.to_vec()).into_iter().filter(|r| r.len() >= 2).collect();
+    if runs.is_empty() {
         return None;
     }
-    let geom = project_line(&coords);
-    let length_m = haversine_length_m(&coords);
-    Some(WayRow { osm_id: rel_id, geom_ewkb: to_ewkb(&geom), length_m })
+    let length_m: f64 = runs.iter().map(|r| haversine_length_m(r)).sum();
+    let lines: Vec<geo::LineString<f64>> = runs.iter().map(|r| project_line(r)).collect();
+    Some(WayRow { osm_id: rel_id, geom_ewkb: to_multi_ewkb(&lines), length_m })
 }
 
 /// Build a relation's multipolygon row from its already-chained `outer`/`inner` rings (see

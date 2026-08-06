@@ -21,7 +21,7 @@ use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
-use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, point_from_ewkb};
+use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, multilinestring_from_ewkb, point_from_ewkb};
 use crate::geom::rows::{EDGE_COLUMNS, POINT_COLUMNS, POLYGON_COLUMNS, WAY_COLUMNS};
 use crate::output::rows::TAG_COLUMNS;
 
@@ -39,6 +39,20 @@ fn lonlat_coordinates(geom: &[u8]) -> anyhow::Result<Vec<[f64; 2]>> {
         .map(|(x, y)| {
             let (lon, lat) = mercator_to_wgs84(x, y);
             [lon, lat]
+        })
+        .collect())
+}
+
+fn lonlat_multi_coordinates(geom: &[u8]) -> anyhow::Result<Vec<Vec<[f64; 2]>>> {
+    Ok(multilinestring_from_ewkb(geom)?
+        .into_iter()
+        .map(|run| {
+            run.into_iter()
+                .map(|(x, y)| {
+                    let (lon, lat) = mercator_to_wgs84(x, y);
+                    [lon, lat]
+                })
+                .collect()
         })
         .collect())
 }
@@ -101,6 +115,30 @@ fn read_way_geom(path: &Path) -> anyhow::Result<Option<HashMap<i64, Vec<[f64; 2]
         }
         let osm_id: i64 = record[0].parse()?;
         by_osm_id.insert(osm_id, lonlat_coordinates(&hex::decode(geom_hex)?)?);
+    }
+    Ok(Some(by_osm_id))
+}
+
+/// Reads a `{table}_relation_geom.csv` file (`WAY_COLUMNS`), keyed by `osm_id` — relation lines are
+/// `MultiLineString` (see `db::schema::GeomTableShape::MultiLineString`'s own doc: a relation's
+/// member ways chained by shared endpoint frequently assemble into several disconnected runs), so
+/// each entry is a list of per-run coordinate lists rather than one flat list like `read_way_geom`.
+/// Returns `None` if the file doesn't exist — this topic didn't declare relation line geometry.
+fn read_relation_line_geom(path: &Path) -> anyhow::Result<Option<HashMap<i64, Vec<Vec<[f64; 2]>>>>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    debug_assert_eq!(WAY_COLUMNS, "osm_id,geom,length_m");
+    let mut reader = csv::Reader::from_path(path)?;
+    let mut by_osm_id = HashMap::new();
+    for result in reader.records() {
+        let record = result?;
+        let geom_hex = &record[1];
+        if geom_hex.is_empty() {
+            continue;
+        }
+        let osm_id: i64 = record[0].parse()?;
+        by_osm_id.insert(osm_id, lonlat_multi_coordinates(&hex::decode(geom_hex)?)?);
     }
     Ok(Some(by_osm_id))
 }
@@ -188,7 +226,7 @@ fn build_features(
     let way_geom = read_way_geom(&out_dir.join(format!("{table}_geom.csv")))?;
     let way_point = read_point_geom(&out_dir.join(format!("{table}_point.csv")))?;
     let way_polygon = read_polygon_geom(&out_dir.join(format!("{table}_polygon.csv")))?;
-    let relation_geom = read_way_geom(&out_dir.join(format!("{table}_relation_geom.csv")))?;
+    let relation_geom = read_relation_line_geom(&out_dir.join(format!("{table}_relation_geom.csv")))?;
     let relation_point = read_point_geom(&out_dir.join(format!("{table}_relation_point.csv")))?;
     let relation_polygon = read_polygon_geom(&out_dir.join(format!("{table}_relation_polygon.csv")))?;
 
@@ -202,10 +240,10 @@ fn build_features(
 
         match osm_type {
             "R" => {
-                if let Some(coordinates) = relation_geom.as_ref().and_then(|m| m.get(&osm_id)) {
+                if let Some(runs) = relation_geom.as_ref().and_then(|m| m.get(&osm_id)) {
                     features.push(json!({
                         "type": "Feature",
-                        "geometry": { "type": "LineString", "coordinates": coordinates },
+                        "geometry": { "type": "MultiLineString", "coordinates": runs },
                         "properties": base_properties(&record, osm_id),
                     }));
                 } else if let Some(coordinates) = relation_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
