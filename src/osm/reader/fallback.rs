@@ -12,16 +12,11 @@ use tracing::info;
 
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
-use super::rel_members::RelMembers;
 use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoordsBuilder, NodeRefCounts};
 use super::way_refs::{EncodedRefs, WayRefsStore};
 use super::{Callbacks, SelectionContext};
 
-pub(super) fn stream_osm_fallback<CR, CW, CN>(
-    path: &str,
-    cb: Callbacks<CR, CW, CN>,
-    use_disk_store: bool,
-) -> anyhow::Result<SelectionContext>
+pub(super) fn stream_osm_fallback<CR, CW, CN>(path: &str, cb: Callbacks<CR, CW, CN>) -> anyhow::Result<SelectionContext>
 where
     CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
     CW: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync + Send,
@@ -106,9 +101,9 @@ where
         )
         .context("way scan parallel read")?;
     let use_counts = if cb.needs_graph {
-        NodeRefCounts::from_counted(counts, use_disk_store)?
+        NodeRefCounts::Counted(counts)
     } else {
-        NodeRefCounts::from_present(counts.into_keys().collect(), use_disk_store)?
+        NodeRefCounts::Present(counts.into_keys().collect())
     };
 
     // Scan 2 — nodes: coords for every referenced node (+ classify nodes → selected set).
@@ -169,19 +164,18 @@ where
             },
         )
         .context("node scan parallel read")?;
-    let mut coords_builder = NodeCoordsBuilder::with_capacity(use_disk_store, coords_vec.len());
+    let mut coords_builder = NodeCoordsBuilder::with_capacity(coords_vec.len());
     for (id, lon, lat) in coords_vec {
         let shared = use_counts.lookup(&id).unwrap_or(false);
         coords_builder.insert(id, lon, lat, shared);
     }
-    let node_coords = coords_builder.finish()?;
+    let node_coords = coords_builder.finish();
 
     log_node_summary(&use_counts, standalone_classified);
 
     // See the sorted path's own `drop(use_counts)` — nothing past here reads it.
     drop(use_counts);
 
-    let way_refs = WayRefsStore::build(way_refs, use_disk_store)?;
-    let rel_members = RelMembers::build(rel_members, use_disk_store)?;
+    let way_refs = WayRefsStore::build(way_refs);
     Ok(SelectionContext { node_coords, way_refs, rel_members, selected })
 }

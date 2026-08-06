@@ -11,7 +11,6 @@ use rayon::prelude::*;
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
 use super::blob_index::decode_block;
-use super::disk_way_refs::WayRefsBuilder;
 use super::resolve::{dense_node_data, node_data, rel_data, way_data, NodeCoords, NodeCoordsBuilder, NodeRefCounts};
 use super::way_refs::{EncodedRefs, WayRefsStore};
 
@@ -96,29 +95,19 @@ struct ClassifiedWay {
 /// see `NodeRefCounts`'s own doc. Doesn't build `endpoints` at all: `geom::materialize` derives its
 /// own from `way_refs` when it actually needs them (`plan.any_way_graph`), so a Pass-A copy was
 /// always dead weight.
-///
-/// `use_disk_store` picks `way_refs`' shape: `WayRefsStore::Disk`, streamed straight to an mmap'd
-/// arena as each way is folded in (`WayRefsBuilder`, see its own doc), or the old resident
-/// `WayRefsStore::Memory` — folding a `Vec<(i64, EncodedRefs, u32)>` into a `FxHashMap` the way this
-/// used to unconditionally. The streamed path never holds more than `FOLD_CHUNK_BLOBS` blobs' worth
-/// of `EncodedRefs` (one boxed-slice allocation each) at a time, instead of one per way in the file
-/// for the run's whole Pass A/B — the single largest contributor to `--use-disk-store`'s Pass-A
-/// peak RSS before this, since a country-sized extract's way count rivals its node count.
 pub(super) fn classify_and_index<C>(
     mmap: &osmpbf::Mmap,
     way_offsets: &[ByteOffset],
     classify: &C,
     extra_way_ids: &FxHashSet<i64>,
     needs_graph: bool,
-    use_disk_store: bool,
 ) -> anyhow::Result<(NodeRefCounts, WayRefsStore, FxHashSet<i64>)>
 where
     C: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync,
 {
     let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
     let mut present: FxHashSet<i64> = FxHashSet::default();
-    let mut way_refs_mem: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
-    let mut way_refs_disk = if use_disk_store { Some(WayRefsBuilder::new()?) } else { None };
+    let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
     let mut extra_node_ids: FxHashSet<i64> = FxHashSet::default();
 
     for blob_chunk in way_offsets.chunks(FOLD_CHUNK_BLOBS) {
@@ -177,26 +166,14 @@ where
                         extra_node_ids.extend(w.refs.iter());
                     }
                 }
-                match &mut way_refs_disk {
-                    Some(builder) => builder.insert(w.id, &w.refs, w.mask)?,
-                    None => {
-                        way_refs_mem.insert(w.id, (w.refs, w.mask));
-                    }
-                }
+                way_refs.insert(w.id, (w.refs, w.mask));
             }
         }
     }
 
-    let use_counts = if needs_graph {
-        NodeRefCounts::from_counted(counts, use_disk_store)?
-    } else {
-        NodeRefCounts::from_present(present, use_disk_store)?
-    };
-    let way_refs = match way_refs_disk {
-        Some(builder) => WayRefsStore::Disk(builder.finish()?),
-        None => WayRefsStore::Memory(way_refs_mem),
-    };
-    Ok((use_counts, way_refs, extra_node_ids))
+    let use_counts =
+        if needs_graph { NodeRefCounts::Counted(counts) } else { NodeRefCounts::Present(present) };
+    Ok((use_counts, WayRefsStore::build(way_refs), extra_node_ids))
 }
 
 /// Pass B — collect coordinates (as f32, ~1 m precision) for the needed nodes from the node-region
@@ -219,7 +196,6 @@ pub(super) fn collect_coords<CN>(
     classify_nodes: bool,
     classify_node: &CN,
     extra_node_ids: &FxHashSet<i64>,
-    use_disk_store: bool,
 ) -> anyhow::Result<(NodeCoords, FxHashSet<i64>, u64)>
 where
     CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync,
@@ -239,7 +215,7 @@ where
     // practice. Re-measure that case before loosening the hint.
     let distinct_needed = use_counts.len()
         + extra_node_ids.iter().filter(|id| !use_counts.contains_key(id)).count();
-    let mut coords = NodeCoordsBuilder::with_capacity(use_disk_store, distinct_needed);
+    let mut coords = NodeCoordsBuilder::with_capacity(distinct_needed);
     let mut selected: FxHashSet<i64> = FxHashSet::default();
     let mut standalone_total: u64 = 0;
 
@@ -295,5 +271,5 @@ where
             standalone_total += standalone;
         }
     }
-    Ok((coords.finish()?, selected, standalone_total))
+    Ok((coords.finish(), selected, standalone_total))
 }

@@ -203,7 +203,8 @@ where
         || !plan.relation_point_topics.is_empty()
         || !plan.relation_polygon_topics.is_empty();
     let way_coords: FxHashMap<i64, Vec<(f64, f64)>> = if want_relation_geom && !ctx.rel_members.is_empty() {
-        let member_way_ids = ctx.rel_members.member_way_ids();
+        let member_way_ids: FxHashSet<i64> =
+            ctx.rel_members.values().flat_map(|(members, _)| members.iter().map(|&(w, _)| w)).collect();
         member_way_ids
             .iter()
             .filter_map(|&id| ctx.way_refs.resolve_one(id, &ctx.node_coords, &ctx.selected).map(|w| (id, w.coords)))
@@ -211,7 +212,8 @@ where
     } else {
         FxHashMap::default()
     };
-    let requests = ctx.rel_members.requests();
+    let requests: Vec<(i64, Vec<(i64, MemberRole)>, u32)> =
+        ctx.rel_members.iter().map(|(&id, (members, mask))| (id, members.clone(), *mask)).collect();
     let relations_batch = relations(&requests, &way_coords, plan);
 
     MaterializedGeometry { node_ids, node_rows, relations: relations_batch }

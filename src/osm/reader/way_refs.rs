@@ -2,11 +2,10 @@
 //!
 //! A way's `node_refs` used to live as a resident `Vec<i64>` (8 bytes/id) per kept way, for the
 //! whole run — on a country-sized extract with tens of millions of ways this rivals or exceeds the
-//! node coordinate table in size, yet was untouched by `--use-disk-store` (that only spills
-//! `node_coords`, see `disk_coords`'s own doc). Consecutive node ids along a way tend to be close
-//! together (the PBF's own `DenseNodes` id encoding banks on the same locality), so delta+zigzag+
-//! varint encoding shrinks most real-world ways well below 8 bytes/id, at the cost of a decode pass
-//! (linear in the way's length) on every read instead of a slice index.
+//! node coordinate table in size. Consecutive node ids along a way tend to be close together (the
+//! PBF's own `DenseNodes` id encoding banks on the same locality), so delta+zigzag+varint encoding
+//! shrinks most real-world ways well below 8 bytes/id, at the cost of a decode pass (linear in the
+//! way's length) on every read instead of a slice index.
 //!
 //! This doesn't reach for the PBF's own on-wire delta encoding directly — `osmpbf`'s `Way::refs()`
 //! already fully decodes it into absolute ids before we ever see them (see `resolve::way_data`), so
@@ -18,7 +17,6 @@ use rayon::prelude::*;
 
 use crate::osm::types::OsmWay;
 
-use super::disk_way_refs::DiskWayRefs;
 use super::resolve::{resolve_geometry, NodeCoords};
 
 /// Delta+zigzag+varint encoded node-id list. `EncodedRefs::encode`/`iter` are the only way in/out —
@@ -54,13 +52,6 @@ impl EncodedRefs {
         EncodedRefs(buf.into_boxed_slice())
     }
 
-    /// The raw encoded bytes — for a caller writing them into its own storage (e.g.
-    /// `disk_way_refs::DiskWayRefs::build`, which concatenates every way's bytes into one mmap'd
-    /// arena) rather than reading through this type.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
     pub fn iter(&self) -> RefsIter<'_> {
         iter_refs(&self.0)
     }
@@ -74,26 +65,15 @@ impl EncodedRefs {
     /// asymptotically, but it skips the `Vec` allocation callers that only need endpoints (not the
     /// full geometry) don't want to pay for.
     pub fn first_last(&self) -> Option<(i64, i64)> {
-        refs_first_last(&self.0)
+        let mut it = self.iter();
+        let first = it.next()?;
+        let last = it.last().unwrap_or(first);
+        Some((first, last))
     }
 }
 
-/// Free-standing counterparts of `EncodedRefs`' methods, operating directly on an encoded byte
-/// slice — for a caller reading bytes it doesn't own an `EncodedRefs` for, e.g. `DiskWayRefs`
-/// reading straight out of its mmap'd arena with no copy.
-pub fn iter_refs(buf: &[u8]) -> RefsIter<'_> {
+fn iter_refs(buf: &[u8]) -> RefsIter<'_> {
     RefsIter { buf, pos: 0, prev: 0 }
-}
-
-pub fn decode_refs(buf: &[u8]) -> Vec<i64> {
-    iter_refs(buf).collect()
-}
-
-pub fn refs_first_last(buf: &[u8]) -> Option<(i64, i64)> {
-    let mut it = iter_refs(buf);
-    let first = it.next()?;
-    let last = it.last().unwrap_or(first);
-    Some((first, last))
 }
 
 pub struct RefsIter<'a> {
@@ -116,41 +96,20 @@ impl Iterator for RefsIter<'_> {
     }
 }
 
-/// `SelectionContext::way_refs`'s storage: `Memory` (default, a resident `FxHashMap`) or `Disk`
-/// (the `--use-disk-store` opt-in — same flag `node_coords` uses, see `disk_way_refs`'s own doc
-/// for why one way store earns a place next to the coordinate store). `build` is the only entry
-/// point — both Pass A readers (`sorted`/`fallback`) already produce a plain
-/// `FxHashMap<i64, (EncodedRefs, u32)>` from their own parallel per-blob accumulation regardless of
-/// backend choice, so the backend split happens once, after that map is fully merged, rather than
-/// threading a builder through Pass A's accumulation itself.
-///
-/// Exposes purpose-built methods for `geom::materialize`'s access patterns (resolve + route every
-/// mask-!=0 way, resolve one arbitrary way on demand, collect mask-!=0 endpoints) instead of a
-/// generic iterator — `Memory`'s and `Disk`'s underlying iterators are different concrete types, and
-/// erasing that behind `dyn ParallelIterator` isn't supported by rayon, so each method just
-/// branches once and lets both arms produce the same concrete result type. Deliberately has no
-/// "resolve every way and cache it" method — see `par_route_kept`'s own doc for why.
-pub enum WayRefsStore {
-    Memory(FxHashMap<i64, (EncodedRefs, u32)>),
-    Disk(DiskWayRefs),
-}
+/// `SelectionContext::way_refs`'s storage — a resident `FxHashMap<i64, (EncodedRefs, u32)>`, wrapped
+/// so `geom::materialize`'s access patterns (resolve + route every mask-!=0 way, resolve one
+/// arbitrary way on demand, collect mask-!=0 endpoints) get purpose-built methods instead of reaching
+/// into the map directly. Deliberately has no "resolve every way and cache it" method — see
+/// `par_route_kept`'s own doc for why.
+pub struct WayRefsStore(FxHashMap<i64, (EncodedRefs, u32)>);
 
 impl WayRefsStore {
-    pub fn build(map: FxHashMap<i64, (EncodedRefs, u32)>, disk: bool) -> anyhow::Result<Self> {
-        if disk {
-            let records: Vec<(i64, EncodedRefs, u32)> =
-                map.into_iter().map(|(id, (refs, mask))| (id, refs, mask)).collect();
-            Ok(WayRefsStore::Disk(DiskWayRefs::build(records)?))
-        } else {
-            Ok(WayRefsStore::Memory(map))
-        }
+    pub fn build(map: FxHashMap<i64, (EncodedRefs, u32)>) -> Self {
+        WayRefsStore(map)
     }
 
     pub fn len(&self) -> usize {
-        match self {
-            WayRefsStore::Memory(m) => m.len(),
-            WayRefsStore::Disk(d) => d.len(),
-        }
+        self.0.len()
     }
 
     /// Resolve and route every mask-!=0 way's geometry, in parallel — resolved once, handed straight
@@ -163,59 +122,32 @@ impl WayRefsStore {
     where
         F: Fn(i64, u32, OsmWay) + Sync,
     {
-        match self {
-            WayRefsStore::Memory(m) => m
-                .par_iter()
-                .filter(|(_, (_, mask))| *mask != 0)
-                .filter_map(|(&id, (refs, mask))| {
-                    let refs = refs.decode();
-                    resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, *mask, w))
-                })
-                .for_each(|(id, mask, w)| f(id, mask, w)),
-            WayRefsStore::Disk(d) => d
-                .par_iter()
-                .filter(|(_, _, mask)| *mask != 0)
-                .filter_map(|(id, bytes, mask)| {
-                    let refs = decode_refs(bytes);
-                    resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, mask, w))
-                })
-                .for_each(|(id, mask, w)| f(id, mask, w)),
-        }
+        self.0
+            .par_iter()
+            .filter(|(_, (_, mask))| *mask != 0)
+            .filter_map(|(&id, (refs, mask))| {
+                let refs = refs.decode();
+                resolve_geometry(id, &refs, node_coords, selected).map(|w| (id, *mask, w))
+            })
+            .for_each(|(id, mask, w)| f(id, mask, w));
     }
 
     /// Resolve one way's geometry on demand — for the small subset of ways (relation members) that
     /// `par_route_kept` doesn't already cover, without paying to cache every way for their sake.
     pub fn resolve_one(&self, id: i64, node_coords: &NodeCoords, selected: &FxHashSet<i64>) -> Option<OsmWay> {
-        match self {
-            WayRefsStore::Memory(m) => {
-                let (refs, _) = m.get(&id)?;
-                resolve_geometry(id, &refs.decode(), node_coords, selected)
-            }
-            WayRefsStore::Disk(d) => {
-                let (bytes, _) = d.get(id)?;
-                resolve_geometry(id, &decode_refs(bytes), node_coords, selected)
-            }
-        }
+        let (refs, _) = self.0.get(&id)?;
+        resolve_geometry(id, &refs.decode(), node_coords, selected)
     }
 
     /// Every mask-!=0 way's first + last node id — the graph vertex candidate set.
     pub fn endpoints(&self) -> FxHashSet<i64> {
-        match self {
-            WayRefsStore::Memory(m) => m
-                .iter()
-                .filter(|(_, (_, mask))| *mask != 0)
-                .filter_map(|(_, (refs, _))| refs.first_last())
-                .flat_map(|(first, last)| [first, last])
-                .collect(),
-            WayRefsStore::Disk(d) => d
-                .iter()
-                .filter(|(_, _, mask)| *mask != 0)
-                .filter_map(|(_, bytes, _)| refs_first_last(bytes))
-                .flat_map(|(first, last)| [first, last])
-                .collect(),
-        }
+        self.0
+            .iter()
+            .filter(|(_, (_, mask))| *mask != 0)
+            .filter_map(|(_, (refs, _))| refs.first_last())
+            .flat_map(|(first, last)| [first, last])
+            .collect()
     }
-
 }
 
 pub(super) fn zigzag_encode(n: i64) -> u64 {

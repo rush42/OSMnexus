@@ -9,72 +9,7 @@ use tracing::info;
 
 use crate::osm::types::{MemberRole, NodeData, OsmWay, RawTags, RelData, WayData, WayMeta};
 
-use super::disk_coords::DiskNodeCoords;
-use super::memory_coords::MemoryNodeCoords;
-use super::store::MphfFile;
-
-/// Node coordinate map for the geometry pass: `id → (lon, lat, shared)` where `shared` = the node
-/// is used by ≥2 filter-passing ways (an intersection cut-point). Folding the shared flag in here
-/// is what lets `use_counts` be dropped at the end of Pass B (both paths do so explicitly), so the
-/// geometry pass holds only this one map. Part of `SelectionContext` — public since
-/// `geom::materialize` (outside `osm::reader`) resolves way/relation geometry from it.
-///
-/// Both variants are MPHF-indexed record stores (see each module's own doc) differing only in
-/// where the record array lives: `Memory` (default) keeps it resident; `Disk` (the
-/// `--use-disk-store` opt-in) spills it to an `mmap`'d temp file.
-pub enum NodeCoords {
-    Memory(MemoryNodeCoords),
-    Disk(DiskNodeCoords),
-}
-
-impl NodeCoords {
-    pub fn get(&self, id: i64) -> Option<(f32, f32, bool)> {
-        match self {
-            NodeCoords::Memory(m) => m.get(id),
-            NodeCoords::Disk(d) => d.get(id),
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        match self {
-            NodeCoords::Memory(m) => m.len(),
-            NodeCoords::Disk(d) => d.len(),
-        }
-    }
-
-    pub fn iter(&self) -> Box<dyn Iterator<Item = (i64, (f32, f32, bool))> + '_> {
-        match self {
-            NodeCoords::Memory(m) => Box::new(m.iter()),
-            NodeCoords::Disk(d) => Box::new(d.iter()),
-        }
-    }
-}
-
-/// Accumulates `(id, lon, lat, shared)` coordinate entries during Pass B / the fallback node scan,
-/// then produces a finished [`NodeCoords`] by handing the collected records to whichever backend's
-/// `build` — both build their MPHF from this exact record set, so entries can arrive in any order.
-pub struct NodeCoordsBuilder {
-    disk: bool,
-    records: Vec<(i64, f32, f32, bool)>,
-}
-
-impl NodeCoordsBuilder {
-    pub fn with_capacity(disk: bool, cap: usize) -> Self {
-        NodeCoordsBuilder { disk, records: Vec::with_capacity(cap) }
-    }
-
-    pub fn insert(&mut self, id: i64, lon: f32, lat: f32, shared: bool) {
-        self.records.push((id, lon, lat, shared));
-    }
-
-    pub fn finish(self) -> anyhow::Result<NodeCoords> {
-        if self.disk {
-            Ok(NodeCoords::Disk(DiskNodeCoords::build(self.records)?))
-        } else {
-            Ok(NodeCoords::Memory(MemoryNodeCoords::build(self.records)))
-        }
-    }
-}
+pub use super::memory_coords::{NodeCoords, NodeCoordsBuilder};
 
 /// Which nodes are referenced by a kept way, from Pass A — the membership test Pass B uses to
 /// decide whose coordinates to collect at all (needed for every geometry shape, not just graph
@@ -83,47 +18,16 @@ impl NodeCoordsBuilder {
 /// (`!needs_graph`, see `Callbacks::needs_graph`), Pass A builds the cheaper `Present` variant
 /// instead: a plain id set, half the per-entry size of `Counted`'s `FxHashMap<i64, u32>` (no `u32`
 /// payload) and no increment work while indexing ways.
-/// `Disk` stores the same `count: u32` payload as `Counted` (a `Present`-derived store just fills
-/// every id's payload with `0`, since `lookup`'s `c > 1` check already reads as "never shared" for
-/// that sentinel — the two source shapes collapse to identical `Disk` behavior for `lookup`, though
-/// `log_node_summary` still needs to tell them apart, hence the `counted` flag). Built once, at the
-/// end of Pass A, from whichever resident accumulator the caller used during indexing — the MPHF
-/// still needs the full key set to build (see `store`'s own doc), so there's no way to skip the
-/// resident accumulation step entirely, only to drop it once the compact backend exists.
 pub(super) enum NodeRefCounts {
     Counted(FxHashMap<i64, u32>),
     Present(FxHashSet<i64>),
-    Disk(MphfFile<u32>, bool),
 }
 
 impl NodeRefCounts {
-    /// Finishes a `Counted` accumulation: resident `FxHashMap` (default) or spilled to a
-    /// `use_disk_store`-gated `MphfFile` (dropping the map).
-    pub(super) fn from_counted(counts: FxHashMap<i64, u32>, use_disk_store: bool) -> anyhow::Result<Self> {
-        if use_disk_store {
-            let records: Vec<(i64, u32)> = counts.into_iter().collect();
-            Ok(NodeRefCounts::Disk(MphfFile::build(records)?, true))
-        } else {
-            Ok(NodeRefCounts::Counted(counts))
-        }
-    }
-
-    /// Finishes a `Present` accumulation: resident `FxHashSet` (default) or spilled to a
-    /// `use_disk_store`-gated `MphfFile`, with every id's payload set to the "never shared" sentinel.
-    pub(super) fn from_present(present: FxHashSet<i64>, use_disk_store: bool) -> anyhow::Result<Self> {
-        if use_disk_store {
-            let records: Vec<(i64, u32)> = present.into_iter().map(|id| (id, 0u32)).collect();
-            Ok(NodeRefCounts::Disk(MphfFile::build(records)?, false))
-        } else {
-            Ok(NodeRefCounts::Present(present))
-        }
-    }
-
     pub(super) fn len(&self) -> usize {
         match self {
             NodeRefCounts::Counted(m) => m.len(),
             NodeRefCounts::Present(s) => s.len(),
-            NodeRefCounts::Disk(m, _) => m.len(),
         }
     }
 
@@ -131,19 +35,17 @@ impl NodeRefCounts {
         match self {
             NodeRefCounts::Counted(m) => m.contains_key(id),
             NodeRefCounts::Present(s) => s.contains(id),
-            NodeRefCounts::Disk(m, _) => m.get(*id).is_some(),
         }
     }
 
     /// `Some(shared)` if `id` is a member, `None` otherwise — one lookup, not the separate
     /// `contains_key` + `shared` a caller would otherwise need. `shared` is always `false` for
     /// `Present` (graph output wasn't wanted, so nothing ever reads it for cut-point purposes
-    /// anyway) and for a `Disk` store built from `Present` (sentinel payload `0`, never `> 1`).
+    /// anyway).
     pub(super) fn lookup(&self, id: &i64) -> Option<bool> {
         match self {
             NodeRefCounts::Counted(m) => m.get(id).map(|&c| c > 1),
             NodeRefCounts::Present(s) => s.contains(id).then_some(false),
-            NodeRefCounts::Disk(m, _) => m.get(*id).map(|c| c > 1),
         }
     }
 }
@@ -166,24 +68,6 @@ pub(super) fn log_node_summary(use_counts: &NodeRefCounts, standalone_classified
                 s.len(),
                 standalone_classified
             );
-        }
-        NodeRefCounts::Disk(m, counted) => {
-            if *counted {
-                let intersections = m.iter().filter(|&(_, c)| c >= 2).count();
-                info!(
-                    "{} referenced nodes, {} intersection nodes (≥2 ways), {} standalone nodes classified",
-                    m.len(),
-                    intersections,
-                    standalone_classified
-                );
-            } else {
-                info!(
-                    "{} referenced nodes (intersection counts not tracked — no topic wants graph output), \
-                     {} standalone nodes classified",
-                    m.len(),
-                    standalone_classified
-                );
-            }
         }
     }
 }
@@ -290,40 +174,4 @@ pub fn resolve_geometry(
     }
 
     Some(OsmWay { id, coords: pts, cut_points })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disk_backed_counted_matches_memory_semantics() {
-        let mut counts = FxHashMap::default();
-        counts.insert(10i64, 1u32);
-        counts.insert(20, 2);
-        counts.insert(7_000_000_000, 5);
-
-        let disk = NodeRefCounts::from_counted(counts.clone(), true).unwrap();
-        let mem = NodeRefCounts::from_counted(counts, false).unwrap();
-
-        for id in [10i64, 20, 7_000_000_000, 999] {
-            assert_eq!(disk.lookup(&id), mem.lookup(&id), "mismatch for id {id}");
-            assert_eq!(disk.contains_key(&id), mem.contains_key(&id), "mismatch for id {id}");
-        }
-        assert_eq!(disk.len(), mem.len());
-    }
-
-    #[test]
-    fn disk_backed_present_never_reports_shared() {
-        let mut present = FxHashSet::default();
-        present.insert(10i64);
-        present.insert(20);
-
-        let disk = NodeRefCounts::from_present(present, true).unwrap();
-        assert_eq!(disk.lookup(&10), Some(false));
-        assert_eq!(disk.lookup(&20), Some(false));
-        assert_eq!(disk.lookup(&999), None);
-        assert!(disk.contains_key(&10));
-        assert!(!disk.contains_key(&999));
-    }
 }

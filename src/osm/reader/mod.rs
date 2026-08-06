@@ -16,25 +16,20 @@
 //! geometry inputs are buffered and returned.
 
 mod blob_index;
-mod disk_coords;
-mod disk_way_refs;
 mod fallback;
 mod memory_coords;
-mod rel_members;
 mod resolve;
 mod sorted;
-mod store;
 mod way_refs;
 
 use anyhow::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{info, warn};
 
-use crate::osm::types::{NodeData, RelData, WayData};
+use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
 use blob_index::{build_blob_index, find_relation_section_start, find_way_section_start, pbf_is_sorted};
 use fallback::stream_osm_fallback;
-pub use rel_members::RelMembers;
 pub use resolve::{resolve_geometry, NodeCoords};
 use sorted::{classify_and_index, classify_relations, collect_coords};
 pub use way_refs::{EncodedRefs, WayRefsStore};
@@ -46,17 +41,15 @@ pub struct SelectionContext {
     /// Every node referenced by a `way_refs` entry (kept way or relation-member way alike).
     pub node_coords: NodeCoords,
     /// Every kept/relation-member way's (delta+varint-encoded node refs, per-topic keep mask) — see
-    /// `way_refs`'s own module doc for why the refs aren't a plain `Vec<i64>`, and for why this is
-    /// an enum rather than a plain map (the `--use-disk-store` opt-in applies here too). `mask ==
-    /// 0` means the way was never tag-kept by any topic — it's here purely because some kept
-    /// relation in `rel_members` references it, so its own shapes (line/point/polygon/graph) are
-    /// never built, only its coordinates are available for relation-geometry assembly.
+    /// `way_refs`'s own module doc for why the refs aren't a plain `Vec<i64>`. `mask == 0` means the
+    /// way was never tag-kept by any topic — it's here purely because some kept relation in
+    /// `rel_members` references it, so its own shapes (line/point/polygon/graph) are never built,
+    /// only its coordinates are available for relation-geometry assembly.
     pub way_refs: WayRefsStore,
     /// `relation_id -> (member ways with role, per-topic keep mask)`, for every tag-kept relation
     /// (regardless of whether any topic wants relation geometry — that decision is
-    /// `geom::materialize`'s, using a `GeometryPlan`, not this module's). `Memory`/`Disk` like
-    /// `way_refs` — see `RelMembers`' own doc.
-    pub rel_members: RelMembers,
+    /// `geom::materialize`'s, using a `GeometryPlan`, not this module's).
+    pub rel_members: FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>,
     /// Node ids classified by a node topic that also declared `"geometry": {"node": ["graph"]}` —
     /// forced cut points even at use-count 1. A node classified only by point-only (or bare) node
     /// topics is not in here — see `GeometryPlan::node_graph_mask`.
@@ -139,11 +132,7 @@ pub fn assign_node_ids(
 ///     topics exist) classify node tags, collecting the selected-node set.
 ///
 /// Fallback (unsorted / boundary check fails / `PBF_FORCE_FALLBACK`): full parallel scans.
-pub fn stream_osm<CR, CW, CN>(
-    path: &str,
-    cb: Callbacks<CR, CW, CN>,
-    use_disk_store: bool,
-) -> anyhow::Result<SelectionContext>
+pub fn stream_osm<CR, CW, CN>(path: &str, cb: Callbacks<CR, CW, CN>) -> anyhow::Result<SelectionContext>
 where
     CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
     CW: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync + Send,
@@ -205,23 +194,20 @@ where
                     .filter(|(_, mask)| mask & cb.relation_geom_mask != 0)
                     .flat_map(|(members, _)| members.iter().map(|&(w, _)| w))
                     .collect();
-                let rel_members = RelMembers::build(rel_members, use_disk_store)?;
 
                 // Pass A — way region (decoded once): classify + counts + way_refs. `extra_node_ids`
                 // (mask-`0` relation-only ways' own node ids, needed for relation-geometry assembly)
                 // comes back straight from the fold instead of a second scan over the finished
                 // `way_refs` — see `classify_and_index`'s own doc.
                 let t = std::time::Instant::now();
-                let (use_counts, way_refs, extra_node_ids) = classify_and_index(
-                    &mmap, way_offsets, &cb.classify_way, &extra_way_ids, cb.needs_graph, use_disk_store,
-                )?;
+                let (use_counts, way_refs, extra_node_ids) =
+                    classify_and_index(&mmap, way_offsets, &cb.classify_way, &extra_way_ids, cb.needs_graph)?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
 
                 // Pass B — node region: coords for every referenced node (+ classify nodes).
                 let t = std::time::Instant::now();
                 let (node_coords, selected, standalone_classified) = collect_coords(
                     &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &extra_node_ids,
-                    use_disk_store,
                 )?;
                 info!(
                     "[phase] Pass B (collect node coords{}): {:.1}s",
@@ -247,7 +233,7 @@ where
         warn!("PBF not declared Sort.Type_then_ID — using full-scan streaming reader");
     }
 
-    stream_osm_fallback(path, cb, use_disk_store)
+    stream_osm_fallback(path, cb)
 }
 
 /// Locate the `(way_start, rel_start)` region boundaries in a sorted file's blob list.
