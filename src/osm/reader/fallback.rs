@@ -12,14 +12,15 @@ use tracing::info;
 
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
-use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoordsBuilder};
+use super::rel_members::RelMembers;
+use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoordsBuilder, NodeRefCounts};
 use super::way_refs::{EncodedRefs, WayRefsStore};
 use super::{Callbacks, SelectionContext};
 
 pub(super) fn stream_osm_fallback<CR, CW, CN>(
     path: &str,
     cb: Callbacks<CR, CW, CN>,
-    disk_node_store: bool,
+    use_disk_store: bool,
 ) -> anyhow::Result<SelectionContext>
 where
     CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
@@ -56,17 +57,18 @@ where
 
     // Scan 1 — ways: classify (emit tag rows), record every kept or relation-member way's
     // (node_refs, mask) — mask 0 for a relation-only way (see `sorted::classify_and_index`'s doc).
+    // `needs_graph` (`cb.needs_graph`, `plan.any_way_graph` at the top-level call site) gates
+    // whether `counts` actually tracks per-node reference counts or just membership — see
+    // `NodeRefCounts`'s own doc. Unlike the sorted fast path, this keeps one shared `FxHashMap<i64,
+    // u32>` accumulator regardless (only shrinking to a plain id set at the very end when
+    // `!needs_graph`): the fallback scan is already the rare, slower path (unsorted files / boundary
+    // check failures), so the transient isn't worth a second duplicated closure here.
     info!("Fallback scan 1 (parallel): classify ways...");
-    let (use_counts, endpoints, way_refs): (
-        FxHashMap<i64, u32>,
-        FxHashSet<i64>,
-        FxHashMap<i64, (EncodedRefs, u32)>,
-    ) = ElementReader::from_path(path)
+    let (counts, way_refs): (FxHashMap<i64, u32>, FxHashMap<i64, (EncodedRefs, u32)>) = ElementReader::from_path(path)
         .context("opening PBF for way scan")?
         .par_map_reduce(
             |element| {
                 let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
-                let mut endpoints: FxHashSet<i64> = FxHashSet::default();
                 let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
                 if let Element::Way(way) = element {
                     let wd = way_data(&way);
@@ -74,39 +76,40 @@ where
                     let is_extra = !extra_way_ids.is_empty() && extra_way_ids.contains(&wd.id);
                     if kept_mask.is_some() || is_extra {
                         // Deltas straight off the wire (see `way_data`'s own doc) — accumulate to
-                        // absolute ids only where needed (counts/endpoints), pass deltas straight
-                        // through to `EncodedRefs` otherwise.
+                        // absolute ids only where needed (counts), pass deltas straight through to
+                        // `EncodedRefs` otherwise.
                         let deltas = way.raw_refs();
                         if kept_mask.is_some() {
                             let mut cur = 0i64;
-                            let mut first = None;
                             for &delta in deltas {
                                 cur += delta;
-                                first.get_or_insert(cur);
-                                *counts.entry(cur).or_insert(0) += 1;
-                            }
-                            if let Some(first) = first {
-                                endpoints.insert(first);
-                                endpoints.insert(cur);
+                                if cb.needs_graph {
+                                    *counts.entry(cur).or_insert(0) += 1;
+                                } else {
+                                    counts.entry(cur).or_insert(0);
+                                }
                             }
                         }
                         way_refs.insert(wd.id, (EncodedRefs::from_deltas(deltas), kept_mask.unwrap_or(0)));
                     }
                 }
-                (counts, endpoints, way_refs)
+                (counts, way_refs)
             },
-            || (FxHashMap::default(), FxHashSet::default(), FxHashMap::default()),
+            || (FxHashMap::default(), FxHashMap::default()),
             |mut a, b| {
                 for (k, v) in b.0 {
                     *a.0.entry(k).or_insert(0) += v;
                 }
                 a.1.extend(b.1);
-                a.2.extend(b.2);
                 a
             },
         )
         .context("way scan parallel read")?;
-    let _ = endpoints; // re-derived from way_refs by geom::materialize (mask != 0 subset)
+    let use_counts = if cb.needs_graph {
+        NodeRefCounts::from_counted(counts, use_disk_store)?
+    } else {
+        NodeRefCounts::from_present(counts.into_keys().collect(), use_disk_store)?
+    };
 
     // Scan 2 — nodes: coords for every referenced node (+ classify nodes → selected set).
     let extra_node_ids: FxHashSet<i64> = way_refs
@@ -166,9 +169,9 @@ where
             },
         )
         .context("node scan parallel read")?;
-    let mut coords_builder = NodeCoordsBuilder::with_capacity(disk_node_store, coords_vec.len());
+    let mut coords_builder = NodeCoordsBuilder::with_capacity(use_disk_store, coords_vec.len());
     for (id, lon, lat) in coords_vec {
-        let shared = use_counts.get(&id).copied().unwrap_or(0) > 1;
+        let shared = use_counts.lookup(&id).unwrap_or(false);
         coords_builder.insert(id, lon, lat, shared);
     }
     let node_coords = coords_builder.finish()?;
@@ -178,6 +181,7 @@ where
     // See the sorted path's own `drop(use_counts)` — nothing past here reads it.
     drop(use_counts);
 
-    let way_refs = WayRefsStore::build(way_refs, disk_node_store)?;
+    let way_refs = WayRefsStore::build(way_refs, use_disk_store)?;
+    let rel_members = RelMembers::build(rel_members, use_disk_store)?;
     Ok(SelectionContext { node_coords, way_refs, rel_members, selected })
 }

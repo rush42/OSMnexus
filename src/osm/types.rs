@@ -93,6 +93,26 @@ impl MemberRole {
             _ => MemberRole::Unknown,
         }
     }
+
+    /// Compact byte tag for `EncodedMembers`' on-disk/in-arena representation — not tied to any
+    /// wire format, just stable within this process.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            MemberRole::Outer => 0,
+            MemberRole::Inner => 1,
+            MemberRole::Unknown => 2,
+        }
+    }
+
+    /// Inverse of `as_u8`. Any byte other than 0/1 reads as `Unknown` — same "unrecognized role"
+    /// fallback `from_str` already uses, so a hypothetical future role byte still round-trips.
+    pub fn from_u8(b: u8) -> Self {
+        match b {
+            0 => MemberRole::Outer,
+            1 => MemberRole::Inner,
+            _ => MemberRole::Unknown,
+        }
+    }
 }
 
 /// A relation's tags + metadata + member **way** ids (with role), produced by the relations pass.

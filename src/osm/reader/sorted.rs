@@ -11,8 +11,9 @@ use rayon::prelude::*;
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 
 use super::blob_index::decode_block;
-use super::resolve::{dense_node_data, node_data, rel_data, way_data, NodeCoords, NodeCoordsBuilder};
-use super::way_refs::EncodedRefs;
+use super::disk_way_refs::WayRefsBuilder;
+use super::resolve::{dense_node_data, node_data, rel_data, way_data, NodeCoords, NodeCoordsBuilder, NodeRefCounts};
+use super::way_refs::{EncodedRefs, WayRefsStore};
 
 /// Relations pass — decode the relation region once (parallel). For every relation, extract its
 /// `RelData` and run `classify_rel` (side effect: emit relation tag rows + `relation_members`
@@ -48,89 +49,155 @@ where
         })
 }
 
-/// Pass A — decode the way-region blobs once (parallel). For every way, extract its `WayData` and
-/// classify it (side effect: emit tag rows); a way is *kept* (mask != 0) when `classify` returns
-/// `Some` — purely its own tag classification, independent of relation membership. Every kept way,
-/// plus every way in `extra_way_ids` (a relation-member way that might not be tag-kept itself —
-/// see `SelectionContext::way_refs`'s own doc), gets a `way_refs` entry; a relation-only way's
-/// entry carries mask `0`. Only mask-!=0 ways feed `use_counts`/`endpoints` (the main graph's
-/// intersection-detection inputs) — a relation-only way never affects them, matching how it never
-/// contributes to the extracted graph itself.
+/// How many blobs a pass decodes in parallel before folding their output sequentially into the
+/// pass's accumulators. This bounds the *transient* cost of the decoded-but-not-yet-folded `Vec`s:
+/// collecting every blob first (which is what Pass B used to do) meant the whole file's data was
+/// resident twice at the moment the fold began — once as per-record `Vec` tuples, once in the
+/// growing accumulator. At ~8k records per blob this caps that transient at a few tens of MB
+/// regardless of file size. Shared by Pass A (`classify_and_index`) and Pass B (`collect_coords`).
+///
+/// The fold stays sequential and *in blob order* on purpose. A producer/consumer channel would
+/// overlap decoding with folding and be faster, but blobs would arrive in completion order, which
+/// changes the insertion order into the accumulator. `FxHashMap`/`FxHashSet` are unseeded, so their
+/// iteration order is a deterministic function of insertion order, and `assign_node_ids` hands out
+/// internal graph-vertex ids in exactly that order — reordering insertions would silently renumber
+/// every row of the `nodes` and `edges` tables. Not worth it for a fold that is a small fraction of
+/// decode time.
+const FOLD_CHUNK_BLOBS: usize = 256;
+
+/// One classified way, ready to fold into Pass A's accumulators: its id, encoded node refs, and
+/// per-topic keep mask, plus (only when tag-kept — `mask != 0`) its absolute node ids, needed to
+/// update `use_counts`/`present`. A relation-only way (`mask == 0`) carries `None` here — its own
+/// node refs never feed the main graph's intersection detection, only relation-geometry assembly
+/// (via `extra_node_ids`, derived from `refs` itself during the fold instead).
+struct ClassifiedWay {
+    id: i64,
+    refs: EncodedRefs,
+    mask: u32,
+    node_ids: Option<Vec<i64>>,
+}
+
+/// Pass A — decode the way-region blobs once, in bounded parallel chunks (`FOLD_CHUNK_BLOBS`, same
+/// pattern as Pass B's `collect_coords`), folding each chunk's ways sequentially into three
+/// accumulators. For every way, extract its `WayData` and classify it (side effect: emit tag rows);
+/// a way is *kept* (mask != 0) when `classify` returns `Some` — purely its own tag classification,
+/// independent of relation membership. Every kept way, plus every way in `extra_way_ids` (a
+/// relation-member way that might not be tag-kept itself — see `SelectionContext::way_refs`'s own
+/// doc), gets a `way_refs` entry; a relation-only way's entry carries mask `0`. Only mask-!=0 ways
+/// feed `use_counts` (the main graph's intersection-detection input) — a relation-only way never
+/// affects it, matching how it never contributes to the extracted graph itself. A relation-only
+/// way's own node ids are folded into the returned `extra_node_ids` instead (mirrors what
+/// `mod.rs` used to derive from the finished `way_refs` after the fact — cheaper to collect during
+/// the one pass that already decodes these ways than to re-scan the finished store for it).
+///
+/// `needs_graph` (`plan.any_way_graph` at the call site) picks `use_counts`' shape: `Counted`
+/// (tracks each node's reference count, to derive the `shared` cut-point flag) when some topic
+/// wants graph output, `Present` (membership only — cheaper, no per-node counting) when none do —
+/// see `NodeRefCounts`'s own doc. Doesn't build `endpoints` at all: `geom::materialize` derives its
+/// own from `way_refs` when it actually needs them (`plan.any_way_graph`), so a Pass-A copy was
+/// always dead weight.
+///
+/// `use_disk_store` picks `way_refs`' shape: `WayRefsStore::Disk`, streamed straight to an mmap'd
+/// arena as each way is folded in (`WayRefsBuilder`, see its own doc), or the old resident
+/// `WayRefsStore::Memory` — folding a `Vec<(i64, EncodedRefs, u32)>` into a `FxHashMap` the way this
+/// used to unconditionally. The streamed path never holds more than `FOLD_CHUNK_BLOBS` blobs' worth
+/// of `EncodedRefs` (one boxed-slice allocation each) at a time, instead of one per way in the file
+/// for the run's whole Pass A/B — the single largest contributor to `--use-disk-store`'s Pass-A
+/// peak RSS before this, since a country-sized extract's way count rivals its node count.
 pub(super) fn classify_and_index<C>(
     mmap: &osmpbf::Mmap,
     way_offsets: &[ByteOffset],
     classify: &C,
     extra_way_ids: &FxHashSet<i64>,
-) -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, FxHashMap<i64, (EncodedRefs, u32)>)>
+    needs_graph: bool,
+    use_disk_store: bool,
+) -> anyhow::Result<(NodeRefCounts, WayRefsStore, FxHashSet<i64>)>
 where
     C: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync,
 {
-    way_offsets
-        .par_iter()
-        .map(|&off| -> anyhow::Result<(FxHashMap<i64, u32>, FxHashSet<i64>, FxHashMap<i64, (EncodedRefs, u32)>)> {
-            let block = decode_block(mmap, off)?;
-            let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
-            let mut endpoints: FxHashSet<i64> = FxHashSet::default();
-            let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
-            for group in block.groups() {
-                for way in group.ways() {
-                    let wd = way_data(&way);
-                    // `classify` has a side effect (emits tag rows) — called exactly once per way.
-                    let kept_mask = classify(&wd);
-                    let is_extra = !extra_way_ids.is_empty() && extra_way_ids.contains(&wd.id);
-                    if kept_mask.is_none() && !is_extra {
-                        continue;
-                    }
-                    // Deltas straight off the wire (see `way_data`'s own doc) — accumulate to
-                    // absolute ids ourselves only where one's actually needed (counts/endpoints),
-                    // and hand the deltas straight to `EncodedRefs` untouched otherwise.
-                    let deltas = way.raw_refs();
-                    if kept_mask.is_some() {
-                        let mut cur = 0i64;
-                        let mut first = None;
-                        for &delta in deltas {
-                            cur += delta;
-                            first.get_or_insert(cur);
-                            *counts.entry(cur).or_insert(0) += 1;
+    let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
+    let mut present: FxHashSet<i64> = FxHashSet::default();
+    let mut way_refs_mem: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
+    let mut way_refs_disk = if use_disk_store { Some(WayRefsBuilder::new()?) } else { None };
+    let mut extra_node_ids: FxHashSet<i64> = FxHashSet::default();
+
+    for blob_chunk in way_offsets.chunks(FOLD_CHUNK_BLOBS) {
+        let per_blob: Vec<Vec<ClassifiedWay>> = blob_chunk
+            .par_iter()
+            .map(|&off| -> anyhow::Result<Vec<ClassifiedWay>> {
+                let block = decode_block(mmap, off)?;
+                let mut out = Vec::new();
+                for group in block.groups() {
+                    for way in group.ways() {
+                        let wd = way_data(&way);
+                        let kept_mask = classify(&wd);
+                        let is_extra = !extra_way_ids.is_empty() && extra_way_ids.contains(&wd.id);
+                        if kept_mask.is_none() && !is_extra {
+                            continue;
                         }
-                        if let Some(first) = first {
-                            endpoints.insert(first);
-                            endpoints.insert(cur);
+                        let deltas = way.raw_refs();
+                        let node_ids = kept_mask.is_some().then(|| {
+                            let mut cur = 0i64;
+                            deltas
+                                .iter()
+                                .map(|&delta| {
+                                    cur += delta;
+                                    cur
+                                })
+                                .collect::<Vec<i64>>()
+                        });
+                        out.push(ClassifiedWay {
+                            id: wd.id,
+                            refs: EncodedRefs::from_deltas(deltas),
+                            mask: kept_mask.unwrap_or(0),
+                            node_ids,
+                        });
+                    }
+                }
+                Ok(out)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        for ways in per_blob {
+            for w in ways {
+                match &w.node_ids {
+                    Some(ids) => {
+                        for &nid in ids {
+                            if needs_graph {
+                                *counts.entry(nid).or_insert(0) += 1;
+                            } else {
+                                present.insert(nid);
+                            }
                         }
                     }
-                    way_refs.insert(wd.id, (EncodedRefs::from_deltas(deltas), kept_mask.unwrap_or(0)));
+                    None => {
+                        // Relation-only (`mask == 0`) — its own refs never touch the main graph's
+                        // intersection detection, but its nodes still need coordinates for
+                        // relation-geometry assembly (see `mod.rs`'s `extra_node_ids` use).
+                        extra_node_ids.extend(w.refs.iter());
+                    }
+                }
+                match &mut way_refs_disk {
+                    Some(builder) => builder.insert(w.id, &w.refs, w.mask)?,
+                    None => {
+                        way_refs_mem.insert(w.id, (w.refs, w.mask));
+                    }
                 }
             }
-            Ok((counts, endpoints, way_refs))
-        })
-        .try_reduce(
-            || (FxHashMap::default(), FxHashSet::default(), FxHashMap::default()),
-            |a, b| {
-                let (mut ca, mut ea, mut ra) = a;
-                let (cb, eb, rb) = b;
-                for (k, v) in cb {
-                    *ca.entry(k).or_insert(0) += v;
-                }
-                ea.extend(eb);
-                ra.extend(rb);
-                Ok((ca, ea, ra))
-            },
-        )
-}
+        }
+    }
 
-/// How many node blobs Pass B decodes in parallel before folding their output into the coordinate
-/// map. This bounds the *transient* cost of the decoded-but-not-yet-folded `Vec`s: collecting every
-/// blob first (which is what this used to do) meant the whole file's node data was resident twice at
-/// the moment the fold began — once as 24-byte `Vec` tuples, once in the growing map. At ~8k nodes
-/// per blob this caps that transient at a few tens of MB regardless of file size.
-///
-/// The fold stays sequential and *in blob order* on purpose. A producer/consumer channel would
-/// overlap decoding with folding and be faster, but blobs would arrive in completion order, which
-/// changes the insertion order into the map. `FxHashMap` is unseeded, so its iteration order is a
-/// deterministic function of insertion order, and `assign_node_ids` hands out internal graph-vertex
-/// ids in exactly that order — reordering insertions would silently renumber every row of the
-/// `nodes` and `edges` tables. Not worth it for a fold that is a small fraction of decode time.
-const FOLD_CHUNK_BLOBS: usize = 256;
+    let use_counts = if needs_graph {
+        NodeRefCounts::from_counted(counts, use_disk_store)?
+    } else {
+        NodeRefCounts::from_present(present, use_disk_store)?
+    };
+    let way_refs = match way_refs_disk {
+        Some(builder) => WayRefsStore::Disk(builder.finish()?),
+        None => WayRefsStore::Memory(way_refs_mem),
+    };
+    Ok((use_counts, way_refs, extra_node_ids))
+}
 
 /// Pass B — collect coordinates (as f32, ~1 m precision) for the needed nodes from the node-region
 /// blobs, in parallel (in chunks of `FOLD_CHUNK_BLOBS`, see its doc). Each node's `shared` flag
@@ -148,11 +215,11 @@ const FOLD_CHUNK_BLOBS: usize = 256;
 pub(super) fn collect_coords<CN>(
     mmap: &osmpbf::Mmap,
     node_offsets: &[ByteOffset],
-    use_counts: &FxHashMap<i64, u32>,
+    use_counts: &NodeRefCounts,
     classify_nodes: bool,
     classify_node: &CN,
     extra_node_ids: &FxHashSet<i64>,
-    disk_node_store: bool,
+    use_disk_store: bool,
 ) -> anyhow::Result<(NodeCoords, FxHashSet<i64>, u64)>
 where
     CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync,
@@ -172,7 +239,7 @@ where
     // practice. Re-measure that case before loosening the hint.
     let distinct_needed = use_counts.len()
         + extra_node_ids.iter().filter(|id| !use_counts.contains_key(id)).count();
-    let mut coords = NodeCoordsBuilder::with_capacity(disk_node_store, distinct_needed);
+    let mut coords = NodeCoordsBuilder::with_capacity(use_disk_store, distinct_needed);
     let mut selected: FxHashSet<i64> = FxHashSet::default();
     let mut standalone_total: u64 = 0;
 
@@ -186,8 +253,8 @@ where
                 let mut standalone: u64 = 0;
                 for group in block.groups() {
                     for n in group.dense_nodes() {
-                        if let Some(&c) = use_counts.get(&n.id()) {
-                            out.push((n.id(), n.lon() as f32, n.lat() as f32, c > 1));
+                        if let Some(shared) = use_counts.lookup(&n.id()) {
+                            out.push((n.id(), n.lon() as f32, n.lat() as f32, shared));
                             if classify_nodes && classify_node(&dense_node_data(&n)) {
                                 selected.insert(n.id());
                             }
@@ -203,8 +270,8 @@ where
                         }
                     }
                     for n in group.nodes() {
-                        if let Some(&c) = use_counts.get(&n.id()) {
-                            out.push((n.id(), n.lon() as f32, n.lat() as f32, c > 1));
+                        if let Some(shared) = use_counts.lookup(&n.id()) {
+                            out.push((n.id(), n.lon() as f32, n.lat() as f32, shared));
                             if classify_nodes && classify_node(&node_data(&n)) {
                                 selected.insert(n.id());
                             }

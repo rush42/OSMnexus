@@ -2,7 +2,7 @@
 //!
 //! A way's `node_refs` used to live as a resident `Vec<i64>` (8 bytes/id) per kept way, for the
 //! whole run — on a country-sized extract with tens of millions of ways this rivals or exceeds the
-//! node coordinate table in size, yet was untouched by `--disk-node-store` (that only spills
+//! node coordinate table in size, yet was untouched by `--use-disk-store` (that only spills
 //! `node_coords`, see `disk_coords`'s own doc). Consecutive node ids along a way tend to be close
 //! together (the PBF's own `DenseNodes` id encoding banks on the same locality), so delta+zigzag+
 //! varint encoding shrinks most real-world ways well below 8 bytes/id, at the cost of a decode pass
@@ -117,7 +117,7 @@ impl Iterator for RefsIter<'_> {
 }
 
 /// `SelectionContext::way_refs`'s storage: `Memory` (default, a resident `FxHashMap`) or `Disk`
-/// (the `--disk-node-store` opt-in — same flag `node_coords` uses, see `disk_way_refs`'s own doc
+/// (the `--use-disk-store` opt-in — same flag `node_coords` uses, see `disk_way_refs`'s own doc
 /// for why one way store earns a place next to the coordinate store). `build` is the only entry
 /// point — both Pass A readers (`sorted`/`fallback`) already produce a plain
 /// `FxHashMap<i64, (EncodedRefs, u32)>` from their own parallel per-blob accumulation regardless of
@@ -218,15 +218,15 @@ impl WayRefsStore {
 
 }
 
-fn zigzag_encode(n: i64) -> u64 {
+pub(super) fn zigzag_encode(n: i64) -> u64 {
     ((n << 1) ^ (n >> 63)) as u64
 }
 
-fn zigzag_decode(u: u64) -> i64 {
+pub(super) fn zigzag_decode(u: u64) -> i64 {
     ((u >> 1) as i64) ^ -((u & 1) as i64)
 }
 
-fn write_varint(buf: &mut Vec<u8>, mut v: u64) {
+pub(super) fn write_varint(buf: &mut Vec<u8>, mut v: u64) {
     loop {
         let byte = (v & 0x7f) as u8;
         v >>= 7;
@@ -241,7 +241,7 @@ fn write_varint(buf: &mut Vec<u8>, mut v: u64) {
 /// Reads one varint starting at `*pos`, advancing it past the consumed bytes. Panics on a
 /// truncated/malformed buffer — `EncodedRefs` is only ever built by `encode`, so a well-formed
 /// buffer is an invariant, not an input to validate.
-fn read_varint(buf: &[u8], pos: &mut usize) -> u64 {
+pub(super) fn read_varint(buf: &[u8], pos: &mut usize) -> u64 {
     let mut result = 0u64;
     let mut shift = 0u32;
     loop {

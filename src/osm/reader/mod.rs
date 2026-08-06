@@ -20,18 +20,21 @@ mod disk_coords;
 mod disk_way_refs;
 mod fallback;
 mod memory_coords;
+mod rel_members;
 mod resolve;
 mod sorted;
+mod store;
 mod way_refs;
 
 use anyhow::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{info, warn};
 
-use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
+use crate::osm::types::{NodeData, RelData, WayData};
 
 use blob_index::{build_blob_index, find_relation_section_start, find_way_section_start, pbf_is_sorted};
 use fallback::stream_osm_fallback;
+pub use rel_members::RelMembers;
 pub use resolve::{resolve_geometry, NodeCoords};
 use sorted::{classify_and_index, classify_relations, collect_coords};
 pub use way_refs::{EncodedRefs, WayRefsStore};
@@ -44,15 +47,16 @@ pub struct SelectionContext {
     pub node_coords: NodeCoords,
     /// Every kept/relation-member way's (delta+varint-encoded node refs, per-topic keep mask) — see
     /// `way_refs`'s own module doc for why the refs aren't a plain `Vec<i64>`, and for why this is
-    /// an enum rather than a plain map (the `--disk-node-store` opt-in applies here too). `mask ==
+    /// an enum rather than a plain map (the `--use-disk-store` opt-in applies here too). `mask ==
     /// 0` means the way was never tag-kept by any topic — it's here purely because some kept
     /// relation in `rel_members` references it, so its own shapes (line/point/polygon/graph) are
     /// never built, only its coordinates are available for relation-geometry assembly.
     pub way_refs: WayRefsStore,
     /// `relation_id -> (member ways with role, per-topic keep mask)`, for every tag-kept relation
     /// (regardless of whether any topic wants relation geometry — that decision is
-    /// `geom::materialize`'s, using a `GeometryPlan`, not this module's).
-    pub rel_members: FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>,
+    /// `geom::materialize`'s, using a `GeometryPlan`, not this module's). `Memory`/`Disk` like
+    /// `way_refs` — see `RelMembers`' own doc.
+    pub rel_members: RelMembers,
     /// Node ids classified by a node topic that also declared `"geometry": {"node": ["graph"]}` —
     /// forced cut points even at use-count 1. A node classified only by point-only (or bare) node
     /// topics is not in here — see `GeometryPlan::node_graph_mask`.
@@ -87,6 +91,12 @@ pub struct Callbacks<CR, CW, CN> {
     /// wanted) is built and routed right here too, by the caller — a node is a leaf, its point
     /// shape needs nothing `SelectionContext` provides.
     pub classify_node: CN,
+    /// `plan.any_way_graph` — whether any topic wants way graph output. Pass A's `use_counts` only
+    /// needs actual per-node reference *counts* (not just membership) to derive the `shared`
+    /// cut-point flag, and that flag is only ever read when this is set (`geom::materialize::run`
+    /// gates `assign_node_ids`/cut-point logic on the same flag) — see `NodeRefCounts`'s own doc
+    /// for the cheaper shape Pass A builds instead when this is `false`.
+    pub needs_graph: bool,
 }
 
 /// Assign a compact, sequential internal id to every graph vertex — a node that will appear as a
@@ -132,7 +142,7 @@ pub fn assign_node_ids(
 pub fn stream_osm<CR, CW, CN>(
     path: &str,
     cb: Callbacks<CR, CW, CN>,
-    disk_node_store: bool,
+    use_disk_store: bool,
 ) -> anyhow::Result<SelectionContext>
 where
     CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
@@ -195,23 +205,23 @@ where
                     .filter(|(_, mask)| mask & cb.relation_geom_mask != 0)
                     .flat_map(|(members, _)| members.iter().map(|&(w, _)| w))
                     .collect();
+                let rel_members = RelMembers::build(rel_members, use_disk_store)?;
 
-                // Pass A — way region (decoded once): classify + counts + endpoints + way_refs.
+                // Pass A — way region (decoded once): classify + counts + way_refs. `extra_node_ids`
+                // (mask-`0` relation-only ways' own node ids, needed for relation-geometry assembly)
+                // comes back straight from the fold instead of a second scan over the finished
+                // `way_refs` — see `classify_and_index`'s own doc.
                 let t = std::time::Instant::now();
-                let (use_counts, endpoints, way_refs) =
-                    classify_and_index(&mmap, way_offsets, &cb.classify_way, &extra_way_ids)?;
+                let (use_counts, way_refs, extra_node_ids) = classify_and_index(
+                    &mmap, way_offsets, &cb.classify_way, &extra_way_ids, cb.needs_graph, use_disk_store,
+                )?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
 
                 // Pass B — node region: coords for every referenced node (+ classify nodes).
-                let extra_node_ids: FxHashSet<i64> = way_refs
-                    .iter()
-                    .filter(|(_, (_, mask))| *mask == 0)
-                    .flat_map(|(_, (refs, _))| refs.iter())
-                    .collect();
                 let t = std::time::Instant::now();
                 let (node_coords, selected, standalone_classified) = collect_coords(
                     &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &extra_node_ids,
-                    disk_node_store,
+                    use_disk_store,
                 )?;
                 info!(
                     "[phase] Pass B (collect node coords{}): {:.1}s",
@@ -219,17 +229,14 @@ where
                     t.elapsed().as_secs_f32()
                 );
                 resolve::log_node_summary(&use_counts, standalone_classified);
-                let _ = endpoints; // endpoints are re-derived from way_refs by geom::materialize (mask != 0 subset)
 
                 // `use_counts` has no consumer past this point — the `shared` flag it feeds is
                 // already baked into `node_coords` (see `NodeCoords`' own doc). Dropped explicitly,
-                // and before the return, because it's one `FxHashMap` entry per referenced node:
-                // carrying it into the materialize phase (which is what returning it in
-                // `SelectionContext` used to do) costs the same order of memory as the coordinate
-                // map itself, for nothing.
+                // and before the return, because it's one entry per referenced node: carrying it
+                // into the materialize phase (which is what returning it in `SelectionContext` used
+                // to do) costs the same order of memory as the coordinate map itself, for nothing.
                 drop(use_counts);
 
-                let way_refs = WayRefsStore::build(way_refs, disk_node_store)?;
                 return Ok(SelectionContext { node_coords, way_refs, rel_members, selected });
             }
             Err(e) => {
@@ -240,7 +247,7 @@ where
         warn!("PBF not declared Sort.Type_then_ID — using full-scan streaming reader");
     }
 
-    stream_osm_fallback(path, cb, disk_node_store)
+    stream_osm_fallback(path, cb, use_disk_store)
 }
 
 /// Locate the `(way_start, rel_start)` region boundaries in a sorted file's blob list.

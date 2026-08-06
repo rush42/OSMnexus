@@ -116,14 +116,15 @@ pub struct Config {
     #[arg(long, value_enum, default_value_t = Source::Pbf)]
     pub source: Source,
 
-    /// Spill node coordinates and way node-ref lists to `mmap`'d temp files instead of keeping
-    /// them resident for the whole run — both are MPHF-indexed (see `disk_coords`'/`disk_way_refs`'
-    /// own docs), so this trades some lookup/build CPU and disk I/O for bounding their
+    /// Spill every id-keyed store that grows with input size — node coordinates, node ref-counts,
+    /// way node-ref lists, and relation member lists — to `mmap`'d temp files instead of keeping
+    /// them resident for the whole run (all MPHF-indexed, built on the shared backends in
+    /// `osm::reader::store`). Trades some lookup/build CPU and disk I/O for bounding their
     /// contribution to peak RSS on large extracts, where they're normally resident throughout Pass
-    /// B/Pass A *and* the materialize phase alongside `resolved`. Output-format agnostic — not
+    /// A/Pass B *and* the materialize phase alongside `resolved`. Output-format agnostic — not
     /// Postgres-specific.
     #[arg(long, default_value_t = false)]
-    pub disk_node_store: bool,
+    pub use_disk_store: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
