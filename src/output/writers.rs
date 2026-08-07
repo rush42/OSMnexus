@@ -34,7 +34,7 @@ pub async fn copy_writer<R: CsvRow>(
     let mut buf = Vec::with_capacity(FLUSH_BYTES);
     let mut count = 0;
     while let Some(rows) = rx.recv().await {
-        for row in &rows {
+        for row in rows {
             write_csv_row(&mut buf, &row.csv_fields()?);
             count += 1;
             if buf.len() >= FLUSH_BYTES {
@@ -64,7 +64,7 @@ pub async fn csv_writer<R: CsvRow>(
     let mut buf = Vec::with_capacity(FLUSH_BYTES);
     let mut count = 0;
     while let Some(rows) = rx.recv().await {
-        for row in &rows {
+        for row in rows {
             write_csv_row(&mut buf, &row.csv_fields()?);
             count += 1;
         }

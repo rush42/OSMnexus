@@ -31,7 +31,7 @@ pub struct EdgeRow {
 
 impl CsvRow for EdgeRow {
     /// CSV field order matches `EDGE_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+    fn csv_fields(self) -> anyhow::Result<Vec<String>> {
         Ok(vec![
             self.osm_id.to_string(),
             self.seg_idx.to_string(),
@@ -58,7 +58,7 @@ pub struct WayRow {
 
 impl CsvRow for WayRow {
     /// CSV field order matches `WAY_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+    fn csv_fields(self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb), self.length_m.to_string()])
     }
 }
@@ -77,7 +77,7 @@ pub struct NodeRow {
 
 impl CsvRow for NodeRow {
     /// CSV field order matches `NODE_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+    fn csv_fields(self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.id.to_string(), self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
     }
 }
@@ -93,7 +93,7 @@ pub struct PointRow {
 
 impl CsvRow for PointRow {
     /// CSV field order matches `POINT_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+    fn csv_fields(self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
     }
 }
@@ -110,7 +110,7 @@ pub struct PolygonRow {
 
 impl CsvRow for PolygonRow {
     /// CSV field order matches `POLYGON_COLUMNS`.
-    fn csv_fields(&self) -> anyhow::Result<Vec<String>> {
+    fn csv_fields(self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
     }
 }

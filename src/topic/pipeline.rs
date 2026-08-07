@@ -168,11 +168,20 @@ pub fn build_topic_rows<'a>(
             annotations.append(&mut extra_annotations);
         }
 
+        // JSON-encode here, on whichever rayon classify worker is running this element, instead of
+        // handing the raw `Map`s to the writer task — see `TopicRow::produced`'s own doc. `Map`'s
+        // keys are always `String` and `Value`'s own `Serialize` impl never fails for the shapes
+        // produced here, so `to_string` failing isn't a real case; `unwrap_or_default` just avoids
+        // plumbing a `Result` through this closure for it.
+        let produced = serde_json::to_string(&produced).unwrap_or_default();
+        let annotations = serde_json::to_string(&annotations).unwrap_or_default();
+        let meta = serde_json::to_string(meta).unwrap_or_default();
+
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_edges`), joined on `osm_id` at materialization time. `id`
         // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
         // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
-        rows.push(TopicRow { osm_id, osm_type: kind.osm_type(), id, category: category_id, produced, annotations, meta: meta.clone() });
+        rows.push(TopicRow { osm_id, osm_type: kind.osm_type(), id, category: category_id, produced, annotations, meta });
     };
 
     emit(&*tags, None, &default_id, annotations);
