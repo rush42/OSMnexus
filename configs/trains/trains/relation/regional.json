@@ -1,0 +1,9 @@
+{
+  "condition": {
+    "and": [
+      { "tag": "type", "eq": "route" },
+      { "tag": "route", "eq": "train" },
+      { "not": { "tag": "service", "in": ["long_distance", "high_speed", "night", "international"] } }
+    ]
+  }
+}
