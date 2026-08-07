@@ -83,12 +83,12 @@ fn main() -> Result<()> {
     }
 
     // Compiling the per-kind decision tree (`CategoriesFile::build_order`'s `decision_tree::build`
-    // call, skipped via `TopicRunner::load`'s `linear_classify` flag) is by far the most expensive
-    // part of loading a topic — and it's only ever read by `decision_tree_dag` below, for an actual
-    // (non-`list`) decision-tree request. Every other mode/selector, including the decision-tree
-    // view's own field-name `list`, never looks at `cats.tree`, so there's no reason to pay for it.
+    // call, skipped via `tree_max_depth == 0`) is by far the most expensive part of loading a
+    // topic — and it's only ever read by `decision_tree_dag` below, for an actual (non-`list`)
+    // decision-tree request. Every other mode/selector, including the decision-tree view's own
+    // field-name `list`, never looks at `cats.tree`, so there's no reason to pay for it.
     let build_tree = mode == "decision-tree" && selector != "list";
-    let runner = TopicRunner::load(&topic_name, 64, !build_tree)
+    let runner = TopicRunner::load(&topic_name, if build_tree { 64 } else { 0 })
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     match mode.as_str() {

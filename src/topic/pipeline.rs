@@ -26,14 +26,18 @@ fn eval_fields(
     fields: &[Field],
     ctx: &ExtractCtx,
     produced: &mut Map<String, Value>,
-    annotations: &mut Map<String, Value>,
+    extra_annotations: &mut Map<String, Value>,
 ) {
     for field in fields {
         if let Some(p) = field.source.eval(ctx) {
             produced.insert(field.output.clone(), p.value);
             // Companion annotate → `<output>_<k>` (e.g. surface_source, smoothness_confidence).
+            // Written into a fresh `extra_annotations` map, separate from `ctx.annotations` (the
+            // row's base map) — so the base never needs cloning just to make room for writes; the
+            // caller merges the two only if `extra_annotations` actually ends up non-empty (most
+            // topics have no `annotate` on their producers at all, e.g. `roads`).
             for (k, v) in p.annotate {
-                annotations.insert(format!("{}_{}", field.output, k), v);
+                extra_annotations.insert(format!("{}_{}", field.output, k), v);
             }
         }
     }
@@ -94,7 +98,15 @@ pub fn build_topic_rows<'a>(
     }
 
     let mut rows = Vec::new();
-    let mut emit = |ectx: ExtractCtx| {
+    // Takes ownership of `base_annotations` (`_side`, plus `_prefix`/`_infix` for a side object —
+    // stamped above / by each `Clone`) rather than borrowing it, so it can be moved straight into
+    // the row unchanged when nothing needs merging into it — the common case, since most topics'
+    // producers carry no `annotate` provenance at all (e.g. `roads`). `ectx` only ever borrows
+    // `base_annotations` for the category-match + `eval_fields` calls below, so by the time this
+    // closure reaches the merge step that borrow has already ended and moving is fine.
+    let mut emit = |obj_tags: &RawTags, parent_tags: Option<&RawTags>, id: &str, base_annotations: Map<String, Value>| {
+        let ectx = ExtractCtx { obj_tags, parent_tags, id, annotations: &base_annotations };
+
         // `accept_all` kinds (`categories` is `None`) skip category matching entirely — every
         // element is kept, with no `category` value and `default_producers` as its producers.
         let category_id = match categories {
@@ -117,17 +129,12 @@ pub fn build_topic_rows<'a>(
         // default's lowest-priority `Fallback` branch — see `runner::merge_default_fields`), share
         // one column and one eval pass.
         let mut produced = Map::new();
-        // `ectx.annotations` already carries `_side`, plus `_prefix`/`_infix` for a side object
-        // (stamped above / by each `Clone`); clone it as this row's base annotations map, then
-        // let `eval_fields` add each output's own `annotate` provenance on top. `_parent_highway`
-        // is gone (redundant with the parent's own `highway` tag, already reachable through
-        // `ectx.parent_tags`).
-        let mut annotations = ectx.annotations.clone();
+        let mut extra_annotations = Map::new();
         let producers = category_id
             .as_ref()
             .and_then(|id| runner.category_producers.get(id))
             .unwrap_or(&runner.default_producers);
-        eval_fields(producers, &ectx, &mut produced, &mut annotations);
+        eval_fields(producers, &ectx, &mut produced, &mut extra_annotations);
         if runner.pass_through_remaining_tags {
             // `"producers": true` or a `null` `passthrough_tags` entry (see
             // `TopicRunner::pass_through_remaining_tags`'s own doc) — every raw tag `eval_fields`
@@ -140,25 +147,26 @@ pub fn build_topic_rows<'a>(
                 produced.entry(k.to_string()).or_insert_with(|| Value::String(v.to_string()));
             }
         }
+        let id = ectx.id.to_owned();
+
+        // `base_annotations`'s borrow (via `ectx`) ended at the last `eval_fields`/`obj_tags` use
+        // above, so it's free to move now: straight through if `eval_fields` added nothing, merged
+        // with `extra_annotations` (via the cheaper of the two `append`s) otherwise.
+        let mut annotations = base_annotations;
+        if !extra_annotations.is_empty() {
+            annotations.append(&mut extra_annotations);
+        }
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
-        // geom table (see `build_edges`), joined on `osm_id` at materialization time. `ectx.id`
+        // geom table (see `build_edges`), joined on `osm_id` at materialization time. `id`
         // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
         // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
-        rows.push(TopicRow {
-            osm_id,
-            osm_type: kind.osm_type(),
-            id: ectx.id.to_owned(),
-            category: category_id,
-            produced,
-            annotations,
-            meta: meta.clone(),
-        });
+        rows.push(TopicRow { osm_id, osm_type: kind.osm_type(), id, category: category_id, produced, annotations, meta: meta.clone() });
     };
 
-    emit(ExtractCtx { obj_tags: &*tags, parent_tags: None, id: &default_id, annotations: &annotations });
-    for (clone_tags, clone_annotations, id) in &clones {
-        emit(ExtractCtx { obj_tags: clone_tags, parent_tags: Some(&*tags), id, annotations: clone_annotations });
+    emit(&*tags, None, &default_id, annotations);
+    for (clone_tags, clone_annotations, id) in clones {
+        emit(&clone_tags, Some(&*tags), &id, clone_annotations);
     }
 
     rows

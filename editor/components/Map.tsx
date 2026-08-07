@@ -41,16 +41,18 @@ function boxToPolygon(a: [number, number], b: [number, number]): GeoJSON.Feature
   };
 }
 
-// Builds a MapLibre `match` expression keyed on `topic` — one color per topic for now, categories
-// within a topic aren't individually distinguished yet. Falls back to a neutral color for anything
-// not yet in `topicColors`.
+// Builds a MapLibre `match` expression keyed on either `topic` or `category` (both stamped onto
+// every feature server-side regardless of which is being viewed — see `output/geojson.rs` /
+// `engine::runner`). Falls back to a neutral color for anything not yet in `colorMap` (e.g. a
+// category with zero matches yet, or the brief window while data still belongs to the outgoing
+// topic during a switch).
 const FALLBACK_COLOR = "#e6432a";
-function colorExpression(topicColors: Record<string, string>): maplibregl.ExpressionSpecification | string {
-  const entries = Object.entries(topicColors);
+function colorExpression(colorField: "topic" | "category", colorMap: Record<string, string>): maplibregl.ExpressionSpecification | string {
+  const entries = Object.entries(colorMap);
   if (entries.length === 0) return FALLBACK_COLOR;
   return [
     "match",
-    ["get", "topic"],
+    ["get", colorField],
     ...entries.flatMap(([key, color]) => [key, color]),
     FALLBACK_COLOR,
   ] as unknown as maplibregl.ExpressionSpecification;
@@ -149,7 +151,8 @@ export default function Map({
   bounds,
   data,
   cutPoints,
-  topicColors,
+  colorField,
+  colorMap,
   hiddenTopics,
   isolateCategory,
   focusTarget,
@@ -163,7 +166,12 @@ export default function Map({
   bounds: [number, number, number, number] | null;
   data: GeoJSON.FeatureCollection | null;
   cutPoints: GeoJSON.FeatureCollection | null;
-  topicColors: Record<string, string>;
+  // Which stamped property to color by, and the color for each value of it — "topic" (one color
+  // per topic, only visually distinct with several topics loaded at once) or "category" (one
+  // color per category within the current topic, e.g. to tell `cycleway_adjoining` apart from
+  // `cycleway_on_highway_advisory` at a glance — see the "Color by category" toggle).
+  colorField: "topic" | "category";
+  colorMap: Record<string, string>;
   hiddenTopics: Set<string>;
   isolateCategory: { topic: string; name: string } | null;
   // What to fit the view to on the next focusTick — a topic click (name: null) fits every feature
@@ -466,10 +474,10 @@ export default function Map({
 
   useEffect(() => {
     if (!ready) return;
-    const expr = colorExpression(topicColors);
+    const expr = colorExpression(colorField, colorMap);
     mapRef.current!.setPaintProperty(`${SOURCE_ID}-line`, "line-color", expr);
     mapRef.current!.setPaintProperty(`${SOURCE_ID}-point`, "circle-color", expr);
-  }, [ready, topicColors]);
+  }, [ready, colorField, colorMap]);
 
   useEffect(() => {
     if (!ready) return;

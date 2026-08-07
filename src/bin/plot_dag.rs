@@ -34,7 +34,11 @@ fn main() -> Result<()> {
     }
     std::fs::create_dir_all(&out_dir)?;
 
-    let runner = TopicRunner::load(&topic_name, 64, false)
+    // `0` skips compiling both the category decision tree and each producer Match's own compiled
+    // tree — neither is ever read here (this binary only plots producer/sanitizer trees from their
+    // raw `rules`/chain data, never `CategoriesFile::tree`; see `tree.rs`'s `Producer::Match` arm,
+    // which explicitly ignores its compiled `tree` field), so there's nothing to lose skipping it.
+    let runner = TopicRunner::load(&topic_name, 0)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     // field -> repr(producer) -> (one instance, labels of who produces it this way)

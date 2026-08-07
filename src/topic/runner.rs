@@ -43,8 +43,11 @@ pub struct TopicRunner {
     /// fallback used if a category id somehow isn't in `category_producers` (shouldn't normally
     /// happen: every category gets its own entry at load time below).
     pub default_producers: Vec<Field>,
-    /// Mirrors `Config::linear_classify` — when set, `build_topic_rows` calls `categorize_linear`
-    /// instead of `categorize`, bypassing the decision tree entirely (see `categorize::categories`).
+    /// Whether this topic's categories were compiled with `tree_max_depth == 0` — when set,
+    /// `build_topic_rows` calls `categorize_linear` instead of `categorize`, bypassing the decision
+    /// tree entirely (see `categorize::categories`). Derived, not independently configurable: a
+    /// depth-0 tree is never built in the first place (`build_order` skips straight to
+    /// `DecisionTree::default()`), so this just remembers that choice for the runtime dispatch.
     pub linear_classify: bool,
     /// Per-category effective producers: the topic's `producers` map merged with the category's own
     /// `producers` overrides (category wins, by key — plain JSON-object merge, see `TopicSpec::producers`),
@@ -153,7 +156,7 @@ impl TopicRunner {
     /// `units.json` files at the config root are skipped automatically), and any `_`-prefixed
     /// directory is skipped too, as a general hidden-directory convention. Returned in sorted
     /// name order for deterministic output.
-    pub fn load_all(tree_max_depth: usize, linear_classify: bool) -> anyhow::Result<Vec<Self>> {
+    pub fn load_all(tree_max_depth: usize) -> anyhow::Result<Vec<Self>> {
         let topics_dir = crate::paths::config_root();
         let mut names: Vec<String> = std::fs::read_dir(&topics_dir)
             .with_context(|| format!("reading {}", topics_dir.display()))?
@@ -167,11 +170,13 @@ impl TopicRunner {
             })
             .collect();
         names.sort();
-        names.iter().map(|name| Self::load(name, tree_max_depth, linear_classify)).collect()
+        names.iter().map(|name| Self::load(name, tree_max_depth)).collect()
     }
 
-    /// Load a topic from its directory `<config_root>/<name>/`.
-    pub fn load(name: &str, tree_max_depth: usize, linear_classify: bool) -> anyhow::Result<Self> {
+    /// Load a topic from its directory `<config_root>/<name>/`. `tree_max_depth == 0` skips
+    /// compiling a decision tree entirely (see `build_order`) and switches this topic's category
+    /// classification to the linear reference walk (`categorize_linear`) at runtime.
+    pub fn load(name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
         let base = crate::paths::config_root().join(name);
         let config_root = base.parent().expect("topics/<name> has a parent").to_path_buf();
 
@@ -247,7 +252,7 @@ impl TopicRunner {
             .with_context(|| format!("loading topics/{name}/ categories"))?;
         let mut categories: HashMap<ElementKind, CategoriesFile> = HashMap::new();
         for (kind, mut cats) in categories_loaded {
-            cats.build_order(tree_max_depth, linear_classify)
+            cats.build_order(tree_max_depth)
                 .with_context(|| format!("building category order for topics/{name}"))?;
             categories.insert(kind, cats);
         }
@@ -340,7 +345,7 @@ impl TopicRunner {
             pipelines,
             exclude_condition,
             default_producers,
-            linear_classify,
+            linear_classify: tree_max_depth == 0,
             category_producers,
             pass_through_remaining_tags,
             accept_all,
@@ -448,7 +453,7 @@ mod producer_tree_tests {
     /// `Producer::Match` needs `assume_match_is_final: false`).
     #[test]
     fn producer_tree_matches_linear() {
-        let runner = TopicRunner::load("roads", crate::config::DEFAULT_TREE_MAX_DEPTH, false)
+        let runner = TopicRunner::load("roads", crate::config::DEFAULT_TREE_MAX_DEPTH)
             .expect("load roads topic");
 
         let mut checked_any_field = false;

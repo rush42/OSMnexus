@@ -463,7 +463,7 @@ async function runPipeline(
   const { tagsCsv, geometry } = await fetchFeatures(target);
   const result = await run(
     PIPELINE_BIN,
-    ["--source", "csv", "--config-dir", configDir, "--output", "csv", "--out-dir", outDir, "--linear-classify"],
+    ["--source", "csv", "--config-dir", configDir, "--output", "csv", "--out-dir", outDir, "--tree-max-depth", "0"],
     undefined,
     tagsCsv,
     { trackMemory: true },

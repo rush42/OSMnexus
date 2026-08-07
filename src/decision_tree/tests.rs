@@ -54,7 +54,7 @@ fn tree_matches_linear() {
           .expect("parse resolved macros");
       for (kind, mut cats) in load_topic_categories(&dir, &resolved_macros, &macros, &sanitizers).expect("load categories") {
         let topic = format!("{topic}/{}", kind.subdir());
-        cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH, false).expect("build order + tree");
+        cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
 
         let refs = referenced_eq(&cats);
         let hw_vals: Vec<Option<String>> = {

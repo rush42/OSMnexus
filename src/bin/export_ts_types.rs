@@ -33,7 +33,9 @@ fn main() -> Result<()> {
     let topic_name = args.next().context(usage)?;
 
     osmnexus::paths::set_config_root(config_dir);
-    let runner = TopicRunner::load(&topic_name, 64, true)
+    // `0` skips compiling any decision tree — this binary only inspects `default_producers`/
+    // `category_producers`' field shapes, never a compiled tree.
+    let runner = TopicRunner::load(&topic_name, 0)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     let mut contributions: std::collections::BTreeMap<String, Vec<Contribution>> = std::collections::BTreeMap::new();

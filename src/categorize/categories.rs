@@ -134,7 +134,7 @@ impl CategoriesFile {
     /// (categories ∪ macro sinks); a cycle is a contradictory priority and is a hard error.
     /// Correctness relies on the disjointness invariant (`categories_are_disjoint`): any two nodes
     /// that can co-match have an exclude edge, so first-match-in-order picks the same winner.
-    pub fn build_order(&mut self, tree_max_depth: usize, skip_tree: bool) -> anyhow::Result<()> {
+    pub fn build_order(&mut self, tree_max_depth: usize) -> anyhow::Result<()> {
         use std::collections::{BTreeMap, BTreeSet};
 
         let catset: BTreeSet<&str> = self.categories.iter().map(|c| c.id.as_str()).collect();
@@ -200,7 +200,11 @@ impl CategoriesFile {
             })
             .collect();
         self.order = order;
-        self.tree = if skip_tree {
+        // `tree_max_depth == 0` skips compiling a tree at all (rather than paying the NNF/simplify
+        // compile-time cost just to produce a single all-candidates leaf) — the caller
+        // (`TopicRunner::load`) notices the same `tree_max_depth == 0` and switches this topic's
+        // runtime dispatch to `categorize_linear`'s walk over `order` directly instead of `categorize`.
+        self.tree = if tree_max_depth == 0 {
             DecisionTree::default()
         } else {
             decision_tree::build(&conditions, tree_max_depth, true)

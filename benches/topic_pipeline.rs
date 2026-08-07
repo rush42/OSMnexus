@@ -12,7 +12,7 @@ fn way_tags(pairs: &[(&str, &str)]) -> RawTags {
 }
 
 fn bench_build_topic_rows(c: &mut Criterion) {
-    let runner = TopicRunner::load("roads", 4, false).expect("load 'roads' topic from configs/tilda");
+    let runner = TopicRunner::load("roads", 4).expect("load 'roads' topic from configs/tilda");
     let meta = OsmMeta { updated_at: None, updated_by: None, changeset_id: None };
 
     let tags = way_tags(&[

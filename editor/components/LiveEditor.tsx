@@ -152,6 +152,12 @@ export default function LiveEditor({
   const [sidebarWidth, setSidebarWidth] = useState(420);
   const [topicsListHeight, setTopicsListHeight] = useState(320);
   const [showNodes, setShowNodes] = useState(false);
+  // Off by default: with a single topic in view (see this component's own doc), topic-coloring
+  // makes every feature the same color, which is only useful as a neutral baseline. Flipping this
+  // on switches the map to one color per *category* within that topic instead — the breakdown
+  // that's actually interesting to look at (e.g. telling `cycleway_adjoining` apart from
+  // `cycleway_on_highway_advisory`).
+  const [colorByCategory, setColorByCategory] = useState(false);
   const [followSelection, setFollowSelection] = useState(true);
   const [viewMode, setViewMode] = useState<"map" | "tree" | "categorize" | "decision-tree" | "sanitizers">("map");
   const [text, setText] = useState<string>("");
@@ -292,6 +298,11 @@ export default function LiveEditor({
   // has no color for. A single-entry `{ [topic]: ... }` map used to hit that fallback for exactly
   // that stretch, flashing every line red until the new topic's data replaced the old.
   const topicColors = useMemo(() => Object.fromEntries(topics.map((t) => [t, hashColor(t)])), [topics]);
+  // One color per category name in the current topic (`categories` covers every kind — way/node/
+  // relation — at once, which is fine: category names are unique within a topic regardless of kind).
+  const categoryColors = useMemo(() => Object.fromEntries(categories.map((c) => [c.name, hashColor(c.name)])), [categories]);
+  const colorField = colorByCategory ? "category" : "topic";
+  const colorMap = colorByCategory ? categoryColors : topicColors;
 
   async function addCategory() {
     const name = newName.trim();
@@ -555,7 +566,8 @@ export default function LiveEditor({
             bounds={bounds}
             data={data}
             cutPoints={cutPoints}
-            topicColors={topicColors}
+            colorField={colorField}
+            colorMap={colorMap}
             hiddenTopics={NO_HIDDEN_TOPICS}
             isolateCategory={isolateCategory}
             focusTarget={focusTarget}
@@ -647,6 +659,27 @@ export default function LiveEditor({
               >
                 <input type="checkbox" checked={showNodes} onChange={(e) => setShowNodes(e.target.checked)} />
                 Show intersections
+              </label>
+              <label
+                style={{
+                  padding: "7px 12px",
+                  background: "rgba(255,255,255,0.85)",
+                  backdropFilter: "blur(6px)",
+                  color: "var(--text)",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  borderRadius: "var(--radius)",
+                  boxShadow: "var(--shadow)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <input type="checkbox" checked={colorByCategory} onChange={(e) => setColorByCategory(e.target.checked)} />
+                Color by category
               </label>
               <label
                 style={{

@@ -1,7 +1,7 @@
 //! Ad-hoc timing harness for the full select-phase classification path (stream_osm + real topic
 //! classification), used to compare tag-allocation cost before/after the Cow-based `RawTags`
 //! change. No DB/writer involved — tag rows are counted and dropped. Run with:
-//!   cargo run --release --example bench_classify -- <path.osm.pbf>
+//!   cargo run --release --example bench_classify -- <path.osm.pbf> [--linear-classify]
 
 use std::time::Instant;
 
@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     osmnexus::paths::set_config_root("configs/tilda");
     let t_init = Instant::now();
     let linear_classify = std::env::args().nth(2).as_deref() == Some("--linear-classify");
-    let runners = TopicRunner::load_all(6, linear_classify)?;
+    let runners = TopicRunner::load_all(if linear_classify { 0 } else { 6 })?;
     println!("init (TopicRunner::load_all): {:.3}s", t_init.elapsed().as_secs_f64());
     let has_relations = runners.iter().any(|r| r.has_kind(osmnexus::osm::types::ElementKind::Relation));
     let has_nodes = runners.iter().any(|r| r.has_kind(osmnexus::osm::types::ElementKind::Node));
