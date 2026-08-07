@@ -139,12 +139,23 @@ pub fn build_topic_rows<'a>(
             // `"producers": true` or a `null` `passthrough_tags` entry (see
             // `TopicRunner::pass_through_remaining_tags`'s own doc) — every raw tag `eval_fields`
             // above didn't already produce a value for, verbatim. `producers: true` means `producers`
-            // was empty to begin with, so this ends up filling every key in that case. `.entry(...)
-            // .or_insert_with(...)` rather than `.extend(...)`: an explicit output (named
-            // passthrough or a real derived field) always wins over the wildcard's raw value for
-            // the same key, never the other way around.
-            for (k, v) in ectx.obj_tags.iter() {
-                produced.entry(k.to_string()).or_insert_with(|| Value::String(v.to_string()));
+            // was empty to begin with, so this ends up filling every key in that case.
+            //
+            // `produced` empty (the common case for a pure-passthrough topic like `live_raw`, whose
+            // category has no explicit fields at all) means there's nothing a wildcard key could
+            // collide with — every raw tag is new by construction, so a plain `insert` is safe and
+            // skips the extra vacant/occupied branch `.entry(...).or_insert_with(...)` pays per tag
+            // just to protect a precedence rule that can't apply here.
+            if produced.is_empty() {
+                for (k, v) in ectx.obj_tags.iter() {
+                    produced.insert(k.to_string(), Value::String(v.to_string()));
+                }
+            } else {
+                // An explicit output (named passthrough or a real derived field) always wins over
+                // the wildcard's raw value for the same key, never the other way around.
+                for (k, v) in ectx.obj_tags.iter() {
+                    produced.entry(k.to_string()).or_insert_with(|| Value::String(v.to_string()));
+                }
             }
         }
         let id = ectx.id.to_owned();

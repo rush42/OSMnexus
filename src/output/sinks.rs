@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use anyhow::Context;
 use deadpool_postgres::Pool;
@@ -30,16 +31,28 @@ use crate::output::writers::{copy_writer, csv_writer};
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
 const WRITER_CHAN_CAP: usize = 256;
 
-/// `w` sharded writers for one table, sender + round-robin counter + join handle per shard.
+/// Single-row `send` calls (e.g. one point row per node/way) accumulate here per shard instead of
+/// going straight to the channel — a channel send costs a permit acquire + wake-up + allocation
+/// per call, which dominates when callers hand rows in one at a time (`route_point`'s per-node
+/// `vec![row.clone()]`, previously the single biggest contributor to per-node overhead on an
+/// all-nodes import). Batches flush once a shard's buffer reaches this size, and whatever's left
+/// flushes in `finish`. `route_tag`'s already-batched sends (a full blob's worth of rows) skip
+/// this buffer entirely — see `send`'s own doc.
+const SEND_BATCH: usize = 2048;
+
+/// `w` sharded writers for one table, sender + round-robin counter + join handle per shard, plus
+/// one small-row accumulation buffer per shard (see `SEND_BATCH`'s own doc).
 struct Shard<T> {
     senders: Vec<mpsc::Sender<Vec<T>>>,
     rr: AtomicUsize,
     handles: Vec<JoinHandle<anyhow::Result<usize>>>,
+    bufs: Vec<Mutex<Vec<T>>>,
 }
 
 impl<T: CsvRow + Send + Sync + 'static> Shard<T> {
     fn spawn(output: Output, pool: &Option<Pool>, out_dir: &Path, table: &str, columns: &'static str, w: usize) -> Self {
         let (mut senders, mut handles) = (Vec::with_capacity(w), Vec::with_capacity(w));
+        let mut bufs = Vec::with_capacity(w);
         for _ in 0..w {
             let (tx, rx) = mpsc::channel::<Vec<T>>(WRITER_CHAN_CAP);
             let h = match output {
@@ -48,28 +61,53 @@ impl<T: CsvRow + Send + Sync + 'static> Shard<T> {
             };
             handles.push(h);
             senders.push(tx);
+            bufs.push(Mutex::new(Vec::with_capacity(SEND_BATCH)));
         }
-        Shard { senders, rr: AtomicUsize::new(0), handles }
+        Shard { senders, rr: AtomicUsize::new(0), handles, bufs }
     }
 
     fn empty() -> Self {
-        Shard { senders: Vec::new(), rr: AtomicUsize::new(0), handles: Vec::new() }
+        Shard { senders: Vec::new(), rr: AtomicUsize::new(0), handles: Vec::new(), bufs: Vec::new() }
     }
 
     fn is_empty(&self) -> bool {
         self.senders.is_empty()
     }
 
+    /// Route `rows` to one shard, round-robin. Already-batch-sized sends (`route_tag`'s full
+    /// blob-fold `Vec`s) go straight to the channel unchanged — they're exactly the case the
+    /// channel was designed for. Small sends (typically length 1, from `route_point`/`route_shape`
+    /// handing rows in one at a time) accumulate in that shard's buffer instead, and only cross
+    /// the channel once `SEND_BATCH` rows are pending, cutting the per-row channel-send count by
+    /// ~`SEND_BATCH`x for that path.
     fn send(&self, rows: Vec<T>) {
         if self.senders.is_empty() {
             return;
         }
         let w = self.senders.len();
         let kk = self.rr.fetch_add(1, Ordering::Relaxed) % w;
-        let _ = self.senders[kk].blocking_send(rows);
+        if rows.len() >= SEND_BATCH {
+            let _ = self.senders[kk].blocking_send(rows);
+            return;
+        }
+        let mut buf = self.bufs[kk].lock().unwrap();
+        buf.extend(rows);
+        if buf.len() >= SEND_BATCH {
+            let batch = std::mem::replace(&mut *buf, Vec::with_capacity(SEND_BATCH));
+            drop(buf);
+            let _ = self.senders[kk].blocking_send(batch);
+        }
     }
 
     async fn finish(self) -> anyhow::Result<usize> {
+        // `.await`, not `blocking_send` — unlike `send` (called from sync rayon-worker callbacks),
+        // `finish` runs in async context, and `blocking_send` panics if called from one.
+        for (tx, buf) in self.senders.iter().zip(&self.bufs) {
+            let batch = std::mem::take(&mut *buf.lock().unwrap());
+            if !batch.is_empty() {
+                let _ = tx.send(batch).await;
+            }
+        }
         drop(self.senders);
         let mut count = 0;
         for h in self.handles {
