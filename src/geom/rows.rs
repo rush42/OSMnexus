@@ -2,7 +2,7 @@
 //! geometry — the tag/link tables) stay in `output::rows`, which also owns the shared `CsvRow`
 //! trait/`write_csv_row` both modules' row types implement/use.
 
-use crate::output::rows::CsvRow;
+use crate::output::rows::{BinaryField, BinaryRow, CsvRow};
 
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `csv_fields` implementation below.
@@ -46,6 +46,24 @@ impl CsvRow for EdgeRow {
     }
 }
 
+impl BinaryRow for EdgeRow {
+    /// Field order matches `EDGE_COLUMNS`; `seg_idx` (`integer` column) is cast from `usize` —
+    /// always small (segments per way), never near `i32::MAX`.
+    fn binary_fields(self) -> anyhow::Result<Vec<BinaryField>> {
+        Ok(vec![
+            BinaryField::Int8(self.osm_id),
+            BinaryField::Int4(self.seg_idx as i32),
+            BinaryField::Int8(self.start_id),
+            BinaryField::Int8(self.end_id),
+            BinaryField::Bytea(self.geom_ewkb),
+            BinaryField::Float8(self.length_m),
+            BinaryField::Float8(self.total_length_m),
+            BinaryField::Float8(self.cost),
+            BinaryField::Float8(self.reverse_cost),
+        ])
+    }
+}
+
 /// A whole linestring row: one `{table}_geom` (way) or `{table}_relation_geom` (relation) row per
 /// kept element declaring `"geometry": { "<kind>": ["line"] }` (see `TopicRunner::wants`).
 /// `Clone` since the same row can fan out to however many topics want it.
@@ -60,6 +78,17 @@ impl CsvRow for WayRow {
     /// CSV field order matches `WAY_COLUMNS`.
     fn csv_fields(self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb), self.length_m.to_string()])
+    }
+}
+
+impl BinaryRow for WayRow {
+    /// Field order matches `WAY_COLUMNS`.
+    fn binary_fields(self) -> anyhow::Result<Vec<BinaryField>> {
+        Ok(vec![
+            BinaryField::Int8(self.osm_id),
+            BinaryField::Bytea(self.geom_ewkb),
+            BinaryField::Float8(self.length_m),
+        ])
     }
 }
 
@@ -82,6 +111,17 @@ impl CsvRow for NodeRow {
     }
 }
 
+impl BinaryRow for NodeRow {
+    /// Field order matches `NODE_COLUMNS`.
+    fn binary_fields(self) -> anyhow::Result<Vec<BinaryField>> {
+        Ok(vec![
+            BinaryField::Int8(self.id),
+            BinaryField::Int8(self.osm_id),
+            BinaryField::Bytea(self.geom_ewkb),
+        ])
+    }
+}
+
 /// A single-point row: a node's own coordinate, a way's centroid, or a relation's centroid —
 /// routed (see `main.rs`) to every topic that declares `"geometry": { "<kind>": ["point"] }` and
 /// kept the element. `Clone` since the same row can fan out to however many topics want it.
@@ -95,6 +135,13 @@ impl CsvRow for PointRow {
     /// CSV field order matches `POINT_COLUMNS`.
     fn csv_fields(self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
+    }
+}
+
+impl BinaryRow for PointRow {
+    /// Field order matches `POINT_COLUMNS`.
+    fn binary_fields(self) -> anyhow::Result<Vec<BinaryField>> {
+        Ok(vec![BinaryField::Int8(self.osm_id), BinaryField::Bytea(self.geom_ewkb)])
     }
 }
 
@@ -112,5 +159,12 @@ impl CsvRow for PolygonRow {
     /// CSV field order matches `POLYGON_COLUMNS`.
     fn csv_fields(self) -> anyhow::Result<Vec<String>> {
         Ok(vec![self.osm_id.to_string(), hex::encode(&self.geom_ewkb)])
+    }
+}
+
+impl BinaryRow for PolygonRow {
+    /// Field order matches `POLYGON_COLUMNS`.
+    fn binary_fields(self) -> anyhow::Result<Vec<BinaryField>> {
+        Ok(vec![BinaryField::Int8(self.osm_id), BinaryField::Bytea(self.geom_ewkb)])
     }
 }

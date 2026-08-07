@@ -25,7 +25,7 @@ use crate::geom::rows::{
     EdgeRow, NodeRow, PointRow, PolygonRow, WayRow, EDGE_COLUMNS, NODE_COLUMNS, POINT_COLUMNS,
     POLYGON_COLUMNS, WAY_COLUMNS,
 };
-use crate::output::rows::{CsvRow, MemberRow, TopicRow, MEMBER_COLUMNS, TAG_COLUMNS};
+use crate::output::rows::{BinaryRow, CsvRow, MemberRow, TopicRow, MEMBER_COLUMNS, TAG_COLUMNS};
 use crate::output::writers::{copy_writer, csv_writer};
 
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
@@ -49,7 +49,7 @@ struct Shard<T> {
     bufs: Vec<Mutex<Vec<T>>>,
 }
 
-impl<T: CsvRow + Send + Sync + 'static> Shard<T> {
+impl<T: CsvRow + BinaryRow + Send + Sync + 'static> Shard<T> {
     fn spawn(output: Output, pool: &Option<Pool>, out_dir: &Path, table: &str, columns: &'static str, w: usize) -> Self {
         let (mut senders, mut handles) = (Vec::with_capacity(w), Vec::with_capacity(w));
         let mut bufs = Vec::with_capacity(w);
@@ -255,7 +255,7 @@ impl TableWriters {
         }
     }
 
-    fn route_shape<T: CsvRow + Send + Sync + Clone + 'static>(&self, shards: &[Shard<T>], mask: u32, topics: &[usize], row: T) {
+    fn route_shape<T: CsvRow + BinaryRow + Send + Sync + Clone + 'static>(&self, shards: &[Shard<T>], mask: u32, topics: &[usize], row: T) {
         for (i, &topic_idx) in topics.iter().enumerate() {
             if mask & (1 << topic_idx) != 0 {
                 shards[i].send(vec![row.clone()]);
@@ -347,7 +347,7 @@ impl TableWriters {
 /// geometry, which is resolved entirely in memory *after* the main streaming pass (see
 /// `geom::relation`), so it has no ongoing channel to shard across `w` writers like the streaming
 /// tables above; one connection/file is plenty for what's typically a small dataset.
-pub async fn write_rows_once<R: CsvRow + Send + Sync + 'static>(
+pub async fn write_rows_once<R: CsvRow + BinaryRow + Send + Sync + 'static>(
     output: Output,
     pool: &Option<Pool>,
     out_dir: &Path,
