@@ -9,7 +9,8 @@ use crate::categorize::transform::{run_transform_steps, TransformStep};
 use crate::topic::runner::TopicRunner;
 use crate::topic::spec::Field;
 use crate::osm::types::{ElementKind, RawTags};
-use crate::output::{rows::TopicRow, types::OsmMeta};
+use crate::osm::types::WayMeta;
+use crate::output::rows::TopicRow;
 
 // ── Field evaluation ────────────────────────────────────────────────────────────
 
@@ -45,12 +46,61 @@ fn eval_fields(
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// The base object's annotations (`{"_side": "self"}`), shared rather than rebuilt per element.
+///
+/// Category matching reads `_side`/`_prefix`/`_infix` (see `decision_tree::runtime`), so the base
+/// object can't simply be matched against an empty map — but it always starts from this exact
+/// content, so one static serves every element that has no transform pipeline to mutate it. Only
+/// an element that actually emits a row pays to clone it into an owned map.
+fn self_annotations() -> &'static Map<String, Value> {
+    static SELF: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+    SELF.get_or_init(|| {
+        let mut m = Map::new();
+        m.insert("_side".to_owned(), Value::String("self".to_owned()));
+        m
+    })
+}
+
+/// A stack-allocated `"{prefix}/{osm_id}"`. Longest possible content is `relation/` plus a 20-char
+/// i64, so 32 bytes always suffices — sized to keep the default id off the heap, since it's built
+/// for every element scanned but consumed only by the ones that emit a row.
+struct IdBuf {
+    buf: [u8; 32],
+    len: usize,
+}
+
+impl IdBuf {
+    fn new(kind: ElementKind, osm_id: i64) -> Self {
+        use std::fmt::Write;
+        let mut b = IdBuf { buf: [0; 32], len: 0 };
+        // Infallible for the shapes above; a truncating write would still yield a valid `&str`.
+        let _ = write!(b, "{}/{}", kind.id_prefix(), osm_id);
+        b
+    }
+
+    fn as_str(&self) -> &str {
+        // Only ever written through `write_str` below, which appends whole `&str`s, so the prefix
+        // is valid UTF-8 by construction.
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl std::fmt::Write for IdBuf {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = (self.len + s.len()).min(self.buf.len());
+        let n = end - self.len;
+        self.buf[self.len..end].copy_from_slice(&s.as_bytes()[..n]);
+        self.len = end;
+        Ok(())
+    }
+}
+
 pub fn build_topic_rows<'a>(
     runner: &TopicRunner,
     kind: ElementKind,
     osm_id: i64,
     raw_tags: &'a RawTags<'a>,
-    meta: &OsmMeta,
+    meta: &WayMeta,
 ) -> Vec<TopicRow> {
     // The category set for this element kind. Absent → either this kind is flagged `accept_all`
     // (every element passes straight through, no category match — see `TopicSpec::accept_all`) or
@@ -73,9 +123,13 @@ pub fn build_topic_rows<'a>(
         }
     }
 
-    let default_id = format!("{}/{}", kind.id_prefix(), osm_id);
-    let mut annotations = Map::new();
-    annotations.insert("_side".to_owned(), Value::String("self".to_owned()));
+    // Both of these are built for every element that reaches here but read only by an element that
+    // actually matches a category — the overwhelming minority on a nodes pass. `default_id` goes on
+    // the stack (see `IdBuf`), and the base annotations start as a borrow of one shared static
+    // (see `self_annotations`), cloned into an owned map only at emit time or when a transform
+    // pipeline needs to mutate it.
+    let default_id_buf = IdBuf::new(kind, osm_id);
+    let default_id = default_id_buf.as_str();
     let mut clones = Vec::new();
 
     // This kind's own transform pipeline (in-place `InputTransform`s + `Clone`s from
@@ -91,8 +145,17 @@ pub fn build_topic_rows<'a>(
         Cow::Owned(raw_tags.clone())
     };
 
+    // A pipeline stamps `_prefix`/`_infix` into the base annotations, so that case (and only that
+    // case) needs an owned map up front; everything else keeps borrowing the shared static.
+    let mut base_annotations: Cow<'static, Map<String, Value>> = Cow::Borrowed(self_annotations());
     if !pipeline.is_empty() {
-        if !run_transform_steps(tags.to_mut(), &mut annotations, pipeline, &default_id, &mut clones) {
+        if !run_transform_steps(
+            tags.to_mut(),
+            base_annotations.to_mut(),
+            pipeline,
+            default_id,
+            &mut clones,
+        ) {
             return Vec::new();
         }
     }
@@ -104,7 +167,7 @@ pub fn build_topic_rows<'a>(
     // producers carry no `annotate` provenance at all (e.g. `roads`). `ectx` only ever borrows
     // `base_annotations` for the category-match + `eval_fields` calls below, so by the time this
     // closure reaches the merge step that borrow has already ended and moving is fine.
-    let mut emit = |obj_tags: &RawTags, parent_tags: Option<&RawTags>, id: &str, base_annotations: Map<String, Value>| {
+    let mut emit = |obj_tags: &RawTags, parent_tags: Option<&RawTags>, id: &str, base_annotations: Cow<'_, Map<String, Value>>| {
         let ectx = ExtractCtx { obj_tags, parent_tags, id, annotations: &base_annotations };
 
         // `accept_all` kinds (`categories` is `None`) skip category matching entirely — every
@@ -163,7 +226,10 @@ pub fn build_topic_rows<'a>(
         // `base_annotations`'s borrow (via `ectx`) ended at the last `eval_fields`/`obj_tags` use
         // above, so it's free to move now: straight through if `eval_fields` added nothing, merged
         // with `extra_annotations` (via the cheaper of the two `append`s) otherwise.
-        let mut annotations = base_annotations;
+        // Past the category match, so this element is definitely emitting: now is the first point
+        // it's worth owning the annotations (a no-op clone away from the shared static) rather than
+        // having built a fresh map per element scanned.
+        let mut annotations = base_annotations.into_owned();
         if !extra_annotations.is_empty() {
             annotations.append(&mut extra_annotations);
         }
@@ -175,7 +241,9 @@ pub fn build_topic_rows<'a>(
         // plumbing a `Result` through this closure for it.
         let produced = serde_json::to_string(&produced).unwrap_or_default();
         let annotations = serde_json::to_string(&annotations).unwrap_or_default();
-        let meta = serde_json::to_string(meta).unwrap_or_default();
+        // `OsmMeta` is built here, per emitted row, rather than once per element scanned — see
+        // `processing::meta_from` for why that distinction dominates the nodes pass.
+        let meta = serde_json::to_string(&crate::processing::meta_from(meta)).unwrap_or_default();
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_edges`), joined on `osm_id` at materialization time. `id`
@@ -184,9 +252,9 @@ pub fn build_topic_rows<'a>(
         rows.push(TopicRow { osm_id, osm_type: kind.osm_type(), id, category: category_id, produced, annotations, meta });
     };
 
-    emit(&*tags, None, &default_id, annotations);
+    emit(&*tags, None, default_id, base_annotations);
     for (clone_tags, clone_annotations, id) in clones {
-        emit(&clone_tags, Some(&*tags), &id, clone_annotations);
+        emit(&clone_tags, Some(&*tags), &id, Cow::Owned(clone_annotations));
     }
 
     rows

@@ -31,7 +31,7 @@ use rustc_hash::FxHashMap;
 use tracing::info;
 
 use crate::osm::types::{ElementKind, RawTags};
-use crate::output::types::OsmMeta;
+use crate::osm::types::WayMeta;
 use crate::topic::TopicRunner;
 
 /// One element as read back off stdin: its id, kind, and tags (already flattened by the caller's
@@ -80,7 +80,7 @@ pub async fn run(runners: Arc<Vec<TopicRunner>>, writers: Arc<crate::output::sin
 
     let n = elements.len();
     tokio::task::spawn_blocking(move || {
-        let no_meta = OsmMeta { updated_at: None, updated_by: None, changeset_id: None };
+        let no_meta = WayMeta { timestamp: None, user: None, changeset: None };
         for element in elements {
             let mut tags: RawTags = FxHashMap::default();
             for (k, v) in &element.tags {

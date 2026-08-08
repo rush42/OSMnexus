@@ -13,9 +13,8 @@ use crate::topic::load::{
 };
 use crate::topic::pipeline::build_topic_rows;
 use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, TopicSpec, TransformsSpec};
-use crate::osm::types::{ElementKind, RawTags};
+use crate::osm::types::{ElementKind, RawTags, WayMeta};
 use crate::output::rows::TopicRow;
-use crate::output::types::OsmMeta;
 
 /// A fully loaded topic ready to process ways.
 pub struct TopicRunner {
@@ -394,7 +393,7 @@ impl TopicRunner {
         kind: ElementKind,
         osm_id: i64,
         raw_tags: &'a RawTags<'a>,
-        meta: &OsmMeta,
+        meta: &WayMeta,
     ) -> Vec<TopicRow> {
         if !self.has_kind(kind) {
             return Vec::new();

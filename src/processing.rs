@@ -7,9 +7,15 @@ use crate::topic::TopicRunner;
 use crate::osm::types::{ElementKind, NodeData, RelData, WayData, WayMeta};
 use crate::output::{rows::TopicRow, types::OsmMeta};
 
-/// Build the `OsmMeta` (updated_at/by, changeset) from an element's raw metadata. Shared by the
-/// way/relation/node classification entry points.
-fn meta_from(m: &WayMeta) -> OsmMeta {
+/// Build the `OsmMeta` (updated_at/by, changeset) from an element's raw metadata.
+///
+/// Called per emitted *row*, not per element scanned — the timestamp formatting alone measures
+/// ~250 ns (chrono's strftime plus the `String` it allocates), which is ruinous on the nodes pass:
+/// a category-based node topic walks every node in the file (3.8 billion on europe-latest) to keep
+/// a handful, so formatting eagerly spent ~940 CPU-seconds there producing strings that were
+/// discarded for all but ~27k of them. `build_topic_rows` therefore carries the borrowed `WayMeta`
+/// through classification and calls this only once an element is actually being emitted.
+pub(crate) fn meta_from(m: &WayMeta) -> OsmMeta {
     OsmMeta {
         updated_at: m.timestamp.and_then(|ts| {
             chrono::DateTime::from_timestamp(ts, 0)
@@ -27,7 +33,7 @@ fn classify_element(
     kind: ElementKind,
     id: i64,
     tags: &crate::osm::types::RawTags<'_>,
-    meta: &OsmMeta,
+    meta: &WayMeta,
 ) -> Vec<Vec<TopicRow>> {
     runners.iter().map(|r| r.process(kind, id, tags, meta)).collect()
 }
@@ -42,13 +48,12 @@ pub struct ClassifyOutput {
 /// Tag-only classification for one way (Pass A). Runs every topic's way pipeline against the way's
 /// raw tags. No geometry — coords are not needed and not available yet.
 pub fn classify_way(runners: &[TopicRunner], wd: &WayData<'_>) -> ClassifyOutput {
-    let meta = meta_from(&wd.meta);
     let mut mask = 0u32;
     let topic_rows: Vec<Vec<TopicRow>> = runners
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let rows = r.process(ElementKind::Way, wd.id, &wd.tags, &meta);
+            let rows = r.process(ElementKind::Way, wd.id, &wd.tags, &wd.meta);
             if !rows.is_empty() {
                 mask |= 1 << i;
             }
@@ -60,12 +65,10 @@ pub fn classify_way(runners: &[TopicRunner], wd: &WayData<'_>) -> ClassifyOutput
 
 /// Tag-only classification for one relation (relations pass). Per-topic relation tag rows.
 pub fn classify_relation(runners: &[TopicRunner], rd: &RelData<'_>) -> Vec<Vec<TopicRow>> {
-    let meta = meta_from(&rd.meta);
-    classify_element(runners, ElementKind::Relation, rd.id, &rd.tags, &meta)
+    classify_element(runners, ElementKind::Relation, rd.id, &rd.tags, &rd.meta)
 }
 
 /// Tag-only classification for one node (nodes pass). Per-topic node tag rows.
 pub fn classify_node(runners: &[TopicRunner], nd: &NodeData<'_>) -> Vec<Vec<TopicRow>> {
-    let meta = meta_from(&nd.meta);
-    classify_element(runners, ElementKind::Node, nd.id, &nd.tags, &meta)
+    classify_element(runners, ElementKind::Node, nd.id, &nd.tags, &nd.meta)
 }
