@@ -176,8 +176,9 @@ where
     Ok((use_counts, WayRefsStore::build(way_refs), extra_node_ids))
 }
 
-/// Pass B — collect coordinates (as f32, ~1 m precision) for the needed nodes from the node-region
-/// blobs, in parallel (in chunks of `FOLD_CHUNK_BLOBS`, see its doc). Each node's `shared` flag
+/// Pass B — collect coordinates (as fixed-point decimicrodegrees, the PBF's own exact integer form
+/// — see `NodeCoords`) for the needed nodes from the node-region blobs, in parallel (in chunks of
+/// `FOLD_CHUNK_BLOBS`, see its doc). Each node's `shared` flag
 /// (used by ≥2 mask-!=0 ways) is read from `use_counts` here and baked into the value.
 ///
 /// When `classify_nodes` is set, every needed node's tags are also decoded and passed to
@@ -220,9 +221,9 @@ where
     let mut standalone_total: u64 = 0;
 
     for blob_chunk in node_offsets.chunks(FOLD_CHUNK_BLOBS) {
-        let per_blob: Vec<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>, u64)> = blob_chunk
+        let per_blob: Vec<(Vec<(i64, i32, i32, bool)>, FxHashSet<i64>, u64)> = blob_chunk
             .par_iter()
-            .map(|&off| -> anyhow::Result<(Vec<(i64, f32, f32, bool)>, FxHashSet<i64>, u64)> {
+            .map(|&off| -> anyhow::Result<(Vec<(i64, i32, i32, bool)>, FxHashSet<i64>, u64)> {
                 let block = decode_block(mmap, off)?;
                 let mut out = Vec::new();
                 let mut selected: FxHashSet<i64> = FxHashSet::default();
@@ -230,12 +231,12 @@ where
                 for group in block.groups() {
                     for n in group.dense_nodes() {
                         if let Some(shared) = use_counts.lookup(&n.id()) {
-                            out.push((n.id(), n.lon() as f32, n.lat() as f32, shared));
+                            out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), shared));
                             if classify_nodes && classify_node(&dense_node_data(&n)) {
                                 selected.insert(n.id());
                             }
                         } else if extra_node_ids.contains(&n.id()) {
-                            out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
+                            out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), false));
                         } else if classify_nodes {
                             // Not part of any kept way — still classify it (tag rows / point
                             // geometry are driven by `classify_node` itself from `NodeData`, not
@@ -247,12 +248,12 @@ where
                     }
                     for n in group.nodes() {
                         if let Some(shared) = use_counts.lookup(&n.id()) {
-                            out.push((n.id(), n.lon() as f32, n.lat() as f32, shared));
+                            out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), shared));
                             if classify_nodes && classify_node(&node_data(&n)) {
                                 selected.insert(n.id());
                             }
                         } else if extra_node_ids.contains(&n.id()) {
-                            out.push((n.id(), n.lon() as f32, n.lat() as f32, false));
+                            out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), false));
                         } else if classify_nodes {
                             classify_node(&node_data(&n));
                             standalone += 1;

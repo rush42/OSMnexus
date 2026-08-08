@@ -114,32 +114,32 @@ where
         .flat_map(|(_, (refs, _))| refs.iter())
         .collect();
     info!("Fallback scan 2 (parallel): collect node coords{}...", if cb.has_nodes { " + classify nodes" } else { "" });
-    let (coords_vec, selected, standalone_classified): (Vec<(i64, f32, f32)>, FxHashSet<i64>, u64) =
+    let (coords_vec, selected, standalone_classified): (Vec<(i64, i32, i32)>, FxHashSet<i64>, u64) =
         ElementReader::from_path(path)
         .context("opening PBF for node scan")?
         .par_map_reduce(
             |element| {
-                let mut coords: Vec<(i64, f32, f32)> = Vec::new();
+                let mut coords: Vec<(i64, i32, i32)> = Vec::new();
                 let mut selected: FxHashSet<i64> = FxHashSet::default();
                 let mut standalone: u64 = 0;
                 match element {
                     Element::DenseNode(n) if use_counts.contains_key(&n.id()) => {
-                        coords.push((n.id(), n.lon() as f32, n.lat() as f32));
+                        coords.push((n.id(), n.decimicro_lon(), n.decimicro_lat()));
                         if cb.has_nodes && (cb.classify_node)(&dense_node_data(&n)) {
                             selected.insert(n.id());
                         }
                     }
                     Element::Node(n) if use_counts.contains_key(&n.id()) => {
-                        coords.push((n.id(), n.lon() as f32, n.lat() as f32));
+                        coords.push((n.id(), n.decimicro_lon(), n.decimicro_lat()));
                         if cb.has_nodes && (cb.classify_node)(&node_data(&n)) {
                             selected.insert(n.id());
                         }
                     }
                     Element::DenseNode(n) if extra_node_ids.contains(&n.id()) => {
-                        coords.push((n.id(), n.lon() as f32, n.lat() as f32));
+                        coords.push((n.id(), n.decimicro_lon(), n.decimicro_lat()));
                     }
                     Element::Node(n) if extra_node_ids.contains(&n.id()) => {
-                        coords.push((n.id(), n.lon() as f32, n.lat() as f32));
+                        coords.push((n.id(), n.decimicro_lon(), n.decimicro_lat()));
                     }
                     // Not part of any kept way — still classify it (tag rows / point geometry are
                     // driven by `classify_node` itself from `NodeData`, not `NodeCoords`), just

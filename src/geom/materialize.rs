@@ -182,7 +182,7 @@ where
     let (node_ids, node_rows) = if plan.any_way_graph {
         let endpoints: FxHashSet<i64> = ctx.way_refs.endpoints();
         let (ids, rows) = assign_node_ids(&ctx.node_coords, &endpoints, &ctx.selected);
-        let node_rows = rows.into_iter().map(|(id, osm_id, lon, lat)| build_node_row(id, osm_id, lon as f64, lat as f64)).collect();
+        let node_rows = rows.into_iter().map(|(id, osm_id, lon, lat)| build_node_row(id, osm_id, lon, lat)).collect();
         (ids, node_rows)
     } else {
         (FxHashMap::default(), Vec::new())

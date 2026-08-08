@@ -154,7 +154,7 @@ pub fn resolve_geometry(
     let mut kept: Vec<(i64, bool)> = Vec::with_capacity(node_refs.len());
     for &nid in node_refs {
         if let Some((lon, lat, shared)) = coords.get(nid) {
-            pts.push((lon as f64, lat as f64));
+            pts.push((lon, lat));
             kept.push((nid, shared));
         }
     }

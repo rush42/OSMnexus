@@ -107,9 +107,9 @@ pub fn assign_node_ids(
     coords: &NodeCoords,
     endpoints: &FxHashSet<i64>,
     selected: &FxHashSet<i64>,
-) -> (FxHashMap<i64, i64>, Vec<(i64, i64, f32, f32)>) {
+) -> (FxHashMap<i64, i64>, Vec<(i64, i64, f64, f64)>) {
     let mut ids: FxHashMap<i64, i64> = FxHashMap::default();
-    let mut nodes: Vec<(i64, i64, f32, f32)> = Vec::new();
+    let mut nodes: Vec<(i64, i64, f64, f64)> = Vec::new();
     let mut next_id: i64 = 1;
     for (osm_id, (lon, lat, shared)) in coords.iter() {
         if shared || endpoints.contains(&osm_id) || selected.contains(&osm_id) {
