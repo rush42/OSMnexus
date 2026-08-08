@@ -104,7 +104,9 @@ where
     let use_counts = if cb.needs_graph {
         NodeRefCounts::Counted(counts)
     } else {
-        NodeRefCounts::Present(counts.into_keys().collect())
+        let mut ids: Vec<i64> = counts.into_keys().collect();
+        ids.sort_unstable();
+        NodeRefCounts::Present(ids)
     };
 
     // Scan 2 — nodes: coords for every referenced node (+ classify nodes → selected set).

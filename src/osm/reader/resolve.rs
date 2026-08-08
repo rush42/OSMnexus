@@ -20,7 +20,15 @@ pub use super::memory_coords::{NodeCoords, NodeCoordsBuilder};
 /// payload) and no increment work while indexing ways.
 pub(super) enum NodeRefCounts {
     Counted(FxHashMap<i64, u32>),
-    Present(FxHashSet<i64>),
+    /// Sorted, deduplicated node ids — a flat array searched by bisection rather than a hash set.
+    ///
+    /// A `FxHashSet<i64>` stores the 8-byte key plus a control byte in a table rounded up to a
+    /// power of two above `n * 8/7`, so 76M referenced nodes cost ~1.2 GB of which a third is
+    /// load-factor slack, and it reaches that size by doubling (transiently holding the old and new
+    /// tables at once). The sorted array is exactly `8 * n` with no slack and no rehashing; lookups
+    /// become `O(log n)` bisection instead of `O(1)` hashing, which is affordable here because it's
+    /// consulted once per node in Pass B rather than in an inner loop.
+    Present(Vec<i64>),
 }
 
 impl NodeRefCounts {
@@ -34,7 +42,7 @@ impl NodeRefCounts {
     pub(super) fn contains_key(&self, id: &i64) -> bool {
         match self {
             NodeRefCounts::Counted(m) => m.contains_key(id),
-            NodeRefCounts::Present(s) => s.contains(id),
+            NodeRefCounts::Present(s) => s.binary_search(id).is_ok(),
         }
     }
 
@@ -45,7 +53,7 @@ impl NodeRefCounts {
     pub(super) fn lookup(&self, id: &i64) -> Option<bool> {
         match self {
             NodeRefCounts::Counted(m) => m.get(id).map(|&c| c > 1),
-            NodeRefCounts::Present(s) => s.contains(id).then_some(false),
+            NodeRefCounts::Present(s) => s.binary_search(id).is_ok().then_some(false),
         }
     }
 }

@@ -106,7 +106,10 @@ where
     C: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync,
 {
     let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
-    let mut present: FxHashSet<i64> = FxHashSet::default();
+    // Appended to unsorted (with duplicates — a node referenced by k ways lands k times), then
+    // sorted and deduplicated once at the end: pushing is cheaper than hashing per ref, and the
+    // final array is exactly as large as the distinct-id count.
+    let mut present: Vec<i64> = Vec::new();
     let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
     let mut extra_node_ids: FxHashSet<i64> = FxHashSet::default();
 
@@ -155,7 +158,7 @@ where
                             if needs_graph {
                                 *counts.entry(nid).or_insert(0) += 1;
                             } else {
-                                present.insert(nid);
+                                present.push(nid);
                             }
                         }
                     }
@@ -171,8 +174,14 @@ where
         }
     }
 
-    let use_counts =
-        if needs_graph { NodeRefCounts::Counted(counts) } else { NodeRefCounts::Present(present) };
+    let use_counts = if needs_graph {
+        NodeRefCounts::Counted(counts)
+    } else {
+        present.sort_unstable();
+        present.dedup();
+        present.shrink_to_fit();
+        NodeRefCounts::Present(present)
+    };
     Ok((use_counts, WayRefsStore::build(way_refs), extra_node_ids))
 }
 
