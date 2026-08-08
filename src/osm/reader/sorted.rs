@@ -177,7 +177,12 @@ where
     let use_counts = if needs_graph {
         NodeRefCounts::Counted(counts)
     } else {
-        present.sort_unstable();
+        // Sorting is what makes the array form work at all: `binary_search` needs the order, and
+        // `dedup` only collapses *consecutive* equals, so the duplicates (a node referenced by k
+        // ways was pushed k times) only fold away once sorted. Done in parallel because it's the
+        // one genuinely new cost this representation adds to Pass A — serially it measured ~8s on
+        // germany's ~91M pushed refs, against ~5s saved in Pass B.
+        present.par_sort_unstable();
         present.dedup();
         present.shrink_to_fit();
         NodeRefCounts::Present(present)
