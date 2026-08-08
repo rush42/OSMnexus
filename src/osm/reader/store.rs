@@ -59,6 +59,16 @@ impl<T: Copy + Send + Sync> MphfArena<T> {
         self.ids.len()
     }
 
+    /// Resident heap bytes of the arena's own arrays. Excludes the MPHF itself (~3-4 bits/key,
+    /// which `boomphf` exposes no accessor for) — small next to the arrays, but it does mean this
+    /// is a lower bound rather than an exact figure.
+    pub fn heap_bytes(&self) -> usize {
+        self.ids.len() * std::mem::size_of::<i64>()
+            + self.offsets.len() * std::mem::size_of::<u32>()
+            + self.bytes.len()
+            + self.meta.len() * std::mem::size_of::<T>()
+    }
+
     fn slot(&self, idx: usize) -> (i64, &[u8], T) {
         let start = self.offsets[idx] as usize;
         let end = self.offsets[idx + 1] as usize;

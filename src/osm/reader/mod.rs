@@ -105,6 +105,45 @@ pub struct Callbacks<CR, CW, CN> {
     pub needs_graph: bool,
 }
 
+/// Log what the reader's own long-lived structures occupy at a phase boundary, next to the
+/// process's current anonymous RSS.
+///
+/// The point is the *residual*: total RSS minus these structures. A small residual means the
+/// pipeline's memory is understood and accounted for; a large one means something unmodelled is
+/// resident — a structure not listed here, or memory the allocator is holding rather than returning
+/// to the OS. Peak-RSS numbers alone can't distinguish those, and a heap profiler can't see the
+/// second case at all (it counts requested bytes, not what glibc keeps in its arenas).
+///
+/// Individual sizes are lower bounds where noted (MPHFs aren't measurable through `boomphf`'s API).
+/// Anonymous RSS specifically, not total: the PBF is mmap'd, and its resident pages would otherwise
+/// swamp the comparison — see this reader's benchmarking notes.
+fn log_struct_sizes(phase: &str, parts: &[(&str, usize)]) {
+    const MB: f64 = 1024.0 * 1024.0;
+    let total: usize = parts.iter().map(|&(_, b)| b).sum();
+    let detail: Vec<String> =
+        parts.iter().map(|&(name, b)| format!("{name}={:.0}MB", b as f64 / MB)).collect();
+    let rss_anon = read_rss_anon_bytes();
+    match rss_anon {
+        Some(rss) => info!(
+            "[mem] {phase}: {} | accounted={:.0}MB RssAnon={:.0}MB residual={:.0}MB",
+            detail.join(" "),
+            total as f64 / MB,
+            rss as f64 / MB,
+            (rss.saturating_sub(total)) as f64 / MB,
+        ),
+        None => info!("[mem] {phase}: {} | accounted={:.0}MB", detail.join(" "), total as f64 / MB),
+    }
+}
+
+/// Current anonymous resident bytes from `/proc/self/status` (Linux only; `None` elsewhere or if
+/// the field is missing). `RssAnon` rather than `VmRSS` deliberately — see `log_struct_sizes`.
+fn read_rss_anon_bytes() -> Option<usize> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("RssAnon:"))?;
+    let kb: usize = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
+}
+
 /// Assign a compact, sequential internal id to every graph vertex — a node that will appear as a
 /// `start_id`/`end_id` in the `edges` table: shared between ≥2 ways, a way endpoint, or forced by a
 /// node topic wanting graph output (`selected`). Plain interior nodes of a single way never need an
@@ -216,6 +255,14 @@ where
                 let (use_counts, way_refs, extra_node_ids) =
                     classify_and_index(&mmap, way_offsets, &cb.classify_way, &extra_way_ids, cb.needs_graph)?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
+                log_struct_sizes(
+                    "after Pass A",
+                    &[
+                        ("use_counts", use_counts.heap_bytes()),
+                        ("way_refs", way_refs.heap_bytes()),
+                        ("extra_node_ids", extra_node_ids.capacity() * (std::mem::size_of::<i64>() + 1)),
+                    ],
+                );
 
                 // Pass B — node region: coords for every referenced node (+ classify nodes).
                 let t = std::time::Instant::now();
@@ -229,6 +276,16 @@ where
                     t.elapsed().as_secs_f32()
                 );
                 resolve::log_node_summary(&use_counts, standalone_classified);
+                log_struct_sizes(
+                    "after Pass B",
+                    &[
+                        ("node_coords", node_coords.heap_bytes()),
+                        ("use_counts", use_counts.heap_bytes()),
+                        ("way_refs", way_refs.heap_bytes()),
+                        ("extra_node_ids", extra_node_ids.capacity() * (std::mem::size_of::<i64>() + 1)),
+                        ("selected", selected.capacity() * (std::mem::size_of::<i64>() + 1)),
+                    ],
+                );
 
                 // `use_counts` has no consumer past this point — the `shared` flag it feeds is
                 // already baked into `node_coords` (see `NodeCoords`' own doc). Dropped explicitly,

@@ -39,6 +39,19 @@ impl NodeRefCounts {
         }
     }
 
+    /// Approximate resident heap bytes. Hashbrown rounds its table up to a power of two above
+    /// `n * 8/7` and keeps one control byte per slot, so `Counted` is estimated from that shape
+    /// rather than measured; `Present` is exact (a flat `Vec`).
+    pub(super) fn heap_bytes(&self) -> usize {
+        match self {
+            NodeRefCounts::Counted(m) => {
+                let slots = (m.capacity() * 8 / 7).next_power_of_two();
+                slots * (std::mem::size_of::<(i64, u32)>() + 1)
+            }
+            NodeRefCounts::Present(v) => v.capacity() * std::mem::size_of::<i64>(),
+        }
+    }
+
     pub(super) fn contains_key(&self, id: &i64) -> bool {
         match self {
             NodeRefCounts::Counted(m) => m.contains_key(id),

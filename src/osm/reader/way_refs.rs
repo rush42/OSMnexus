@@ -138,6 +138,11 @@ impl WayRefsStore {
 
     /// Resolve one way's geometry on demand — for the small subset of ways (relation members) that
     /// `par_route_kept` doesn't already cover, without paying to cache every way for their sake.
+    /// See `MphfArena::heap_bytes` — a lower bound (excludes the MPHF).
+    pub fn heap_bytes(&self) -> usize {
+        self.0.heap_bytes()
+    }
+
     pub fn resolve_one(&self, id: i64, node_coords: &NodeCoords, selected: &FxHashSet<i64>) -> Option<OsmWay> {
         let (bytes, _) = self.0.get(id)?;
         let refs: Vec<i64> = iter_refs(bytes).collect();

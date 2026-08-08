@@ -172,6 +172,13 @@ impl NodeCoords {
         Some((lon as f64 * DECIMICRO, lat as f64 * DECIMICRO, bit_is_set(&self.shared, idx)))
     }
 
+    /// Resident heap bytes of the record array plus the `shared` bitset. Excludes the MPHF
+    /// (~3-4 bits/key, no accessor) — a lower bound, like `MphfArena::heap_bytes`.
+    pub fn heap_bytes(&self) -> usize {
+        self.data.capacity() * std::mem::size_of::<(i64, i32, i32)>()
+            + self.shared.capacity() * std::mem::size_of::<u64>()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (i64, (f64, f64, bool))> + '_ {
         self.data.iter().enumerate().map(|(slot, &(id, lon, lat))| {
             (id, (lon as f64 * DECIMICRO, lat as f64 * DECIMICRO, bit_is_set(&self.shared, slot)))
