@@ -144,11 +144,17 @@ where
                     // Not part of any kept way — still classify it (tag rows / point geometry are
                     // driven by `classify_node` itself from `NodeData`, not `NodeCoords`), just
                     // don't hold its coords or count it toward graph cut points.
-                    Element::DenseNode(n) if cb.has_nodes => {
+                    // Untagged nodes skipped outright when every topic provably yields nothing for
+                    // them (see `Callbacks::skip_untagged_nodes`) — same guard the sorted path applies.
+                    Element::DenseNode(n)
+                        if cb.has_nodes && !(cb.skip_untagged_nodes && n.tags().next().is_none()) =>
+                    {
                         (cb.classify_node)(&dense_node_data(&n));
                         standalone += 1;
                     }
-                    Element::Node(n) if cb.has_nodes => {
+                    Element::Node(n)
+                        if cb.has_nodes && !(cb.skip_untagged_nodes && n.tags().next().is_none()) =>
+                    {
                         (cb.classify_node)(&node_data(&n));
                         standalone += 1;
                     }

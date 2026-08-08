@@ -87,6 +87,16 @@ pub struct Callbacks<CR, CW, CN> {
     /// wanted) is built and routed right here too, by the caller — a node is a leaf, its point
     /// shape needs nothing `SelectionContext` provides.
     pub classify_node: CN,
+    /// Every node-processing topic provably yields nothing for a node with no tags, so untagged
+    /// nodes can be skipped without decoding them (see `TopicRunner::skips_untagged`). The great
+    /// majority of nodes in an OSM extract carry no tags at all — they exist only as way geometry —
+    /// so on a category-based node topic this elides nearly the whole per-node cost (tag decode,
+    /// `NodeData` construction, classification) that Pass B would otherwise pay to reject them.
+    ///
+    /// False whenever any topic *could* match an untagged node — `accept_all`, or a filter that's
+    /// satisfied by absence (e.g. "`highway` not present") — in which case every node is decoded as
+    /// before.
+    pub skip_untagged_nodes: bool,
     /// `plan.any_way_graph` — whether any topic wants way graph output. Pass A's `use_counts` only
     /// needs actual per-node reference *counts* (not just membership) to derive the `shared`
     /// cut-point flag, and that flag is only ever read when this is set (`geom::materialize::run`
@@ -211,6 +221,7 @@ where
                 let t = std::time::Instant::now();
                 let (node_coords, selected, standalone_classified) = collect_coords(
                     &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &extra_node_ids,
+                    cb.skip_untagged_nodes,
                 )?;
                 info!(
                     "[phase] Pass B (collect node coords{}): {:.1}s",

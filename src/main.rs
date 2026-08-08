@@ -115,6 +115,10 @@ async fn main() -> anyhow::Result<()> {
     // `plan.any_way_graph` below (see `schema::EDGE_TABLE`'s own doc).
     let has_relations = runners.iter().any(|r| r.has_kind(ElementKind::Relation));
     let has_nodes = runners.iter().any(|r| r.has_kind(ElementKind::Node));
+    // Only safe when *every* topic rejects an untagged node — one `accept_all` (or one filter
+    // satisfied by a tag's absence) and the whole optimization is off. See
+    // `TopicRunner::skips_untagged` for why this is decided by probing the real pipeline.
+    let skip_untagged_nodes = runners.iter().all(|r| r.skips_untagged(ElementKind::Node));
 
     // Every geometry decision (which topic wants which shape, for which kind) computed once —
     // replaces what used to be a dozen separately-named `Vec<usize>`/`Vec<bool>` locals here. See
@@ -292,6 +296,7 @@ async fn main() -> anyhow::Result<()> {
                 classify_way: classify_way_cb,
                 has_nodes,
                 classify_node: classify_node_cb,
+                skip_untagged_nodes,
                 needs_graph: plan.any_way_graph,
             },
         )

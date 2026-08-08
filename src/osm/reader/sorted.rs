@@ -197,6 +197,7 @@ pub(super) fn collect_coords<CN>(
     classify_nodes: bool,
     classify_node: &CN,
     extra_node_ids: &FxHashSet<i64>,
+    skip_untagged: bool,
 ) -> anyhow::Result<(NodeCoords, FxHashSet<i64>, u64)>
 where
     CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync,
@@ -232,12 +233,15 @@ where
                     for n in group.dense_nodes() {
                         if let Some(shared) = use_counts.lookup(&n.id()) {
                             out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), shared));
-                            if classify_nodes && classify_node(&dense_node_data(&n)) {
+                            if classify_nodes
+                                && !(skip_untagged && n.tags().next().is_none())
+                                && classify_node(&dense_node_data(&n))
+                            {
                                 selected.insert(n.id());
                             }
                         } else if extra_node_ids.contains(&n.id()) {
                             out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), false));
-                        } else if classify_nodes {
+                        } else if classify_nodes && !(skip_untagged && n.tags().next().is_none()) {
                             // Not part of any kept way — still classify it (tag rows / point
                             // geometry are driven by `classify_node` itself from `NodeData`, not
                             // `NodeCoords`), just don't hold its coords or count it toward graph
@@ -249,12 +253,15 @@ where
                     for n in group.nodes() {
                         if let Some(shared) = use_counts.lookup(&n.id()) {
                             out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), shared));
-                            if classify_nodes && classify_node(&node_data(&n)) {
+                            if classify_nodes
+                                && !(skip_untagged && n.tags().next().is_none())
+                                && classify_node(&node_data(&n))
+                            {
                                 selected.insert(n.id());
                             }
                         } else if extra_node_ids.contains(&n.id()) {
                             out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), false));
-                        } else if classify_nodes {
+                        } else if classify_nodes && !(skip_untagged && n.tags().next().is_none()) {
                             classify_node(&node_data(&n));
                             standalone += 1;
                         }
