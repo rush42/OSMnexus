@@ -38,6 +38,29 @@ pub struct NodeCoords {
     shared: Vec<u64>,
 }
 
+/// Streams the ids out of a `records` slice in fixed-size chunks, so the MPHF can be built without
+/// a second full copy of them (see `NodeCoords::build`). `boomphf` re-iterates its input several
+/// times during construction, so this deliberately borrows `records` rather than owning anything:
+/// each pass re-reads the same slice and materializes only one chunk at a time.
+struct IdChunks<'r>(&'r [(i64, i32, i32)]);
+
+/// Ids per materialized chunk — small enough that the transient is irrelevant (512 KB), large
+/// enough that per-chunk overhead disappears against the id extraction itself.
+const ID_CHUNK: usize = 1 << 16;
+
+impl<'a, 'r> IntoIterator for &'a IdChunks<'r> {
+    type Item = Vec<i64>;
+    type IntoIter =
+        std::iter::Map<std::slice::Chunks<'r, (i64, i32, i32)>, fn(&[(i64, i32, i32)]) -> Vec<i64>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        fn ids(chunk: &[(i64, i32, i32)]) -> Vec<i64> {
+            chunk.iter().map(|&(id, ..)| id).collect()
+        }
+        self.0.chunks(ID_CHUNK).map(ids as fn(&[(i64, i32, i32)]) -> Vec<i64>)
+    }
+}
+
 /// `bits[i]` — the visited-slot bitset used by `build`'s in-place permutation.
 #[inline]
 fn bit_is_set(bits: &[u64], i: usize) -> bool {
@@ -83,10 +106,20 @@ impl NodeCoords {
     /// corrupt the permutation silently.
     pub fn build(mut records: Vec<(i64, i32, i32)>, mut shared: Vec<u64>) -> Self {
         let len = records.len();
-        let ids: Vec<i64> = records.iter().map(|&(id, ..)| id).collect();
         // gamma=1.7 is boomphf's recommended default: a fair space/build-time tradeoff.
-        let mphf = Mphf::new(1.7, &ids);
-        drop(ids);
+        //
+        // Built from a chunked iterator rather than `Mphf::new(&ids)`: the latter needs one
+        // contiguous `&[i64]`, i.e. a full `Vec<i64>` copy of every id living alongside `records`
+        // for the duration of construction — 607 MB on a Germany extract's ~76M nodes, purely as
+        // scaffolding. The chunked form walks the ids straight out of `records`, materializing one
+        // chunk at a time.
+        //
+        // The parallel variant, because construction re-reads the key set once per level: doing
+        // that serially made Pass B measurably slower than the `Mphf::new` it replaced, which would
+        // have traded runtime for the memory saving rather than simply winning.
+        let threads = rayon::current_num_threads().max(1);
+        let mphf =
+            Mphf::from_chunked_iterator_parallel(1.7, &IdChunks(&records), None, len as u64, threads);
 
         let mut placed = vec![0u64; (len + 63) / 64];
         for start in 0..len {
