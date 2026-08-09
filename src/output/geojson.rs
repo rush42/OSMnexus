@@ -23,7 +23,6 @@ use serde_json::{json, Map, Value};
 
 use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, multilinestring_from_ewkb, point_from_ewkb};
 use crate::geom::rows::{EDGE_COLUMNS, POINT_COLUMNS, POLYGON_COLUMNS, WAY_COLUMNS};
-use crate::output::rows::TAG_COLUMNS;
 
 struct EdgeGeom {
     seg_idx: usize,
@@ -192,21 +191,52 @@ fn merge_properties(target: &mut Map<String, Value>, json_str: &str) {
     }
 }
 
-fn base_properties(record: &csv::StringRecord, osm_id: i64) -> Map<String, Value> {
+/// Column positions in `{table}.csv`, resolved from its header rather than assumed.
+///
+/// A topic that set `"id_type": "none"` (see `TopicSpec::id_type`) has no `id` column, which shifts
+/// every column after it — reading by fixed index would silently reinterpret `category` as the id,
+/// and so on, producing plausible-looking nonsense rather than an error.
+struct TagCols {
+    id: Option<usize>,
+    category: usize,
+    produced: usize,
+    annotations: usize,
+}
+
+impl TagCols {
+    fn from_header(header: &csv::StringRecord) -> anyhow::Result<Self> {
+        let at = |name: &str| -> anyhow::Result<usize> {
+            header
+                .iter()
+                .position(|h| h == name)
+                .ok_or_else(|| anyhow::anyhow!("tag CSV header missing column '{name}'"))
+        };
+        Ok(TagCols {
+            id: header.iter().position(|h| h == "id"),
+            category: at("category")?,
+            produced: at("produced")?,
+            annotations: at("annotations")?,
+        })
+    }
+}
+
+fn base_properties(record: &csv::StringRecord, osm_id: i64, cols: &TagCols) -> Map<String, Value> {
     let mut properties = Map::new();
     properties.insert("osm_id".to_owned(), json!(osm_id));
-    properties.insert("id".to_owned(), json!(&record[2]));
+    if let Some(i) = cols.id {
+        properties.insert("id".to_owned(), json!(&record[i]));
+    }
     // Empty means `accept_all` (no category matched — see `TopicRow::category`); keep the column
     // out of GeoJSON properties entirely rather than emitting a misleading empty string.
-    if !record[3].is_empty() {
-        properties.insert("category".to_owned(), json!(&record[3]));
+    if !record[cols.category].is_empty() {
+        properties.insert("category".to_owned(), json!(&record[cols.category]));
     }
-    merge_properties(&mut properties, &record[4]);
+    merge_properties(&mut properties, &record[cols.produced]);
     // `annotations` carries engine-attached bookkeeping (e.g. `_side`, the side-split object's
     // left/right/self side; `<output>_source`/`_confidence` provenance) rather than topic-authored
     // output — merged in alongside `produced` since it's ordinary public output too (e.g. the live
     // editor keys a line-offset expression on `_side`).
-    merge_properties(&mut properties, &record[5]);
+    merge_properties(&mut properties, &record[cols.annotations]);
     properties
 }
 
@@ -222,7 +252,6 @@ fn build_features(
     edges: &HashMap<i64, Vec<EdgeGeom>>,
     relation_members: &HashMap<i64, Vec<i64>>,
 ) -> anyhow::Result<Vec<Value>> {
-    debug_assert_eq!(TAG_COLUMNS, "osm_id,osm_type,id,category,produced,annotations,meta");
     let way_geom = read_way_geom(&out_dir.join(format!("{table}_geom.csv")))?;
     let way_point = read_point_geom(&out_dir.join(format!("{table}_point.csv")))?;
     let way_polygon = read_polygon_geom(&out_dir.join(format!("{table}_polygon.csv")))?;
@@ -231,6 +260,7 @@ fn build_features(
     let relation_polygon = read_polygon_geom(&out_dir.join(format!("{table}_relation_polygon.csv")))?;
 
     let mut reader = csv::Reader::from_path(out_dir.join(format!("{table}.csv")))?;
+    let cols = TagCols::from_header(reader.headers()?)?;
     let mut features = Vec::new();
 
     for result in reader.records() {
@@ -244,26 +274,26 @@ fn build_features(
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "MultiLineString", "coordinates": runs },
-                        "properties": base_properties(&record, osm_id),
+                        "properties": base_properties(&record, osm_id, &cols),
                     }));
                 } else if let Some(coordinates) = relation_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "Polygon", "coordinates": [coordinates] },
-                        "properties": base_properties(&record, osm_id),
+                        "properties": base_properties(&record, osm_id, &cols),
                     }));
                 } else if let Some(coordinates) = relation_point.as_ref().and_then(|m| m.get(&osm_id)) {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "Point", "coordinates": coordinates },
-                        "properties": base_properties(&record, osm_id),
+                        "properties": base_properties(&record, osm_id, &cols),
                     }));
                 } else if let Some(way_ids) = relation_members.get(&osm_id) {
                     // Graph-shape fallback: no per-topic relation geometry table, stitch the
                     // shared graph's edges for this relation's member ways instead.
                     let segments: Vec<&EdgeGeom> =
                         way_ids.iter().filter_map(|way_id| edges.get(way_id)).flatten().collect();
-                    let properties = base_properties(&record, osm_id);
+                    let properties = base_properties(&record, osm_id, &cols);
                     for segment in &segments {
                         let mut properties = properties.clone();
                         properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));
@@ -280,7 +310,7 @@ fn build_features(
                 features.push(json!({
                     "type": "Feature",
                     "geometry": { "type": "Point", "coordinates": coordinates },
-                    "properties": base_properties(&record, osm_id),
+                    "properties": base_properties(&record, osm_id, &cols),
                 }));
             }
             _ => {
@@ -288,24 +318,24 @@ fn build_features(
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "LineString", "coordinates": coordinates },
-                        "properties": base_properties(&record, osm_id),
+                        "properties": base_properties(&record, osm_id, &cols),
                     }));
                 } else if let Some(coordinates) = way_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "Polygon", "coordinates": [coordinates] },
-                        "properties": base_properties(&record, osm_id),
+                        "properties": base_properties(&record, osm_id, &cols),
                     }));
                 } else if let Some(coordinates) = way_point.as_ref().and_then(|m| m.get(&osm_id)) {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "Point", "coordinates": coordinates },
-                        "properties": base_properties(&record, osm_id),
+                        "properties": base_properties(&record, osm_id, &cols),
                     }));
                 } else if let Some(segments) = edges.get(&osm_id) {
                     // Graph-shape fallback (see module doc): split into intersection segments,
                     // surfacing the shared node between consecutive segments as a cut point.
-                    let properties = base_properties(&record, osm_id);
+                    let properties = base_properties(&record, osm_id, &cols);
                     for segment in segments {
                         let mut properties = properties.clone();
                         properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));

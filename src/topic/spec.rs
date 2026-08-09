@@ -76,6 +76,39 @@ pub struct TopicSpec {
     /// such a run is bound by COPY throughput rather than CPU, the bytes *are* the runtime.
     #[serde(default = "default_true")]
     pub meta: bool,
+    /// Shape of the `id` column — the per-row feature id. See [`IdType`].
+    #[serde(default)]
+    pub id_type: IdType,
+}
+
+/// How much of the row's identity the `id` column spells out.
+///
+/// The full form restates information the `osm_type` and `osm_id` columns already carry: `"way/"`
+/// is 5 bytes/row of prefix, and the whole column ~15 bytes/row (6.5 GB on a 434M-row id+coords
+/// import, a quarter of that table). A topic picks how much of it is worth storing.
+///
+/// A side object appends its `id_suffix` in every form that keeps the column (`"way/123/cycleway/
+/// left"`), since that suffix is the only part not derivable from the other columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdType {
+    /// `"way/123"` — element kind and id. The default, and what every topic emitted before this
+    /// setting existed.
+    #[default]
+    TypeId,
+    /// `"123"` — the OSM id alone. `osm_type` sits in its own column already, so the prefix is
+    /// redundant for a consumer reading both.
+    Id,
+    /// No `id` column at all; uniqueness rests on `(osm_type, osm_id)`. Rejected at load time for a
+    /// side-splitting topic, whose rows share an `osm_id` and are told apart only by the suffix.
+    None,
+}
+
+impl IdType {
+    /// Whether the tag table has an `id` column at all.
+    pub fn emits_column(self) -> bool {
+        self != IdType::None
+    }
 }
 
 fn default_true() -> bool {

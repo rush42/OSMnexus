@@ -119,13 +119,15 @@ fn member_index_stmts() -> [String; 2] {
 
 /// Tag table: one row per (way, side, prefix). No geometry — that lives in `EDGE_TABLE`, joined at
 /// tile-materialization time on `osm_id`.
-fn create_tag_table_sql(table: &str) -> String {
+/// `emits_id` false drops the `id` column entirely (`IdType::None`); uniqueness then rests on
+/// `(osm_type, osm_id)` instead — see `tag_index_stmts`.
+fn create_tag_table_sql(table: &str, emits_id: bool) -> String {
+    let id_col = if emits_id { "  id        text NOT NULL,\n" } else { "" };
     format!(r#"
 CREATE TABLE IF NOT EXISTS {table} (
   osm_id    bigint,
   osm_type  text,
-  id        text NOT NULL,
-  category  text,
+{id_col}  category  text,
   produced    jsonb,
   annotations jsonb,
   meta        jsonb
@@ -206,9 +208,16 @@ fn drop_node_indexes_sql() -> String {
 }
 
 /// Tag-table indexes: unique feature id, join key on osm_id.
-fn tag_index_stmts(table: &str) -> [String; 2] {
+fn tag_index_stmts(table: &str, emits_id: bool) -> [String; 2] {
     [
-        format!("CREATE UNIQUE INDEX IF NOT EXISTS {table}_id_idx ON {table} (id)"),
+        if emits_id {
+            format!("CREATE UNIQUE INDEX IF NOT EXISTS {table}_id_idx ON {table} (id)")
+        } else {
+            // Without the `id` column, `(osm_type, osm_id)` is the row's identity — and it really is
+            // unique there, since only a side-splitting topic emits several rows per `osm_id`, which
+            // `IdType::None` refuses to coexist with (see `TopicRunner::load`).
+            format!("CREATE UNIQUE INDEX IF NOT EXISTS {table}_id_idx ON {table} (osm_type, osm_id)")
+        },
         format!("CREATE INDEX IF NOT EXISTS {table}_osm_id_idx ON {table} (osm_id)"),
     ]
 }
@@ -240,12 +249,12 @@ fn node_index_stmts() -> [String; 3] {
 /// same principle as the per-topic `geom_tables`.
 pub async fn create_tables(
     client: &Client,
-    tables: &[&str],
+    tables: &[(&str, bool)],
     geom_tables: &[(String, GeomTableShape)],
     emit_graph: bool,
 ) -> anyhow::Result<()> {
-    for table in tables {
-        client.batch_execute(&create_tag_table_sql(table)).await?;
+    for &(table, emits_id) in tables {
+        client.batch_execute(&create_tag_table_sql(table, emits_id)).await?;
     }
     if emit_graph {
         client.batch_execute(&create_edge_table_sql()).await?;
@@ -304,12 +313,13 @@ pub async fn drop_indexes(
 /// the units build in parallel so the small tables hide under the dominant edge-table GiST.
 pub async fn create_indexes(
     pool: &Pool,
-    tables: &[&str],
+    tables: &[(&str, bool)],
     geom_tables: &[(String, GeomTableShape)],
     emit_graph: bool,
 ) -> anyhow::Result<()> {
     // One build unit per tag table, plus the shared edge table.
-    let mut units: Vec<Vec<String>> = tables.iter().map(|t| tag_index_stmts(t).to_vec()).collect();
+    let mut units: Vec<Vec<String>> =
+        tables.iter().map(|&(t, emits_id)| tag_index_stmts(t, emits_id).to_vec()).collect();
     if emit_graph {
         units.push(edge_index_stmts().to_vec());
         units.push(node_index_stmts().to_vec());

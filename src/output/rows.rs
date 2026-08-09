@@ -6,6 +6,20 @@
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `csv_fields` implementation below.
 pub const TAG_COLUMNS: &str = "osm_id,osm_type,id,category,produced,annotations,meta";
+/// `TAG_COLUMNS` without `id`, for a topic that set `"id_type": "none"` (see `TopicSpec::id_type`).
+/// The column set is fixed per table, so every row of that table omits the field and the COPY
+/// statement/CSV header must agree — binary COPY encodes a field count per tuple and rejects a
+/// mismatch outright.
+pub const TAG_COLUMNS_NO_ID: &str = "osm_id,osm_type,category,produced,annotations,meta";
+
+/// The tag-table column list for a topic, given whether it emits the `id` column.
+pub fn tag_columns(emits_id: bool) -> &'static str {
+    if emits_id {
+        TAG_COLUMNS
+    } else {
+        TAG_COLUMNS_NO_ID
+    }
+}
 pub const MEMBER_COLUMNS: &str = "relation_osm_id,way_osm_id";
 
 /// A row that can be serialized into an ordered list of CSV fields. Implemented by every output
@@ -103,7 +117,9 @@ pub fn write_binary_row(buf: &mut Vec<u8>, fields: &[BinaryField]) {
 pub struct TopicRow {
     pub osm_id: i64,
     pub osm_type: &'static str,
-    pub id: String,
+    /// `None` for a topic that set `"id_type": "none"` — the field is then omitted from the row
+    /// entirely, matching `TAG_COLUMNS_NO_ID`.
+    pub id: Option<String>,
     /// The matched category's id — a dedicated column rather than a `produced` key, since every
     /// row has at most one and it's not itself a `Producer`-evaluated output. `None` for an
     /// `accept_all` kind (see `TopicSpec::accept_all`), which never matches a category at all;
@@ -132,15 +148,17 @@ impl CsvRow for TopicRow {
     /// text by construction (see their own docs) — moved straight out, no clone or
     /// `serde_json::to_string` left to do here.
     fn csv_fields(self) -> anyhow::Result<Vec<String>> {
-        Ok(vec![
-            self.osm_id.to_string(),
-            self.osm_type.to_owned(),
-            self.id,
+        let mut fields = vec![self.osm_id.to_string(), self.osm_type.to_owned()];
+        if let Some(id) = self.id {
+            fields.push(id);
+        }
+        fields.extend([
             self.category.unwrap_or_default(),
             self.produced,
             self.annotations,
             self.meta,
-        ])
+        ]);
+        Ok(fields)
     }
 }
 
@@ -160,15 +178,18 @@ impl BinaryRow for TopicRow {
     /// Field order matches `TAG_COLUMNS`; `category` is `Null` (not empty-string) for
     /// `accept_all` rows, since binary COPY has no CSV-style empty-string/NULL ambiguity to lean on.
     fn binary_fields(self) -> anyhow::Result<Vec<BinaryField>> {
-        Ok(vec![
-            BinaryField::Int8(self.osm_id),
-            BinaryField::Text(self.osm_type.to_owned()),
-            BinaryField::Text(self.id),
+        let mut fields =
+            vec![BinaryField::Int8(self.osm_id), BinaryField::Text(self.osm_type.to_owned())];
+        if let Some(id) = self.id {
+            fields.push(BinaryField::Text(id));
+        }
+        fields.extend([
             self.category.map_or(BinaryField::Null, BinaryField::Text),
             jsonb_or_null(self.produced),
             jsonb_or_null(self.annotations),
             jsonb_or_null(self.meta),
-        ])
+        ]);
+        Ok(fields)
     }
 }
 

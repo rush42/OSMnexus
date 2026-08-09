@@ -13,12 +13,14 @@ use crate::db::schema::{self, GeomTableShape};
 use crate::db::topic_edges;
 use crate::topic::TopicRunner;
 
+/// `tag_tables` is `(table name, whether it emits the `id` column)` — see `TopicSpec::id_type`.
+///
 /// Connect, create/truncate tables + drop indexes, and size the pool for `n_tag_tables` tag tables
 /// plus `extra_tables` shared/geometry tables at `cfg.db_writers` connections each. Returns the
 /// pool and `w` (writers per table) for the caller to pass to `TableWriters::spawn`.
 pub async fn setup(
     cfg: &Config,
-    table_refs: &[&str],
+    tag_tables: &[(&str, bool)],
     geom_tables: &[(String, GeomTableShape)],
     emit_graph: bool,
     n_tag_tables: usize,
@@ -28,11 +30,12 @@ pub async fn setup(
     let pool = build_pool(cfg)?;
     let client = pool.get().await.context("getting DB connection")?;
     info!("Setting up schema...");
-    schema::create_tables(&client, table_refs, geom_tables, emit_graph).await?;
+    let table_refs: Vec<&str> = tag_tables.iter().map(|&(t, _)| t).collect();
+    schema::create_tables(&client, tag_tables, geom_tables, emit_graph).await?;
     if cfg.truncate {
-        schema::truncate_tables(&client, table_refs, geom_tables, emit_graph).await?;
+        schema::truncate_tables(&client, &table_refs, geom_tables, emit_graph).await?;
     }
-    schema::drop_indexes(&client, table_refs, geom_tables, emit_graph).await?;
+    schema::drop_indexes(&client, &table_refs, geom_tables, emit_graph).await?;
     drop(client);
     let k = cfg.db_writers.max(1);
     // Pool must supply every writer connection at once: k per tag table + k per extra table.
@@ -46,7 +49,7 @@ pub async fn setup(
 pub async fn finalize(
     cfg: &Config,
     pool: &Pool,
-    table_refs: &[&str],
+    tag_tables: &[(&str, bool)],
     geom_tables: &[(String, GeomTableShape)],
     emit_graph: bool,
     runners: &[TopicRunner],
@@ -54,7 +57,7 @@ pub async fn finalize(
     if cfg.create_index {
         info!("Creating indexes...");
         let t_idx = std::time::Instant::now();
-        schema::create_indexes(pool, table_refs, geom_tables, emit_graph).await?;
+        schema::create_indexes(pool, tag_tables, geom_tables, emit_graph).await?;
         info!("Index creation: {:.1}s", t_idx.elapsed().as_secs_f32());
     } else {
         info!("Skipping index creation (pass --create-index to enable)");

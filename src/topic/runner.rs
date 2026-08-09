@@ -12,7 +12,7 @@ use crate::topic::load::{
     load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge, resolve_macros, resolve_refs,
 };
 use crate::topic::pipeline::build_topic_rows;
-use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, TopicSpec, TransformsSpec};
+use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, IdType, TopicSpec, TransformsSpec};
 use crate::osm::types::{ElementKind, RawTags, WayMeta};
 use crate::output::rows::TopicRow;
 
@@ -384,6 +384,18 @@ impl TopicRunner {
             })
             .map(|(&kind, _)| kind)
             .collect();
+
+        // A side object's id is `"{parent_id}/{id_suffix}"` — not derivable from `osm_type`/`osm_id`,
+        // since several rows share one `osm_id`. Dropping the column there would lose the only thing
+        // distinguishing them, so reject the combination at load time rather than silently emit
+        // colliding rows.
+        anyhow::ensure!(
+            runner.spec.id_type.emits_column() || runner.stamps_side.is_empty(),
+            "topic '{}' sets \"id_type\": \"none\" but side-splits ({:?}): a side object's id carries \
+             an id_suffix, so without the column its rows are indistinguishable",
+            runner.spec.table,
+            runner.stamps_side,
+        );
 
         runner.skip_untagged = runner.probe_skip_untagged();
         Ok(runner)

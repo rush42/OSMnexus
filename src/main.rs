@@ -90,6 +90,11 @@ async fn main() -> anyhow::Result<()> {
 
     let tables: Vec<String> = runners.iter().map(|r| r.table().to_owned()).collect();
     let table_refs: Vec<&str> = tables.iter().map(String::as_str).collect();
+    // Paired with whether each topic emits an `id` column (see `TopicSpec::id_type`) — the tag
+    // table's DDL, COPY column list and uniqueness index all differ when a topic drops it.
+    let tag_tables: Vec<(&str, bool)> =
+        table_refs.iter().zip(&runners).map(|(&t, r)| (t, r.spec.id_type.emits_column())).collect();
+    let emits_id: Vec<bool> = runners.iter().map(|r| r.spec.id_type.emits_column()).collect();
 
     for r in &runners {
         info!(
@@ -156,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
     // single file writer for CSV. `pool` is `None` for CSV.
     let (pool, w): (Option<Pool>, usize) = match cfg.output {
         Output::Pg => {
-            let (pool, k) = db::backend::setup(&cfg, &table_refs, &geom_tables, plan.any_way_graph, n, extra_tables).await?;
+            let (pool, k) = db::backend::setup(&cfg, &tag_tables, &geom_tables, plan.any_way_graph, n, extra_tables).await?;
             (Some(pool), k)
         }
         Output::Csv => {
@@ -186,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
     // COPY connections (rows round-robined for k-way parallel serialization + ingest); for CSV, w=1,
     // so one buffered-file writer per table.
     let out_dir = PathBuf::from(&cfg.out_dir);
-    let writers = Arc::new(TableWriters::spawn(cfg.output, &pool, &out_dir, w, &tables, &table_refs, &plan));
+    let writers = Arc::new(TableWriters::spawn(cfg.output, &pool, &out_dir, w, &tables, &table_refs, &emits_id, &plan));
     mem_snapshot("config+writers");
 
     // Arc'd here (rather than right before the PBF select phase, where this used to live) so the
@@ -364,7 +369,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cfg.output == Output::Pg {
-        db::backend::finalize(&cfg, pool.as_ref().unwrap(), &table_refs, &geom_tables, plan.any_way_graph, &runners).await?;
+        db::backend::finalize(&cfg, pool.as_ref().unwrap(), &tag_tables, &geom_tables, plan.any_way_graph, &runners).await?;
     }
 
     if cfg.output == Output::GeoJson {

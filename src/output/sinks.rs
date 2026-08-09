@@ -25,7 +25,7 @@ use crate::geom::rows::{
     EdgeRow, NodeRow, PointRow, PolygonRow, WayRow, EDGE_COLUMNS, NODE_COLUMNS, POINT_COLUMNS,
     POLYGON_COLUMNS, WAY_COLUMNS,
 };
-use crate::output::rows::{BinaryRow, CsvRow, MemberRow, TopicRow, MEMBER_COLUMNS, TAG_COLUMNS};
+use crate::output::rows::{tag_columns, BinaryRow, CsvRow, MemberRow, TopicRow, MEMBER_COLUMNS};
 use crate::output::writers::{copy_writer, csv_writer};
 
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
@@ -163,10 +163,16 @@ impl TableWriters {
         w: usize,
         tables: &[String],
         table_refs: &[&str],
+        emits_id: &[bool],
         plan: &GeometryPlan,
     ) -> Self {
-        let tag: Vec<Shard<TopicRow>> =
-            tables.iter().map(|t| Shard::spawn(output, pool, out_dir, t, TAG_COLUMNS, w)).collect();
+        // Column list per table, not one shared constant: a topic that set `"id_type": "none"`
+        // drops the `id` column, and the COPY statement/CSV header must match the rows it receives.
+        let tag: Vec<Shard<TopicRow>> = tables
+            .iter()
+            .zip(emits_id)
+            .map(|(t, &emits)| Shard::spawn(output, pool, out_dir, t, tag_columns(emits), w))
+            .collect();
 
         let edges = if plan.any_way_graph {
             Shard::spawn(output, pool, out_dir, EDGE_TABLE, EDGE_COLUMNS, w)

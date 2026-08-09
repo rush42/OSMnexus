@@ -7,7 +7,7 @@ use crate::lang::filter::eval_filter;
 use crate::lang::producer::ExtractCtx;
 use crate::categorize::transform::{run_transform_steps, TransformStep};
 use crate::topic::runner::TopicRunner;
-use crate::topic::spec::Field;
+use crate::topic::spec::{Field, IdType};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::osm::types::WayMeta;
 use crate::output::rows::TopicRow;
@@ -79,11 +79,18 @@ struct IdBuf {
 }
 
 impl IdBuf {
-    fn new(kind: ElementKind, osm_id: i64) -> Self {
+    fn new(kind: ElementKind, osm_id: i64, id_type: IdType) -> Self {
         use std::fmt::Write;
         let mut b = IdBuf { buf: [0; 32], len: 0 };
         // Infallible for the shapes above; a truncating write would still yield a valid `&str`.
-        let _ = write!(b, "{}/{}", kind.id_prefix(), osm_id);
+        let _ = match id_type {
+            IdType::TypeId => write!(b, "{}/{}", kind.id_prefix(), osm_id),
+            // `IdType::None` still builds a base id here: a side-split `Clone` derives its own id
+            // from it, and `run_transform_steps` needs that even when the column is dropped. It
+            // simply never reaches a row (see `emit`), and `None` is rejected for side-splitting
+            // topics anyway.
+            IdType::Id | IdType::None => write!(b, "{osm_id}"),
+        };
         b
     }
 
@@ -137,7 +144,7 @@ pub fn build_topic_rows<'a>(
     // the stack (see `IdBuf`), and the base annotations start as a borrow of one shared static
     // (see `self_annotations`), cloned into an owned map only at emit time or when a transform
     // pipeline needs to mutate it.
-    let default_id_buf = IdBuf::new(kind, osm_id);
+    let default_id_buf = IdBuf::new(kind, osm_id, runner.spec.id_type);
     let default_id = default_id_buf.as_str();
     let mut clones = Vec::new();
 
@@ -231,7 +238,9 @@ pub fn build_topic_rows<'a>(
                 }
             }
         }
-        let id = ectx.id.to_owned();
+        // Skipped entirely for a topic that dropped the column (`IdType::None`) — that also
+        // avoids building the `String` per row, not just storing it.
+        let id = runner.spec.id_type.emits_column().then(|| ectx.id.to_owned());
 
         // `base_annotations`'s borrow (via `ectx`) ended at the last `eval_fields`/`obj_tags` use
         // above, so it's free to move now: straight through if `eval_fields` added nothing, merged
