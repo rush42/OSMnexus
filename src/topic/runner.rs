@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use anyhow::Context;
 use serde_json::{Map, Value};
 
@@ -12,7 +14,7 @@ use crate::topic::load::{
     load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge, resolve_macros, resolve_refs,
 };
 use crate::topic::pipeline::build_topic_rows;
-use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, IdType, TopicSpec, TransformsSpec};
+use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, TopicSpec, TransformsSpec};
 use crate::osm::types::{ElementKind, RawTags, WayMeta};
 use crate::output::rows::TopicRow;
 
@@ -354,9 +356,15 @@ impl TopicRunner {
         // Compile a discrimination net into any `Producer::Match` with enough rules to be worth it
         // (see `Producer::compile_trees`/`MATCH_TREE_MIN_RULES`) — every field's producer is fully
         // macro/sanitizer/shared-reference-resolved by now, so this is safe to run once, here.
-        for field in default_producers.iter_mut().chain(category_producers.values_mut().flatten()) {
-            field.source.compile_trees(tree_max_depth);
-        }
+        //
+        // In parallel: each field's producer is compiled independently of every other, and there are
+        // hundreds of them (one per output per category — `configs/tilda`'s bikelanes alone has 26
+        // categories over ~48 producers). Tree building is otherwise pure startup latency paid
+        // before the first blob is read, which on a city-sized extract exceeded the entire
+        // classification it speeds up.
+        let mut fields: Vec<&mut Field> =
+            default_producers.iter_mut().chain(category_producers.values_mut().flatten()).collect();
+        fields.par_iter_mut().for_each(|field| field.source.compile_trees(tree_max_depth));
 
         let mut runner = Self {
             spec,
