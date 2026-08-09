@@ -144,6 +144,18 @@ impl CsvRow for TopicRow {
     }
 }
 
+/// A jsonb field, or SQL `NULL` when the row left it empty — an omitted `meta` (see
+/// `TopicSpec::meta`) or a base object's dropped `annotations`. `NULL` rather than `{}` because it
+/// is both smaller on disk and the honest representation: the value wasn't empty, it wasn't
+/// recorded.
+fn jsonb_or_null(s: String) -> BinaryField {
+    if s.is_empty() {
+        BinaryField::Null
+    } else {
+        BinaryField::Jsonb(s)
+    }
+}
+
 impl BinaryRow for TopicRow {
     /// Field order matches `TAG_COLUMNS`; `category` is `Null` (not empty-string) for
     /// `accept_all` rows, since binary COPY has no CSV-style empty-string/NULL ambiguity to lean on.
@@ -153,9 +165,9 @@ impl BinaryRow for TopicRow {
             BinaryField::Text(self.osm_type.to_owned()),
             BinaryField::Text(self.id),
             self.category.map_or(BinaryField::Null, BinaryField::Text),
-            BinaryField::Jsonb(self.produced),
-            BinaryField::Jsonb(self.annotations),
-            BinaryField::Jsonb(self.meta),
+            jsonb_or_null(self.produced),
+            jsonb_or_null(self.annotations),
+            jsonb_or_null(self.meta),
         ])
     }
 }

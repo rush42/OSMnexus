@@ -171,10 +171,12 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
             Some(parent_tags) => eval(parent, &ExtractCtx { obj_tags: parent_tags, ..*ctx }),
         },
 
-        // `_side` is always present in practice (`topic::pipeline::build_topic_rows` stamps it on
-        // every object, self included), so there's no missing-annotation case to default here the
-        // way the old `Filter::Side` did — an absent key simply compares unequal, same as `_prefix`/
-        // `_infix` (only ever present on a side-split object to begin with).
+        // `_side` is absent on a base object and means "self" there (see
+        // `lang::producer::side_of`), so it needs that default applied before comparing.
+        // `_prefix`/`_infix` have no such default — they only ever exist on a side-split object, and
+        // absent genuinely means "no prefix/infix", so an absent key compares unequal.
+        Filter::AnnotationEq { key, eq } if key == "_side" =>
+            crate::lang::producer::side_of(ctx) == eq.as_str(),
         Filter::AnnotationEq { key, eq } =>
             ctx.annotations.get(key).and_then(Value::as_str) == Some(eq.as_str()),
         Filter::HasKeyPrefix { has_key_prefix } =>

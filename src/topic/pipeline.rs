@@ -46,19 +46,16 @@ fn eval_fields(
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// The base object's annotations (`{"_side": "self"}`), shared rather than rebuilt per element.
+/// The base object's annotations: empty.
 ///
-/// Category matching reads `_side`/`_prefix`/`_infix` (see `decision_tree::runtime`), so the base
-/// object can't simply be matched against an empty map — but it always starts from this exact
-/// content, so one static serves every element that has no transform pipeline to mutate it. Only
-/// an element that actually emits a row pays to clone it into an owned map.
-fn self_annotations() -> &'static Map<String, Value> {
-    static SELF: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
-    SELF.get_or_init(|| {
-        let mut m = Map::new();
-        m.insert("_side".to_owned(), Value::String("self".to_owned()));
-        m
-    })
+/// It used to hold `{"_side": "self"}`, stamped on every element. That was a constant carrying no
+/// information — "self" is precisely what a missing `_side` means — yet it was cloned into an owned
+/// map for every emitted row and stored in every one of them (22 bytes/row; 9.5 GB on a 434M-row
+/// import). A side-split `Clone` still stamps a real `_side`; readers apply the "self" default
+/// themselves (`lang::producer::side_of`), so matching semantics are unchanged.
+fn base_annotations() -> &'static Map<String, Value> {
+    static EMPTY: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(Map::new)
 }
 
 /// A stack-allocated `"{prefix}/{osm_id}"`. Longest possible content is `relation/` plus a 20-char
@@ -147,7 +144,7 @@ pub fn build_topic_rows<'a>(
 
     // A pipeline stamps `_prefix`/`_infix` into the base annotations, so that case (and only that
     // case) needs an owned map up front; everything else keeps borrowing the shared static.
-    let mut base_annotations: Cow<'static, Map<String, Value>> = Cow::Borrowed(self_annotations());
+    let mut base_annotations: Cow<'static, Map<String, Value>> = Cow::Borrowed(base_annotations());
     if !pipeline.is_empty() {
         if !run_transform_steps(
             tags.to_mut(),
@@ -240,10 +237,23 @@ pub fn build_topic_rows<'a>(
         // produced here, so `to_string` failing isn't a real case; `unwrap_or_default` just avoids
         // plumbing a `Result` through this closure for it.
         let produced = serde_json::to_string(&produced).unwrap_or_default();
-        let annotations = serde_json::to_string(&annotations).unwrap_or_default();
+
+        // An empty map is the base object with no `annotate` provenance — nothing worth a column
+        // value, so the row stores NULL rather than `{}` (see `output::rows::jsonb_or_null`).
+        let annotations = if annotations.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&annotations).unwrap_or_default()
+        };
+
         // `OsmMeta` is built here, per emitted row, rather than once per element scanned — see
-        // `processing::meta_from` for why that distinction dominates the nodes pass.
-        let meta = serde_json::to_string(&crate::processing::meta_from(meta)).unwrap_or_default();
+        // `processing::meta_from` for why that distinction dominates the nodes pass. Skipped
+        // entirely (column left NULL) for a topic that opted out via `"meta": false`.
+        let meta = if runner.spec.meta {
+            serde_json::to_string(&crate::processing::meta_from(meta)).unwrap_or_default()
+        } else {
+            String::new()
+        };
 
         // One tag row per transformed object; geometry (and its per-segment length) lives in the
         // geom table (see `build_edges`), joined on `osm_id` at materialization time. `id`

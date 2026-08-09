@@ -66,6 +66,20 @@ pub struct TopicSpec {
     /// per kind (e.g. `buildings/way/building.json`) just to opt out of subcategorization.
     #[serde(default)]
     pub accept_all: AcceptAllSpec,
+    /// Whether to emit the `meta` column (`updated_at`/`updated_by`/`changeset_id`). On by default;
+    /// set `"meta": false` for a topic that doesn't need element provenance.
+    ///
+    /// It is not free to carry: the timestamp is formatted with `chrono`'s `strftime` and heap-
+    /// allocated *per emitted row* (~250 ns), and the resulting JSON is by far the widest thing most
+    /// rows store — measured at 87 bytes/row against 10 bytes for `osm_id` + `osm_type`. On an
+    /// id+coords import of germany (434M node rows) that was 38 GB of the table's 70 GB, and since
+    /// such a run is bound by COPY throughput rather than CPU, the bytes *are* the runtime.
+    #[serde(default = "default_true")]
+    pub meta: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// `topic.json`'s `"accept_all"`: which element kinds skip category matching entirely (see

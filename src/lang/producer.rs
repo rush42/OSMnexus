@@ -108,6 +108,16 @@ pub struct ExtractCtx<'a> {
     pub annotations: &'a Map<String, Value>,
 }
 
+/// The object's side: `_side` when a `split_sides` `Clone` stamped one, `"self"` otherwise.
+///
+/// The base object deliberately carries *no* `_side` annotation — it used to be stamped
+/// unconditionally, which meant every emitted row stored (and cloned) a constant
+/// `{"_side": "self"}` saying nothing. Absence is now the encoding for "self", so every reader has
+/// to apply that default rather than compare the raw lookup.
+pub fn side_of<'a>(ctx: &ExtractCtx<'a>) -> &'a str {
+    ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self")
+}
+
 /// A shared, empty annotations map — for a context that has none to offer (a neutral
 /// `eval_filter` check, or a test helper) but still needs a `&Map` to satisfy `ExtractCtx`.
 pub(crate) fn empty_annotations() -> &'static Map<String, Value> {

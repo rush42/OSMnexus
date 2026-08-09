@@ -76,9 +76,10 @@ fn decide_concrete(p: &Predicate, ctx: &ExtractCtx) -> bool {
         Predicate::Num(e, op, bits) => read_extract_num(e, ctx).is_some_and(|n| num_matches(op, *bits, n)),
         Predicate::HasKeyPrefix(prefix) => ctx.obj_tags.keys().any(|k| k.starts_with(prefix.as_str())),
         Predicate::HasParent => ctx.parent_tags.is_some(),
-        // Same lookup `Filter::AnnotationEq` uses — no "self"/"absent" default (unlike `branch_key`'s
-        // own `SIDE_KEY` handling, a tree-descent safety net, not `eval`'s real semantics).
-        Predicate::Side(v) => ctx.annotations.get("_side").and_then(Value::as_str) == Some(v.as_str()),
+        // Absent `_side` means "self": the base object carries no side annotation at all (only a
+        // `Clone` from `split_sides` stamps one), so "self" is the value to compare against when
+        // the key is missing. Same convention as `Filter::AnnotationEq` and `branch_key`.
+        Predicate::Side(v) => crate::lang::producer::side_of(ctx) == v.as_str(),
         Predicate::Prefix(v) => ctx.annotations.get("_prefix").and_then(Value::as_str) == Some(v.as_str()),
         Predicate::Infix(v) => ctx.annotations.get("_infix").and_then(Value::as_str) == Some(v.as_str()),
         Predicate::TagsEmpty => ctx.obj_tags.is_empty(),
@@ -131,11 +132,9 @@ pub(crate) fn resolve_first<T>(
 /// as `eval_atom`/`decide_concrete`.
 pub(crate) fn branch_key<'a>(ctx: &ExtractCtx<'a>, key: &BranchKey) -> Option<Cow<'a, str>> {
     match key {
-        // `_side` is always stamped by `topic::pipeline::build_topic_rows`/each `Clone` (self
-        // included) — defaulting to "self" here is a safety net, not the normal path.
-        BranchKey::Sentinel(SIDE_KEY) => {
-            Some(Cow::Borrowed(ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self")))
-        }
+        // Only a side-split `Clone` stamps `_side`; on a base object the key is absent and means
+        // "self" — see `side_of`.
+        BranchKey::Sentinel(SIDE_KEY) => Some(Cow::Borrowed(crate::lang::producer::side_of(ctx))),
         BranchKey::Sentinel(HAS_PARENT_KEY) => {
             Some(Cow::Borrowed(if ctx.parent_tags.is_some() { "true" } else { "false" }))
         }
