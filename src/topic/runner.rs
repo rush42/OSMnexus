@@ -89,6 +89,15 @@ pub struct TopicRunner {
     /// Using the actual matcher means this can't drift from runtime semantics the way a
     /// hand-written static analysis of filter shapes would.
     skip_untagged: std::collections::HashSet<ElementKind>,
+    /// Kinds whose transform pipeline side-splits — i.e. contains a `Clone` that annotates
+    /// `_side`. Those kinds stamp `_side: "self"` on the base object too, so every row of such a
+    /// topic carries the key and a consumer can read it without a coalesce.
+    ///
+    /// Elsewhere the base object deliberately carries no `_side` at all (see
+    /// `topic::pipeline::base_annotations`): for a topic that never splits, the key would be a
+    /// constant on every row saying nothing. Matching is unaffected either way — readers treat an
+    /// absent `_side` as "self" (`lang::producer::side_of`).
+    stamps_side: std::collections::HashSet<ElementKind>,
 }
 
 /// Resolve one topic's or category's raw `producers` map (already merged by key, category winning)
@@ -361,7 +370,20 @@ impl TopicRunner {
             accept_all,
             passthrough_producers,
             skip_untagged: std::collections::HashSet::new(),
+            stamps_side: std::collections::HashSet::new(),
         };
+
+        runner.stamps_side = runner
+            .pipelines
+            .iter()
+            .filter(|(_, steps)| {
+                steps.iter().any(|step| match step {
+                    TransformStep::Clone(c) => c.annotate.iter().any(|(k, _)| k == "_side"),
+                    TransformStep::Transform(_) => false,
+                })
+            })
+            .map(|(&kind, _)| kind)
+            .collect();
 
         runner.skip_untagged = runner.probe_skip_untagged();
         Ok(runner)
@@ -399,6 +421,11 @@ impl TopicRunner {
     /// Whether an element of `kind` carrying no tags can be skipped outright for this topic —
     /// either the topic ignores `kind` entirely, or the empty-tag probe at load time produced no
     /// rows (see `skip_untagged`). Lets a caller avoid even decoding such an element.
+    /// Whether `kind`'s base objects should carry `_side: "self"` — see `stamps_side`.
+    pub fn stamps_side(&self, kind: ElementKind) -> bool {
+        self.stamps_side.contains(&kind)
+    }
+
     pub fn skips_untagged(&self, kind: ElementKind) -> bool {
         !self.has_kind(kind) || self.skip_untagged.contains(&kind)
     }

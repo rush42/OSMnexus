@@ -46,16 +46,28 @@ fn eval_fields(
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// The base object's annotations: empty.
+/// The base object's annotations, shared rather than rebuilt per element.
 ///
-/// It used to hold `{"_side": "self"}`, stamped on every element. That was a constant carrying no
-/// information — "self" is precisely what a missing `_side` means — yet it was cloned into an owned
-/// map for every emitted row and stored in every one of them (22 bytes/row; 9.5 GB on a 434M-row
-/// import). A side-split `Clone` still stamps a real `_side`; readers apply the "self" default
-/// themselves (`lang::producer::side_of`), so matching semantics are unchanged.
-fn base_annotations() -> &'static Map<String, Value> {
+/// `{"_side": "self"}` only for a kind that actually side-splits (`TopicRunner::stamps_side`), so
+/// that such a topic's rows uniformly carry the key and a consumer can read it without a coalesce.
+/// For every other kind it's empty: stamping a constant `"self"` on every row of a topic that never
+/// splits stored 22 bytes/row of nothing (9.5 GB on a 434M-row import) and cloned a one-entry map
+/// per emitted row to do it.
+///
+/// Either way matching is unaffected — readers treat an absent `_side` as "self"
+/// (`lang::producer::side_of`).
+fn base_annotations(stamps_side: bool) -> &'static Map<String, Value> {
+    static SELF: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
     static EMPTY: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
-    EMPTY.get_or_init(Map::new)
+    if stamps_side {
+        SELF.get_or_init(|| {
+            let mut m = Map::new();
+            m.insert("_side".to_owned(), Value::String("self".to_owned()));
+            m
+        })
+    } else {
+        EMPTY.get_or_init(Map::new)
+    }
 }
 
 /// A stack-allocated `"{prefix}/{osm_id}"`. Longest possible content is `relation/` plus a 20-char
@@ -144,7 +156,8 @@ pub fn build_topic_rows<'a>(
 
     // A pipeline stamps `_prefix`/`_infix` into the base annotations, so that case (and only that
     // case) needs an owned map up front; everything else keeps borrowing the shared static.
-    let mut base_annotations: Cow<'static, Map<String, Value>> = Cow::Borrowed(base_annotations());
+    let mut base_annotations: Cow<'static, Map<String, Value>> =
+        Cow::Borrowed(base_annotations(runner.stamps_side(kind)));
     if !pipeline.is_empty() {
         if !run_transform_steps(
             tags.to_mut(),
