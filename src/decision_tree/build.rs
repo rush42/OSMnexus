@@ -3,6 +3,7 @@
 //! branch (`choose_branch`) that shrinks the surviving candidate set, folding each choice's fact
 //! into every candidate (`kleene::simplify`) until what's left is small enough to leave as a `Leaf`.
 
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::kleene::{decide_value, decide_wildcard, keep_for, simplify, K};
@@ -49,7 +50,7 @@ pub(super) type Candidate = (usize, Expr, Expr);
 ///   first match, to replicate `match_rules`'s "keep going if it produced nothing" exactly.
 pub fn build(conditions: &[Filter], max_depth: usize, assume_match_is_final: bool) -> DecisionTree {
     let all = initial_candidates(conditions, assume_match_is_final);
-    build_rec(all, &mut FxHashSet::default(), &mut FxHashSet::default(), 0, max_depth)
+    build_rec(all, &FxHashSet::default(), &FxHashSet::default(), 0, max_depth)
 }
 
 /// The `residual`/`own` prologue `build` folds into `build_rec` — split out so an alternate search
@@ -144,10 +145,19 @@ pub(super) fn atom_children(candidates: &[Candidate], atom: &Predicate) -> (Vec<
     (on_true, on_false)
 }
 
+/// Below this many candidates a subtree is small enough that handing it to another worker costs
+/// more than building it here — the tree is thousands of nodes but the vast majority are tiny, and
+/// spawning for each would swamp the win from the few large ones.
+const PARALLEL_MIN_CANDIDATES: usize = 24;
+
+/// `used`/`used_atoms` are shared immutably rather than threaded as `&mut` with insert-then-remove
+/// backtracking. Every child of a given branch sees exactly the same set — the branch's own key
+/// added — so the clone happens once per branch node, not once per child, and all children can then
+/// read it concurrently.
 fn build_rec(
     candidates: Vec<Candidate>,
-    used: &mut FxHashSet<BranchKey>,
-    used_atoms: &mut FxHashSet<Predicate>,
+    used: &FxHashSet<BranchKey>,
+    used_atoms: &FxHashSet<Predicate>,
     depth: usize,
     max_depth: usize,
 ) -> DecisionTree {
@@ -161,31 +171,61 @@ fn build_rec(
     match choice {
         BranchChoice::Key(tag) => {
             let values = eligible_values(&candidates, &tag);
+            let mut used = used.clone();
             used.insert(tag.clone());
 
-            let mut child_sets = key_children(&candidates, &tag, &values).into_iter();
-            let wildcard = Box::new(build_rec(
-                child_sets.next().expect("key_children always yields the wildcard child first"),
-                used, used_atoms, depth + 1, max_depth,
-            ));
-            let mut children = FxHashMap::default();
-            for (v, kept) in values.iter().zip(child_sets) {
-                children.insert(v.clone(), build_rec(kept, used, used_atoms, depth + 1, max_depth));
-            }
+            let mut child_sets = key_children(&candidates, &tag, &values);
+            let rest = child_sets.split_off(1);
+            let wildcard_set =
+                child_sets.pop().expect("key_children always yields the wildcard child first");
+            let big = candidates.len() >= PARALLEL_MIN_CANDIDATES;
 
-            used.remove(&tag);
+            let (wildcard, children) = build_pair(
+                big,
+                || Box::new(build_rec(wildcard_set, &used, used_atoms, depth + 1, max_depth)),
+                || {
+                    let build_one = |(v, kept): (&String, Vec<Candidate>)| {
+                        (v.clone(), build_rec(kept, &used, used_atoms, depth + 1, max_depth))
+                    };
+                    if big {
+                        values.par_iter().zip(rest.into_par_iter()).map(build_one).collect()
+                    } else {
+                        values.iter().zip(rest).map(build_one).collect::<FxHashMap<_, _>>()
+                    }
+                },
+            );
+
             DecisionTree::Branch { tag, children, wildcard }
         }
         BranchChoice::Atom(atom) => {
+            let mut used_atoms = used_atoms.clone();
             used_atoms.insert(atom.clone());
 
             let (on_true, on_false) = atom_children(&candidates, &atom);
-            let on_true = Box::new(build_rec(on_true, used, used_atoms, depth + 1, max_depth));
-            let on_false = Box::new(build_rec(on_false, used, used_atoms, depth + 1, max_depth));
+            let (on_true, on_false) = build_pair(
+                candidates.len() >= PARALLEL_MIN_CANDIDATES,
+                || Box::new(build_rec(on_true, used, &used_atoms, depth + 1, max_depth)),
+                || Box::new(build_rec(on_false, used, &used_atoms, depth + 1, max_depth)),
+            );
 
-            used_atoms.remove(&atom);
             DecisionTree::AtomBranch { atom, on_true, on_false }
         }
+    }
+}
+
+/// Run two subtree builds, in parallel only when the candidate set is large enough to pay for it
+/// (see `PARALLEL_MIN_CANDIDATES`). Both orders produce the same tree — the split choice above is a
+/// pure function of the candidate set, so parallelism changes only who does the work, never the
+/// result.
+fn build_pair<A: Send, B: Send>(
+    parallel: bool,
+    a: impl FnOnce() -> A + Send,
+    b: impl FnOnce() -> B + Send,
+) -> (A, B) {
+    if parallel {
+        rayon::join(a, b)
+    } else {
+        (a(), b())
     }
 }
 
