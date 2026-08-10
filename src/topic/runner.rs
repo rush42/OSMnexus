@@ -58,7 +58,10 @@ pub struct TopicRunner {
     /// as any other output. Present for every category (unlike a plain override map, every
     /// category's effective defaults can still differ from the topic's even with no `producers`
     /// override).
-    pub category_producers: HashMap<String, Vec<Field>>,
+    /// Indexed by `CategoryDef::idx`, not keyed by category id: `categorize` returns the matched
+    /// `&CategoryDef`, so its producers are one array index away — the id string never has to be
+    /// hashed (or cloned) on the emit path.
+    pub category_producers: Vec<Vec<Field>>,
     /// Set when `topic.json`'s `producers` is the bare `true` shorthand (`ProducersSpec::is_all`) or
     /// `passthrough_tags` carries a bare `null` entry (`TopicSpec::passthrough_tags`'s own doc) —
     /// either way, every raw tag `eval_fields` didn't already produce a value for gets copied into
@@ -340,16 +343,20 @@ impl TopicRunner {
         // even with no `producers` override: its effective defaults can still differ from the
         // topic's. Category ids are expected unique within a topic (they're file stems); a node
         // and a way category sharing a stem would collide here — keep stems distinct per topic.
-        let mut category_producers = HashMap::new();
-        for cats in categories.values() {
-            for cat in &cats.categories {
+        // Assign each category its slot in `category_producers` and its shared id handle as we go,
+        // so the emit path can go straight from the matched `&CategoryDef` to both.
+        let mut category_producers: Vec<Vec<Field>> = Vec::new();
+        for cats in categories.values_mut() {
+            for cat in &mut cats.categories {
                 let raw = merge(&topic_producers, &cat.producers);
                 let fields = resolve_producers(
                     raw, &producer_lib, &sanitizers,
                     &format!("topics/{name}: category '{}' producers", cat.id),
                 )?;
                 let defaults = merge(&spec.defaults, &cat.defaults);
-                category_producers.insert(cat.id.clone(), merge_default_fields(fields, &defaults));
+                cat.idx = category_producers.len();
+                cat.id_shared = Some(std::sync::Arc::from(cat.id.as_str()));
+                category_producers.push(merge_default_fields(fields, &defaults));
             }
         }
 
@@ -363,7 +370,7 @@ impl TopicRunner {
         // before the first blob is read, which on a city-sized extract exceeded the entire
         // classification it speeds up.
         let mut fields: Vec<&mut Field> =
-            default_producers.iter_mut().chain(category_producers.values_mut().flatten()).collect();
+            default_producers.iter_mut().chain(category_producers.iter_mut().flatten()).collect();
         fields.par_iter_mut().for_each(|field| field.source.compile_trees(tree_max_depth));
 
         let mut runner = Self {
@@ -540,7 +547,7 @@ mod producer_tree_tests {
             .expect("load roads topic");
 
         let mut checked_any_field = false;
-        for field in runner.default_producers.iter().chain(runner.category_producers.values().flatten()) {
+        for field in runner.default_producers.iter().chain(runner.category_producers.iter().flatten()) {
             let mut compiled = Vec::new();
             find_compiled_matches(&field.source, &mut compiled);
             if compiled.is_empty() {

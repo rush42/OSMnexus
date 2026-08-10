@@ -189,7 +189,9 @@ pub fn build_topic_rows<'a>(
 
         // `accept_all` kinds (`categories` is `None`) skip category matching entirely — every
         // element is kept, with no `category` value and `default_producers` as its producers.
-        let category_id = match categories {
+        // Carry the matched category itself, not its id: the row's `category` value and its
+        // producers both hang off it directly, so neither costs a `String` clone or a hash of one.
+        let matched = match categories {
             Some(cats) => {
                 let category = if runner.linear_classify {
                     categorize_linear(&ectx, cats)
@@ -199,7 +201,7 @@ pub fn build_topic_rows<'a>(
                 let Some(category) = category else {
                     return;
                 };
-                Some(category.id.clone())
+                Some(category)
             }
             None => None,
         };
@@ -210,9 +212,8 @@ pub fn build_topic_rows<'a>(
         // one column and one eval pass.
         let mut produced = Map::new();
         let mut extra_annotations = Map::new();
-        let producers = category_id
-            .as_ref()
-            .and_then(|id| runner.category_producers.get(id))
+        let producers = matched
+            .and_then(|c| runner.category_producers.get(c.idx))
             .unwrap_or(&runner.default_producers);
         eval_fields(producers, &ectx, &mut produced, &mut extra_annotations);
         if runner.pass_through_remaining_tags {
@@ -281,7 +282,10 @@ pub fn build_topic_rows<'a>(
         // geom table (see `build_edges`), joined on `osm_id` at materialization time. `id`
         // is the self object's own id, or a side object's `"{id}/{prefix}/{side}"`. `category`/
         // `id` are dedicated `TopicRow` columns, not `produced` keys — see `TopicRow::category`.
-        rows.push(TopicRow { osm_id, osm_type: kind.osm_type(), id, category: category_id, produced, annotations, meta });
+                // A refcount bump on the shared handle built at load time, not a fresh allocation — this
+        // runs once per emitted row (~14M on a germany tilda run).
+        let category = matched.and_then(|c| c.id_shared.clone());
+        rows.push(TopicRow { osm_id, osm_type: kind.osm_type(), id, category, produced, annotations, meta });
     };
 
     emit(&*tags, None, default_id, base_annotations);

@@ -46,6 +46,9 @@ pub enum BinaryField {
     Float8(f64),
     /// `text` — raw UTF-8 bytes, no terminator (the length prefix carries the extent).
     Text(String),
+    /// `text` from a shared handle — for a value interned once at load and reused by many rows
+    /// (a category id), so the row carries a refcount rather than its own copy.
+    TextShared(std::sync::Arc<str>),
     /// `jsonb` — a 1-byte version prefix (`1`) followed by the UTF-8 JSON text; the version byte
     /// is jsonb's binary-format wire requirement, not part of the JSON itself.
     Jsonb(String),
@@ -98,6 +101,10 @@ pub fn write_binary_row(buf: &mut Vec<u8>, fields: &[BinaryField]) {
                 buf.extend_from_slice(&(s.len() as i32).to_be_bytes());
                 buf.extend_from_slice(s.as_bytes());
             }
+            BinaryField::TextShared(s) => {
+                buf.extend_from_slice(&(s.len() as i32).to_be_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
             BinaryField::Jsonb(s) => {
                 buf.extend_from_slice(&(s.len() as i32 + 1).to_be_bytes());
                 buf.push(1u8); // jsonb binary-format version byte
@@ -124,7 +131,7 @@ pub struct TopicRow {
     /// row has at most one and it's not itself a `Producer`-evaluated output. `None` for an
     /// `accept_all` kind (see `TopicSpec::accept_all`), which never matches a category at all;
     /// serializes as an empty CSV field, which Postgres `COPY ... FORMAT CSV` reads back as NULL.
-    pub category: Option<String>,
+    pub category: Option<std::sync::Arc<str>>,
     /// Every non-underscore-prefixed output (the former separate `osm`/`sanitized`/`derived`
     /// columns — all three were always the same `Producer`-evaluation mechanism, just different
     /// JSON shorthands for declaring one entry in one `producers` map; see `TopicSpec::producers`).
@@ -153,7 +160,7 @@ impl CsvRow for TopicRow {
             fields.push(id);
         }
         fields.extend([
-            self.category.unwrap_or_default(),
+            self.category.as_deref().unwrap_or_default().to_owned(),
             self.produced,
             self.annotations,
             self.meta,
@@ -184,7 +191,7 @@ impl BinaryRow for TopicRow {
             fields.push(BinaryField::Text(id));
         }
         fields.extend([
-            self.category.map_or(BinaryField::Null, BinaryField::Text),
+            self.category.map_or(BinaryField::Null, BinaryField::TextShared),
             jsonb_or_null(self.produced),
             jsonb_or_null(self.annotations),
             jsonb_or_null(self.meta),

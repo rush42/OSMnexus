@@ -20,6 +20,17 @@ use crate::lang::producer::ExtractCtx;
 #[derive(Debug, Clone, Deserialize)]
 pub struct CategoryDef {
     pub id: String,
+    /// This category's index into its topic's `TopicRunner::category_producers`, assigned at load.
+    ///
+    /// `categorize` already hands back the matched `&CategoryDef`, so the runtime can reach that
+    /// category's resolved producers directly rather than hashing `id` — which it previously did
+    /// once per emitted row (~14M string hashes on a germany tilda run, each over a ~25-char key).
+    #[serde(skip)]
+    pub idx: usize,
+    /// `id` as a shared handle, so a row can record its category without allocating a fresh
+    /// `String` per emitted row (the other half of the same cost).
+    #[serde(skip)]
+    pub id_shared: Option<std::sync::Arc<str>>,
     pub condition: Filter,
     pub excludes: Option<Vec<String>>,
     /// Per-category output overrides: merged over the topic's `producers` map by key (category
