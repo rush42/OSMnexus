@@ -42,15 +42,21 @@ fn main() -> anyhow::Result<()> {
             let rows = classify_node(&runners, nd);
             rows.iter().any(|r| !r.is_empty())
         },
+        // This example measures classification only, so it opts out of everything the real
+        // pipeline uses these for: no relation geometry, no graph output, and every node decoded
+        // (an untagged-node skip would hide exactly the per-node cost being measured).
+        relation_geom_mask: 0,
+        skip_untagged_nodes: false,
+        needs_graph: false,
     };
 
     let t = Instant::now();
-    let ctx = stream_osm(&path, cb, false)?;
+    let ctx = stream_osm(&path, cb)?;
     let elapsed = t.elapsed();
     println!(
         "total: {:.2}s (node_coords={}, way_refs={}, rel_members={})",
         elapsed.as_secs_f64(),
-        ctx.node_coords.len(),
+        ctx.node_coords.iter().count(),
         ctx.way_refs.len(),
         ctx.rel_members.len(),
     );
