@@ -139,7 +139,7 @@ pub(super) fn classify_and_index<C, RT>(
     route_tag: &RT,
     extra_way_ids: &FxHashSet<i64>,
     needs_graph: bool,
-) -> anyhow::Result<(NodeRefCounts, WayRefsStore, FxHashSet<i64>)>
+) -> anyhow::Result<(NodeRefCounts, WayRefsStore, FxHashSet<i64>, Vec<i64>)>
 where
     C: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync,
     RT: Fn(Vec<Vec<TopicRow>>),
@@ -151,6 +151,12 @@ where
     let mut present: Vec<i64> = Vec::new();
     let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
     let mut extra_node_ids: FxHashSet<i64> = FxHashSet::default();
+    // Every tag-kept (mask != 0) way's id, in the same blob order its tag row was just routed in —
+    // handed back so `geom::materialize::run` can route that way's geometry row in matching order
+    // too (`WayRefsStore::par_route_ordered`), instead of the arena's own MPHF-slot order. One `i64`
+    // per kept way — for `germany-latest.osm.pbf`'s tens of millions of kept ways this is tens to
+    // ~100s of MB, the same order of magnitude `way_refs` itself already holds.
+    let mut kept_way_order: Vec<i64> = Vec::new();
 
     for blob_chunk in way_offsets.chunks(FOLD_CHUNK_BLOBS) {
         let per_blob: Vec<Vec<ClassifiedWay>> = blob_chunk
@@ -195,6 +201,7 @@ where
                 route_tag(w.topic_rows);
                 match &w.node_ids {
                     Some(ids) => {
+                        kept_way_order.push(w.id);
                         for &nid in ids {
                             if needs_graph {
                                 *counts.entry(nid).or_insert(0) += 1;
@@ -228,7 +235,7 @@ where
         present.shrink_to_fit();
         NodeRefCounts::Present(present)
     };
-    Ok((use_counts, WayRefsStore::build(way_refs), extra_node_ids))
+    Ok((use_counts, WayRefsStore::build(way_refs), extra_node_ids, kept_way_order))
 }
 
 /// Pass B — collect coordinates (as fixed-point decimicrodegrees, the PBF's own exact integer form

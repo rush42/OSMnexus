@@ -59,6 +59,12 @@ pub struct SelectionContext {
     /// forced cut points even at use-count 1. A node classified only by point-only (or bare) node
     /// topics is not in here — see `GeometryPlan::node_graph_mask`.
     pub selected: FxHashSet<i64>,
+    /// Every tag-kept way's id, in the same order its tag row was routed in during the select phase
+    /// — the ordered fast path gives blob order (see `sorted::classify_and_index`'s own doc), the
+    /// fallback scan whatever order its own parallel reduce produced. `geom::materialize::run` walks
+    /// this same order (`WayRefsStore::par_route_ordered`) so a table's tag-row CSV and its paired
+    /// geometry CSV end up in matching row order.
+    pub kept_way_order: Vec<i64>,
 }
 
 /// The topic-agnostic callbacks driving the "select" phase. `classify_way`/`classify_rel`/
@@ -274,7 +280,7 @@ where
                 // comes back straight from the fold instead of a second scan over the finished
                 // `way_refs` — see `classify_and_index`'s own doc.
                 let t = std::time::Instant::now();
-                let (use_counts, way_refs, extra_node_ids) = classify_and_index(
+                let (use_counts, way_refs, extra_node_ids, kept_way_order) = classify_and_index(
                     &mmap, way_offsets, &cb.classify_way, &cb.route_tag, &extra_way_ids, cb.needs_graph,
                 )?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
@@ -317,7 +323,13 @@ where
                 // to do) costs the same order of memory as the coordinate map itself, for nothing.
                 drop(use_counts);
 
-                return Ok(SelectionContext { node_coords, way_refs, rel_members: RelMembers::build(rel_members), selected });
+                return Ok(SelectionContext {
+                    node_coords,
+                    way_refs,
+                    rel_members: RelMembers::build(rel_members),
+                    selected,
+                    kept_way_order,
+                });
             }
             Err(e) => {
                 warn!("ordered fast-path boundary check failed ({e:#}); falling back to full scan");

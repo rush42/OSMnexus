@@ -117,6 +117,10 @@ where
             },
         )
         .context("way scan parallel read")?;
+    // No ordering guarantee to preserve here (see this function's own doc) — just the full
+    // tag-kept id set, in whatever order `way_refs`' hashmap iterates.
+    let kept_way_order: Vec<i64> =
+        way_refs.iter().filter(|(_, (_, mask))| *mask != 0).map(|(&id, _)| id).collect();
     let use_counts = if cb.needs_graph {
         NodeRefCounts::Counted(counts)
     } else {
@@ -224,5 +228,11 @@ where
     drop(use_counts);
 
     let way_refs = WayRefsStore::build(way_refs);
-    Ok(SelectionContext { node_coords, way_refs, rel_members: RelMembers::build(rel_members), selected })
+    Ok(SelectionContext {
+        node_coords,
+        way_refs,
+        rel_members: RelMembers::build(rel_members),
+        selected,
+        kept_way_order,
+    })
 }

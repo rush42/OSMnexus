@@ -188,9 +188,10 @@ where
         (FxHashMap::default(), Vec::new())
     };
 
-    // Resolve + route every mask-!=0 way's own shapes — resolved once, routed, dropped; no cache of
-    // every kept way's geometry stays resident (see `WayRefsStore::par_route_kept`'s own doc).
-    ctx.way_refs.par_route_kept(&ctx.node_coords, &ctx.selected, |id, mask, w| {
+    // Resolve + route every kept way's own shapes, in `ctx.kept_way_order` — the same order the
+    // select phase already routed that way's tag row in (see `WayRefsStore::par_route_ordered`'s own
+    // doc) — resolved once, routed, dropped; no cache of every kept way's geometry stays resident.
+    ctx.way_refs.par_route_ordered(&ctx.kept_way_order, &ctx.node_coords, &ctx.selected, |id, mask, w| {
         route_way(id, mask, way(&w, &node_ids, plan));
     });
 
