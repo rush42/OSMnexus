@@ -230,6 +230,52 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   - **Composes with the relations→ways→nodes plan:** each per-kind topic table just generates its own
     column set.
 
+- **Tag/geometry CSV row order now aligned by construction — DONE, downstream hashmap join not yet
+  removed.** `geojson.rs` and Simon's parked GeoParquet PR (`simon/feat/geoparquet-output`,
+  `src/output/parquet.rs`) join staged tag/geometry CSVs via a full `HashMap<i64, GeomRow>` keyed by
+  `osm_id`. Investigating whether that could be a cheap positional join instead led through shard-
+  keying (ruled out — `--output csv`/`geojson`/`geojsonseq` already runs `w=1`, so `Shard::send`'s
+  round-robin was never the source of disorder there) and a sorted-merge-join design (superseded by
+  what actually got built — see below) before landing on the real fix, in two commits:
+  - **What was actually nondeterministic, and the fix (commits routing tag rows from the blob-order
+    fold, then routing way geometry the same way):** `classify_way`/`classify_rel`/`classify_node`
+    used to call `route_tag`/`route_member`/`route_node_point` as a side effect from inside
+    `sorted.rs`'s parallel per-blob decode closures, racing across elements decoded concurrently
+    within a chunk. They're now pure (return rows instead of routing them), and routing moved into
+    the sequential, blob-order fold Pass A/B already used for their own accumulators
+    (`FOLD_CHUNK_BLOBS`) — so a table's tag-row CSV order is now a deterministic function of blob
+    order. Separately, `geom::materialize::run` used to resolve/route way geometry via
+    `WayRefsStore`'s own MPHF-slot order (an id-derived order with no relation to blob order) — Pass
+    A now also records `kept_way_order` (every tag-kept way's id, in the same blob-order fold that
+    routes its tag row), and materialize walks that same order via a new
+    `WayRefsStore::par_route_ordered` instead. Both fixes needed the same bounded-parallel-chunk +
+    sequential-fold shape to avoid buffering a table's-worth of rows in memory at once — and both hit
+    the same lesson tuning chunk size (see below).
+  - **Result: no sort needed at all.** Since tag and geometry rows are now written in matching
+    relative order *as they're produced*, the downstream join can become a plain positional zip (two
+    file readers advanced in lockstep) — cheaper than the sorted-merge-join idea this entry used to
+    describe, which would have needed an `O(n log n)` sort pass first. Verified on `berlin.osm.pbf`:
+    `roads.csv` <-> `roads_geom.csv` match `osm_id` at every row position (0 mismatches / 391828
+    rows); `bikelanes`' side-split tag rows (multiple per way) match geometry order once deduped.
+    Byte-identical across repeated runs.
+  - **RSS lesson (bit twice, same root cause):** buffering a whole `FOLD_CHUNK_BLOBS=256`-blob chunk's
+    tag rows (not just cheap ref/id data) before routing blew up peak RSS +80% on
+    `brandenburg-latest.osm.pbf` (550MB → 990MB) for no measurable time benefit — shrunk to `16`,
+    matching baseline RSS with no slowdown. `way_refs.rs`'s new `ROUTE_CHUNK_WAYS` was sized `512`
+    conservatively from the start given that lesson, and benchmarked clean (no measurable RSS/time
+    regression on the same extract). Any future chunk-size tuning on either constant should re-run
+    this same before/after `/usr/bin/time -v` comparison — the payload held in the transient, not the
+    blob/way count alone, is what determines the RSS cost.
+  - **Still N/A for the PostGIS/COPY path.** `copy_writer` (`writers.rs:29-56`) streams straight into
+    per-table `COPY ... FORMAT BINARY`; there is no in-process join there at all — cross-table
+    correspondence is handled by Postgres's own indexed `JOIN` at query time, so none of this applies.
+  - **Not yet done:** `geojson.rs`/`parquet.rs` still build the `HashMap<i64, GeomRow>` and do
+    `.get(&osm_id)` lookups — the alignment guarantee above just means they no longer *need* to.
+    Rewriting them as a positional zip (with the `osm_id` columns kept as a cheap assertion, not a
+    join key) is the remaining step, whenever the current hashmap join is confirmed to actually cost
+    something (instrument the geometry-hashmap-build + tag-lookup phase specifically, e.g. on
+    `germany-latest.osm.pbf`, before investing — not done yet).
+
 - **Root `Dockerfile` (standalone one-container live-editor demo) is stale.** It bundles a single
   container with no Postgres service, but the live editor now requires `db`
   (`editor/docker-compose.yml`) plus a one-time "all ways" ingest pass — see the Next.js migration
