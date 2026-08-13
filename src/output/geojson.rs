@@ -178,32 +178,124 @@ impl OrderedWayGeomCursor {
     }
 }
 
-/// Reads a `{table}_relation_geom.csv` file (`WAY_COLUMNS`), keyed by `osm_id` — relation lines are
-/// `MultiLineString` (see `db::schema::GeomTableShape::MultiLineString`'s own doc: a relation's
-/// member ways chained by shared endpoint frequently assemble into several disconnected runs), so
-/// each entry is a list of per-run coordinate lists rather than one flat list like `read_way_geom`.
-/// Returns `None` if the file doesn't exist — this topic didn't declare relation line geometry.
-fn read_relation_line_geom(path: &Path) -> anyhow::Result<Option<HashMap<i64, Vec<Vec<[f64; 2]>>>>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    debug_assert_eq!(WAY_COLUMNS, "osm_id,geom,length_m");
-    let mut reader = csv::Reader::from_path(path)?;
-    let mut by_osm_id = HashMap::new();
-    for result in reader.records() {
-        let record = result?;
-        let geom_hex = &record[1];
-        if geom_hex.is_empty() {
-            continue;
-        }
-        let osm_id: i64 = record[0].parse()?;
-        by_osm_id.insert(osm_id, lonlat_multi_coordinates(&hex::decode(geom_hex)?)?);
-    }
-    Ok(Some(by_osm_id))
+/// A `{table}_relation_geom.csv` reader consumed forward, in step with `{table}.csv`'s own relation
+/// rows — the relation-line analog of `OrderedWayGeomCursor`, safe for the same reason: `main.rs`
+/// writes `relations_batch.line_rows[i]` via `write_rows_once` in the order
+/// `geom::materialize::relations` produced it, which now walks `RelMembers::requests_ordered`ed by
+/// `SelectionContext::kept_relation_order` — the same blob order the relations pass already routed
+/// that relation's tag row in. Relation lines are `MultiLineString` (see
+/// `db::schema::GeomTableShape::MultiLineString`'s own doc: a relation's member ways chained by
+/// shared endpoint frequently assemble into several disconnected runs), so each entry is a list of
+/// per-run coordinate lists rather than one flat list like `OrderedWayGeomCursor`.
+struct OrderedRelationLineCursor {
+    reader: Option<csv::Reader<std::fs::File>>,
+    pending: Option<(i64, Vec<Vec<[f64; 2]>>)>,
+    last: Option<(i64, Vec<Vec<[f64; 2]>>)>,
 }
 
-/// Reads a `{table}_point.csv`/`{table}_relation_point.csv` file (`POINT_COLUMNS`), keyed by
-/// `osm_id`. Returns `None` if the file doesn't exist.
+impl OrderedRelationLineCursor {
+    fn open(path: &Path) -> anyhow::Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(OrderedRelationLineCursor { reader: Some(csv::Reader::from_path(path)?), pending: None, last: None }))
+    }
+
+    fn read_one(&mut self) -> anyhow::Result<Option<(i64, Vec<Vec<[f64; 2]>>)>> {
+        let Some(reader) = self.reader.as_mut() else { return Ok(None) };
+        loop {
+            let mut record = csv::StringRecord::new();
+            if !reader.read_record(&mut record)? {
+                self.reader = None;
+                return Ok(None);
+            }
+            let geom_hex = &record[1];
+            if geom_hex.is_empty() {
+                continue;
+            }
+            let osm_id: i64 = record[0].parse()?;
+            return Ok(Some((osm_id, lonlat_multi_coordinates(&hex::decode(geom_hex)?)?)));
+        }
+    }
+
+    fn get(&mut self, osm_id: i64) -> anyhow::Result<Option<&[Vec<[f64; 2]>]>> {
+        if let Some((id, _)) = &self.last {
+            if *id == osm_id {
+                return Ok(self.last.as_ref().map(|(_, g)| g.as_slice()));
+            }
+        }
+        if self.pending.is_none() {
+            self.pending = self.read_one()?;
+        }
+        match &self.pending {
+            Some((id, _)) if *id == osm_id => {
+                self.last = self.pending.take();
+                Ok(self.last.as_ref().map(|(_, g)| g.as_slice()))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+/// A `{table}_relation_point.csv` reader consumed forward, in step with `{table}.csv`'s own relation
+/// rows. Unlike `{table}_point.csv` (way/node points share one channel — see `OrderedWayGeomCursor`'s
+/// own doc for why that stays a `HashMap`), `{table}_relation_point.csv` is relation-only, written in
+/// one `write_rows_once` batch already in `kept_relation_order` — same alignment reasoning as
+/// `OrderedRelationLineCursor`.
+struct OrderedPointCursor {
+    reader: Option<csv::Reader<std::fs::File>>,
+    pending: Option<(i64, [f64; 2])>,
+    last: Option<(i64, [f64; 2])>,
+}
+
+impl OrderedPointCursor {
+    fn open(path: &Path) -> anyhow::Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        debug_assert_eq!(POINT_COLUMNS, "osm_id,geom");
+        Ok(Some(OrderedPointCursor { reader: Some(csv::Reader::from_path(path)?), pending: None, last: None }))
+    }
+
+    fn read_one(&mut self) -> anyhow::Result<Option<(i64, [f64; 2])>> {
+        let Some(reader) = self.reader.as_mut() else { return Ok(None) };
+        loop {
+            let mut record = csv::StringRecord::new();
+            if !reader.read_record(&mut record)? {
+                self.reader = None;
+                return Ok(None);
+            }
+            let geom_hex = &record[1];
+            if geom_hex.is_empty() {
+                continue;
+            }
+            let osm_id: i64 = record[0].parse()?;
+            return Ok(Some((osm_id, lonlat_point(&hex::decode(geom_hex)?)?)));
+        }
+    }
+
+    fn get(&mut self, osm_id: i64) -> anyhow::Result<Option<[f64; 2]>> {
+        if let Some((id, g)) = &self.last {
+            if *id == osm_id {
+                return Ok(Some(*g));
+            }
+        }
+        if self.pending.is_none() {
+            self.pending = self.read_one()?;
+        }
+        match self.pending {
+            Some((id, _)) if id == osm_id => {
+                self.last = self.pending.take();
+                Ok(self.last.map(|(_, g)| g))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+/// Reads a `{table}_point.csv` file (`POINT_COLUMNS`) into a `HashMap`, keyed by `osm_id`. Used only
+/// for way/node points — see `OrderedWayGeomCursor`'s own doc for why that file can't safely use a
+/// forward cursor. Returns `None` if the file doesn't exist.
 fn read_point_geom(path: &Path) -> anyhow::Result<Option<HashMap<i64, [f64; 2]>>> {
     if !path.exists() {
         return Ok(None);
@@ -219,28 +311,6 @@ fn read_point_geom(path: &Path) -> anyhow::Result<Option<HashMap<i64, [f64; 2]>>
         }
         let osm_id: i64 = record[0].parse()?;
         by_osm_id.insert(osm_id, lonlat_point(&hex::decode(geom_hex)?)?);
-    }
-    Ok(Some(by_osm_id))
-}
-
-/// Reads a `{table}_polygon.csv`/`{table}_relation_polygon.csv` file (`POLYGON_COLUMNS` — a single
-/// ring's worth of coordinates; multipolygon holes aren't reconstructed here), keyed by `osm_id`.
-/// Returns `None` if the file doesn't exist.
-fn read_polygon_geom(path: &Path) -> anyhow::Result<Option<HashMap<i64, Vec<[f64; 2]>>>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    debug_assert_eq!(POLYGON_COLUMNS, "osm_id,geom");
-    let mut reader = csv::Reader::from_path(path)?;
-    let mut by_osm_id = HashMap::new();
-    for result in reader.records() {
-        let record = result?;
-        let geom_hex = &record[1];
-        if geom_hex.is_empty() {
-            continue;
-        }
-        let osm_id: i64 = record[0].parse()?;
-        by_osm_id.insert(osm_id, lonlat_coordinates(&hex::decode(geom_hex)?)?);
     }
     Ok(Some(by_osm_id))
 }
@@ -317,9 +387,9 @@ fn build_features(
     let mut way_geom = OrderedWayGeomCursor::open(&out_dir.join(format!("{table}_geom.csv")))?;
     let mut way_polygon = OrderedWayGeomCursor::open(&out_dir.join(format!("{table}_polygon.csv")))?;
     let way_point = read_point_geom(&out_dir.join(format!("{table}_point.csv")))?;
-    let relation_geom = read_relation_line_geom(&out_dir.join(format!("{table}_relation_geom.csv")))?;
-    let relation_point = read_point_geom(&out_dir.join(format!("{table}_relation_point.csv")))?;
-    let relation_polygon = read_polygon_geom(&out_dir.join(format!("{table}_relation_polygon.csv")))?;
+    let mut relation_geom = OrderedRelationLineCursor::open(&out_dir.join(format!("{table}_relation_geom.csv")))?;
+    let mut relation_point = OrderedPointCursor::open(&out_dir.join(format!("{table}_relation_point.csv")))?;
+    let mut relation_polygon = OrderedWayGeomCursor::open(&out_dir.join(format!("{table}_relation_polygon.csv")))?;
 
     let mut reader = csv::Reader::from_path(out_dir.join(format!("{table}.csv")))?;
     let cols = TagCols::from_header(reader.headers()?)?;
@@ -332,19 +402,39 @@ fn build_features(
 
         match osm_type {
             "R" => {
-                if let Some(runs) = relation_geom.as_ref().and_then(|m| m.get(&osm_id)) {
+                let runs = match relation_geom.as_mut() {
+                    Some(cursor) => cursor.get(osm_id)?.map(<[_]>::to_vec),
+                    None => None,
+                };
+                let poly = if runs.is_none() {
+                    match relation_polygon.as_mut() {
+                        Some(cursor) => cursor.get(osm_id)?.map(<[_]>::to_vec),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let point = if runs.is_none() && poly.is_none() {
+                    match relation_point.as_mut() {
+                        Some(cursor) => cursor.get(osm_id)?,
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(runs) = runs {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "MultiLineString", "coordinates": runs },
                         "properties": base_properties(&record, osm_id, &cols),
                     }));
-                } else if let Some(coordinates) = relation_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
+                } else if let Some(coordinates) = poly {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "Polygon", "coordinates": [coordinates] },
                         "properties": base_properties(&record, osm_id, &cols),
                     }));
-                } else if let Some(coordinates) = relation_point.as_ref().and_then(|m| m.get(&osm_id)) {
+                } else if let Some(coordinates) = point {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "Point", "coordinates": coordinates },
