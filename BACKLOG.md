@@ -269,12 +269,22 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   - **Still N/A for the PostGIS/COPY path.** `copy_writer` (`writers.rs:29-56`) streams straight into
     per-table `COPY ... FORMAT BINARY`; there is no in-process join there at all — cross-table
     correspondence is handled by Postgres's own indexed `JOIN` at query time, so none of this applies.
-  - **Not yet done:** `geojson.rs`/`parquet.rs` still build the `HashMap<i64, GeomRow>` and do
-    `.get(&osm_id)` lookups — the alignment guarantee above just means they no longer *need* to.
-    Rewriting them as a positional zip (with the `osm_id` columns kept as a cheap assertion, not a
-    join key) is the remaining step, whenever the current hashmap join is confirmed to actually cost
-    something (instrument the geometry-hashmap-build + tag-lookup phase specifically, e.g. on
-    `germany-latest.osm.pbf`, before investing — not done yet).
+  - **DONE for GeoJSON/GeoJSONSeq way geometry.** `geojson.rs`'s `build_features` now reads
+    `{table}_geom.csv`/`{table}_polygon.csv` via `OrderedWayGeomCursor` — a forward cursor consumed
+    in step with `{table}.csv`'s own way rows (peek, consume-if-match, hold-for-later otherwise) —
+    instead of a `HashMap<i64, Geom>` + `.get(&osm_id)`. `read_way_geom` (the old hashmap reader) is
+    gone. Verified byte-identical GeoJSON/GeoJSONSeq output against the pre-change build on
+    `berlin.osm.pbf` (tilda: roads, bikelanes) and `public_transport` config.
+  - **Deliberately still `HashMap`-based, not zipped:** `{table}_point.csv` (shares its channel
+    between node-point rows, written during the select phase in node order, and way-point rows,
+    written during materialize in way order — so its `osm_id` sequence is `[node points][way
+    points]`, not aligned with `{table}.csv`'s own R/W/N block order; a forward cursor here would
+    silently attribute zero points to every way); `edges.csv` (the relation path needs random access
+    into it by arbitrary member-way id, and no shipped config exercises the way-graph-fallback path
+    that would benefit anyway — see the graph-topics note above); and all relation geometry
+    (`geom::materialize::relations` isn't order-aligned with the relations pass — a "pass 3" nobody's
+    built). `parquet.rs` (Simon's parked PR) hasn't been touched at all yet — same cursor rewrite
+    would apply there once that branch is picked back up.
 
 - **Root `Dockerfile` (standalone one-container live-editor demo) is stale.** It bundles a single
   container with no Postgres service, but the live editor now requires `db`
