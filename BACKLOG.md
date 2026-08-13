@@ -275,16 +275,36 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
     instead of a `HashMap<i64, Geom>` + `.get(&osm_id)`. `read_way_geom` (the old hashmap reader) is
     gone. Verified byte-identical GeoJSON/GeoJSONSeq output against the pre-change build on
     `berlin.osm.pbf` (tilda: roads, bikelanes) and `public_transport` config.
-  - **Deliberately still `HashMap`-based, not zipped:** `{table}_point.csv` (shares its channel
+  - **DONE for relations too.** `RelMembers` had the exact same problem `WayRefsStore` did:
+    `RelMembers::build` fed the relations pass's blob-ordered fold into the same `MphfArena` that
+    discards insertion order (sorted by hashed slot — `store.rs`'s `build`), so
+    `geom::materialize::relations()` (via `RelMembers::requests()`, `self.0.iter()`) built relation
+    geometry in MPHF-slot order, unrelated to the relations pass's blob order. Fixed the same way:
+    `classify_relations` now also returns `kept_relation_order`, threaded through
+    `SelectionContext`, and `RelMembers::requests_ordered(&self, order)` replaces `requests()` —
+    sequential, not chunked/parallel like the way case, since relation counts are orders of magnitude
+    smaller than way counts. `geojson.rs` gained `OrderedRelationLineCursor`/`OrderedPointCursor` for
+    `{table}_relation_geom.csv`/`{table}_relation_point.csv` (relation polygon reuses
+    `OrderedWayGeomCursor` — same column shape); `read_relation_line_geom`/`read_polygon_geom` (the
+    old hashmap readers) are gone. Verified on `berlin.osm.pbf`/`configs/trains` (the one shipped
+    config with relation line geometry): 106/106 relation ids match position; byte-identical GeoJSON
+    against the pre-change build there, on `public_transport` (graph-fallback path, still hashmap via
+    `edges.csv`), and on `tilda` (way-only sanity check).
+  - **Still deliberately `HashMap`-based, not zipped:** `{table}_point.csv` (shares its channel
     between node-point rows, written during the select phase in node order, and way-point rows,
     written during materialize in way order — so its `osm_id` sequence is `[node points][way
     points]`, not aligned with `{table}.csv`'s own R/W/N block order; a forward cursor here would
     silently attribute zero points to every way); `edges.csv` (the relation path needs random access
     into it by arbitrary member-way id, and no shipped config exercises the way-graph-fallback path
-    that would benefit anyway — see the graph-topics note above); and all relation geometry
-    (`geom::materialize::relations` isn't order-aligned with the relations pass — a "pass 3" nobody's
-    built). `parquet.rs` (Simon's parked PR) hasn't been touched at all yet — same cursor rewrite
-    would apply there once that branch is picked back up.
+    that would benefit anyway — see the graph-topics note above). `parquet.rs` (Simon's parked PR)
+    hasn't been touched at all yet — same cursor rewrite would apply there once that branch is picked
+    back up.
+  - **Benchmark note:** `--output geojsonseq` (streaming, no `FeatureCollection` buffer) on
+    `brandenburg-latest.osm.pbf`, tilda config (way-only, no relations exercised): peak RSS ~2.99GB
+    both before and after the relation-cursor change — expected, since relation counts are tiny next
+    to way counts in this config; the way-cursor change (see above) was already the ~4% RSS win on
+    this same benchmark. Not re-benchmarked on a relation-heavy config — none of the shipped ones are
+    large enough to be worth it.
 
 - **Root `Dockerfile` (standalone one-container live-editor demo) is stale.** It bundles a single
   container with no Postgres service, but the live editor now requires `db`
