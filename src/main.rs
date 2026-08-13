@@ -39,10 +39,10 @@ use tracing::info;
 
 use config::{Config, Output};
 use db::schema;
-use geom::rows::{POINT_COLUMNS, POLYGON_COLUMNS, WAY_COLUMNS};
+use geom::rows::{PointRow, POINT_COLUMNS, POLYGON_COLUMNS, WAY_COLUMNS};
 use topic::TopicRunner;
 use osm::types::{ElementKind, NodeData, RelData, WayData};
-use output::rows::MemberRow;
+use output::rows::{MemberRow, TopicRow};
 use output::sinks::{write_rows_once, TableWriters};
 use processing::{classify_node, classify_relation, classify_way};
 
@@ -231,22 +231,26 @@ async fn main() -> anyhow::Result<()> {
         // Ways pass: emit tag rows; a way is kept purely by its own tag classification — relation
         // membership has no bearing here (see `osm::reader::Callbacks::classify_way`'s own doc).
         // The returned mask becomes `SelectionContext::way_refs`' per-way keep mask.
+        // Pure — no writer side effects. The ordered fast path routes tag rows from its blob-order
+        // sequential fold instead of from here (see `osm::reader::Callbacks`' own doc); the fallback
+        // scan routes right next to calling this, same as before.
         let classify_way_cb = {
-            let (runners, writers) = (runners.clone(), writers.clone());
-            move |wd: &WayData| -> Option<u32> {
+            let runners = runners.clone();
+            move |wd: &WayData| -> (Option<u32>, Vec<Vec<TopicRow>>) {
                 let out = classify_way(&runners, wd);
-                let kept_by_topic = writers.route_tag(out.topic_rows);
-                kept_by_topic.then_some(out.mask)
+                let kept = out.mask != 0;
+                (kept.then_some(out.mask), out.topic_rows)
             }
         };
-        // Relations pass: emit relation tag rows + `relation_members` links; return the keep mask.
-        // Fully independent of the ways pass for classification purposes — a kept relation's
-        // member ways are recorded into `SelectionContext::rel_members` by the reader itself
-        // (regardless of whether any topic wants relation *geometry*; that decision is
-        // `geom::materialize`'s, using `plan`, not made here).
+        // Relations pass: classify one relation, returning its keep mask, tag rows, and member-way
+        // link rows (empty unless kept) — pure, routed by the caller. Fully independent of the ways
+        // pass for classification purposes — a kept relation's member ways are recorded into
+        // `SelectionContext::rel_members` by the reader itself (regardless of whether any topic
+        // wants relation *geometry*; that decision is `geom::materialize`'s, using `plan`, not made
+        // here).
         let classify_rel_cb = {
-            let (runners, writers) = (runners.clone(), writers.clone());
-            move |rd: &RelData| -> Option<u32> {
+            let runners = runners.clone();
+            move |rd: &RelData| -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) {
                 let rows = classify_relation(&runners, rd);
                 let mut mask = 0u32;
                 for (i, r) in rows.iter().enumerate() {
@@ -254,28 +258,28 @@ async fn main() -> anyhow::Result<()> {
                         mask |= 1 << i;
                     }
                 }
-                let kept = writers.route_tag(rows);
-                if kept && !rd.member_ways.is_empty() {
-                    let links: Vec<MemberRow> = rd
-                        .member_ways
+                let kept = mask != 0;
+                let links = if kept && !rd.member_ways.is_empty() {
+                    rd.member_ways
                         .iter()
                         .map(|&(wid, _)| MemberRow { relation_osm_id: rd.id, way_osm_id: wid })
-                        .collect();
-                    writers.route_member(links);
-                }
-                kept.then_some(mask)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (kept.then_some(mask), rows, links)
             }
         };
-        // Nodes pass: emit node tag rows; also builds + routes this node's own point row right here
-        // — a node is a leaf, its point shape needs nothing `SelectionContext` provides, so there's
-        // no reason to defer it to the materialize phase the way way/relation geometry is deferred.
-        // The callback's return value becomes `SelectionContext::selected` (forced graph cut
-        // point) — true only when a *matching* topic declared `"geometry": {"node": ["graph"]}`
-        // (`plan.node_graph_mask`), not merely "some topic classified this node" — a point-only (or
-        // bare) node topic never affects how ways get cut.
+        // Nodes pass: classify one node, returning whether it's a forced graph cut point
+        // (`SelectionContext::selected` — true only when a *matching* topic declared `"geometry":
+        // {"node": ["graph"]}`, `plan.node_graph_mask`, not merely "some topic classified this
+        // node"), its tag rows, and (if kept) its own point row paired with its mask — a node is a
+        // leaf, its point shape needs nothing `SelectionContext` provides, so there's no reason to
+        // defer it to the materialize phase the way way/relation geometry is deferred. Pure — the
+        // caller routes both.
         let classify_node_cb = {
-            let (runners, writers, plan) = (runners.clone(), writers.clone(), plan.clone());
-            move |nd: &NodeData| -> bool {
+            let (runners, plan) = (runners.clone(), plan.clone());
+            move |nd: &NodeData| -> (bool, Vec<Vec<TopicRow>>, Option<(u32, PointRow)>) {
                 let rows = classify_node(&runners, nd);
                 let mut mask = 0u32;
                 for (i, r) in rows.iter().enumerate() {
@@ -283,13 +287,31 @@ async fn main() -> anyhow::Result<()> {
                         mask |= 1 << i;
                     }
                 }
-                let kept = writers.route_tag(rows);
-                if kept {
-                    if let Some(row) = geom::materialize::node_point(nd.id, nd.lon, nd.lat, &plan) {
-                        writers.route_node_point(mask, row, &plan);
-                    }
-                }
-                kept && (mask & plan.node_graph_mask != 0)
+                let kept = mask != 0;
+                let point = kept
+                    .then(|| geom::materialize::node_point(nd.id, nd.lon, nd.lat, &plan))
+                    .flatten()
+                    .map(|row| (mask, row));
+                let forced_cut = kept && (mask & plan.node_graph_mask != 0);
+                (forced_cut, rows, point)
+            }
+        };
+        let route_tag_cb = {
+            let writers = writers.clone();
+            move |rows: Vec<Vec<TopicRow>>| {
+                writers.route_tag(rows);
+            }
+        };
+        let route_member_cb = {
+            let writers = writers.clone();
+            move |links: Vec<MemberRow>| {
+                writers.route_member(links);
+            }
+        };
+        let route_point_cb = {
+            let (writers, plan) = (writers.clone(), plan.clone());
+            move |mask: u32, row: PointRow| {
+                writers.route_node_point(mask, row, &plan);
             }
         };
         osm::reader::stream_osm(
@@ -303,6 +325,9 @@ async fn main() -> anyhow::Result<()> {
                 classify_node: classify_node_cb,
                 skip_untagged_nodes,
                 needs_graph: plan.any_way_graph,
+                route_tag: route_tag_cb,
+                route_member: route_member_cb,
+                route_point: route_point_cb,
             },
         )
     });

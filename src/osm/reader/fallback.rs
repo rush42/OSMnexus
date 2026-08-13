@@ -10,18 +10,28 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use osmpbf::{Element, ElementReader};
 use tracing::info;
 
+use crate::geom::rows::PointRow;
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
+use crate::output::rows::{MemberRow, TopicRow};
 
 use super::rel_members::RelMembers;
 use super::resolve::{dense_node_data, log_node_summary, node_data, rel_data, way_data, NodeCoordsBuilder, NodeRefCounts};
 use super::way_refs::{EncodedRefs, WayRefsStore};
 use super::{Callbacks, SelectionContext};
 
-pub(super) fn stream_osm_fallback<CR, CW, CN>(path: &str, cb: Callbacks<CR, CW, CN>) -> anyhow::Result<SelectionContext>
+/// Rare/slow path — routing happens right next to classification here (no ordering guarantee to
+/// preserve, unlike the sorted fast path's blob-order fold — see `Callbacks`' own doc).
+pub(super) fn stream_osm_fallback<CR, CW, CN, RT, RM, RP>(
+    path: &str,
+    cb: Callbacks<CR, CW, CN, RT, RM, RP>,
+) -> anyhow::Result<SelectionContext>
 where
-    CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
-    CW: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync + Send,
-    CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync + Send,
+    CR: for<'a> Fn(&RelData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) + Sync + Send,
+    CW: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync + Send,
+    CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, PointRow)>) + Sync + Send,
+    RT: Fn(Vec<Vec<TopicRow>>) + Sync + Send,
+    RM: Fn(Vec<MemberRow>) + Sync + Send,
+    RP: Fn(u32, PointRow) + Sync + Send,
 {
     // Scan R — relations: classify + emit rows, collect member-way requests. Independent of the
     // ways/nodes scans below. Sequential (the relation region is small relative to ways/nodes).
@@ -33,7 +43,12 @@ where
             .for_each(|element| {
                 if let Element::Relation(rel) = element {
                     let rd = rel_data(&rel);
-                    if let Some(mask) = (cb.classify_rel)(&rd) {
+                    let (mask, topic_rows, links) = (cb.classify_rel)(&rd);
+                    (cb.route_tag)(topic_rows);
+                    if !links.is_empty() {
+                        (cb.route_member)(links);
+                    }
+                    if let Some(mask) = mask {
                         out.insert(rd.id, (rd.member_ways, mask));
                     }
                 }
@@ -68,7 +83,8 @@ where
                 let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
                 if let Element::Way(way) = element {
                     let wd = way_data(&way);
-                    let kept_mask = (cb.classify_way)(&wd);
+                    let (kept_mask, topic_rows) = (cb.classify_way)(&wd);
+                    (cb.route_tag)(topic_rows);
                     let is_extra = !extra_way_ids.is_empty() && extra_way_ids.contains(&wd.id);
                     if kept_mask.is_some() || is_extra {
                         // Deltas straight off the wire (see `way_data`'s own doc) — accumulate to
@@ -127,14 +143,28 @@ where
                 match element {
                     Element::DenseNode(n) if use_counts.contains_key(&n.id()) => {
                         coords.push((n.id(), n.decimicro_lon(), n.decimicro_lat()));
-                        if cb.has_nodes && (cb.classify_node)(&dense_node_data(&n)) {
-                            selected.insert(n.id());
+                        if cb.has_nodes {
+                            let (forced_cut, topic_rows, point) = (cb.classify_node)(&dense_node_data(&n));
+                            (cb.route_tag)(topic_rows);
+                            if let Some((mask, row)) = point {
+                                (cb.route_point)(mask, row);
+                            }
+                            if forced_cut {
+                                selected.insert(n.id());
+                            }
                         }
                     }
                     Element::Node(n) if use_counts.contains_key(&n.id()) => {
                         coords.push((n.id(), n.decimicro_lon(), n.decimicro_lat()));
-                        if cb.has_nodes && (cb.classify_node)(&node_data(&n)) {
-                            selected.insert(n.id());
+                        if cb.has_nodes {
+                            let (forced_cut, topic_rows, point) = (cb.classify_node)(&node_data(&n));
+                            (cb.route_tag)(topic_rows);
+                            if let Some((mask, row)) = point {
+                                (cb.route_point)(mask, row);
+                            }
+                            if forced_cut {
+                                selected.insert(n.id());
+                            }
                         }
                     }
                     Element::DenseNode(n) if extra_node_ids.contains(&n.id()) => {
@@ -151,13 +181,21 @@ where
                     Element::DenseNode(n)
                         if cb.has_nodes && !(cb.skip_untagged_nodes && n.tags().next().is_none()) =>
                     {
-                        (cb.classify_node)(&dense_node_data(&n));
+                        let (_, topic_rows, point) = (cb.classify_node)(&dense_node_data(&n));
+                        (cb.route_tag)(topic_rows);
+                        if let Some((mask, row)) = point {
+                            (cb.route_point)(mask, row);
+                        }
                         standalone += 1;
                     }
                     Element::Node(n)
                         if cb.has_nodes && !(cb.skip_untagged_nodes && n.tags().next().is_none()) =>
                     {
-                        (cb.classify_node)(&node_data(&n));
+                        let (_, topic_rows, point) = (cb.classify_node)(&node_data(&n));
+                        (cb.route_tag)(topic_rows);
+                        if let Some((mask, row)) = point {
+                            (cb.route_point)(mask, row);
+                        }
                         standalone += 1;
                     }
                     _ => {}
