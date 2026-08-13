@@ -96,26 +96,86 @@ fn read_edges(path: &Path) -> anyhow::Result<HashMap<i64, Vec<EdgeGeom>>> {
     Ok(by_osm_id)
 }
 
-/// Reads a `{table}_geom.csv`/`{table}_relation_geom.csv` file (`WAY_COLUMNS`: whole-way/relation
-/// linestring, no split segments), keyed by `osm_id`. Returns `None` if the file doesn't exist —
-/// this topic didn't declare that shape for this kind.
-fn read_way_geom(path: &Path) -> anyhow::Result<Option<HashMap<i64, Vec<[f64; 2]>>>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    debug_assert_eq!(WAY_COLUMNS, "osm_id,geom,length_m");
-    let mut reader = csv::Reader::from_path(path)?;
-    let mut by_osm_id = HashMap::new();
-    for result in reader.records() {
-        let record = result?;
-        let geom_hex = &record[1];
-        if geom_hex.is_empty() {
-            continue;
+/// A `{table}_geom.csv`/`{table}_polygon.csv` reader consumed forward, in step with `{table}.csv`'s
+/// own way rows, instead of loaded into a `HashMap` first — safe because `geom::materialize::run`
+/// now resolves+routes a table's way geometry in the exact same blob order Pass A already routed
+/// that way's tag row in (`WayRefsStore::par_route_ordered`, `SelectionContext::kept_way_order`), so
+/// this file's `osm_id` sequence is a *subset* of `{table}.csv`'s way-row sequence in the same
+/// relative order — no random access, and no full in-memory geometry map, needed to match them up.
+/// Used for the way path only (`build_features`'s fallback branch, not `"R"`); relation geometry is
+/// still resolved via `HashMap` (`read_relation_line_geom`/`read_polygon_geom`) since
+/// `geom::materialize::relations` isn't order-aligned with the relations pass yet — see
+/// `BACKLOG.md`.
+///
+/// This is *not* used for `way_point.csv`: that file also carries node-point rows (written earlier,
+/// during the select phase, sharing the point channel with way-point rows — see
+/// `TableWriters::route_node_point`'s own doc) ahead of the way-point rows, so its `osm_id` sequence
+/// is `[node points][way points]`, not aligned with `{table}.csv`'s own row order (which interleaves
+/// relations/ways/nodes as R, W, N blocks) — a forward cursor would silently attribute zero points to
+/// every way while stuck behind the node-point block. `read_point_geom`'s `HashMap` stays exactly as
+/// it was for that reason. Nor is it used for `edges.csv`: the relation path needs random access into
+/// it by arbitrary member-way id, so it stays a `HashMap` there and the (currently unused by any
+/// shipped config, see `BACKLOG.md`) way-graph-fallback path just reuses that same map.
+struct OrderedWayGeomCursor {
+    reader: Option<csv::Reader<std::fs::File>>,
+    /// The next record read but not yet known to belong to the way being asked about — held across
+    /// calls so a mismatch (this way has no entry) doesn't lose the record, which belongs to some
+    /// later way.
+    pending: Option<(i64, Vec<[f64; 2]>)>,
+    /// The most recently matched record, kept so a repeated `get` for the *same* `osm_id` (a
+    /// side-split topic emits several tag rows per way, all sharing one geometry) reuses it instead
+    /// of re-consuming the (already-advanced-past) cursor.
+    last: Option<(i64, Vec<[f64; 2]>)>,
+}
+
+impl OrderedWayGeomCursor {
+    /// `None` if `path` doesn't exist — this topic didn't declare that shape for ways. Works for
+    /// both `WAY_COLUMNS` (`osm_id,geom,length_m`) and `POLYGON_COLUMNS` (`osm_id,geom`) files —
+    /// `geom` is field index 1 in both, and nothing here reads past it.
+    fn open(path: &Path) -> anyhow::Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
         }
-        let osm_id: i64 = record[0].parse()?;
-        by_osm_id.insert(osm_id, lonlat_coordinates(&hex::decode(geom_hex)?)?);
+        Ok(Some(OrderedWayGeomCursor { reader: Some(csv::Reader::from_path(path)?), pending: None, last: None }))
     }
-    Ok(Some(by_osm_id))
+
+    fn read_one(&mut self) -> anyhow::Result<Option<(i64, Vec<[f64; 2]>)>> {
+        let Some(reader) = self.reader.as_mut() else { return Ok(None) };
+        loop {
+            let mut record = csv::StringRecord::new();
+            if !reader.read_record(&mut record)? {
+                self.reader = None; // exhausted — stop trying to read further
+                return Ok(None);
+            }
+            let geom_hex = &record[1];
+            if geom_hex.is_empty() {
+                continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
+            }
+            let osm_id: i64 = record[0].parse()?;
+            return Ok(Some((osm_id, lonlat_coordinates(&hex::decode(geom_hex)?)?)));
+        }
+    }
+
+    /// This way's geometry, if the file has one — `None` otherwise. Must be called with `osm_id` in
+    /// the same non-decreasing-by-file-order sequence `{table}.csv`'s way rows come in (repeats for
+    /// the same way, from side-split duplicates, are fine).
+    fn get(&mut self, osm_id: i64) -> anyhow::Result<Option<&[[f64; 2]]>> {
+        if let Some((id, _)) = &self.last {
+            if *id == osm_id {
+                return Ok(self.last.as_ref().map(|(_, g)| g.as_slice()));
+            }
+        }
+        if self.pending.is_none() {
+            self.pending = self.read_one()?;
+        }
+        match &self.pending {
+            Some((id, _)) if *id == osm_id => {
+                self.last = self.pending.take();
+                Ok(self.last.as_ref().map(|(_, g)| g.as_slice()))
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 /// Reads a `{table}_relation_geom.csv` file (`WAY_COLUMNS`), keyed by `osm_id` — relation lines are
@@ -252,9 +312,11 @@ fn build_features(
     edges: &HashMap<i64, Vec<EdgeGeom>>,
     relation_members: &HashMap<i64, Vec<i64>>,
 ) -> anyhow::Result<Vec<Value>> {
-    let way_geom = read_way_geom(&out_dir.join(format!("{table}_geom.csv")))?;
+    debug_assert_eq!(WAY_COLUMNS, "osm_id,geom,length_m");
+    debug_assert_eq!(POLYGON_COLUMNS, "osm_id,geom");
+    let mut way_geom = OrderedWayGeomCursor::open(&out_dir.join(format!("{table}_geom.csv")))?;
+    let mut way_polygon = OrderedWayGeomCursor::open(&out_dir.join(format!("{table}_polygon.csv")))?;
     let way_point = read_point_geom(&out_dir.join(format!("{table}_point.csv")))?;
-    let way_polygon = read_polygon_geom(&out_dir.join(format!("{table}_polygon.csv")))?;
     let relation_geom = read_relation_line_geom(&out_dir.join(format!("{table}_relation_geom.csv")))?;
     let relation_point = read_point_geom(&out_dir.join(format!("{table}_relation_point.csv")))?;
     let relation_polygon = read_polygon_geom(&out_dir.join(format!("{table}_relation_polygon.csv")))?;
@@ -314,13 +376,25 @@ fn build_features(
                 }));
             }
             _ => {
-                if let Some(coordinates) = way_geom.as_ref().and_then(|m| m.get(&osm_id)) {
+                let way_line = match way_geom.as_mut() {
+                    Some(cursor) => cursor.get(osm_id)?.map(<[_]>::to_vec),
+                    None => None,
+                };
+                let way_poly = if way_line.is_none() {
+                    match way_polygon.as_mut() {
+                        Some(cursor) => cursor.get(osm_id)?.map(<[_]>::to_vec),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(coordinates) = way_line {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "LineString", "coordinates": coordinates },
                         "properties": base_properties(&record, osm_id, &cols),
                     }));
-                } else if let Some(coordinates) = way_polygon.as_ref().and_then(|m| m.get(&osm_id)) {
+                } else if let Some(coordinates) = way_poly {
                     features.push(json!({
                         "type": "Feature",
                         "geometry": { "type": "Polygon", "coordinates": [coordinates] },
