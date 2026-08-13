@@ -28,7 +28,7 @@ pub(super) fn classify_relations<CR, RT, RM>(
     classify_rel: &CR,
     route_tag: &RT,
     route_member: &RM,
-) -> anyhow::Result<FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>>
+) -> anyhow::Result<(FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>, Vec<i64>)>
 where
     CR: for<'a> Fn(&RelData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) + Sync,
     RT: Fn(Vec<Vec<TopicRow>>),
@@ -36,6 +36,9 @@ where
 {
     type KeptRel = (i64, Vec<(i64, MemberRole)>, u32, Vec<Vec<TopicRow>>, Vec<MemberRow>);
     let mut result: FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)> = FxHashMap::default();
+    // Every kept relation's id, in the same blob order its tag row was just routed in — see
+    // `sorted::classify_and_index`'s `kept_way_order` for the way-side equivalent of this.
+    let mut kept_relation_order: Vec<i64> = Vec::new();
     for blob_chunk in rel_offsets.chunks(FOLD_CHUNK_BLOBS) {
         let per_blob: Vec<Vec<KeptRel>> = blob_chunk
             .par_iter()
@@ -61,11 +64,12 @@ where
                 if !links.is_empty() {
                     route_member(links);
                 }
+                kept_relation_order.push(id);
                 result.insert(id, (member_ways, mask));
             }
         }
     }
-    Ok(result)
+    Ok((result, kept_relation_order))
 }
 
 /// How many blobs a pass decodes in parallel before folding their output sequentially into the

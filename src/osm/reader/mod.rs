@@ -65,6 +65,11 @@ pub struct SelectionContext {
     /// this same order (`WayRefsStore::par_route_ordered`) so a table's tag-row CSV and its paired
     /// geometry CSV end up in matching row order.
     pub kept_way_order: Vec<i64>,
+    /// Every kept relation's id, in the same order its tag row was routed in during the relations
+    /// pass — the way-order equivalent for relations. `geom::materialize::run` walks this same order
+    /// (`RelMembers::requests_ordered`) so a table's relation tag rows and their paired relation
+    /// geometry rows end up in matching order too.
+    pub kept_relation_order: Vec<i64>,
 }
 
 /// The topic-agnostic callbacks driving the "select" phase. `classify_way`/`classify_rel`/
@@ -256,13 +261,13 @@ where
                 );
 
                 // Relations pass — classify + emit relation rows, collect member-way requests.
-                let rel_members = if cb.has_relations && !rel_offsets.is_empty() {
+                let (rel_members, kept_relation_order) = if cb.has_relations && !rel_offsets.is_empty() {
                     let t = std::time::Instant::now();
-                    let m = classify_relations(&mmap, rel_offsets, &cb.classify_rel, &cb.route_tag, &cb.route_member)?;
+                    let (m, order) = classify_relations(&mmap, rel_offsets, &cb.classify_rel, &cb.route_tag, &cb.route_member)?;
                     info!("[phase] Relations pass (classify + emit): {:.1}s ({} kept)", t.elapsed().as_secs_f32(), m.len());
-                    m
+                    (m, order)
                 } else {
-                    FxHashMap::default()
+                    (FxHashMap::default(), Vec::new())
                 };
                 // Every relation-member way id needs its node refs recorded too (as a `mask == 0`
                 // `way_refs` entry) even when its own tags never tag-keep it — see
@@ -329,6 +334,7 @@ where
                     rel_members: RelMembers::build(rel_members),
                     selected,
                     kept_way_order,
+                    kept_relation_order,
                 });
             }
             Err(e) => {

@@ -58,6 +58,9 @@ where
     } else {
         FxHashMap::default()
     };
+    // No ordering guarantee to preserve here (see this function's own doc) — just the full
+    // kept-relation id set, in whatever order `rel_members`' hashmap iterates.
+    let kept_relation_order: Vec<i64> = rel_members.keys().copied().collect();
     // Only relations whose mask wants some geometry pull their member ways' coords in — see
     // `sorted`'s own path for why (mirrored here for the fallback scan).
     let extra_way_ids: FxHashSet<i64> = rel_members
@@ -234,5 +237,6 @@ where
         rel_members: RelMembers::build(rel_members),
         selected,
         kept_way_order,
+        kept_relation_order,
     })
 }

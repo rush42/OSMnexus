@@ -197,9 +197,10 @@ where
 
     // Relation-geometry assembly needs its own coordinate copy — skip entirely when no topic wants
     // relation line/point/polygon (`relations()` would build nothing from it either way), and even
-    // then resolve only the (typically small — see `par_route_kept`'s own doc) subset of ways that
-    // are actual relation members, redoing `resolve_geometry` for any that were already resolved
-    // above rather than caching every kept way's geometry just to avoid that overlap's redundant work.
+    // then resolve only the (typically small — see `par_route_ordered`'s own doc) subset of ways
+    // that are actual relation members, redoing `resolve_geometry` for any that were already
+    // resolved above rather than caching every kept way's geometry just to avoid that overlap's
+    // redundant work.
     let want_relation_geom = !plan.relation_line_topics.is_empty()
         || !plan.relation_point_topics.is_empty()
         || !plan.relation_polygon_topics.is_empty();
@@ -212,7 +213,7 @@ where
     } else {
         FxHashMap::default()
     };
-    let requests: Vec<(i64, Vec<(i64, MemberRole)>, u32)> = ctx.rel_members.requests();
+    let requests: Vec<(i64, Vec<(i64, MemberRole)>, u32)> = ctx.rel_members.requests_ordered(&ctx.kept_relation_order);
     let relations_batch = relations(&requests, &way_coords, plan);
 
     MaterializedGeometry { node_ids, node_rows, relations: relations_batch }
