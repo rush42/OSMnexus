@@ -28,7 +28,7 @@ use anyhow::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{info, warn};
 
-use crate::geom::rows::PointRow;
+use crate::geom::rows::GeomRow;
 use crate::osm::types::{NodeData, RelData, WayData};
 use crate::output::rows::{MemberRow, TopicRow};
 
@@ -218,10 +218,10 @@ pub fn stream_osm<CR, CW, CN, RT, RM, RP>(
 where
     CR: for<'a> Fn(&RelData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) + Sync + Send,
     CW: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync + Send,
-    CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, PointRow)>) + Sync + Send,
+    CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) + Sync + Send,
     RT: Fn(Vec<Vec<TopicRow>>) + Sync + Send,
     RM: Fn(Vec<MemberRow>) + Sync + Send,
-    RP: Fn(u32, PointRow) + Sync + Send,
+    RP: Fn(u32, GeomRow) + Sync + Send,
 {
     info!("Building blob index (no decompression)...");
     let t_idx = std::time::Instant::now();

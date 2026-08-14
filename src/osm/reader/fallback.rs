@@ -10,7 +10,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use osmpbf::{Element, ElementReader};
 use tracing::info;
 
-use crate::geom::rows::PointRow;
+use crate::geom::rows::GeomRow;
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 use crate::output::rows::{MemberRow, TopicRow};
 
@@ -28,10 +28,10 @@ pub(super) fn stream_osm_fallback<CR, CW, CN, RT, RM, RP>(
 where
     CR: for<'a> Fn(&RelData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) + Sync + Send,
     CW: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync + Send,
-    CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, PointRow)>) + Sync + Send,
+    CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) + Sync + Send,
     RT: Fn(Vec<Vec<TopicRow>>) + Sync + Send,
     RM: Fn(Vec<MemberRow>) + Sync + Send,
-    RP: Fn(u32, PointRow) + Sync + Send,
+    RP: Fn(u32, GeomRow) + Sync + Send,
 {
     // Scan R — relations: classify + emit rows, collect member-way requests. Independent of the
     // ways/nodes scans below. Sequential (the relation region is small relative to ways/nodes).

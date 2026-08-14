@@ -230,8 +230,9 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   - **Composes with the relations→ways→nodes plan:** each per-kind topic table just generates its own
     column set.
 
-- **Tag/geometry CSV row order now aligned by construction — DONE, downstream hashmap join not yet
-  removed.** `geojson.rs` and Simon's parked GeoParquet PR (`simon/feat/geoparquet-output`,
+- **Tag/geometry CSV row order aligned by construction — DONE, incl. the point-table split
+  (`{table}_node_geom`/`{table}_way_geom`) that removed the last mixing case. `parquet.rs` still
+  not ported.** `geojson.rs` and Simon's parked GeoParquet PR (`simon/feat/geoparquet-output`,
   `src/output/parquet.rs`) join staged tag/geometry CSVs via a full `HashMap<i64, GeomRow>` keyed by
   `osm_id`. Investigating whether that could be a cheap positional join instead led through shard-
   keying (ruled out — `--output csv`/`geojson`/`geojsonseq` already runs `w=1`, so `Shard::send`'s
@@ -290,21 +291,30 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
     config with relation line geometry): 106/106 relation ids match position; byte-identical GeoJSON
     against the pre-change build there, on `public_transport` (graph-fallback path, still hashmap via
     `edges.csv`), and on `tilda` (way-only sanity check).
-  - **Still deliberately `HashMap`-based, not zipped:** `{table}_point.csv` (shares its channel
-    between node-point rows, written during the select phase in node order, and way-point rows,
-    written during materialize in way order — so its `osm_id` sequence is `[node points][way
-    points]`, not aligned with `{table}.csv`'s own R/W/N block order; a forward cursor here would
-    silently attribute zero points to every way); `edges.csv` (the relation path needs random access
-    into it by arbitrary member-way id, and no shipped config exercises the way-graph-fallback path
-    that would benefit anyway — see the graph-topics note above). `parquet.rs` (Simon's parked PR)
-    hasn't been touched at all yet — same cursor rewrite would apply there once that branch is picked
-    back up.
-  - **Benchmark note:** `--output geojsonseq` (streaming, no `FeatureCollection` buffer) on
-    `brandenburg-latest.osm.pbf`, tilda config (way-only, no relations exercised): peak RSS ~2.99GB
-    both before and after the relation-cursor change — expected, since relation counts are tiny next
-    to way counts in this config; the way-cursor change (see above) was already the ~4% RSS win on
-    this same benchmark. Not re-benchmarked on a relation-heavy config — none of the shipped ones are
-    large enough to be worth it.
+  - **Point-table mixing — DONE, via a config schema change, not a cursor workaround.** The one
+    remaining `HashMap` was `{table}_point.csv`, which shared its channel between node-point rows
+    (select phase, node order) and way-point rows (materialize phase, way order) — an `osm_id`
+    sequence `[node points][way points]` with no relation to `{table}.csv`'s own R/W/N block order,
+    so a forward cursor there would've silently attributed zero points to every way. Root-caused to
+    geometry tables being organized by *shape* (line/point/polygon) instead of *element kind*
+    (node/way/relation) — the one shared "point" table was the only place two different kinds'
+    output landed in one file. Fixed by reorganizing `topic.json`'s geometry schema itself: each
+    kind now gets exactly one declared shape (`"geometry_output": { "way": "line" }`, not a list —
+    every shipped config only ever declared one anyway) and its own physically separate table
+    (`{table}_node_geom`/`{table}_way_geom`/`{table}_relation_geom`, self-describing via a
+    `geom_type` column). No more shared point table, so no more mixing — `geojson.rs` now uses the
+    same `OrderedGeomCursor` for all three kinds. See CHANGELOG's "Unreleased" entry for the full
+    schema-change writeup (also collapses tag-table-adjacent geometry tables from up to 6 per topic
+    to 3, and separates the routing-graph flag into its own orthogonal `"graph"` field). Verified
+    byte-identical output against the pre-change build on `berlin.osm.pbf` (tilda/trains/live_raw)
+    and `brandenburg-latest.osm.pbf` (tilda); no RSS/time regression on the same benchmark used for
+    the way/relation alignment work above.
+  - **Still `HashMap`-based, and expected to stay that way:** `edges.csv` (the relation path needs
+    random access into it by arbitrary member-way id, and no shipped config exercises the
+    way-graph-fallback path that would benefit anyway — see the graph-topics note above).
+    `parquet.rs` (Simon's parked PR) hasn't been touched at all yet — same cursor rewrite (now even
+    simpler, given the one-table-per-kind schema) would apply there once that branch is picked back
+    up.
 
 - **Root `Dockerfile` (standalone one-container live-editor demo) is stale.** It bundles a single
   container with no Postgres service, but the live editor now requires `db`

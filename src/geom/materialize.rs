@@ -14,17 +14,21 @@ use crate::geom::builders::{
 use crate::geom::plan::GeometryPlan;
 use crate::geom::primitives::{haversine_length_m, project_line};
 use crate::geom::relation::assemble_rings;
-use crate::geom::rows::{EdgeRow, NodeRow, PointRow, PolygonRow, WayRow};
+use crate::geom::rows::{EdgeRow, GeomRow, NodeRow};
 use crate::osm::reader::{assign_node_ids, SelectionContext};
 use crate::osm::types::{MemberRole, OsmWay};
+use crate::topic::spec::GeometryShape;
 
 /// Every shape a way can produce, already gated by `plan` — `None` for any shape no topic wants
-/// (or, for `point`, that a way's coordinates happened to collapse to a degenerate centroid).
+/// (or, for `point`, that a way's coordinates happened to collapse to a degenerate centroid). Up
+/// to three of these can be non-`None` at once (different topics can want different shapes for the
+/// same way — see `GeometryPlan::way_shape`'s own doc), even though each individual topic only
+/// ever gets routed the one it declared.
 pub struct WayGeometry {
     pub edges: Option<Vec<EdgeRow>>,
-    pub line: Option<WayRow>,
-    pub point: Option<PointRow>,
-    pub polygon: Option<PolygonRow>,
+    pub line: Option<GeomRow>,
+    pub point: Option<GeomRow>,
+    pub polygon: Option<GeomRow>,
 }
 
 /// Build every shape a resolved way needs, per `plan`. `node_ids` is only consulted when
@@ -37,8 +41,9 @@ pub fn way(way: &OsmWay, node_ids: &FxHashMap<i64, i64>, plan: &GeometryPlan) ->
         build_edges(way, &geom, length_m, node_ids)
     });
 
-    let want_line = !plan.way_line_topics.is_empty();
-    let want_point = !plan.point_topics.is_empty();
+    let want_line = plan.way_shape.contains(&GeometryShape::Line);
+    let want_point = plan.way_shape.contains(&GeometryShape::Point);
+    let want_polygon = plan.way_shape.contains(&GeometryShape::Polygon);
     let geom = (want_line || want_point).then(|| project_line(&way.coords));
 
     let line = geom.as_ref().filter(|_| want_line).map(|g| {
@@ -47,32 +52,32 @@ pub fn way(way: &OsmWay, node_ids: &FxHashMap<i64, i64>, plan: &GeometryPlan) ->
     });
     let point = geom.as_ref().filter(|_| want_point).and_then(|g| build_way_point_row(way, g));
 
-    let polygon = (!plan.way_polygon_topics.is_empty()).then(|| build_way_polygon_row(way));
+    let polygon = want_polygon.then(|| build_way_polygon_row(way));
 
     WayGeometry { edges, line, point, polygon }
 }
 
-/// A node's own point row, gated on whether any topic wants `"geometry": { "node": ["point"] }` —
-/// trivial, but kept alongside `way`/`relations` for a uniform "ask the plan, get rows back" shape
-/// at every call site.
-pub fn node_point(osm_id: i64, lon: f64, lat: f64, plan: &GeometryPlan) -> Option<PointRow> {
-    (!plan.point_topics.is_empty()).then(|| build_node_point_row(osm_id, lon, lat))
+/// A node's own point row, gated on whether any topic wants `"geometry_output": { "node": "point" }`
+/// — trivial, but kept alongside `way`/`relations` for a uniform "ask the plan, get rows back" shape
+/// at every call site. Always `Point` (the only shape a node can declare — see
+/// `GeometryOutputSpec::validate`), so no shape check needed like `way`'s.
+pub fn node_point(osm_id: i64, lon: f64, lat: f64, plan: &GeometryPlan) -> Option<GeomRow> {
+    (!plan.node_geom_topics.is_empty()).then(|| build_node_point_row(osm_id, lon, lat))
 }
 
-/// One relation's requested geometry, already fanned out per wanting topic (`line_topics[i]`'s
-/// mask bit decides whether `line`/`point`/`polygon` apply to that topic) — the caller just needs
-/// to route `Some` rows to their topic's channel.
+/// One relation's requested geometry — up to three of these can be non-`None` at once (see
+/// `WayGeometry`'s own doc, same reasoning). The caller routes each wanting topic its one declared
+/// shape.
 pub struct RelationGeometry {
-    pub line: Option<WayRow>,
-    pub point: Option<PointRow>,
-    pub polygon: Option<PolygonRow>,
+    pub line: Option<GeomRow>,
+    pub point: Option<GeomRow>,
+    pub polygon: Option<GeomRow>,
 }
 
 /// Build one relation's line/point/polygon from its member ways' already-resolved coordinates
 /// (see `geom::relation`'s own doc on how those got resolved with no second PBF scan) — `members`
 /// is `(way_id, role)` pairs, `way_coords` the resolved-coordinate lookup. `polygon` is only
-/// attempted when `plan.relation_polygon_topics` is non-empty (ring assembly is the one
-/// non-trivial cost here).
+/// attempted when some topic wants it (ring assembly is the one non-trivial cost here).
 pub fn relation(
     members: &[(i64, MemberRole)],
     way_coords: &FxHashMap<i64, Vec<(f64, f64)>>,
@@ -82,13 +87,13 @@ pub fn relation(
     let member_coords: Vec<Vec<(f64, f64)>> =
         members.iter().filter_map(|&(w, _)| way_coords.get(&w).cloned()).collect();
 
-    let line = (!plan.relation_line_topics.is_empty())
-        .then(|| build_relation_line_row(rel_id, &member_coords))
-        .flatten();
-    let point = (!plan.relation_point_topics.is_empty())
-        .then(|| build_relation_point_row(rel_id, &member_coords))
-        .flatten();
-    let polygon = (!plan.relation_polygon_topics.is_empty())
+    let want_line = plan.relation_shape.contains(&GeometryShape::Line);
+    let want_point = plan.relation_shape.contains(&GeometryShape::Point);
+    let want_polygon = plan.relation_shape.contains(&GeometryShape::Polygon);
+
+    let line = want_line.then(|| build_relation_line_row(rel_id, &member_coords)).flatten();
+    let point = want_point.then(|| build_relation_point_row(rel_id, &member_coords)).flatten();
+    let polygon = want_polygon
         .then(|| {
             let outer: Vec<_> = members
                 .iter()
@@ -107,14 +112,12 @@ pub fn relation(
     RelationGeometry { line, point, polygon }
 }
 
-/// Every kept, geometry-wanting relation's rows, already fanned out into one `Vec` per wanting
-/// topic (parallel to `plan.relation_{line,point,polygon}_topics`) — the batch-oriented sibling of
-/// `way`/`node_point`, since relation geometry is resolved after the whole streaming pass finishes
-/// (see `geom::relation`'s own doc) rather than one element at a time as the file streams.
+/// Every kept, geometry-wanting relation's rows, one `Vec` per wanting topic (parallel to
+/// `plan.relation_geom_topics`) — the batch-oriented sibling of `way`/`node_point`, since relation
+/// geometry is resolved after the whole streaming pass finishes (see `geom::relation`'s own doc)
+/// rather than one element at a time as the file streams.
 pub struct RelationGeomBatch {
-    pub line_rows: Vec<Vec<WayRow>>,
-    pub point_rows: Vec<Vec<PointRow>>,
-    pub polygon_rows: Vec<Vec<PolygonRow>>,
+    pub rows: Vec<Vec<GeomRow>>,
 }
 
 pub fn relations(
@@ -122,36 +125,26 @@ pub fn relations(
     way_coords: &FxHashMap<i64, Vec<(f64, f64)>>,
     plan: &GeometryPlan,
 ) -> RelationGeomBatch {
-    let mut line_rows: Vec<Vec<WayRow>> = vec![Vec::new(); plan.relation_line_topics.len()];
-    let mut point_rows: Vec<Vec<PointRow>> = vec![Vec::new(); plan.relation_point_topics.len()];
-    let mut polygon_rows: Vec<Vec<PolygonRow>> = vec![Vec::new(); plan.relation_polygon_topics.len()];
+    let mut rows: Vec<Vec<GeomRow>> = vec![Vec::new(); plan.relation_geom_topics.len()];
 
     for (rel_id, members, mask) in requests {
         let g = relation(members, way_coords, *rel_id, plan);
-        if let Some(row) = g.line {
-            for (i, &topic_idx) in plan.relation_line_topics.iter().enumerate() {
-                if mask & (1 << topic_idx) != 0 {
-                    line_rows[i].push(row.clone());
-                }
+        for (i, &topic_idx) in plan.relation_geom_topics.iter().enumerate() {
+            if mask & (1 << topic_idx) == 0 {
+                continue;
             }
-        }
-        if let Some(row) = g.point {
-            for (i, &topic_idx) in plan.relation_point_topics.iter().enumerate() {
-                if mask & (1 << topic_idx) != 0 {
-                    point_rows[i].push(row.clone());
-                }
-            }
-        }
-        if let Some(row) = g.polygon {
-            for (i, &topic_idx) in plan.relation_polygon_topics.iter().enumerate() {
-                if mask & (1 << topic_idx) != 0 {
-                    polygon_rows[i].push(row.clone());
-                }
+            let row = match plan.relation_shape[i] {
+                GeometryShape::Line => &g.line,
+                GeometryShape::Point => &g.point,
+                GeometryShape::Polygon => &g.polygon,
+            };
+            if let Some(row) = row {
+                rows[i].push(row.clone());
             }
         }
     }
 
-    RelationGeomBatch { line_rows, point_rows, polygon_rows }
+    RelationGeomBatch { rows }
 }
 
 /// Every row `run` produced, ready for `main.rs` to route to writer channels — the top-level
@@ -201,9 +194,7 @@ where
     // that are actual relation members, redoing `resolve_geometry` for any that were already
     // resolved above rather than caching every kept way's geometry just to avoid that overlap's
     // redundant work.
-    let want_relation_geom = !plan.relation_line_topics.is_empty()
-        || !plan.relation_point_topics.is_empty()
-        || !plan.relation_polygon_topics.is_empty();
+    let want_relation_geom = !plan.relation_geom_topics.is_empty();
     let way_coords: FxHashMap<i64, Vec<(f64, f64)>> = if want_relation_geom && !ctx.rel_members.is_empty() {
         let member_way_ids = ctx.rel_members.member_way_ids();
         member_way_ids

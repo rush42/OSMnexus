@@ -39,7 +39,7 @@ use tracing::info;
 
 use config::{Config, Output};
 use db::schema;
-use geom::rows::{PointRow, POINT_COLUMNS, POLYGON_COLUMNS, WAY_COLUMNS};
+use geom::rows::{GeomRow, GEOM_COLUMNS};
 use topic::TopicRunner;
 use osm::types::{ElementKind, NodeData, RelData, WayData};
 use output::rows::{MemberRow, TopicRow};
@@ -130,32 +130,25 @@ async fn main() -> anyhow::Result<()> {
     // `geom::plan::GeometryPlan`'s own doc.
     let plan = geom::plan::GeometryPlan::build(&runners);
 
-    // Every non-tag-table geometry table this run needs (see `schema::GeomTableShape`'s own doc) —
-    // one consolidated list instead of a parallel `&[&str]` per shape.
-    let geom_tables: Vec<(String, schema::GeomTableShape)> = plan
-        .way_line_topics
+    // Every non-tag-table geometry table this run needs — one consolidated list instead of a
+    // parallel `&[&str]` per shape. One table per (kind, topic) now, not per (kind, shape, topic):
+    // `geom_type` self-describes the shape within each table (see `geom::rows::GeomRow`'s own doc).
+    let geom_tables: Vec<String> = plan
+        .node_geom_topics
         .iter()
-        .map(|&i| (schema::way_geom_table(table_refs[i]), schema::GeomTableShape::LineString))
-        .chain(plan.way_polygon_topics.iter().map(|&i| (schema::polygon_table(table_refs[i]), schema::GeomTableShape::Polygon)))
-        .chain(plan.point_topics.iter().map(|&i| (schema::point_table(table_refs[i]), schema::GeomTableShape::Point)))
-        .chain(plan.relation_line_topics.iter().map(|&i| (schema::relation_geom_table(table_refs[i]), schema::GeomTableShape::MultiLineString)))
-        .chain(plan.relation_point_topics.iter().map(|&i| (schema::relation_point_table(table_refs[i]), schema::GeomTableShape::Point)))
-        .chain(plan.relation_polygon_topics.iter().map(|&i| (schema::relation_polygon_table(table_refs[i]), schema::GeomTableShape::Polygon)))
+        .map(|&i| schema::node_geom_table(table_refs[i]))
+        .chain(plan.way_geom_topics.iter().map(|&i| schema::way_geom_table(table_refs[i])))
+        .chain(plan.relation_geom_topics.iter().map(|&i| schema::relation_geom_table(table_refs[i])))
         .collect();
-    let relation_line_table_refs: Vec<&str> = plan.relation_line_topics.iter().map(|&i| table_refs[i]).collect();
-    let relation_point_table_refs: Vec<&str> = plan.relation_point_topics.iter().map(|&i| table_refs[i]).collect();
-    let relation_polygon_table_refs: Vec<&str> = plan.relation_polygon_topics.iter().map(|&i| table_refs[i]).collect();
+    let relation_table_refs: Vec<&str> = plan.relation_geom_topics.iter().map(|&i| table_refs[i]).collect();
 
     let n = tables.len();
     // Extra sharded-writer tables beyond the per-topic tag tables: members, plus edges+nodes when
-    // any topic wants the graph, plus one per topic wanting a way-shaped geometry table (relation
+    // any topic wants the graph, plus one per topic wanting node or way geometry (relation
     // geometry writes separately, after the main streaming pass, so it isn't part of this
     // pool-sizing count — see below).
-    let extra_tables = 1
-        + if plan.any_way_graph { 2 } else { 0 }
-        + plan.way_line_topics.len()
-        + plan.way_polygon_topics.len()
-        + plan.point_topics.len();
+    let extra_tables =
+        1 + if plan.any_way_graph { 2 } else { 0 } + plan.node_geom_topics.len() + plan.way_geom_topics.len();
 
     // Output backend. `w` = parallel writers per table: k sharded COPY connections for Postgres, a
     // single file writer for CSV. `pool` is `None` for CSV.
@@ -279,7 +272,7 @@ async fn main() -> anyhow::Result<()> {
         // caller routes both.
         let classify_node_cb = {
             let (runners, plan) = (runners.clone(), plan.clone());
-            move |nd: &NodeData| -> (bool, Vec<Vec<TopicRow>>, Option<(u32, PointRow)>) {
+            move |nd: &NodeData| -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) {
                 let rows = classify_node(&runners, nd);
                 let mut mask = 0u32;
                 for (i, r) in rows.iter().enumerate() {
@@ -310,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let route_point_cb = {
             let (writers, plan) = (writers.clone(), plan.clone());
-            move |mask: u32, row: PointRow| {
+            move |mask: u32, row: GeomRow| {
                 writers.route_node_point(mask, row, &plan);
             }
         };
@@ -370,26 +363,15 @@ async fn main() -> anyhow::Result<()> {
     writers.finish_materialize(plan.any_way_graph).await?;
     mem_snapshot("materialize");
 
-    // Relation geometry (line/point/polygon): already built by the materialize phase above, from
-    // `ctx.rel_members` — just write it out. Works the same for CSV/GeoJSON as for Postgres
-    // (unlike the old SQL-post-processing approach, which needed a live database to merge from).
+    // Relation geometry: already built by the materialize phase above, from `ctx.rel_members` —
+    // just write it out. Works the same for CSV/GeoJSON as for Postgres (unlike the old
+    // SQL-post-processing approach, which needed a live database to merge from). One table per
+    // topic now (`geom_type` distinguishes shapes within it), not one per (topic, shape).
     let mut batch = relations_batch;
-    for (i, &table_name) in relation_line_table_refs.iter().enumerate() {
+    for (i, &table_name) in relation_table_refs.iter().enumerate() {
         let out_table = schema::relation_geom_table(table_name);
-        let rows = std::mem::take(&mut batch.line_rows[i]);
-        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, WAY_COLUMNS, rows).await?;
-        info!("Wrote {count} rows → {out_table}");
-    }
-    for (i, &table_name) in relation_point_table_refs.iter().enumerate() {
-        let out_table = schema::relation_point_table(table_name);
-        let rows = std::mem::take(&mut batch.point_rows[i]);
-        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POINT_COLUMNS, rows).await?;
-        info!("Wrote {count} rows → {out_table}");
-    }
-    for (i, &table_name) in relation_polygon_table_refs.iter().enumerate() {
-        let out_table = schema::relation_polygon_table(table_name);
-        let rows = std::mem::take(&mut batch.polygon_rows[i]);
-        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POLYGON_COLUMNS, rows).await?;
+        let rows = std::mem::take(&mut batch.rows[i]);
+        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, GEOM_COLUMNS, rows).await?;
         info!("Wrote {count} rows → {out_table}");
     }
 

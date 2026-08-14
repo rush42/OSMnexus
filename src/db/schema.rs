@@ -4,14 +4,14 @@ use tokio_postgres::Client;
 /// The single shared graph-edge table: one row per intersection-split sub-linestring of every kept
 /// way (the extracted graph). Topic-independent, so every topic's tag table joins to this one table
 /// on `osm_id`. Conceptually: one extracted graph, with the per-topic tag tables as disjoint
-/// attribute layers over it. Created/populated only when some topic declares
-/// `"geometry": { "way": ["graph"] }` (see `create_tables`'s `emit_graph` param) — otherwise no
-/// topic needs the routing graph at all, so it's skipped entirely.
+/// attribute layers over it. Created/populated only when some topic declares `"graph": { "way":
+/// true }` (see `create_tables`'s `emit_graph` param) — otherwise no topic needs the routing graph
+/// at all, so it's skipped entirely.
 pub const EDGE_TABLE: &str = "edges";
 
 /// Relation → member-way link table. Relations have no materialized geometry of their own; a
 /// relation's tag row joins here to reach its member ways' rows in `EDGE_TABLE`, or a topic can
-/// build its own relation geometry directly (see `GeomTableShape`/`main.rs`'s relation-geometry
+/// build its own relation geometry directly (see `relation_geom_table`/`main.rs`'s relation-geometry
 /// step). Always created — a relation-member link is meaningful even when no topic wants the
 /// routing graph.
 pub const MEMBER_TABLE: &str = "relation_members";
@@ -23,76 +23,26 @@ pub const MEMBER_TABLE: &str = "relation_members";
 /// joins on, `osm_id` is the original OSM node id.
 pub const NODE_TABLE: &str = "nodes";
 
-/// One non-tag, non-tag-table geometry output a topic can have: a `(osm_id, geom[, length_m])`
-/// table, one row per kept element (way, node, or relation) — everything except the always-on
-/// shared `edges`/`nodes` tables and the per-topic tag tables. Every such table shares the same
-/// column shape modulo `length_m` (`LineString` only); `create`/`drop_indexes`/`index_stmts` below
-/// dispatch on this one enum rather than needing a separate function (and a separate parallel
-/// `&[&str]` parameter to every schema function) per shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GeomTableShape {
-    LineString,
-    /// Relation-line tables only (see `geom::builders::build_relation_line_row`'s own doc): a
-    /// relation's member ways chained by shared endpoint frequently assemble into several
-    /// disconnected runs (branches, real mapping gaps), so relation lines carry all of them as one
-    /// `MultiLineString` row per relation instead of splitting into multiple rows.
-    MultiLineString,
-    Point,
-    Polygon,
+/// This topic's node geometry table name (populated for topics declaring `"geometry_output": {
+/// "node": "point" }` — always a `Point`, the only shape `GeometryOutputSpec` allows for nodes).
+pub fn node_geom_table(table: &str) -> String {
+    format!("{table}_node_geom")
 }
 
-impl GeomTableShape {
-    fn pg_type(self) -> &'static str {
-        match self {
-            GeomTableShape::LineString => "LineString",
-            GeomTableShape::MultiLineString => "MultiLineString",
-            GeomTableShape::Point => "Point",
-            GeomTableShape::Polygon => "Polygon",
-        }
-    }
-
-    fn has_length(self) -> bool {
-        matches!(self, GeomTableShape::LineString | GeomTableShape::MultiLineString)
-    }
-}
-
-/// This topic's whole-way linestring table name (populated for topics declaring
-/// `"geometry": { "way": ["line"] }`).
+/// This topic's way geometry table name (populated for topics declaring any `"geometry_output": {
+/// "way": ... }`). One table per topic regardless of shape — `geom_type` distinguishes
+/// Point/LineString/Polygon rows within it (see `geom::rows::GeomRow`'s own doc for why one table
+/// per kind replaced one table per (kind, shape) pair).
 pub fn way_geom_table(table: &str) -> String {
-    format!("{table}_geom")
+    format!("{table}_way_geom")
 }
 
-/// This topic's merged relation-line table name (populated for topics declaring
-/// `"geometry": { "relation": ["line"] }` — built in-process from member ways' independently
-/// re-resolved coordinates, see `geom::relation` / `main.rs`'s post-stream step).
+/// This topic's relation geometry table name (populated for topics declaring any
+/// `"geometry_output": { "relation": ... }` — built in-process from member ways' independently
+/// re-resolved coordinates, see `geom::relation` / `main.rs`'s post-stream step). `geom_type`
+/// distinguishes Point/MultiLineString/Polygon rows within it, same as `way_geom_table`.
 pub fn relation_geom_table(table: &str) -> String {
     format!("{table}_relation_geom")
-}
-
-/// This topic's relation centroid-point table name (populated for topics declaring
-/// `"geometry": { "relation": ["point"] }`).
-pub fn relation_point_table(table: &str) -> String {
-    format!("{table}_relation_point")
-}
-
-/// This topic's relation multipolygon table name (populated for topics declaring
-/// `"geometry": { "relation": ["polygon"] }` — assembled from member `outer`/`inner` ways, see
-/// `geom::relation`).
-pub fn relation_polygon_table(table: &str) -> String {
-    format!("{table}_relation_polygon")
-}
-
-/// This topic's point table name (populated for topics declaring `"geometry": { "node": ["point"] }`
-/// or `"geometry": { "way": ["point"] }` — a node's own coordinate or a way's centroid, see
-/// `TopicRunner::wants`).
-pub fn point_table(table: &str) -> String {
-    format!("{table}_point")
-}
-
-/// This topic's polygon table name (populated for topics declaring `"geometry": { "way": ["polygon"] }`
-/// — a closed way's own ring, see `TopicRunner::wants`).
-pub fn polygon_table(table: &str) -> String {
-    format!("{table}_polygon")
 }
 
 fn create_member_table_sql() -> String {
@@ -163,14 +113,20 @@ CREATE TABLE IF NOT EXISTS {NODE_TABLE} (
 )"#)
 }
 
-/// One `(osm_id, geom[, length_m])` geometry table, per `GeomTableShape`'s own doc.
-fn create_geom_table_sql(name: &str, shape: GeomTableShape) -> String {
-    let ty = shape.pg_type();
-    let length_col = if shape.has_length() { ",\n  length_m double precision" } else { "" };
+/// One per-kind geometry table: `(osm_id, geom_type, geom, length_m)`, one row per kept element
+/// (node, way, or relation) declaring a geometry output for that kind — everything except the
+/// always-on shared `edges`/`nodes` tables and the per-topic tag tables. The PostGIS column is
+/// typed `geometry(Geometry, 3857)` (not a fixed subtype like `LineString`) since one table now
+/// holds whichever shape(s) that kind's topics actually declared — `geom_type` (`'Point'`/
+/// `'LineString'`/`'MultiLineString'`/`'Polygon'`) says which, mirroring `GeomRow`'s CSV/Parquet
+/// shape. `length_m` is `NULL` for Point/Polygon rows — only a line has a length.
+fn create_geom_table_sql(name: &str) -> String {
     format!(r#"
 CREATE TABLE IF NOT EXISTS {name} (
-  osm_id bigint,
-  geom   geometry({ty}, 3857){length_col}
+  osm_id    bigint,
+  geom_type text,
+  geom      geometry(Geometry, 3857),
+  length_m  double precision
 )"#)
 }
 
@@ -238,19 +194,19 @@ fn node_index_stmts() -> [String; 3] {
     ]
 }
 
-/// `geom_tables`: every non-tag-table geometry table that should exist this run — one entry per
-/// (already-fully-formatted table name, shape), covering way `line`/`point`/`polygon` and relation
-/// `line`/`point` alike (see `GeomTableShape`'s own doc). Threaded through `create_tables`/
+/// `geom_tables`: every non-tag-table geometry table that should exist this run — one already-
+/// fully-formatted table name per topic wanting node/way/relation geometry (see
+/// `node_geom_table`/`way_geom_table`/`relation_geom_table`). Threaded through `create_tables`/
 /// `truncate_tables`/`drop_indexes`/`create_indexes` alongside the always-present `EDGE_TABLE` +
 /// `MEMBER_TABLE` + `NODE_TABLE`.
-/// `emit_graph`: whether any topic actually declares a way `"graph"` shape — the shared
-/// `EDGE_TABLE`/`NODE_TABLE` pair exists solely to back that shape (`start_id`/`end_id`, the
-/// extracted routing graph), so when nothing wants it, neither table is created/touched at all,
-/// same principle as the per-topic `geom_tables`.
+/// `emit_graph`: whether any topic actually declares `"graph": { "way": true }` — the shared
+/// `EDGE_TABLE`/`NODE_TABLE` pair exists solely to back that (`start_id`/`end_id`, the extracted
+/// routing graph), so when nothing wants it, neither table is created/touched at all, same
+/// principle as the per-topic `geom_tables`.
 pub async fn create_tables(
     client: &Client,
     tables: &[(&str, bool)],
-    geom_tables: &[(String, GeomTableShape)],
+    geom_tables: &[String],
     emit_graph: bool,
 ) -> anyhow::Result<()> {
     for &(table, emits_id) in tables {
@@ -261,8 +217,8 @@ pub async fn create_tables(
         client.batch_execute(&create_node_table_sql()).await?;
     }
     client.batch_execute(&create_member_table_sql()).await?;
-    for (name, shape) in geom_tables {
-        client.batch_execute(&create_geom_table_sql(name, *shape)).await?;
+    for name in geom_tables {
+        client.batch_execute(&create_geom_table_sql(name)).await?;
     }
     Ok(())
 }
@@ -270,7 +226,7 @@ pub async fn create_tables(
 pub async fn truncate_tables(
     client: &Client,
     tables: &[&str],
-    geom_tables: &[(String, GeomTableShape)],
+    geom_tables: &[String],
     emit_graph: bool,
 ) -> anyhow::Result<()> {
     let mut all: Vec<String> = tables.iter().map(|t| t.to_string()).collect();
@@ -279,7 +235,7 @@ pub async fn truncate_tables(
         all.push(NODE_TABLE.to_string());
     }
     all.push(MEMBER_TABLE.to_string());
-    all.extend(geom_tables.iter().map(|(name, _)| name.clone()));
+    all.extend(geom_tables.iter().cloned());
     client.batch_execute(&format!("TRUNCATE TABLE {}", all.join(", "))).await?;
     Ok(())
 }
@@ -287,7 +243,7 @@ pub async fn truncate_tables(
 pub async fn drop_indexes(
     client: &Client,
     tables: &[&str],
-    geom_tables: &[(String, GeomTableShape)],
+    geom_tables: &[String],
     emit_graph: bool,
 ) -> anyhow::Result<()> {
     for table in tables {
@@ -298,7 +254,7 @@ pub async fn drop_indexes(
         client.batch_execute(&drop_node_indexes_sql()).await?;
     }
     client.batch_execute(&drop_member_indexes_sql()).await?;
-    for (name, _) in geom_tables {
+    for name in geom_tables {
         client.batch_execute(&drop_geom_indexes_sql(name)).await?;
     }
     Ok(())
@@ -314,7 +270,7 @@ pub async fn drop_indexes(
 pub async fn create_indexes(
     pool: &Pool,
     tables: &[(&str, bool)],
-    geom_tables: &[(String, GeomTableShape)],
+    geom_tables: &[String],
     emit_graph: bool,
 ) -> anyhow::Result<()> {
     // One build unit per tag table, plus the shared edge table.
@@ -325,7 +281,7 @@ pub async fn create_indexes(
         units.push(node_index_stmts().to_vec());
     }
     units.push(member_index_stmts().to_vec());
-    for (name, _) in geom_tables {
+    for name in geom_tables {
         units.push(geom_index_stmts(name).to_vec());
     }
 

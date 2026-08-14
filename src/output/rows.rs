@@ -1,6 +1,6 @@
 //! Non-geometry output row types (tag rows + relation-member links) and their CSV serialization,
 //! plus the shared `CsvRow` trait/`write_csv_row` helper both this module and `geom::rows` use.
-//! Geometry row types (`EdgeRow`/`WayRow`/`NodeRow`/`PointRow`/`PolygonRow`) live in
+//! Geometry row types (`EdgeRow`/`GeomRow`/`NodeRow`) live in
 //! `geom::rows` instead — see `geom`'s own module doc for why geometry is split out.
 
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).

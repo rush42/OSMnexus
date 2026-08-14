@@ -8,7 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use osmpbf::ByteOffset;
 use rayon::prelude::*;
 
-use crate::geom::rows::PointRow;
+use crate::geom::rows::GeomRow;
 use crate::osm::types::{MemberRole, NodeData, RelData, WayData};
 use crate::output::rows::{MemberRow, TopicRow};
 
@@ -272,9 +272,9 @@ pub(super) fn collect_coords<CN, RT, RP>(
     skip_untagged: bool,
 ) -> anyhow::Result<(NodeCoords, FxHashSet<i64>, u64)>
 where
-    CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, PointRow)>) + Sync,
+    CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) + Sync,
     RT: Fn(Vec<Vec<TopicRow>>),
-    RP: Fn(u32, PointRow),
+    RP: Fn(u32, GeomRow),
 {
     // Size the map up front. Growing from empty means the final doubling holds the old and new
     // bucket arrays at once — a transient of ~1.5x the final table, which at this cardinality is
@@ -295,7 +295,7 @@ where
     let mut selected: FxHashSet<i64> = FxHashSet::default();
     let mut standalone_total: u64 = 0;
 
-    type NodeClassified = (Vec<Vec<TopicRow>>, Option<(u32, PointRow)>);
+    type NodeClassified = (Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>);
     for blob_chunk in node_offsets.chunks(FOLD_CHUNK_BLOBS) {
         type BlobResult = (Vec<(i64, i32, i32, bool)>, FxHashSet<i64>, u64, Vec<NodeClassified>);
         let per_blob: Vec<BlobResult> = blob_chunk

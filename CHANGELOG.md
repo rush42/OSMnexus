@@ -4,6 +4,45 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
 
 ## Unreleased
 
+- **One geometry output per element kind, not per (kind, shape) — schema change.** `topic.json`'s
+  `"geometry": { "way": ["line", ...] }` (a list, letting a kind declare multiple shapes) is now
+  `"geometry_output": { "way": "line" }` (one shape, or omit the kind entirely) — every shipped
+  config only ever declared one shape per kind anyway. The routing-graph flag is now a fully
+  separate, orthogonal `"graph": { "way": true, "node": true }` field (it always was independent of
+  shape — a topic can still want both a routing table and a rendered line for the same ways) —
+  `GeometryShape::Graph` is gone, `GeometryShape` is just `Point`/`Line`/`Polygon` now.
+  - **Output tables collapse from up to 6 per topic to 3.** `{table}_geom`/`_point`/`_polygon` and
+    the `_relation_*` variants are replaced by `{table}_node_geom`/`{table}_way_geom`/
+    `{table}_relation_geom` — one self-describing table per *kind* (`osm_id, geom_type, geom,
+    length_m`; `geom_type` is `Point`/`LineString`/`MultiLineString`/`Polygon`), covering whichever
+    shape that kind's topics actually declared. New `geom::rows::GeomRow` replaces `WayRow`/
+    `PointRow`/`PolygonRow`. Applies to every output backend (`pg`/`csv`/`geojson`/`geojsonseq`) —
+    Postgres tables use a generic `geometry(Geometry, 3857)` column instead of a fixed subtype.
+  - **This was the fix for the last CSV/GeoJSON alignment gap.** `{table}_point.csv` used to mix
+    node-point rows (written during the select phase, in node order) and way-point rows (written
+    during materialize, in way order) in one file — the one geometry table `geojson.rs`'s
+    forward-cursor join (see the previous three entries below) couldn't safely use, since the two
+    row groups aren't in the tag file's own row order relative to each other. Splitting node and
+    way geometry into physically separate tables removes the mixing entirely: `geojson.rs` now uses
+    the same `OrderedGeomCursor` for node/way/relation geometry alike, no `HashMap` left except
+    `edges.csv` (relation path needs random access by member-way id) and the way-graph-fallback
+    (unexercised by any shipped config).
+  - `geom::plan::GeometryPlan` simplified accordingly: `way_line_topics`/`way_polygon_topics`/
+    `point_topics`/`way_point_eligible`/`node_point_eligible`/`relation_line_topics`/
+    `relation_point_topics`/`relation_polygon_topics` (9 fields, 3 separate topic-index lists per
+    kind plus eligibility bools to disambiguate the shared point table) collapse to
+    `node_geom_topics`/`way_geom_topics`+`way_shape`/`relation_geom_topics`+`relation_shape` (a
+    topic-index list plus a parallel declared-shape array per kind) — possible only because a kind
+    now has at most one shape, so there's nothing left to disambiguate.
+  - Verified byte-identical CSV/GeoJSON/GeoJSONSeq output against the pre-change build on
+    `berlin.osm.pbf` (`tilda`, `trains`, `live_raw` configs) and on `brandenburg-latest.osm.pbf`
+    (`tilda`); alignment re-verified end to end (tag-row `osm_id` sequence vs. geometry-table
+    `osm_id` sequence, deduped for side-split) on all three. No measurable RSS/time regression on
+    the same Brandenburg `/usr/bin/time -v` benchmark used for the earlier alignment work.
+  - Migrated all 8 shipped configs' `topic.json` to the new schema; updated
+    `editor/lib/liveEditor.ts`'s SQL (queries `{table}_way_geom`/`{table}_node_geom` now, was
+    `{table}_geom`/`{table}_point`) and `README.md`'s data-model section to match.
+
 - **Live editor: start page + per-topic dropdown, and each topic now runs as if it were its own config.** Previously the editor auto-picked the first config on load and showed every topic in it as an accordion, and every edit re-ran the pipeline against the *whole* multi-topic config (so editing `bikelanes` also paid for classifying `roads`, `tilda`'s other topic, on every save).
   - `/` is now a start page (`app/page.tsx`, a server component) listing every `configs/*` dir; picking one goes to `/editor/<config>` (`app/editor/[config]/page.tsx`, new dynamic route), which shows a topic dropdown instead of the old accordion — current topic lives in `?topic=` so refresh/back/shared links preserve it.
   - `lib/liveEditor.ts`: dropped the auto-pick-first-config fallback (`ensureConfigSelected`) in favor of explicit `requireConfig()`/`requireTopicDir()` guards (409 if unset — a start page is now mandatory, not optional). New `switchTopic(topic)` builds a scratch dir containing *only* that topic's subdirectory plus the config's shared root-level files (`macros.json`/`sanitizers.json`/`producers.json`/`units.json`/`value_sets.json` — matched by "is a file, not a directory," not a hardcoded name list) and points every pipeline/`dag_json` call at it — confirmed against `TopicRunner::load_all`/`src/paths.rs` that a config-dir with exactly one topic subdirectory works identically to one with many, so this needed zero Rust changes. New `POST /api/topic-select` route.

@@ -1,7 +1,7 @@
 {
   "table": "idcoords",
   "accept_all": { "node": true },
-  "geometry": { "node": ["point"] },
+  "geometry_output": { "node": "point" },
   "meta": false,
   "id_type": "none"
 }
