@@ -395,11 +395,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cfg.output == Output::Parquet {
-        info!("Building Parquet from CSV output...");
-        output::parquet::write_parquet_from_csv(&out_dir, &tables)?;
-        for table in &tables {
-            info!("Wrote {}/{table}.parquet", cfg.out_dir);
+        #[cfg(feature = "parquet")]
+        {
+            info!("Building Parquet from CSV output...");
+            output::parquet::write_parquet_from_csv(&out_dir, &tables)?;
+            for table in &tables {
+                info!("Wrote {}/{table}.parquet", cfg.out_dir);
+            }
         }
+        #[cfg(not(feature = "parquet"))]
+        anyhow::bail!(
+            "this binary was built without the `parquet` feature; \
+             rebuild with `--features parquet` (on by default)"
+        );
     }
 
     mem_snapshot("relation-geom+finalize");
