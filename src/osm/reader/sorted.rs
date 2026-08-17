@@ -16,6 +16,26 @@ use super::blob_index::decode_block;
 use super::resolve::{dense_node_data, node_data, rel_data, way_data, NodeCoords, NodeCoordsBuilder, NodeRefCounts};
 use super::way_refs::{EncodedRefs, WayRefsStore};
 
+/// Merge one element's per-topic tag rows into a running per-blob batch, appending rather than
+/// replacing so multiple elements' rows for the same topic accumulate in encounter order. Used to
+/// turn many small `route_tag` calls (one per element — a single way/node/relation typically
+/// produces 1-3 rows) into one call per blob: `Shard::send` buffers small sends behind a per-shard
+/// `Mutex` ([`output::sinks`]'s own doc), so calling it once per element from up to `--threads`
+/// concurrent rayon workers (the `!ordered` routing path) contends on that mutex on every call —
+/// measured as a net *regression* on `germany-latest.osm.pbf` when routing moved into the parallel
+/// section at per-element granularity (6:30 batched-nowhere vs 6:58 per-element-unordered, worse
+/// than staying in the ordered sequential fold). Batching per blob cuts the call count by roughly
+/// the average element-per-blob ratio, collapsing most of that contention regardless of which path
+/// (ordered fold or unordered parallel section) is doing the routing.
+fn merge_topic_rows(batch: &mut Vec<Vec<TopicRow>>, rows: Vec<Vec<TopicRow>>) {
+    if batch.len() < rows.len() {
+        batch.resize_with(rows.len(), Vec::new);
+    }
+    for (i, mut r) in rows.into_iter().enumerate() {
+        batch[i].append(&mut r);
+    }
+}
+
 /// Relations pass — decode the relation region once, in bounded parallel chunks (`FOLD_CHUNK_BLOBS`,
 /// same pattern as Pass A/B below), folding each chunk sequentially in blob order. `classify_rel` is
 /// pure (no routing); each kept relation's tag rows and member-way links are routed from the
@@ -28,16 +48,19 @@ pub(super) fn classify_relations<CR, RT, RM>(
     classify_rel: &CR,
     route_tag: &RT,
     route_member: &RM,
+    ordered: bool,
 ) -> anyhow::Result<(FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)>, Vec<i64>)>
 where
     CR: for<'a> Fn(&RelData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) + Sync,
-    RT: Fn(Vec<Vec<TopicRow>>),
-    RM: Fn(Vec<MemberRow>),
+    RT: Fn(Vec<Vec<TopicRow>>) + Sync,
+    RM: Fn(Vec<MemberRow>) + Sync,
 {
-    type KeptRel = (i64, Vec<(i64, MemberRole)>, u32, Vec<Vec<TopicRow>>, Vec<MemberRow>);
+    type Routing = Option<(Vec<Vec<TopicRow>>, Vec<MemberRow>)>;
+    type KeptRel = (i64, Vec<(i64, MemberRole)>, u32, Routing);
     let mut result: FxHashMap<i64, (Vec<(i64, MemberRole)>, u32)> = FxHashMap::default();
     // Every kept relation's id, in the same blob order its tag row was just routed in — see
-    // `sorted::classify_and_index`'s `kept_way_order` for the way-side equivalent of this.
+    // `sorted::classify_and_index`'s `kept_way_order` for the way-side equivalent of this. Left
+    // empty when `!ordered` (nobody reads it — routing already happened from the parallel section).
     let mut kept_relation_order: Vec<i64> = Vec::new();
     for blob_chunk in rel_offsets.chunks(FOLD_CHUNK_BLOBS) {
         let per_blob: Vec<Vec<KeptRel>> = blob_chunk
@@ -50,7 +73,18 @@ where
                         let rd = rel_data(&rel);
                         let (mask, topic_rows, links) = classify_rel(&rd);
                         if let Some(mask) = mask {
-                            out.push((rd.id, rd.member_ways, mask, topic_rows, links));
+                            if ordered {
+                                out.push((rd.id, rd.member_ways, mask, Some((topic_rows, links))));
+                            } else {
+                                // No ordering to preserve (e.g. `pg` output, joined on `osm_id`
+                                // downstream) — route straight from this parallel closure instead
+                                // of paying the sequential fold's serialization below.
+                                route_tag(topic_rows);
+                                if !links.is_empty() {
+                                    route_member(links);
+                                }
+                                out.push((rd.id, rd.member_ways, mask, None));
+                            }
                         }
                     }
                 }
@@ -59,12 +93,14 @@ where
             .collect::<anyhow::Result<Vec<_>>>()?;
 
         for rels in per_blob {
-            for (id, member_ways, mask, topic_rows, links) in rels {
-                route_tag(topic_rows);
-                if !links.is_empty() {
-                    route_member(links);
+            for (id, member_ways, mask, routing) in rels {
+                if let Some((topic_rows, links)) = routing {
+                    route_tag(topic_rows);
+                    if !links.is_empty() {
+                        route_member(links);
+                    }
+                    kept_relation_order.push(id);
                 }
-                kept_relation_order.push(id);
                 result.insert(id, (member_ways, mask));
             }
         }
@@ -95,7 +131,7 @@ where
 /// RSS on `brandenburg-latest.osm.pbf` (550MB → 990MB) for no measurable time benefit; at `16` RSS
 /// matches the pre-routing-reorder baseline with no measurable slowdown. Re-measure before raising
 /// this if decode ever shows up as CPU-bound on the folding step (it hasn't).
-const FOLD_CHUNK_BLOBS: usize = 16;
+const FOLD_CHUNK_BLOBS: usize = 64;
 
 /// One classified way, ready to fold into Pass A's accumulators: its id, encoded node refs, and
 /// per-topic keep mask, plus (only when tag-kept — `mask != 0`) its absolute node ids, needed to
@@ -143,10 +179,11 @@ pub(super) fn classify_and_index<C, RT>(
     route_tag: &RT,
     extra_way_ids: &FxHashSet<i64>,
     needs_graph: bool,
+    ordered: bool,
 ) -> anyhow::Result<(NodeRefCounts, WayRefsStore, FxHashSet<i64>, Vec<i64>)>
 where
     C: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync,
-    RT: Fn(Vec<Vec<TopicRow>>),
+    RT: Fn(Vec<Vec<TopicRow>>) + Sync,
 {
     let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
     // Appended to unsorted (with duplicates — a node referenced by k ways lands k times), then
@@ -163,11 +200,14 @@ where
     let mut kept_way_order: Vec<i64> = Vec::new();
 
     for blob_chunk in way_offsets.chunks(FOLD_CHUNK_BLOBS) {
-        let per_blob: Vec<Vec<ClassifiedWay>> = blob_chunk
+        let mut per_blob: Vec<Vec<ClassifiedWay>> = blob_chunk
             .par_iter()
             .map(|&off| -> anyhow::Result<Vec<ClassifiedWay>> {
                 let block = decode_block(mmap, off)?;
                 let mut out = Vec::new();
+                // Only populated when `!ordered` — one `route_tag` call per blob instead of one per
+                // way, called from this parallel closure (see `merge_topic_rows`'s own doc).
+                let mut tag_batch: Vec<Vec<TopicRow>> = Vec::new();
                 for group in block.groups() {
                     for way in group.ways() {
                         let wd = way_data(&way);
@@ -187,6 +227,12 @@ where
                                 })
                                 .collect::<Vec<i64>>()
                         });
+                        let topic_rows = if ordered {
+                            topic_rows
+                        } else {
+                            merge_topic_rows(&mut tag_batch, topic_rows);
+                            Vec::new()
+                        };
                         out.push(ClassifiedWay {
                             id: wd.id,
                             refs: EncodedRefs::from_deltas(deltas),
@@ -196,16 +242,40 @@ where
                         });
                     }
                 }
+                if !ordered {
+                    // No downstream ordering to preserve (e.g. `pg` output, joined on `osm_id`) —
+                    // route straight from this parallel closure instead of carrying the tag rows
+                    // into the sequential fold just to route them one blob-order barrier later.
+                    route_tag(tag_batch);
+                }
                 Ok(out)
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
+        // Batch the whole chunk's ways' tag rows into one `route_tag` call per chunk instead of one
+        // per way (only relevant when `ordered` — the unordered path already batched per blob and
+        // left `w.topic_rows` empty above) — same contention reasoning as `merge_topic_rows`'s own
+        // doc, applied to this sequential fold (uncontended here, but still one mutex lock/unlock
+        // per call otherwise).
+        let mut tag_batch: Vec<Vec<TopicRow>> = Vec::new();
+        for ways in &mut per_blob {
+            for w in ways {
+                if ordered {
+                    merge_topic_rows(&mut tag_batch, std::mem::take(&mut w.topic_rows));
+                }
+            }
+        }
+        if ordered {
+            route_tag(tag_batch);
+        }
+
         for ways in per_blob {
             for w in ways {
-                route_tag(w.topic_rows);
                 match &w.node_ids {
                     Some(ids) => {
-                        kept_way_order.push(w.id);
+                        if ordered {
+                            kept_way_order.push(w.id);
+                        }
                         for &nid in ids {
                             if needs_graph {
                                 *counts.entry(nid).or_insert(0) += 1;
@@ -270,11 +340,12 @@ pub(super) fn collect_coords<CN, RT, RP>(
     route_point: &RP,
     extra_node_ids: &FxHashSet<i64>,
     skip_untagged: bool,
+    ordered: bool,
 ) -> anyhow::Result<(NodeCoords, FxHashSet<i64>, u64)>
 where
     CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) + Sync,
-    RT: Fn(Vec<Vec<TopicRow>>),
-    RP: Fn(u32, GeomRow),
+    RT: Fn(Vec<Vec<TopicRow>>) + Sync,
+    RP: Fn(u32, GeomRow) + Sync,
 {
     // Size the map up front. Growing from empty means the final doubling holds the old and new
     // bucket arrays at once — a transient of ~1.5x the final table, which at this cardinality is
@@ -306,6 +377,21 @@ where
                 let mut selected: FxHashSet<i64> = FxHashSet::default();
                 let mut standalone: u64 = 0;
                 let mut classified: Vec<NodeClassified> = Vec::new();
+                // No downstream ordering to preserve (e.g. `pg` output) — route straight from here
+                // instead of carrying tag rows into the sequential fold. `route_point` was never
+                // order-dependent to begin with (a node's point row is only ever correlated with
+                // its own tag row from the same `classify_node` call, never with another element's).
+                // Tag rows batch per blob (`tag_batch`, flushed after the group loop) rather than
+                // routing per node — see `merge_topic_rows`'s own doc for why. `route_point` stays
+                // per-call: it already batches per shard behind `Shard::send`'s own `SEND_BATCH`
+                // buffer, so there's no equivalent per-call contention to fix here.
+                let mut tag_batch: Vec<Vec<TopicRow>> = Vec::new();
+                let route_now = |tag_batch: &mut Vec<Vec<TopicRow>>, topic_rows, point: Option<(u32, GeomRow)>| {
+                    merge_topic_rows(tag_batch, topic_rows);
+                    if let Some((mask, row)) = point {
+                        route_point(mask, row);
+                    }
+                };
                 for group in block.groups() {
                     for n in group.dense_nodes() {
                         if let Some(shared) = use_counts.lookup(&n.id()) {
@@ -315,7 +401,11 @@ where
                                 if forced_cut {
                                     selected.insert(n.id());
                                 }
-                                classified.push((topic_rows, point));
+                                if ordered {
+                                    classified.push((topic_rows, point));
+                                } else {
+                                    route_now(&mut tag_batch, topic_rows, point);
+                                }
                             }
                         } else if extra_node_ids.contains(&n.id()) {
                             out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), false));
@@ -325,7 +415,11 @@ where
                             // `NodeCoords`), just don't hold its coords or count it toward graph
                             // cut points.
                             let (_, topic_rows, point) = classify_node(&dense_node_data(&n));
-                            classified.push((topic_rows, point));
+                            if ordered {
+                                classified.push((topic_rows, point));
+                            } else {
+                                route_now(&mut tag_batch, topic_rows, point);
+                            }
                             standalone += 1;
                         }
                     }
@@ -337,33 +431,53 @@ where
                                 if forced_cut {
                                     selected.insert(n.id());
                                 }
-                                classified.push((topic_rows, point));
+                                if ordered {
+                                    classified.push((topic_rows, point));
+                                } else {
+                                    route_now(&mut tag_batch, topic_rows, point);
+                                }
                             }
                         } else if extra_node_ids.contains(&n.id()) {
                             out.push((n.id(), n.decimicro_lon(), n.decimicro_lat(), false));
                         } else if classify_nodes && !(skip_untagged && n.tags().next().is_none()) {
                             let (_, topic_rows, point) = classify_node(&node_data(&n));
-                            classified.push((topic_rows, point));
+                            if ordered {
+                                classified.push((topic_rows, point));
+                            } else {
+                                route_now(&mut tag_batch, topic_rows, point);
+                            }
                             standalone += 1;
                         }
                     }
+                }
+                if !ordered {
+                    route_tag(tag_batch);
                 }
                 Ok((out, selected, standalone, classified))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
+        // Batch the whole chunk's nodes' tag rows into one `route_tag` call (only relevant when
+        // `ordered` — the unordered path already flushed its own per-blob batch above and left
+        // `classified` empty) — see `merge_topic_rows`'s own doc.
+        let mut tag_batch: Vec<Vec<TopicRow>> = Vec::new();
         for (chunk, sel, standalone, classified) in per_blob {
             for (id, lon, lat, shared) in chunk {
                 coords.insert(id, lon, lat, shared);
             }
             selected.extend(sel);
             standalone_total += standalone;
-            for (topic_rows, point) in classified {
-                route_tag(topic_rows);
-                if let Some((mask, row)) = point {
-                    route_point(mask, row);
+            if ordered {
+                for (topic_rows, point) in classified {
+                    merge_topic_rows(&mut tag_batch, topic_rows);
+                    if let Some((mask, row)) = point {
+                        route_point(mask, row);
+                    }
                 }
             }
+        }
+        if ordered {
+            route_tag(tag_batch);
         }
     }
     Ok((coords.finish(), selected, standalone_total))

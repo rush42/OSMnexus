@@ -168,7 +168,14 @@ pub struct MaterializedGeometry {
 /// handed to `route_way(way_id, mask, shapes)` as soon as they're built, from whichever `rayon`
 /// worker resolved that way — `route_way` must be safe to call concurrently (the caller's
 /// `TableWriters::route_way` already is, called the same way from the select phase's callbacks).
-pub fn run<F>(ctx: &SelectionContext, plan: &GeometryPlan, route_way: F) -> MaterializedGeometry
+///
+/// `ordered` must match the same flag the select phase's `osm::reader::Callbacks::ordered` was run
+/// with — `ctx.kept_way_order`/`kept_relation_order` are only populated when it was `true`. `true`
+/// walks them (`WayRefsStore::par_route_ordered`/`RelMembers::requests_ordered`) so a table's
+/// tag-row output and its paired geometry output end up in matching row order (CSV/GeoJSON's
+/// forward-cursor join); `false` routes in arena order instead (`par_route_all`/`requests_all`),
+/// for backends (`pg`) that correlate by `osm_id` and don't pay for the ordering guarantee.
+pub fn run<F>(ctx: &SelectionContext, plan: &GeometryPlan, ordered: bool, route_way: F) -> MaterializedGeometry
 where
     F: Fn(i64, u32, WayGeometry) + Sync,
 {
@@ -184,9 +191,15 @@ where
     // Resolve + route every kept way's own shapes, in `ctx.kept_way_order` — the same order the
     // select phase already routed that way's tag row in (see `WayRefsStore::par_route_ordered`'s own
     // doc) — resolved once, routed, dropped; no cache of every kept way's geometry stays resident.
-    ctx.way_refs.par_route_ordered(&ctx.kept_way_order, &ctx.node_coords, &ctx.selected, |id, mask, w| {
-        route_way(id, mask, way(&w, &node_ids, plan));
-    });
+    if ordered {
+        ctx.way_refs.par_route_ordered(&ctx.kept_way_order, &ctx.node_coords, &ctx.selected, |id, mask, w| {
+            route_way(id, mask, way(&w, &node_ids, plan));
+        });
+    } else {
+        ctx.way_refs.par_route_all(&ctx.node_coords, &ctx.selected, |id, mask, w| {
+            route_way(id, mask, way(&w, &node_ids, plan));
+        });
+    }
 
     // Relation-geometry assembly needs its own coordinate copy — skip entirely when no topic wants
     // relation line/point/polygon (`relations()` would build nothing from it either way), and even
@@ -204,7 +217,11 @@ where
     } else {
         FxHashMap::default()
     };
-    let requests: Vec<(i64, Vec<(i64, MemberRole)>, u32)> = ctx.rel_members.requests_ordered(&ctx.kept_relation_order);
+    let requests: Vec<(i64, Vec<(i64, MemberRole)>, u32)> = if ordered {
+        ctx.rel_members.requests_ordered(&ctx.kept_relation_order)
+    } else {
+        ctx.rel_members.requests_all()
+    };
     let relations_batch = relations(&requests, &way_coords, plan);
 
     MaterializedGeometry { node_ids, node_rows, relations: relations_batch }

@@ -91,6 +91,15 @@ impl RelMembers {
             })
             .collect()
     }
+
+    /// Every relation's `(id, member ways with role, keep mask)`, in the arena's own MPHF-slot order
+    /// — for output backends with no row-order correlation to preserve (e.g. `pg`, joined on
+    /// `osm_id` downstream). Cheaper than `requests_ordered` only in that it skips
+    /// `SelectionContext::kept_relation_order`'s construction upstream; relation counts are small
+    /// enough (see this module's own doc) that this method's own cost difference is negligible.
+    pub fn requests_all(&self) -> Vec<(i64, Vec<(i64, MemberRole)>, u32)> {
+        self.0.iter().map(|(id, bytes, mask)| (id, decode_members(bytes), mask)).collect()
+    }
 }
 
 #[cfg(test)]

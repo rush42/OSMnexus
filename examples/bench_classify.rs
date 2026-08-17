@@ -49,6 +49,7 @@ fn main() -> anyhow::Result<()> {
         relation_geom_mask: 0,
         skip_untagged_nodes: false,
         needs_graph: false,
+        ordered: true,
         route_tag: |_| {},
         route_member: |_| {},
         route_point: |_, _| {},

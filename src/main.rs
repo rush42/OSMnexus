@@ -180,6 +180,12 @@ async fn main() -> anyhow::Result<()> {
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
 
+    // CSV/GeoJSON/GeoJSONSeq join tag and geometry rows by output-file *position* (a forward-cursor
+    // join, avoiding a hashmap — see `WayRefsStore::par_route_ordered`'s own doc), so they need
+    // blob-order-deterministic routing. `pg` correlates by the `osm_id` column instead, so row order
+    // is free to relax — see `osm::reader::Callbacks::ordered`'s own doc for what that buys.
+    let ordered = cfg.output != Output::Pg;
+
     // Spawn `w` writers per tag table + `w` for each shared table. For Postgres these are sharded
     // COPY connections (rows round-robined for k-way parallel serialization + ingest); for CSV, w=1,
     // so one buffered-file writer per table.
@@ -318,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
                 classify_node: classify_node_cb,
                 skip_untagged_nodes,
                 needs_graph: plan.any_way_graph,
+                ordered,
                 route_tag: route_tag_cb,
                 route_member: route_member_cb,
                 route_point: route_point_cb,
@@ -348,7 +355,7 @@ async fn main() -> anyhow::Result<()> {
     let materialize_writers = writers.clone();
     let relations_batch = tokio::task::spawn_blocking(move || {
         let writers = materialize_writers;
-        let m = geom::materialize::run(&ctx, &materialize_plan, |_way_id, mask, g| {
+        let m = geom::materialize::run(&ctx, &materialize_plan, ordered, |_way_id, mask, g| {
             writers.route_way(mask, g, &materialize_plan);
         });
         writers.route_node_rows(m.node_rows);

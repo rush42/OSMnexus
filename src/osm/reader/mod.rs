@@ -123,8 +123,19 @@ pub struct Callbacks<CR, CW, CN, RT, RM, RP> {
     /// gates `assign_node_ids`/cut-point logic on the same flag) — see `NodeRefCounts`'s own doc
     /// for the cheaper shape Pass A builds instead when this is `false`.
     pub needs_graph: bool,
+    /// Whether tag-row/geometry-row correlation needs to survive as matching output row order (CSV/
+    /// GeoJSON/GeoJSONSeq, which join tag and geometry files by position to avoid a hashmap join —
+    /// see `WayRefsStore::par_route_ordered`'s own doc) versus not (`pg`, which correlates by the
+    /// `osm_id` column instead and pays nothing for row order). When `true`, the ordered fast path
+    /// routes from its sequential, blob-order fold (this struct's own doc); when `false`, it routes
+    /// straight from the parallel decode section instead, trading the row-order guarantee for full
+    /// thread-pool occupancy (no barrier between decode and route) — see `sorted::FOLD_CHUNK_BLOBS`'s
+    /// own doc for why that barrier exists regardless (accumulator determinism, unrelated to tag
+    /// routing). The fallback scan ignores this — it never had an ordering guarantee to preserve.
+    pub ordered: bool,
     /// Route a classified element's per-topic tag rows to the tag-table writers. Called from the
-    /// ordered fast path's sequential, blob-order fold — see this struct's own doc.
+    /// ordered fast path's sequential, blob-order fold when `ordered`, or straight from the parallel
+    /// decode section otherwise — see this struct's own doc.
     pub route_tag: RT,
     /// Route a kept relation's member-way link rows.
     pub route_member: RM,
@@ -263,7 +274,9 @@ where
                 // Relations pass — classify + emit relation rows, collect member-way requests.
                 let (rel_members, kept_relation_order) = if cb.has_relations && !rel_offsets.is_empty() {
                     let t = std::time::Instant::now();
-                    let (m, order) = classify_relations(&mmap, rel_offsets, &cb.classify_rel, &cb.route_tag, &cb.route_member)?;
+                    let (m, order) = classify_relations(
+                        &mmap, rel_offsets, &cb.classify_rel, &cb.route_tag, &cb.route_member, cb.ordered,
+                    )?;
                     info!("[phase] Relations pass (classify + emit): {:.1}s ({} kept)", t.elapsed().as_secs_f32(), m.len());
                     (m, order)
                 } else {
@@ -287,6 +300,7 @@ where
                 let t = std::time::Instant::now();
                 let (use_counts, way_refs, extra_node_ids, kept_way_order) = classify_and_index(
                     &mmap, way_offsets, &cb.classify_way, &cb.route_tag, &extra_way_ids, cb.needs_graph,
+                    cb.ordered,
                 )?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
                 log_struct_sizes(
@@ -302,7 +316,7 @@ where
                 let t = std::time::Instant::now();
                 let (node_coords, selected, standalone_classified) = collect_coords(
                     &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &cb.route_tag,
-                    &cb.route_point, &extra_node_ids, cb.skip_untagged_nodes,
+                    &cb.route_point, &extra_node_ids, cb.skip_untagged_nodes, cb.ordered,
                 )?;
                 info!(
                     "[phase] Pass B (collect node coords{}): {:.1}s",

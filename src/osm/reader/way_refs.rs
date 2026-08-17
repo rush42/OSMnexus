@@ -158,6 +158,27 @@ impl WayRefsStore {
         }
     }
 
+    /// Resolve and route every mask-!=0 way's geometry, in arena (MPHF-slot) order — the unordered
+    /// counterpart to `par_route_ordered`, for output backends with no row-order correlation to
+    /// preserve downstream (e.g. `pg`, joined on `osm_id`). Fully parallel: unlike
+    /// `par_route_ordered`, there's no caller-given order to preserve, so no chunk-then-fold split is
+    /// needed — `f` is called directly from whichever rayon worker resolved that way, same
+    /// concurrency contract `par_route_ordered` already requires of it.
+    pub fn par_route_all<F>(&self, node_coords: &NodeCoords, selected: &FxHashSet<i64>, f: F)
+    where
+        F: Fn(i64, u32, OsmWay) + Sync,
+    {
+        self.0.par_iter().for_each(|(id, bytes, mask)| {
+            if mask == 0 {
+                return;
+            }
+            let refs: Vec<i64> = iter_refs(bytes).collect();
+            if let Some(w) = resolve_geometry(id, &refs, node_coords, selected) {
+                f(id, mask, w);
+            }
+        });
+    }
+
     /// Resolve one way's geometry on demand — for the small subset of ways (relation members) that
     /// `par_route_ordered` doesn't already cover, without paying to cache every way for their sake.
     /// See `MphfArena::heap_bytes` — a lower bound (excludes the MPHF).
