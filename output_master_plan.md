@@ -7,16 +7,27 @@ the code it describes and a fresh `--threads` sweep on `germany-latest.osm.pbf`.
 opt-in, what `as_member` is for. This file is the *execution* order: what to build, in what
 sequence, and which measurement gates decide whether the later phases happen at all.
 
-**Headline conclusion:** the plan's own deprioritized alternative — parallelizing the ordered fold
-rather than abandoning `ordered` — should be tried **first**. Three of the four serialization points
-that produce the measured ordered tax are local and order-preserving, and fixing them does not
-require the sort/merge join.
+**Headline conclusion, after measuring:** neither the sort/merge redesign *nor* the ordered-fold
+parallelization is worth building. The measured ordered tax at usable thread counts is **+4-7%**
+(§2c), of which the fold — Phase 2's entire target — is about **3 seconds**. What actually cost time
+was something in neither plan: **fixed-size fork/join barriers** in the chunk constants. Sizing those
+against the rayon pool took the best germany run from 147.6 s to 136.1 s and cut materialize by up to
+50%, with no memory cost (§2b).
 
-Further: the output-side bottleneck that *did* look like it needed sort/merge (§1.4) is solved by
-**hash-partitioning on `osm_id` instead of round-robin**, which preserves the correspondence the
-forward-cursor join already relies on while still giving every shard to a different core. Under this
-plan the sort, the k-way merge, and the shard-framing work are all unnecessary — sort/merge becomes
-a fallback, not the plan of record.
+Two things remain worth doing, both output-side rather than pipeline-side:
+
+- **the join** — ~26 s, flat at every thread count, ~19% of the run and larger than the whole ordered
+  tax nearly everywhere (Phase 4a, then 4c);
+- **`par_route_ordered`'s arena access** — +13.8 s at 56 threads and the only ordered cost that
+  *grows* with threads (§2c).
+
+`w > 1` for file outputs is reached by **hash-partitioning on `osm_id` instead of round-robin**
+(§1.4), which preserves the correspondence the forward cursor already relies on. The sort, the k-way
+merge and the shard-framing work are all unnecessary under this plan.
+
+The original plan's 57% ordered-tax figure was not wrong so much as **thread-count-specific** — it was
+taken at `--threads 8`, where our own isolated A/B also shows +29%. At 16-32 threads the same tax is
++4-7%. Generalising that one measurement is what pointed both plans at the fold.
 
 ---
 
@@ -151,13 +162,64 @@ rather than the doc's `--output pg`, so these numbers are **not** comparable to 
 236.8 s / 371.8 s ordered-vs-unordered table and do not independently confirm the 57% figure. What
 they do establish is the *shape* of ordered-mode thread scaling, which the doc never measured.
 
+### 2b. Re-measured after Phase 1 (same machine, same flags, 2 reps)
+
+`--output parquet`, head007 exclusive, binary built from this branch:
+
+| threads | total | vs baseline | materialize | vs baseline | join |
+|--------:|------:|------------:|------------:|------------:|-----:|
+| 1  | 566.7 s | +0.1% | 145.8 s | −1.9% | 25.6 s |
+| 2  | 410.8 s | +1.3% | 109.5 s | +3.3% | 25.4 s |
+| 4  | 272.9 s | +1.6% |  79.0 s | +0.4% | 25.9 s |
+| 8  | 184.3 s | −5.2% |  41.5 s | **−23.9%** | 26.7 s |
+| 16 | 142.9 s | −6.5% |  26.1 s | **−26.1%** | 26.3 s |
+| 32 | **136.1 s** | −7.8% |  26.5 s | **−37.5%** | 26.8 s |
+| 56 | 136.8 s | **−16.8%** |  30.8 s | **−49.6%** | 26.0 s |
+
+t=1/2/4 are controls — neither constant changes there — and they drift +0.1% to +1.6%, which is the
+noise floor. Everything from t=8 up is real. Peak RSS unchanged throughout.
+
+The Materialize U-curve is gone: it no longer degrades from 16 → 56 threads. Best total is t=32/t=56
+**tied within noise** (136.1 / 136.8), where the baseline's best was 147.6 s at t=32 and 56 was
+actively worse. So all-cores is now safe; it is not measurably *better*.
+
+### 2c. The ordered tax, isolated (this is what decides Phase 2)
+
+`--output csv` both arms, `OSMNEXUS_FORCE_ORDERED` the **only** variable — backend, encoding, writer,
+machine and data all held fixed. This removes the confound in every previous ordered-vs-unordered
+number, including `output_plan.md`'s. head010 exclusive, 2 reps, arms run back-to-back per thread
+count so drift hits both equally:
+
+| threads | unordered | ordered | tax | **select Δ** | materialize Δ |
+|--------:|----------:|--------:|----:|-------------:|--------------:|
+| 1  | 397.5 s | 533.0 s | +34.1% | +41.9 s | +93.6 s |
+| 8  | 128.8 s | 166.1 s | +28.9% | +19.4 s | +18.3 s |
+| 16 | 114.0 s | 121.5 s | **+6.6%** | **+3.4 s** | +4.6 s |
+| 32 | 102.6 s | 107.1 s | **+4.4%** | **−1.5 s** | +6.4 s |
+| 56 |  94.9 s | 111.4 s | +17.4% | **+3.3 s** | +13.8 s |
+
+Three things follow.
+
+1. **The ordered tax is strongly thread-count-dependent**, from +34% at one thread to +4-7% at
+   16-32. `output_plan.md`'s headline figure was measured at `--threads 8`, which sits squarely in
+   the high-tax regime — our own t=8 arm shows +28.9%. The magnitudes differ (that measurement was
+   `pg`, with database ingest in the loop, and reported +57%), so this is not an exact
+   reconciliation, but the direction and the thread regime match. Generalising a t=8 measurement is
+   what pointed the original plan — and mine — at the fold.
+2. **Select Δ is Phase 2's entire addressable surface, and it is ~3 s at t≥16** — negative at t=32,
+   i.e. indistinguishable from noise. See Phase 2 below.
+3. **Materialize Δ is the only ordered cost that *grows* with threads** (+4.6 → +6.4 → +13.8 s).
+   That is `par_route_ordered` probing the MPHF arena in `kept_way_order` against `par_route_all`'s
+   sequential scan — a memory-access difference, not a synchronisation one. It appears in neither
+   plan and is now the second-largest addressable item.
+
 ---
 
 ## 3. Open decisions — resolved or sharpened
 
 | # | `output_plan.md` question | Resolution |
 |---|---|---|
-| 1 | Sort/merge vs parallelizing the ordered fold | **Neither, as first resort.** Fold first (Phase 2), then reach `w > 1` by hash-partitioning (Phase 4c), which *preserves* the cursor join rather than replacing it. Sort/merge drops to a fallback for the case where unordered routing proves necessary on its own merits — it is no longer the plan of record. |
+| 1 | Sort/merge vs parallelizing the ordered fold | **Measured: neither.** §2c puts the fold's share at ~3 s and the whole ordered tax at +4-7% at t≥16, so Phase 2 is not worth building and unordered-always has little left to win. Reach `w > 1` by hash-partitioning (Phase 4c), which *preserves* the cursor join rather than replacing it. Sort/merge is retired to a contingency. |
 | 2 | `--join-shards` default | **Deferred to Phase 4** — still needs tuning data, and Phase 4 may not happen. Do not pick a number now. |
 | 3 | Does in-memory staging supersede sort/merge? | **No — keep independent.** `geojsonseq` streams today and would lose that property; sort/merge is the only answer that serves all three backends. In-memory becomes an opt-in fast path (Phase 5), never the only path. |
 | 4 | Does `--output csv` need `ordered`? | **Resolved: it does not.** There is no `output/csv.rs`, and `main.rs:398-425` branches a post-run join only for `GeoJson`/`GeoJsonSeq`/`Parquet`. CSV writes independent per-table files with no cross-file correlation. One-line fix, Phase 1. |
@@ -220,9 +282,22 @@ unmeasured background load.
 *Exit gate:* re-run Phase 0. Expect the 56-thread Materialize regression to shrink or vanish. If
 the chunk change moves peak RSS materially, lower `PER_THREAD` and record the tradeoff.
 
-### Phase 2 — Parallelize the ordered fold (§1.2)
+### Phase 2 — Parallelize the ordered fold *(MEASURED, NOT WORTH BUILDING)*
 
-The core cheap fix. Scope is one function, `classify_and_index` (`sorted.rs:207-300`):
+**Do not build this.** §2c measures Phase 2's entire addressable surface — the Select delta between
+ordered and unordered — at **+3.4 s (t=16), −1.5 s (t=32), +3.3 s (t=56)**, i.e. under ~3% of the run
+and negative at one point. The fold serialization was largely a *symptom* of chunks being too small,
+and Phase 1.2 absorbed it.
+
+This was the headline recommendation of this plan, and it was wrong. It was reasoned from
+`output_plan.md`'s 57% figure plus my own sweep, both of which measured a large ordered tax — but the
+former was taken at `--threads 8` (high-tax regime) and the latter was confounded by the fixed
+chunk barrier. Once the barrier was fixed and the confound removed, the fold's share was ~3 s.
+
+Kept below for the record, and because the *reasoning* remains valid if the ordered tax ever grows
+again (e.g. if `route_tag`'s cost rises, or a config produces far more tag rows per way than tilda).
+
+Scope would have been one function, `classify_and_index` (`sorted.rs:207-300`):
 
 - Have each blob's parallel closure build its own `tag_batch` (mirroring the existing `!ordered`
   path at `sorted.rs:238`), returning it alongside its `ClassifiedWay`s.
@@ -246,6 +321,15 @@ brandenburg for every file backend — this is a pure refactor and any output di
 directly and comparably.
 
 ### Phase 3 — Decision gate
+
+**Resolved by §2b/§2c** — the gate has been run, without needing Phase 2.
+
+What ordered tax is left: **+4-7% at the thread counts you would actually use**, of which the fold is
+~3 s and `par_route_ordered`'s arena access is the rest. Is the join now the binding constraint:
+**yes** — ~26 s, flat at every thread count, ~19% of the best run, larger than the entire ordered tax
+at every point except t=56.
+
+Original gate text below, for the record:
 
 With Phases 1–2 measured, answer: **what ordered tax is left, and is the ~26 s join now the
 binding constraint?**
@@ -417,12 +501,16 @@ Two extras that fall out:
 
 ## 7. Immediate next actions
 
-1. ~~Sweep + Phase 0 harness + Phase 1.1 + Phase 1.2 + Phase 1.3 (unordered half)~~ — **done**.
-2. Re-baseline with `scripts/bench_sweep.sh` on a release build of current `main`. **Nothing shipped
-   so far has been measured on germany** — the sweep binary predates all of it. Include
-   `--backends "parquet csv"` so the Phase 1.1 csv win and the Phase 1.3 pg-shaped win are both
-   visible (csv is the only unordered backend measurable without a database).
-3. **Phase 4a** — streaming writer. Independent of Phases 2/3, a bounded-memory win on its own, and
-   byte-identical testable. The cheapest real improvement still on the table.
-4. **Phase 2** — parallelize the ordered fold, measured against that baseline. Also unblocks the
-   `ordered` half of Phase 1.3.
+1. ~~Phase 0 harness, Phase 1.1, 1.2, 1.3 (unordered half), re-baseline, ordered/unordered A/B~~ —
+   **done**. Results in §2b/§2c.
+2. ~~Phase 2~~ — **cancelled on measurement** (§2c). Worth ~3 s.
+3. **Phase 4a — streaming writer.** Now the top item: the join is ~26 s and flat at every thread
+   count, the largest single addressable cost left. Bounded-memory win on its own, byte-identical
+   testable.
+4. **New: make `par_route_ordered` traverse the arena sequentially.** §2c isolates +13.8 s at t=56
+   from probing the MPHF arena in `kept_way_order` rather than scanning it in slot order — the only
+   ordered cost that grows with thread count. In neither original plan. Resolve in slot order,
+   buffer, emit in blob order.
+5. **Phase 4c** — hash-partition + parallel encode, with `geojson`/`geojsonseq` in lockstep (§5).
+6. **Phase 1.3, ordered half** — no longer blocked on Phase 2 (which is cancelled); needs its own
+   look at whether the `topic_rows` transient can be shrunk independently.
