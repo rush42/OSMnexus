@@ -58,10 +58,13 @@ fn geo_metadata_json(geometry_types: Vec<&str>) -> String {
     .to_string()
 }
 
-fn writer_props(geo_json: &str) -> WriterProperties {
+/// No `geo` key-value metadata here: it is derived from `geometry_types`, which is only complete
+/// once every row has been read, and the writer has to exist *before* that so rows can stream into
+/// it. `ArrowWriter::append_key_value_metadata` adds it before `close` instead — see
+/// `write_table_parquet`.
+fn writer_props() -> WriterProperties {
     WriterProperties::builder()
         .set_compression(Compression::UNCOMPRESSED)
-        .set_key_value_metadata(Some(vec![KeyValue { key: "geo".to_owned(), value: Some(geo_json.to_owned()) }]))
         // The default (`Page`) writes per-page column/offset indexes including size-statistics
         // repetition-level histograms — arrow-rs 53.4.1's writer produces ones pyarrow 19 rejects
         // outright ("Repetition level histogram size mismatch") when reading them back. `Chunk`
@@ -86,11 +89,21 @@ fn merged_schema() -> Arc<Schema> {
     ]))
 }
 
-/// Column builders for `merged_schema` — accumulated across the whole topic and written as one
-/// `RecordBatch` per table. Simpler than a streamed multi-batch flush, and not shown to matter at
-/// the scale a `.parquet` deliverable is actually consumed at — revisit if a config's output ever
-/// shows up as memory-bound.
+/// How many merged rows accumulate before being flushed as one `RecordBatch`. Bounds the builders'
+/// transient: at germany scale a whole topic's rows are gigabytes, and holding all of them to write
+/// a single batch made the builders the largest live allocation in the process. `ArrowWriter`
+/// buffers a row group internally and flushes at `max_row_group_size` regardless, so writing many
+/// small batches produces the same file as writing one large one — this only changes what is
+/// resident while producing it.
+const FLUSH_ROWS: usize = 65_536;
+
+/// Column builders for `merged_schema`, flushed to the writer every `FLUSH_ROWS` rows rather than
+/// accumulated across the whole topic (which is what the previous single-`RecordBatch` version did,
+/// and what its own doc flagged to revisit if output ever showed up as memory-bound — it did).
 struct MergedBuilders {
+    /// Rows appended since the last flush — `append` is called a variable number of times per tag
+    /// row (a graph-fallback row emits one per edge segment), so the caller cannot count them.
+    len: usize,
     osm_id: Int64Builder,
     osm_type: StringBuilder,
     id: StringBuilder,
@@ -106,6 +119,7 @@ struct MergedBuilders {
 impl MergedBuilders {
     fn new() -> Self {
         MergedBuilders {
+            len: 0,
             osm_id: Int64Builder::new(),
             osm_type: StringBuilder::new(),
             id: StringBuilder::new(),
@@ -123,6 +137,7 @@ impl MergedBuilders {
     /// geometry payload (`None` for a tag row with no matching geometry at all — every column but
     /// the tag fields is `null`).
     fn append(&mut self, row: &TopicRow, geom: Option<&GeomValue>, seg_idx: Option<usize>) {
+        self.len += 1;
         self.osm_id.append_value(row.osm_id);
         self.osm_type.append_value(row.osm_type);
         match &row.id {
@@ -152,7 +167,15 @@ impl MergedBuilders {
         }
     }
 
-    fn finish(mut self, schema: &Arc<Schema>) -> anyhow::Result<RecordBatch> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Take everything appended so far as one `RecordBatch`, leaving the builders empty and reusable
+    /// — arrow's own `finish` already resets each column builder, so this needs `&mut self` rather
+    /// than consuming, and can be called repeatedly through the row loop.
+    fn flush(&mut self, schema: &Arc<Schema>) -> anyhow::Result<RecordBatch> {
+        self.len = 0;
         let cols: Vec<ArrayRef> = vec![
             Arc::new(self.osm_id.finish()),
             Arc::new(self.osm_type.finish()),
@@ -186,6 +209,13 @@ fn write_table_parquet(
     let (mut reader, schema) = open_tag_reader(out_dir, table)?;
     let mut geometry_types = BTreeSet::new();
     let mut builders = MergedBuilders::new();
+
+    // Writer opened before the row loop so batches can stream into it; the `geo` metadata it still
+    // needs is appended after the loop, once `geometry_types` is complete.
+    let arrow_schema = merged_schema();
+    let path = out_dir.join(format!("{table}.parquet"));
+    let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+    let mut writer = ArrowWriter::try_new(file, arrow_schema.clone(), Some(writer_props()))?;
 
     while let Some(fields) = read_binary_row(&mut reader, &schema)? {
         let row = TopicRow::from_binary_fields(fields)?;
@@ -246,16 +276,22 @@ fn write_table_parquet(
                 }
             }
         }
+
+        // Flushed between tag rows, never mid-row: a graph-fallback row's edge segments stay in one
+        // batch. Row-group boundaries are `ArrowWriter`'s own concern either way.
+        if builders.len() >= FLUSH_ROWS {
+            writer.write(&builders.flush(&arrow_schema)?)?;
+        }
     }
 
-    let geo_metadata = geo_metadata_json(geometry_types.into_iter().collect::<Vec<_>>());
-    let schema = merged_schema();
-    let batch = builders.finish(&schema)?;
+    if builders.len() > 0 {
+        writer.write(&builders.flush(&arrow_schema)?)?;
+    }
 
-    let path = out_dir.join(format!("{table}.parquet"));
-    let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-    let mut writer = ArrowWriter::try_new(file, schema, Some(writer_props(&geo_metadata)))?;
-    writer.write(&batch)?;
+    // Only complete now that every row has been read. `append_key_value_metadata` lands it in the
+    // footer exactly as `WriterProperties::set_key_value_metadata` would have.
+    let geo_metadata = geo_metadata_json(geometry_types.into_iter().collect::<Vec<_>>());
+    writer.append_key_value_metadata(KeyValue { key: "geo".to_owned(), value: Some(geo_metadata) });
     writer.close()?;
     Ok(())
 }
