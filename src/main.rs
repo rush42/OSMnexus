@@ -186,14 +186,24 @@ async fn main() -> anyhow::Result<()> {
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
 
-    // CSV/GeoJSON/GeoJSONSeq join tag and geometry rows by output-file *position* (a forward-cursor
-    // join, avoiding a hashmap — see `WayRefsStore::par_route_ordered`'s own doc), so they need
-    // blob-order-deterministic routing. `pg` correlates by the `osm_id` column instead, so row order
-    // is free to relax — see `osm::reader::Callbacks::ordered`'s own doc for what that buys.
+    // GeoJSON/GeoJSONSeq/Parquet join tag and geometry rows by staged-file *position* (a
+    // forward-cursor join, avoiding a hashmap — see `WayRefsStore::par_route_ordered`'s own doc), so
+    // they need blob-order-deterministic routing. `pg` correlates by the `osm_id` column instead, so
+    // row order is free to relax — see `osm::reader::Callbacks::ordered`'s own doc for what that buys.
+    //
+    // `csv` is on the *cheap* path too, despite once being grouped with the cursor-join backends
+    // here: it performs no cross-file join at all (there is no `output::csv` module, and `main.rs`
+    // runs a post-run join step only for the three backends above), and every table it writes leads
+    // with `osm_id` (`TAG_COLUMNS`/`GEOM_COLUMNS`), so a consumer correlates by id exactly like `pg`.
+    // The one caller that reads these files back — the live editor — keys geometry by
+    // `"<osm_type>:<osm_id>"`, never by row position (`editor/lib/liveEditor.ts`), and its
+    // `--source csv` mode returns before Pass A runs at all. See `output_master_plan.md` §1/§3.
+    //
     // `OSMNEXUS_FORCE_ORDERED=1` forces the ordered path even for `pg` — debugging/benchmarking only
     // (confirmed a real ~57% wall-clock cost on germany-latest.osm.pbf this way; see `output_plan.md`),
     // never needed for correctness since `pg` doesn't read its own output back.
-    let ordered = cfg.output != Output::Pg || std::env::var_os("OSMNEXUS_FORCE_ORDERED").is_some();
+    let ordered = !matches!(cfg.output, Output::Pg | Output::Csv)
+        || std::env::var_os("OSMNEXUS_FORCE_ORDERED").is_some();
 
     // Spawn `w` writers per tag table + `w` for each shared table. For Postgres these are sharded
     // COPY connections (rows round-robined for k-way parallel serialization + ingest); for CSV, w=1,
