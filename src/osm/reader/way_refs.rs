@@ -105,14 +105,30 @@ impl Iterator for RefsIter<'_> {
 /// `par_route_ordered`'s own doc for why.
 pub struct WayRefsStore(MphfArena<u32>);
 
-/// How many way ids get resolved in parallel before their geometry rows are routed sequentially, in
-/// `par_route_ordered`'s given order — same reasoning as `sorted::FOLD_CHUNK_BLOBS`: bounds the
-/// transient of resolved-but-not-yet-routed geometry (coordinates, WKB bytes) held between a chunk's
-/// parallel resolve and its sequential route. `FOLD_CHUNK_BLOBS` learned this the hard way (256 was
-/// sized for cheap ref/id data, not the row payload eventually routed through it, and blew up peak
-/// RSS 80% before being cut to 16) — start smaller here for the same reason and re-measure before
-/// raising it.
-const ROUTE_CHUNK_WAYS: usize = 512;
+/// Floor — the value this was fixed at before it became thread-relative. Bounds the transient of
+/// resolved-but-not-yet-routed geometry (coordinates, WKB bytes) held between a chunk's parallel
+/// resolve and its sequential route; see `route_chunk_ways` for how the batch is actually sized.
+const ROUTE_CHUNK_WAYS_MIN: usize = 512;
+
+/// Ways resolved per parallel batch, sized against the actual rayon pool.
+///
+/// A fixed 512 is a *fork/join barrier* every 512 ways, and the barrier does not get cheaper as the
+/// pool grows: at 56 threads it left ~9 ways of work per thread per barrier, so the synchronisation
+/// cost swamped the work it guarded. Measured on `germany-latest.osm.pbf` (`configs/tilda`,
+/// `--output parquet`), the materialize phase improved 4.3x from 1 to 16 threads (148.7s → 34.6s)
+/// and then *regressed* to 60.3s at 56 — a phase getting slower on more threads for the same
+/// workload, which is the signature of barrier overhead rather than of the work itself. See
+/// `output_master_plan.md` §1.3/§2.
+///
+/// `PER_THREAD` keeps each worker's share of a batch roughly constant instead, so the barrier is
+/// amortised the same way at 8 threads as at 56. Still bounded, and still for the original reason:
+/// the transient here is a chunk's resolved-but-not-yet-routed geometry (coordinates, WKB bytes),
+/// so this trades peak RSS for throughput and any change to `PER_THREAD` must be re-measured
+/// against RSS, not just wall time — `fold_chunk_blobs` learned that the hard way.
+fn route_chunk_ways() -> usize {
+    const PER_THREAD: usize = 128;
+    (rayon::current_num_threads() * PER_THREAD).max(ROUTE_CHUNK_WAYS_MIN)
+}
 
 impl WayRefsStore {
     pub fn build(map: FxHashMap<i64, (EncodedRefs, u32)>) -> Self {
@@ -136,7 +152,7 @@ impl WayRefsStore {
     }
 
     /// Resolve and route every way id in `order`'s geometry, in `order`'s own relative order —
-    /// bounded parallel chunks (`ROUTE_CHUNK_WAYS`), each chunk resolved in parallel then routed
+    /// bounded parallel chunks (`route_chunk_ways`), each chunk resolved in parallel then routed
     /// sequentially, relying on rayon's indexed `collect` preserving a chunk's input order. The
     /// caller (`geom::materialize::run`) passes the same blob order the select phase already routed
     /// each way's tag row in (`SelectionContext::kept_way_order`), so a table's tag-row CSV and its
@@ -153,7 +169,7 @@ impl WayRefsStore {
     where
         F: Fn(i64, u32, OsmWay) + Sync,
     {
-        for id_chunk in order.chunks(ROUTE_CHUNK_WAYS) {
+        for id_chunk in order.chunks(route_chunk_ways()) {
             let resolved: Vec<(i64, u32, OsmWay)> = id_chunk
                 .par_iter()
                 .filter_map(|&id| {
