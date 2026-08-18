@@ -190,7 +190,12 @@ where
     // sorted and deduplicated once at the end: pushing is cheaper than hashing per ref, and the
     // final array is exactly as large as the distinct-id count.
     let mut present: Vec<i64> = Vec::new();
-    let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
+    // Pushed, not inserted into a map — `WayRefsStore::build` immediately re-sorts every record
+    // into MPHF-slot order anyway (`store::MphfArena::build`), so accumulating a `FxHashMap` here
+    // only to drain it into a `Vec` right after paid for a hash + probe on every one of tens of
+    // millions of kept ways for an ordering guarantee nothing downstream reads. Plain `push` is O(1)
+    // amortized with no hashing at all.
+    let mut way_refs: Vec<(i64, EncodedRefs, u32)> = Vec::new();
     let mut extra_node_ids: FxHashSet<i64> = FxHashSet::default();
     // Every tag-kept (mask != 0) way's id, in the same blob order its tag row was just routed in —
     // handed back so `geom::materialize::run` can route that way's geometry row in matching order
@@ -291,7 +296,7 @@ where
                         extra_node_ids.extend(w.refs.iter());
                     }
                 }
-                way_refs.insert(w.id, (w.refs, w.mask));
+                way_refs.push((w.id, w.refs, w.mask));
             }
         }
     }
@@ -309,7 +314,7 @@ where
         present.shrink_to_fit();
         NodeRefCounts::Present(present)
     };
-    Ok((use_counts, WayRefsStore::build(way_refs), extra_node_ids, kept_way_order))
+    Ok((use_counts, WayRefsStore::build_records(way_refs), extra_node_ids, kept_way_order))
 }
 
 /// Pass B — collect coordinates (as fixed-point decimicrodegrees, the PBF's own exact integer form

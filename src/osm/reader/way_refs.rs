@@ -121,6 +121,16 @@ impl WayRefsStore {
         WayRefsStore(MphfArena::build(records))
     }
 
+    /// Same as [`build`](Self::build), from a flat `Vec` instead of a `FxHashMap` — for callers
+    /// (`sorted::classify_and_index`) that never needed key lookups or dedup while accumulating,
+    /// only the final MPHF-arena layout `build` produces either way (`MphfArena::build` re-sorts
+    /// every record into hashed-slot order regardless of input order, so a `Vec`'s push-order input
+    /// costs nothing extra here that a `FxHashMap`'s insert-order input wouldn't).
+    pub fn build_records(records: Vec<(i64, EncodedRefs, u32)>) -> Self {
+        let records: Vec<(i64, Box<[u8]>, u32)> = records.into_iter().map(|(id, refs, mask)| (id, refs.0, mask)).collect();
+        WayRefsStore(MphfArena::build(records))
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
