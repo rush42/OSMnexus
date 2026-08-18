@@ -387,16 +387,16 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cfg.output == Output::GeoJson {
-        info!("Building GeoJSON from CSV output...");
-        output::geojson::write_geojson_from_csv(&out_dir, &tables)?;
+        info!("Building GeoJSON from staged output...");
+        output::geojson::write_geojson(&out_dir, &tables)?;
         for table in &tables {
             info!("Wrote {}/{table}.geojson", cfg.out_dir);
         }
     }
 
     if cfg.output == Output::GeoJsonSeq {
-        info!("Building GeoJSONSeq from CSV output...");
-        output::geojson::write_geojsonseq_from_csv(&out_dir, &tables)?;
+        info!("Building GeoJSONSeq from staged output...");
+        output::geojson::write_geojsonseq(&out_dir, &tables)?;
         for table in &tables {
             info!("Wrote {}/{table}.geojsonseq", cfg.out_dir);
         }
