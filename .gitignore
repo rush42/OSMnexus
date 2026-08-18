@@ -2,6 +2,7 @@
 /target
 
 # OSM extracts (downloaded, not versioned)
+/data
 *.osm
 *.pbf
 *.csv
@@ -13,3 +14,6 @@
 *.DS_Store
 editor/node_modules
 dag_out/
+
+# Benchmark output (scripts/bench_sweep.sh)
+/bench-results
