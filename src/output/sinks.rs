@@ -1,7 +1,7 @@
 //! Writer/channel plumbing for the pipeline's output tables — the piece that used to be ~350 lines
 //! of repetitive spawn/route/await/count code sitting directly in `main.rs`. One [`TableWriters`]
 //! owns every sender, round-robin counter, and writer-task handle for every table kind (tag, edges,
-//! members, way-line, polygon, point, nodes); `main.rs` just calls `spawn`, routes through the
+//! members, node geometry, way geometry, nodes); `main.rs` just calls `spawn`, routes through the
 //! `route_*` methods from inside its select/materialize closures, and calls `finish_select`/
 //! `finish_materialize` to drain + collect counts. No policy here — same sharded-COPY/CSV writer
 //! tasks (`output::writers::{copy_writer, csv_writer}`) and round-robin fan-out as before, just
@@ -21,12 +21,10 @@ use crate::config::Output;
 use crate::db::schema::{self, EDGE_TABLE, MEMBER_TABLE, NODE_TABLE};
 use crate::geom::plan::GeometryPlan;
 use crate::geom::materialize::WayGeometry;
-use crate::geom::rows::{
-    EdgeRow, NodeRow, PointRow, PolygonRow, WayRow, EDGE_COLUMNS, NODE_COLUMNS, POINT_COLUMNS,
-    POLYGON_COLUMNS, WAY_COLUMNS,
-};
-use crate::output::rows::{tag_columns, BinaryRow, CsvRow, MemberRow, TopicRow, MEMBER_COLUMNS};
-use crate::output::writers::{copy_writer, csv_writer};
+use crate::geom::rows::{EdgeRow, GeomRow, NodeRow, EDGE_COLUMNS, GEOM_COLUMNS, NODE_COLUMNS};
+use crate::output::rows::{tag_columns, BinaryRow, MemberRow, TopicRow, MEMBER_COLUMNS};
+use crate::output::writers::{binary_file_writer, copy_writer, csv_writer};
+use crate::topic::spec::GeometryShape;
 
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
 const WRITER_CHAN_CAP: usize = 256;
@@ -49,7 +47,7 @@ struct Shard<T> {
     bufs: Vec<Mutex<Vec<T>>>,
 }
 
-impl<T: CsvRow + BinaryRow + Send + Sync + 'static> Shard<T> {
+impl<T: BinaryRow + Send + Sync + 'static> Shard<T> {
     fn spawn(output: Output, pool: &Option<Pool>, out_dir: &Path, table: &str, columns: &'static str, w: usize) -> Self {
         let (mut senders, mut handles) = (Vec::with_capacity(w), Vec::with_capacity(w));
         let mut bufs = Vec::with_capacity(w);
@@ -57,7 +55,14 @@ impl<T: CsvRow + BinaryRow + Send + Sync + 'static> Shard<T> {
             let (tx, rx) = mpsc::channel::<Vec<T>>(WRITER_CHAN_CAP);
             let h = match output {
                 Output::Pg => tokio::spawn(copy_writer::<T>(pool.clone().unwrap(), table.to_owned(), columns, rx)),
-                Output::Csv | Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => tokio::spawn(csv_writer::<T>(out_dir.join(format!("{table}.csv")), columns, rx)),
+                Output::Csv => tokio::spawn(csv_writer::<T>(out_dir.join(format!("{table}.csv")), columns, rx)),
+                // Staged for `output::geojson`/`output::parquet`'s post-run cursor join — the same
+                // binary wire format `Output::Pg` streams live, written to a file instead (see
+                // `writers::binary_file_writer`'s own doc). No header line/SQL, so `columns` (used
+                // by the other two arms) doesn't apply here.
+                Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => {
+                    tokio::spawn(binary_file_writer::<T>(out_dir.join(format!("{table}.bin")), rx))
+                }
             };
             handles.push(h);
             senders.push(tx);
@@ -124,37 +129,38 @@ pub struct TableWriters {
     tag: Vec<Shard<TopicRow>>,
     edges: Shard<EdgeRow>,
     members: Shard<MemberRow>,
-    way_line: Vec<Shard<WayRow>>,
-    way_line_tables: Vec<String>,
-    polygon: Vec<Shard<PolygonRow>>,
-    polygon_tables: Vec<String>,
-    point: Vec<Shard<PointRow>>,
-    point_tables: Vec<String>,
+    /// One shard per topic in `plan.node_geom_topics` — node points only (see `GeomRow`'s own doc
+    /// for why node/way geometry now live in physically separate tables: sharing one made a
+    /// forward-cursor join impossible downstream, since node points are written during the select
+    /// phase and way points during materialize, in unrelated relative order).
+    node_geom: Vec<Shard<GeomRow>>,
+    node_geom_tables: Vec<String>,
+    /// One shard per topic in `plan.way_geom_topics` — whichever single shape
+    /// (`plan.way_shape[i]`) that topic declared for ways.
+    way_geom: Vec<Shard<GeomRow>>,
+    way_geom_tables: Vec<String>,
     nodes: Shard<NodeRow>,
 }
 
-/// Counts collected once the select-phase writers (tag + members) finish draining.
+/// Counts collected once the select-phase writers (tag + members + node geometry) finish draining.
 pub struct SelectCounts {
     pub tag_counts: Vec<usize>,
     pub member_count: usize,
+    pub node_geom_counts: Vec<usize>,
 }
 
-/// Counts collected once the materialize-phase writers (edges/nodes/way-line/polygon/point) finish
-/// draining. `point_counts` covers node-point rows (sent during select) and way-point rows (sent
-/// during materialize) alike — the two phases share the same point channels.
+/// Counts collected once the materialize-phase writers (edges/nodes/way geometry) finish draining.
 pub struct MaterializeCounts {
     pub edge_count: usize,
     pub node_count: usize,
-    pub way_line_counts: Vec<usize>,
-    pub polygon_counts: Vec<usize>,
-    pub point_counts: Vec<usize>,
+    pub way_geom_counts: Vec<usize>,
 }
 
 impl TableWriters {
-    /// Spawn every writer task this run needs: `w` shards per tag table, plus shared
-    /// edges/nodes (only when `plan.any_way_graph`), members, and one shard-set per topic wanting a
-    /// way-line/polygon/point table (`geom_tables`/`plan` already say which topics those are —
-    /// see `GeometryPlan`'s own doc). `table_refs[i]` is topic `i`'s table name.
+    /// Spawn every writer task this run needs: `w` shards per tag table, plus shared edges/nodes
+    /// (only when `plan.any_way_graph`), members, one shard per topic in `plan.node_geom_topics`
+    /// (node points), and one shard per topic in `plan.way_geom_topics` (whichever single way shape
+    /// each declared — see `GeometryPlan`'s own doc). `table_refs[i]` is topic `i`'s table name.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         output: Output,
@@ -186,29 +192,25 @@ impl TableWriters {
         };
         let members = Shard::spawn(output, pool, out_dir, MEMBER_TABLE, MEMBER_COLUMNS, w);
 
-        let way_line_tables: Vec<String> = plan.way_line_topics.iter().map(|&i| schema::way_geom_table(table_refs[i])).collect();
-        let way_line: Vec<Shard<WayRow>> =
-            way_line_tables.iter().map(|t| Shard::spawn(output, pool, out_dir, t, WAY_COLUMNS, w)).collect();
+        let node_geom_tables: Vec<String> =
+            plan.node_geom_topics.iter().map(|&i| schema::node_geom_table(table_refs[i])).collect();
+        let node_geom: Vec<Shard<GeomRow>> =
+            node_geom_tables.iter().map(|t| Shard::spawn(output, pool, out_dir, t, GEOM_COLUMNS, w)).collect();
 
-        let polygon_tables: Vec<String> = plan.way_polygon_topics.iter().map(|&i| schema::polygon_table(table_refs[i])).collect();
-        let polygon: Vec<Shard<PolygonRow>> =
-            polygon_tables.iter().map(|t| Shard::spawn(output, pool, out_dir, t, POLYGON_COLUMNS, w)).collect();
-
-        let point_tables: Vec<String> = plan.point_topics.iter().map(|&i| schema::point_table(table_refs[i])).collect();
-        let point: Vec<Shard<PointRow>> =
-            point_tables.iter().map(|t| Shard::spawn(output, pool, out_dir, t, POINT_COLUMNS, w)).collect();
+        let way_geom_tables: Vec<String> =
+            plan.way_geom_topics.iter().map(|&i| schema::way_geom_table(table_refs[i])).collect();
+        let way_geom: Vec<Shard<GeomRow>> =
+            way_geom_tables.iter().map(|t| Shard::spawn(output, pool, out_dir, t, GEOM_COLUMNS, w)).collect();
 
         TableWriters {
             tables: tables.to_vec(),
             tag,
             edges,
             members,
-            way_line,
-            way_line_tables,
-            polygon,
-            polygon_tables,
-            point,
-            point_tables,
+            node_geom,
+            node_geom_tables,
+            way_geom,
+            way_geom_tables,
             nodes,
         }
     }
@@ -230,41 +232,35 @@ impl TableWriters {
         self.members.send(links);
     }
 
-    /// Fan a `point` row out to every topic that both declared `point` (on whichever kind is
-    /// calling — `eligible` gates that) and kept this element (`mask`).
-    pub fn route_node_point(&self, mask: u32, row: PointRow, plan: &GeometryPlan) {
-        self.route_point(mask, row, &plan.point_topics, &plan.node_point_eligible);
-    }
-
-    fn route_point(&self, mask: u32, row: PointRow, point_topics: &[usize], eligible: &[bool]) {
-        for (i, &topic_idx) in point_topics.iter().enumerate() {
-            if eligible[i] && mask & (1 << topic_idx) != 0 {
-                self.point[i].send(vec![row.clone()]);
+    /// Fan a node's point row out to every topic that kept this node and declared
+    /// `"geometry_output": { "node": "point" }` (`plan.node_geom_topics`).
+    pub fn route_node_point(&self, mask: u32, row: GeomRow, plan: &GeometryPlan) {
+        for (i, &topic_idx) in plan.node_geom_topics.iter().enumerate() {
+            if mask & (1 << topic_idx) != 0 {
+                self.node_geom[i].send(vec![row.clone()]);
             }
         }
     }
 
-    /// Route every shape a materialized way produced (edges/line/point/polygon) to its writer(s) —
-    /// one call per way, replacing four separate `if let Some(...)` blocks at the call site.
+    /// Route every shape a materialized way produced (edges, plus whichever of line/point/polygon
+    /// exist) to its writer(s) — edges go to the shared graph table; line/point/polygon each go to
+    /// every topic in `plan.way_geom_topics` whose declared shape (`plan.way_shape[i]`) matches
+    /// which one of `g`'s fields is `Some`.
     pub fn route_way(&self, mask: u32, g: WayGeometry, plan: &GeometryPlan) {
         if let Some(rows) = g.edges {
             self.edges.send(rows);
         }
-        if let Some(row) = g.line {
-            self.route_shape(&self.way_line, mask, &plan.way_line_topics, row);
-        }
-        if let Some(row) = g.point {
-            self.route_point(mask, row, &plan.point_topics, &plan.way_point_eligible);
-        }
-        if let Some(row) = g.polygon {
-            self.route_shape(&self.polygon, mask, &plan.way_polygon_topics, row);
-        }
-    }
-
-    fn route_shape<T: CsvRow + BinaryRow + Send + Sync + Clone + 'static>(&self, shards: &[Shard<T>], mask: u32, topics: &[usize], row: T) {
-        for (i, &topic_idx) in topics.iter().enumerate() {
-            if mask & (1 << topic_idx) != 0 {
-                shards[i].send(vec![row.clone()]);
+        for (i, &topic_idx) in plan.way_geom_topics.iter().enumerate() {
+            if mask & (1 << topic_idx) == 0 {
+                continue;
+            }
+            let row = match plan.way_shape[i] {
+                GeometryShape::Line => &g.line,
+                GeometryShape::Point => &g.point,
+                GeometryShape::Polygon => &g.polygon,
+            };
+            if let Some(row) = row {
+                self.way_geom[i].send(vec![row.clone()]);
             }
         }
     }
@@ -280,72 +276,64 @@ impl TableWriters {
         }
     }
 
-    /// Drain + await the select-phase writers (tag + members) and log their counts. Point-table
-    /// writers are *not* touched here — they stay open for the materialize phase's way-point rows.
+    /// Drain + await the select-phase writers (tag + members + node geometry) and log their counts.
+    /// Node geometry is fully select-phase now (way geometry lives in its own separate table — see
+    /// `GeomRow`'s own doc), so unlike the old shared `point` table, it's finished here rather than
+    /// carried into the materialize phase.
     pub async fn finish_select(self) -> anyhow::Result<(Self, SelectCounts)> {
-        // `Shard::finish` consumes; split tag/members out, finish them, and reassemble the rest so
-        // the caller keeps one `TableWriters` for the materialize phase.
-        let TableWriters { tables, tag, edges, members, way_line, way_line_tables, polygon, polygon_tables, point, point_tables, nodes } = self;
+        // `Shard::finish` consumes; split tag/members/node_geom out, finish them, and reassemble
+        // the rest so the caller keeps one `TableWriters` for the materialize phase.
+        let TableWriters { tables, tag, edges, members, node_geom, node_geom_tables, way_geom, way_geom_tables, nodes } = self;
         let mut tag_counts = Vec::with_capacity(tag.len());
         for shard in tag {
             tag_counts.push(shard.finish().await?);
         }
         let member_count = members.finish().await?;
+        let mut node_geom_counts = Vec::with_capacity(node_geom.len());
+        for shard in node_geom {
+            node_geom_counts.push(shard.finish().await?);
+        }
 
         for (table, &count) in tables.iter().zip(&tag_counts) {
             info!("Wrote {count} tag rows → {table}");
         }
         info!("Wrote {member_count} relation-member links → {MEMBER_TABLE}");
+        for (table, &count) in node_geom_tables.iter().zip(&node_geom_counts) {
+            info!("Wrote {count} rows → {table}");
+        }
 
         let rest = TableWriters {
             tables,
             tag: Vec::new(),
             edges,
             members: Shard::empty(),
-            way_line,
-            way_line_tables,
-            polygon,
-            polygon_tables,
-            point,
-            point_tables,
+            node_geom: Vec::new(),
+            node_geom_tables: Vec::new(),
+            way_geom,
+            way_geom_tables,
             nodes,
         };
-        Ok((rest, SelectCounts { tag_counts, member_count }))
+        Ok((rest, SelectCounts { tag_counts, member_count, node_geom_counts }))
     }
 
-    /// Drain + await the materialize-phase writers (edges/nodes/way-line/polygon/point) and log
-    /// their counts.
+    /// Drain + await the materialize-phase writers (edges/nodes/way geometry) and log their counts.
     pub async fn finish_materialize(self, any_way_graph: bool) -> anyhow::Result<MaterializeCounts> {
         let edge_count = self.edges.finish().await?;
-        let mut way_line_counts = Vec::with_capacity(self.way_line.len());
-        for shard in self.way_line {
-            way_line_counts.push(shard.finish().await?);
-        }
         let node_count = self.nodes.finish().await?;
-        let mut polygon_counts = Vec::with_capacity(self.polygon.len());
-        for shard in self.polygon {
-            polygon_counts.push(shard.finish().await?);
-        }
-        let mut point_counts = Vec::with_capacity(self.point.len());
-        for shard in self.point {
-            point_counts.push(shard.finish().await?);
+        let mut way_geom_counts = Vec::with_capacity(self.way_geom.len());
+        for shard in self.way_geom {
+            way_geom_counts.push(shard.finish().await?);
         }
 
         if any_way_graph {
             info!("Wrote {edge_count} edge rows → {EDGE_TABLE}");
             info!("Wrote {node_count} node rows → {NODE_TABLE}");
         }
-        for (table, &count) in self.way_line_tables.iter().zip(&way_line_counts) {
-            info!("Wrote {count} way rows → {table}");
-        }
-        for (table, &count) in self.polygon_tables.iter().zip(&polygon_counts) {
-            info!("Wrote {count} rows → {table}");
-        }
-        for (table, &count) in self.point_tables.iter().zip(&point_counts) {
+        for (table, &count) in self.way_geom_tables.iter().zip(&way_geom_counts) {
             info!("Wrote {count} rows → {table}");
         }
 
-        Ok(MaterializeCounts { edge_count, node_count, way_line_counts, polygon_counts, point_counts })
+        Ok(MaterializeCounts { edge_count, node_count, way_geom_counts })
     }
 }
 
@@ -353,7 +341,7 @@ impl TableWriters {
 /// geometry, which is resolved entirely in memory *after* the main streaming pass (see
 /// `geom::relation`), so it has no ongoing channel to shard across `w` writers like the streaming
 /// tables above; one connection/file is plenty for what's typically a small dataset.
-pub async fn write_rows_once<R: CsvRow + BinaryRow + Send + Sync + 'static>(
+pub async fn write_rows_once<R: BinaryRow + Send + Sync + 'static>(
     output: Output,
     pool: &Option<Pool>,
     out_dir: &Path,
@@ -364,8 +352,9 @@ pub async fn write_rows_once<R: CsvRow + BinaryRow + Send + Sync + 'static>(
     let (tx, rx) = mpsc::channel(1);
     let handle = match output {
         Output::Pg => tokio::spawn(copy_writer::<R>(pool.clone().unwrap(), table.to_owned(), columns, rx)),
-        Output::Csv | Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => {
-            tokio::spawn(csv_writer::<R>(out_dir.join(format!("{table}.csv")), columns, rx))
+        Output::Csv => tokio::spawn(csv_writer::<R>(out_dir.join(format!("{table}.csv")), columns, rx)),
+        Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => {
+            tokio::spawn(binary_file_writer::<R>(out_dir.join(format!("{table}.bin")), rx))
         }
     };
     tx.send(rows).await.ok();

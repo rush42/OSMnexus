@@ -8,7 +8,7 @@ use crate::geom::primitives::{
     project_ring, to_ewkb, to_multi_ewkb, wgs84_to_3857,
 };
 use crate::geom::relation::assemble_rings;
-use crate::geom::rows::{EdgeRow, NodeRow, PointRow, PolygonRow, WayRow};
+use crate::geom::rows::{EdgeRow, GeomRow, NodeRow};
 use crate::osm::types::OsmWay;
 use rustc_hash::FxHashMap;
 
@@ -71,9 +71,9 @@ pub fn build_edges(
 }
 
 /// Build the whole-way linestring row for a way — routed (see `main.rs`'s `build_geom_cb`) to
-/// every topic that declares `"geometry": { "way": ["line"] }` and kept this way.
-pub fn build_way(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> WayRow {
-    WayRow { osm_id: way.id, geom_ewkb: to_ewkb(geom), length_m }
+/// every topic that declares `"geometry_output": { "way": "line" }` and kept this way.
+pub fn build_way(way: &OsmWay, geom: &geo::LineString<f64>, length_m: f64) -> GeomRow {
+    GeomRow { osm_id: way.id, geom_type: "LineString", geom_ewkb: to_ewkb(geom), length_m: Some(length_m) }
 }
 
 /// Build a `nodes` table row for a graph vertex — always emitted (see `assign_node_ids`).
@@ -83,28 +83,34 @@ pub fn build_node_row(id: i64, osm_id: i64, lon: f64, lat: f64) -> NodeRow {
 }
 
 /// Build a topic-level point row for a plain node — routed to every topic that kept the node and
-/// declares `"geometry": { "node": ["point"] }` (see `main.rs`). Distinct from `build_node_row`,
-/// which is the always-on shared graph-vertex table keyed by internal id, not `osm_id`.
-pub fn build_node_point_row(osm_id: i64, lon: f64, lat: f64) -> PointRow {
+/// declares `"geometry_output": { "node": "point" }` (see `main.rs`). Distinct from
+/// `build_node_row`, which is the always-on shared graph-vertex table keyed by internal id, not
+/// `osm_id`.
+pub fn build_node_point_row(osm_id: i64, lon: f64, lat: f64) -> GeomRow {
     let (x, y) = wgs84_to_3857(lon, lat);
-    PointRow { osm_id, geom_ewkb: point_to_ewkb(x, y) }
+    GeomRow { osm_id, geom_type: "Point", geom_ewkb: point_to_ewkb(x, y), length_m: None }
 }
 
 /// Build a way's centroid point row — routed to every topic that both kept this way and declares
-/// `"geometry": { "way": ["point"] }` (see `main.rs`). Centroid of the way's own vertices, not an
-/// area-weighted centroid (a way is a line, not yet a closed shape at this point).
-pub fn build_way_point_row(way: &OsmWay, geom: &geo::LineString<f64>) -> Option<PointRow> {
+/// `"geometry_output": { "way": "point" }` (see `main.rs`). Centroid of the way's own vertices, not
+/// an area-weighted centroid (a way is a line, not yet a closed shape at this point).
+pub fn build_way_point_row(way: &OsmWay, geom: &geo::LineString<f64>) -> Option<GeomRow> {
     let (x, y) = centroid_of_line(geom)?;
     let _ = way; // centroid is purely geometric; kept for a consistent per-way builder signature
-    Some(PointRow { osm_id: way.id, geom_ewkb: point_to_ewkb(x, y) })
+    Some(GeomRow { osm_id: way.id, geom_type: "Point", geom_ewkb: point_to_ewkb(x, y), length_m: None })
 }
 
 /// Build a way's closed-ring polygon row — routed to every topic that both kept this way and
-/// declares `"geometry": { "way": ["polygon"] }` (see `main.rs`). Single ring only (no holes) —
-/// a way itself never has inner rings; that's a relation/multipolygon concept (see
+/// declares `"geometry_output": { "way": "polygon" }` (see `main.rs`). Single ring only (no holes)
+/// — a way itself never has inner rings; that's a relation/multipolygon concept (see
 /// `build_relation_polygon_row`).
-pub fn build_way_polygon_row(way: &OsmWay) -> PolygonRow {
-    PolygonRow { osm_id: way.id, geom_ewkb: polygon_to_ewkb(&project_ring(&way.coords)) }
+pub fn build_way_polygon_row(way: &OsmWay) -> GeomRow {
+    GeomRow {
+        osm_id: way.id,
+        geom_type: "Polygon",
+        geom_ewkb: polygon_to_ewkb(&project_ring(&way.coords)),
+        length_m: None,
+    }
 }
 
 /// Build a relation's line row from its member ways' independently re-resolved coordinate
@@ -118,7 +124,7 @@ pub fn build_way_polygon_row(way: &OsmWay) -> PolygonRow {
 /// multi-branch route (or a route with real mapping gaps) still emits a single relation-line row
 /// instead of splitting into several. `None` if no run has at least 2 points (e.g. every member way
 /// was missing/unresolvable).
-pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -> Option<WayRow> {
+pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -> Option<GeomRow> {
     let runs: Vec<Vec<(f64, f64)>> =
         assemble_rings(member_coords.to_vec()).into_iter().filter(|r| r.len() >= 2).collect();
     if runs.is_empty() {
@@ -126,7 +132,12 @@ pub fn build_relation_line_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -
     }
     let length_m: f64 = runs.iter().map(|r| haversine_length_m(r)).sum();
     let lines: Vec<geo::LineString<f64>> = runs.iter().map(|r| project_line(r)).collect();
-    Some(WayRow { osm_id: rel_id, geom_ewkb: to_multi_ewkb(&lines), length_m })
+    Some(GeomRow {
+        osm_id: rel_id,
+        geom_type: "MultiLineString",
+        geom_ewkb: to_multi_ewkb(&lines),
+        length_m: Some(length_m),
+    })
 }
 
 /// Build a relation's multipolygon row from its already-chained `outer`/`inner` rings (see
@@ -140,21 +151,21 @@ pub fn build_relation_polygon_row(
     rel_id: i64,
     outer_rings: &[Vec<(f64, f64)>],
     inner_rings: &[Vec<(f64, f64)>],
-) -> Option<PolygonRow> {
+) -> Option<GeomRow> {
     let exterior = outer_rings.iter().max_by_key(|r| r.len())?;
     let polygon = project_polygon(exterior, inner_rings);
-    Some(PolygonRow { osm_id: rel_id, geom_ewkb: polygon_to_ewkb(&polygon) })
+    Some(GeomRow { osm_id: rel_id, geom_type: "Polygon", geom_ewkb: polygon_to_ewkb(&polygon), length_m: None })
 }
 
 /// Build a relation's centroid point row from its member ways' coordinates (all points pooled
 /// together, not weighted per-way-length) — see `build_relation_line_row`'s own doc for the same
 /// member-coordinate source. `None` if no member way resolved to any points.
-pub fn build_relation_point_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -> Option<PointRow> {
+pub fn build_relation_point_row(rel_id: i64, member_coords: &[Vec<(f64, f64)>]) -> Option<GeomRow> {
     let coords: Vec<(f64, f64)> = member_coords.iter().flatten().copied().collect();
     if coords.is_empty() {
         return None;
     }
     let geom = project_line(&coords);
     let (x, y) = centroid_of_line(&geom)?;
-    Some(PointRow { osm_id: rel_id, geom_ewkb: point_to_ewkb(x, y) })
+    Some(GeomRow { osm_id: rel_id, geom_type: "Point", geom_ewkb: point_to_ewkb(x, y), length_m: None })
 }

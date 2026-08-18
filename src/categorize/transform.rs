@@ -8,6 +8,7 @@
 //! only the *construction* of a `Vec<TransformStep>` from `topic.json`'s `input_transforms`/
 //! `split_sides` is (see `topic::runner::TopicRunner::load`).
 
+use std::borrow::Cow;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -311,32 +312,31 @@ fn read_directed<'a>(
 ///   key == "cycleway:left:width"  → dest["width"]    = val, + dest["source:width"] if source: sibling exists
 pub(crate) fn unnest_prefixed_tags<'a>(
     tags: &RawTags<'a>,
-    prefix: &str,
+    prefix: &'a str,
     infix: &str,
-    meta_prefixes: &[&str],
+    meta_prefixes: &[&'a str],
     dest: &mut RawTags<'a>,
 ) {
-    let full_prefix = if infix.is_empty() {
-        prefix.to_owned()
-    } else {
-        format!("{prefix}:{infix}")
-    };
+    // The full prefix (`"{prefix}:{infix}"`) is matched against without being built: this runs once
+    // per (element × clone step), so a `format!` here was one allocation per call for a string
+    // derived entirely from two fixed inputs. `full_len` is what the matching below actually needs.
+    let full_len = prefix.len() + if infix.is_empty() { 0 } else { 1 + infix.len() };
 
     // Reused across meta-companion lookups below instead of a fresh `format!` allocation per
     // (matched key × meta prefix) pair — cleared and rewritten in place each time.
     let mut meta_key_buf = String::new();
 
     for (key, val) in tags {
-        if !key.starts_with(&full_prefix) {
+        if !starts_with_prefix_infix(key, prefix, infix) {
             continue;
         }
 
         // `suffix: None` = exact match (`key == full_prefix`); `Some(s)` = a `:`-separated
         // sub-key — drives both the plain dest key and each meta companion's dest key below.
-        let suffix: Option<&str> = if key == &full_prefix {
+        let suffix: Option<&str> = if key.len() == full_len {
             None
-        } else if key.len() > full_prefix.len() && key.as_bytes()[full_prefix.len()] == b':' {
-            let s = &key[full_prefix.len() + 1..];
+        } else if key.len() > full_len && key.as_bytes()[full_len] == b':' {
+            let s = &key[full_len + 1..];
             // Validate: when infix is empty, the first component of suffix must not itself be a side.
             if infix.is_empty() {
                 let first = s.split(':').next().unwrap_or("");
@@ -349,7 +349,18 @@ pub(crate) fn unnest_prefixed_tags<'a>(
             continue;
         };
 
-        dest.insert(suffix.unwrap_or(prefix).to_owned().into(), val.clone());
+        // Borrowed where possible rather than allocated per matched tag: an exact match re-keys
+        // onto `prefix` (which lives as long as the tags themselves), and a sub-key is a slice of
+        // `key` — still pointing into the pbf block's string table unless a transform has already
+        // replaced it with an owned string.
+        let dest_key: Cow<'a, str> = match suffix {
+            None => Cow::Borrowed(prefix),
+            Some(_) => match key {
+                Cow::Borrowed(k) => Cow::Borrowed(&k[full_len + 1..]),
+                Cow::Owned(k) => Cow::Owned(k[full_len + 1..].to_owned()),
+            },
+        };
+        dest.insert(dest_key, val.clone());
 
         for meta in meta_prefixes {
             meta_key_buf.clear();
@@ -357,13 +368,27 @@ pub(crate) fn unnest_prefixed_tags<'a>(
             meta_key_buf.push_str(key);
             let Some(meta_val) = tags.get(meta_key_buf.as_str()) else { continue };
             let meta_key = meta.trim_end_matches(':');
-            let dest_key = match suffix {
-                Some(s) => format!("{meta_key}:{s}"),
-                None => meta_key.to_owned(),
+            let dest_key: Cow<'a, str> = match suffix {
+                Some(s) => Cow::Owned(format!("{meta_key}:{s}")),
+                // Same borrow as above — the meta prefix outlives the tags it is re-keying.
+                None => Cow::Borrowed(meta_key),
             };
-            dest.insert(dest_key.into(), meta_val.clone());
+            dest.insert(dest_key, meta_val.clone());
         }
     }
+}
+
+/// Whether `key` starts with `"{prefix}:{infix}"`, without building that string — see
+/// `unnest_prefixed_tags`, which calls this once per tag per clone step.
+fn starts_with_prefix_infix(key: &str, prefix: &str, infix: &str) -> bool {
+    if !key.starts_with(prefix) {
+        return false;
+    }
+    if infix.is_empty() {
+        return true;
+    }
+    let rest = &key[prefix.len()..];
+    rest.as_bytes().first() == Some(&b':') && rest[1..].starts_with(infix)
 }
 
 /// For every key starting with `prefix`, strip it, re-key the value onto the base tag, and stamp

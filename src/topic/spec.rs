@@ -53,11 +53,18 @@ pub struct TopicSpec {
     /// the same key overrides them). Categories override per-key via their own `defaults`.
     #[serde(default)]
     pub defaults: serde_json::Map<String, serde_json::Value>,
-    /// Which geometry producers this topic wants, per element kind — replaces the old global
+    /// This topic's one geometry output per element kind — replaces the old global
     /// `--emit-way-geometries`/`--emit-relation-geometries`/`--topic-edges` CLI flags with a
-    /// per-topic declaration. See `GeometryShape`.
+    /// per-topic declaration. `"geometry_output"` (not `"geometry"`) since `graph` (below) is a
+    /// separate, orthogonal concern — see `GeometryOutputSpec`'s own doc for why a kind gets at
+    /// most one shape now, not a list.
     #[serde(default)]
-    pub geometry: GeometrySpec,
+    pub geometry_output: GeometryOutputSpec,
+    /// Whether this topic's ways/nodes force a cut point in the shared routing graph — independent
+    /// of `geometry_output` (a topic can want both `graph.way` and `geometry_output.way: "line"` at
+    /// once: routing table plus a rendered line). See `GraphSpec`'s own doc.
+    #[serde(default)]
+    pub graph: GraphSpec,
     /// Per-kind "no subcategorization" opt-out from the `topics/<name>/{node,way,relation}/`
     /// category-file convention — a kind flagged here accepts every (non-`exclude_condition`-
     /// matched) element straight through the topic's own `producers`/`defaults`, with no category
@@ -169,48 +176,57 @@ impl ProducersSpec {
     }
 }
 
-/// Per-kind geometry output declarations (`topic.json`'s `"geometry"`). Every shape is now built
-/// in-process (no Postgres post-import SQL step — see `geom`), so `node`/`way`/
-/// `relation` all share the same `GeometryShape` vocabulary; `GeometrySpec::validate` rejects
-/// combinations that don't make sense for a kind (e.g. a node can't have a `Line`).
+/// This topic's one geometry output per element kind (`topic.json`'s `"geometry_output"`). At most
+/// one shape per kind now (not a list) — every shipped config only ever declared one anyway, and
+/// collapsing to exactly one lets every output backend give each kind its own single, self-
+/// describing geometry table (`{table}_node_geom`/`{table}_way_geom`/`{table}_relation_geom`,
+/// `geom_type` distinguishing Point/Line/Polygon within it) instead of one table per (kind, shape)
+/// pair. `GeometryOutputSpec::validate` rejects combinations that don't make sense for a kind (a
+/// node can't have a `Line`). Every shape is built in-process (no Postgres post-import SQL step —
+/// see `geom`), so `node`/`way`/`relation` all share the same `GeometryShape` vocabulary.
 #[derive(Debug, Deserialize, Default)]
-pub struct GeometrySpec {
-    /// Geometry producers for this topic's nodes. `Point` emits the node's own point row; `Graph`
-    /// forces a cut point in the shared routing graph at this node (even at way use-count 1) for
-    /// every way passing through it — independent of `Point`, and independent of whether any *other*
-    /// topic's ways want the graph at all (moot if none do; see `GeometryPlan::node_graph_mask`).
-    /// A topic can declare either, both, or neither.
+pub struct GeometryOutputSpec {
+    /// This topic's node geometry — only `Point` makes sense (a node has no line/polygon reading).
     #[serde(default)]
-    pub node: Vec<GeometryShape>,
-    /// Geometry producers for this topic's ways.
+    pub node: Option<GeometryShape>,
+    /// This topic's way geometry.
     #[serde(default)]
-    pub way: Vec<GeometryShape>,
-    /// Geometry producers for this topic's relations — built from its member ways' already-resolved
-    /// geometry (see `geom::relation::resolve_relation_ways`), no SQL post-processing needed.
+    pub way: Option<GeometryShape>,
+    /// This topic's relation geometry — built from its member ways' already-resolved geometry (see
+    /// `geom::relation::resolve_relation_ways`), no SQL post-processing needed.
     #[serde(default)]
-    pub relation: Vec<GeometryShape>,
+    pub relation: Option<GeometryShape>,
 }
 
-impl GeometrySpec {
-    /// Reject shapes that are meaningless for their kind: `node` only supports `Point` (its own
-    /// coordinate) and `Graph` (force a cut point — see `GeometrySpec::node`'s own doc); no line/
-    /// polygon reading makes sense for a single point. `relation` never supports `Graph` (the
-    /// routing/edge table is way-only — a relation has no natural directed-cost reading).
+impl GeometryOutputSpec {
+    /// Reject shapes meaningless for their kind: `node` only supports `Point` (its own coordinate)
+    /// — no line/polygon reading makes sense for a single point.
     pub fn validate(&self) -> anyhow::Result<()> {
-        for shape in &self.node {
+        if let Some(shape) = self.node {
             anyhow::ensure!(
-                matches!(shape, GeometryShape::Point | GeometryShape::Graph),
-                "geometry.node only supports \"point\" or \"graph\", got {shape:?}"
-            );
-        }
-        for shape in &self.relation {
-            anyhow::ensure!(
-                *shape != GeometryShape::Graph,
-                "geometry.relation does not support \"graph\" (routing/edge tables are way-only)"
+                shape == GeometryShape::Point,
+                "geometry_output.node only supports \"point\", got {shape:?}"
             );
         }
         Ok(())
     }
+}
+
+/// Forces a cut point in the shared routing graph — orthogonal to `GeometryOutputSpec` (see
+/// `TopicSpec::graph`'s own doc for why they're separate fields). `way: true` feeds this topic's
+/// kept ways into a per-topic `{table}_edge` pgRouting-shaped table (intersection-split,
+/// `cost`/`reverse_cost` from the topic's own `cost`/`is_directed` fields — see `db::topic_edges`;
+/// requires the topic to define a `cost` field). `node: true` forces a cut point in the shared graph
+/// at this node (even at way use-count 1) for every way passing through it — independent of whether
+/// any *other* topic's ways want the graph at all (moot if none do; see
+/// `GeometryPlan::node_graph_mask`). Relations never support graph (the routing/edge table is
+/// way-only — a relation has no natural directed-cost reading), so there's no `relation` field here.
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+pub struct GraphSpec {
+    #[serde(default)]
+    pub way: bool,
+    #[serde(default)]
+    pub node: bool,
 }
 
 /// One geometry output a topic can opt into for a given element kind.
@@ -224,12 +240,6 @@ pub enum GeometryShape {
     /// as a JSON alias for the old spelling.
     #[serde(alias = "linestring")]
     Line,
-    /// Way: this topic's kept ways feed into a per-topic `{table}_edge` pgRouting-shaped table
-    /// (intersection-split, `cost`/`reverse_cost` from the topic's own `cost`/`is_directed` fields
-    /// — see `db::topic_edges`). Requires the topic to define a `cost` field.
-    /// Node: this topic's classified nodes force a cut point in the shared graph (no per-topic
-    /// edge table implication — nodes don't have one of their own).
-    Graph,
     /// A closed ring (way) or assembled multipolygon (relation, from `outer`/`inner` member
     /// roles).
     Polygon,
@@ -239,27 +249,26 @@ pub enum GeometryShape {
 mod geometry_spec_tests {
     use super::*;
 
-    fn spec(node: &[GeometryShape], relation: &[GeometryShape]) -> GeometrySpec {
-        GeometrySpec { node: node.to_vec(), way: Vec::new(), relation: relation.to_vec() }
-    }
-
     #[test]
-    fn node_accepts_point_graph_or_both() {
-        assert!(spec(&[GeometryShape::Point], &[]).validate().is_ok());
-        assert!(spec(&[GeometryShape::Graph], &[]).validate().is_ok());
-        assert!(spec(&[GeometryShape::Point, GeometryShape::Graph], &[]).validate().is_ok());
+    fn node_accepts_point() {
+        let spec = GeometryOutputSpec { node: Some(GeometryShape::Point), way: None, relation: None };
+        assert!(spec.validate().is_ok());
     }
 
     #[test]
     fn node_rejects_line_and_polygon() {
-        assert!(spec(&[GeometryShape::Line], &[]).validate().is_err());
-        assert!(spec(&[GeometryShape::Polygon], &[]).validate().is_err());
+        let line = GeometryOutputSpec { node: Some(GeometryShape::Line), way: None, relation: None };
+        assert!(line.validate().is_err());
+        let polygon = GeometryOutputSpec { node: Some(GeometryShape::Polygon), way: None, relation: None };
+        assert!(polygon.validate().is_err());
     }
 
     #[test]
-    fn relation_rejects_graph() {
-        assert!(spec(&[], &[GeometryShape::Graph]).validate().is_err());
-        assert!(spec(&[], &[GeometryShape::Line]).validate().is_ok());
+    fn relation_accepts_any_shape() {
+        for shape in [GeometryShape::Point, GeometryShape::Line, GeometryShape::Polygon] {
+            let spec = GeometryOutputSpec { node: None, way: None, relation: Some(shape) };
+            assert!(spec.validate().is_ok());
+        }
     }
 }
 

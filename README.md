@@ -165,10 +165,10 @@ A topic classifies **all three OSM primitives** independently:
   tags, independently of its member ways. Matching never pulls those ways into the topic's tag
   table or the shared `edges`/`nodes` graph — a member way that isn't *itself* matched by some
   `way/*.json` category stays out of both entirely. The only thing relation membership does is
-  make member ways' coordinates available for **relation geometry** (`{topic}_relation_geom`/
-  `_point`/`_polygon`) — and only that: if a topic doesn't declare `"geometry": { "relation":
-  [...] }`, an unmatched member way's coordinates are never even read. The relation still gets its
-  own tag row either way, linked to its member ways via `relation_members`.
+  make member ways' coordinates available for **relation geometry** (`{topic}_relation_geom`) —
+  and only that: if a topic doesn't declare a `"geometry_output": { "relation": ... }`, an
+  unmatched member way's coordinates are never even read. The relation still gets its own tag row
+  either way, linked to its member ways via `relation_members`.
 - **Nodes** are classified too (`node/*.json` — barriers, crossings, traffic signals) but don't
   add edges themselves — a classified node forces a graph split, cutting the way that carries it
   even where only one way uses it.
@@ -189,16 +189,20 @@ One extracted graph; each topic is a disjoint attribute layer over it.
   end_id, geom(LineString,3857), length_m, total_length_m, cost, reverse_cost`, cut at
   intersections and any classified node.
 - **`nodes`** — one row per graph vertex: `id, osm_id, geom(Point,3857)`.
-- **`{topic}_geom` / `_point` / `_polygon`** (and `{topic}_relation_*` variants) — for a topic
-  that declares `"geometry"` in its `topic.json`: whole-way linestrings, centroids, or assembled
-  polygons, built in-process during the streaming pass — no Postgres post-import SQL step, so
-  every backend (`pg`, `csv`, `geojson`, `geojsonseq`) gets the same tables.
+- **`{topic}_node_geom` / `{topic}_way_geom` / `{topic}_relation_geom`** — for a topic that
+  declares a `"geometry_output"` for that kind: `osm_id, geom_type, geom, length_m`, one table per
+  (topic, kind) regardless of shape — `geom_type` (`Point`/`LineString`/`MultiLineString`/
+  `Polygon`) says which, so a node's own coordinate, a way's whole linestring or centroid, and a
+  relation's assembled multipolygon all fit the same table shape. Built in-process during the
+  streaming pass — no Postgres post-import SQL step, so every backend (`pg`, `csv`, `geojson`,
+  `geojsonseq`) gets the same tables.
 - **`relation_members`** — `relation_id` ↔ member `way_id` link table.
 
 A topic that wants real routing weights (not just shared edge length) declares
-`"geometry": { "way": ["graph"] }` plus `cost`/`is_directed` fields — the only geometry shape
-that's a post-load SQL step, producing a pgRouting-shaped `{topic}_edge` table with `cost`/
-`reverse_cost` split proportionally across cut segments.
+`"graph": { "way": true }` plus `cost`/`is_directed` fields — orthogonal to `geometry_output` (a
+topic can want both a routing table and a rendered line for the same ways) and the only geometry
+concept that's still a post-load SQL step, producing a pgRouting-shaped `{topic}_edge` table with
+`cost`/`reverse_cost` split proportionally across cut segments.
 
 ```sql
 -- materialize by joining topic tags to shared geometry on osm_id
@@ -236,7 +240,7 @@ full `--release` build is ~60s+ by design and not meant for iterating.
 | `--output <backend>` | `pg` | `pg` (COPY into PostGIS), `csv`, `geojson` (+ `<topic>.geojson`), `geojsonseq` (+ streaming `<topic>.geojsonseq`) |
 | `--out-dir <path>` | `out` | output directory (non-`pg` backends) |
 | `--create-index` | off | build indexes after load (`pg` only) |
-| `--topic-edges <mode>` | `pgrouting` | `{topic}_edge` shape for `"geometry": { "way": ["graph"] }` topics: `pgrouting` or `all` (+ tag columns) |
+| `--topic-edges <mode>` | `pgrouting` | `{topic}_edge` shape for `"graph": { "way": true }` topics: `pgrouting` or `all` (+ tag columns) |
 | `--db-writers <k>` | `4` | parallel COPY connections per table (`pg` only) |
 | `--threads <n>` | `1` | rayon pool size for CPU-bound passes (`0` = all cores) |
 | `--left-hand-traffic` | off | flip which physical side `forward`/`backward` reads from on side-split objects |

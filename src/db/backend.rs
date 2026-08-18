@@ -9,7 +9,7 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::db::pool::build_pool;
-use crate::db::schema::{self, GeomTableShape};
+use crate::db::schema;
 use crate::db::topic_edges;
 use crate::topic::TopicRunner;
 
@@ -21,7 +21,7 @@ use crate::topic::TopicRunner;
 pub async fn setup(
     cfg: &Config,
     tag_tables: &[(&str, bool)],
-    geom_tables: &[(String, GeomTableShape)],
+    geom_tables: &[String],
     emit_graph: bool,
     n_tag_tables: usize,
     extra_tables: usize,
@@ -50,7 +50,7 @@ pub async fn finalize(
     cfg: &Config,
     pool: &Pool,
     tag_tables: &[(&str, bool)],
-    geom_tables: &[(String, GeomTableShape)],
+    geom_tables: &[String],
     emit_graph: bool,
     runners: &[TopicRunner],
 ) -> anyhow::Result<()> {

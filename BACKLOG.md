@@ -230,6 +230,92 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   - **Composes with the relations→ways→nodes plan:** each per-kind topic table just generates its own
     column set.
 
+- **Tag/geometry CSV row order aligned by construction — DONE, incl. the point-table split
+  (`{table}_node_geom`/`{table}_way_geom`) that removed the last mixing case. `parquet.rs` still
+  not ported.** `geojson.rs` and Simon's parked GeoParquet PR (`simon/feat/geoparquet-output`,
+  `src/output/parquet.rs`) join staged tag/geometry CSVs via a full `HashMap<i64, GeomRow>` keyed by
+  `osm_id`. Investigating whether that could be a cheap positional join instead led through shard-
+  keying (ruled out — `--output csv`/`geojson`/`geojsonseq` already runs `w=1`, so `Shard::send`'s
+  round-robin was never the source of disorder there) and a sorted-merge-join design (superseded by
+  what actually got built — see below) before landing on the real fix, in two commits:
+  - **What was actually nondeterministic, and the fix (commits routing tag rows from the blob-order
+    fold, then routing way geometry the same way):** `classify_way`/`classify_rel`/`classify_node`
+    used to call `route_tag`/`route_member`/`route_node_point` as a side effect from inside
+    `sorted.rs`'s parallel per-blob decode closures, racing across elements decoded concurrently
+    within a chunk. They're now pure (return rows instead of routing them), and routing moved into
+    the sequential, blob-order fold Pass A/B already used for their own accumulators
+    (`FOLD_CHUNK_BLOBS`) — so a table's tag-row CSV order is now a deterministic function of blob
+    order. Separately, `geom::materialize::run` used to resolve/route way geometry via
+    `WayRefsStore`'s own MPHF-slot order (an id-derived order with no relation to blob order) — Pass
+    A now also records `kept_way_order` (every tag-kept way's id, in the same blob-order fold that
+    routes its tag row), and materialize walks that same order via a new
+    `WayRefsStore::par_route_ordered` instead. Both fixes needed the same bounded-parallel-chunk +
+    sequential-fold shape to avoid buffering a table's-worth of rows in memory at once — and both hit
+    the same lesson tuning chunk size (see below).
+  - **Result: no sort needed at all.** Since tag and geometry rows are now written in matching
+    relative order *as they're produced*, the downstream join can become a plain positional zip (two
+    file readers advanced in lockstep) — cheaper than the sorted-merge-join idea this entry used to
+    describe, which would have needed an `O(n log n)` sort pass first. Verified on `berlin.osm.pbf`:
+    `roads.csv` <-> `roads_geom.csv` match `osm_id` at every row position (0 mismatches / 391828
+    rows); `bikelanes`' side-split tag rows (multiple per way) match geometry order once deduped.
+    Byte-identical across repeated runs.
+  - **RSS lesson (bit twice, same root cause):** buffering a whole `FOLD_CHUNK_BLOBS=256`-blob chunk's
+    tag rows (not just cheap ref/id data) before routing blew up peak RSS +80% on
+    `brandenburg-latest.osm.pbf` (550MB → 990MB) for no measurable time benefit — shrunk to `16`,
+    matching baseline RSS with no slowdown. `way_refs.rs`'s new `ROUTE_CHUNK_WAYS` was sized `512`
+    conservatively from the start given that lesson, and benchmarked clean (no measurable RSS/time
+    regression on the same extract). Any future chunk-size tuning on either constant should re-run
+    this same before/after `/usr/bin/time -v` comparison — the payload held in the transient, not the
+    blob/way count alone, is what determines the RSS cost.
+  - **Still N/A for the PostGIS/COPY path.** `copy_writer` (`writers.rs:29-56`) streams straight into
+    per-table `COPY ... FORMAT BINARY`; there is no in-process join there at all — cross-table
+    correspondence is handled by Postgres's own indexed `JOIN` at query time, so none of this applies.
+  - **DONE for GeoJSON/GeoJSONSeq way geometry.** `geojson.rs`'s `build_features` now reads
+    `{table}_geom.csv`/`{table}_polygon.csv` via `OrderedWayGeomCursor` — a forward cursor consumed
+    in step with `{table}.csv`'s own way rows (peek, consume-if-match, hold-for-later otherwise) —
+    instead of a `HashMap<i64, Geom>` + `.get(&osm_id)`. `read_way_geom` (the old hashmap reader) is
+    gone. Verified byte-identical GeoJSON/GeoJSONSeq output against the pre-change build on
+    `berlin.osm.pbf` (tilda: roads, bikelanes) and `public_transport` config.
+  - **DONE for relations too.** `RelMembers` had the exact same problem `WayRefsStore` did:
+    `RelMembers::build` fed the relations pass's blob-ordered fold into the same `MphfArena` that
+    discards insertion order (sorted by hashed slot — `store.rs`'s `build`), so
+    `geom::materialize::relations()` (via `RelMembers::requests()`, `self.0.iter()`) built relation
+    geometry in MPHF-slot order, unrelated to the relations pass's blob order. Fixed the same way:
+    `classify_relations` now also returns `kept_relation_order`, threaded through
+    `SelectionContext`, and `RelMembers::requests_ordered(&self, order)` replaces `requests()` —
+    sequential, not chunked/parallel like the way case, since relation counts are orders of magnitude
+    smaller than way counts. `geojson.rs` gained `OrderedRelationLineCursor`/`OrderedPointCursor` for
+    `{table}_relation_geom.csv`/`{table}_relation_point.csv` (relation polygon reuses
+    `OrderedWayGeomCursor` — same column shape); `read_relation_line_geom`/`read_polygon_geom` (the
+    old hashmap readers) are gone. Verified on `berlin.osm.pbf`/`configs/trains` (the one shipped
+    config with relation line geometry): 106/106 relation ids match position; byte-identical GeoJSON
+    against the pre-change build there, on `public_transport` (graph-fallback path, still hashmap via
+    `edges.csv`), and on `tilda` (way-only sanity check).
+  - **Point-table mixing — DONE, via a config schema change, not a cursor workaround.** The one
+    remaining `HashMap` was `{table}_point.csv`, which shared its channel between node-point rows
+    (select phase, node order) and way-point rows (materialize phase, way order) — an `osm_id`
+    sequence `[node points][way points]` with no relation to `{table}.csv`'s own R/W/N block order,
+    so a forward cursor there would've silently attributed zero points to every way. Root-caused to
+    geometry tables being organized by *shape* (line/point/polygon) instead of *element kind*
+    (node/way/relation) — the one shared "point" table was the only place two different kinds'
+    output landed in one file. Fixed by reorganizing `topic.json`'s geometry schema itself: each
+    kind now gets exactly one declared shape (`"geometry_output": { "way": "line" }`, not a list —
+    every shipped config only ever declared one anyway) and its own physically separate table
+    (`{table}_node_geom`/`{table}_way_geom`/`{table}_relation_geom`, self-describing via a
+    `geom_type` column). No more shared point table, so no more mixing — `geojson.rs` now uses the
+    same `OrderedGeomCursor` for all three kinds. See CHANGELOG's "Unreleased" entry for the full
+    schema-change writeup (also collapses tag-table-adjacent geometry tables from up to 6 per topic
+    to 3, and separates the routing-graph flag into its own orthogonal `"graph"` field). Verified
+    byte-identical output against the pre-change build on `berlin.osm.pbf` (tilda/trains/live_raw)
+    and `brandenburg-latest.osm.pbf` (tilda); no RSS/time regression on the same benchmark used for
+    the way/relation alignment work above.
+  - **Still `HashMap`-based, and expected to stay that way:** `edges.csv` (the relation path needs
+    random access into it by arbitrary member-way id, and no shipped config exercises the
+    way-graph-fallback path that would benefit anyway — see the graph-topics note above).
+    `parquet.rs` (Simon's parked PR) hasn't been touched at all yet — same cursor rewrite (now even
+    simpler, given the one-table-per-kind schema) would apply there once that branch is picked back
+    up.
+
 - **Root `Dockerfile` (standalone one-container live-editor demo) is stale.** It bundles a single
   container with no Postgres service, but the live editor now requires `db`
   (`editor/docker-compose.yml`) plus a one-time "all ways" ingest pass — see the Next.js migration

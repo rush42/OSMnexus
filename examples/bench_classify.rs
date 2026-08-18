@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
 
     let cb = Callbacks {
         has_relations,
-        classify_rel: |rd: &RelData| -> Option<u32> {
+        classify_rel: |rd: &RelData| {
             let rows = classify_relation(&runners, rd);
             let mut mask = 0u32;
             for (i, r) in rows.iter().enumerate() {
@@ -31,26 +31,37 @@ fn main() -> anyhow::Result<()> {
                     mask |= 1 << i;
                 }
             }
-            mask.ne(&0).then_some(mask)
+            (mask.ne(&0).then_some(mask), rows, Vec::new())
         },
-        classify_way: |wd: &WayData| -> Option<u32> {
+        classify_way: |wd: &WayData| {
             let out = classify_way(&runners, wd);
-            (out.mask != 0).then_some(out.mask)
+            ((out.mask != 0).then_some(out.mask), out.topic_rows)
         },
         has_nodes,
-        classify_node: |nd: &NodeData| -> bool {
+        classify_node: |nd: &NodeData| {
             let rows = classify_node(&runners, nd);
-            rows.iter().any(|r| !r.is_empty())
+            (rows.iter().any(|r| !r.is_empty()), rows, None)
         },
+        // This example measures classification only, so it opts out of everything the real
+        // pipeline uses these for: no relation geometry, no graph output, and every node decoded
+        // (an untagged-node skip would hide exactly the per-node cost being measured). `route_*`
+        // are no-ops — this harness counts/drops rows, no writer involved.
+        relation_geom_mask: 0,
+        skip_untagged_nodes: false,
+        needs_graph: false,
+        ordered: true,
+        route_tag: |_| {},
+        route_member: |_| {},
+        route_point: |_, _| {},
     };
 
     let t = Instant::now();
-    let ctx = stream_osm(&path, cb, false)?;
+    let ctx = stream_osm(&path, cb)?;
     let elapsed = t.elapsed();
     println!(
         "total: {:.2}s (node_coords={}, way_refs={}, rel_members={})",
         elapsed.as_secs_f64(),
-        ctx.node_coords.len(),
+        ctx.node_coords.iter().count(),
         ctx.way_refs.len(),
         ctx.rel_members.len(),
     );

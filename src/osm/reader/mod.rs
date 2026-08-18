@@ -28,7 +28,9 @@ use anyhow::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{info, warn};
 
+use crate::geom::rows::GeomRow;
 use crate::osm::types::{NodeData, RelData, WayData};
+use crate::output::rows::{MemberRow, TopicRow};
 
 use blob_index::{build_blob_index, find_relation_section_start, find_way_section_start, pbf_is_sorted};
 use fallback::stream_osm_fallback;
@@ -57,17 +59,34 @@ pub struct SelectionContext {
     /// forced cut points even at use-count 1. A node classified only by point-only (or bare) node
     /// topics is not in here — see `GeometryPlan::node_graph_mask`.
     pub selected: FxHashSet<i64>,
+    /// Every tag-kept way's id, in the same order its tag row was routed in during the select phase
+    /// — the ordered fast path gives blob order (see `sorted::classify_and_index`'s own doc), the
+    /// fallback scan whatever order its own parallel reduce produced. `geom::materialize::run` walks
+    /// this same order (`WayRefsStore::par_route_ordered`) so a table's tag-row CSV and its paired
+    /// geometry CSV end up in matching row order.
+    pub kept_way_order: Vec<i64>,
+    /// Every kept relation's id, in the same order its tag row was routed in during the relations
+    /// pass — the way-order equivalent for relations. `geom::materialize::run` walks this same order
+    /// (`RelMembers::requests_ordered`) so a table's relation tag rows and their paired relation
+    /// geometry rows end up in matching order too.
+    pub kept_relation_order: Vec<i64>,
 }
 
-/// The topic-agnostic callbacks driving the "select" phase. `classify_way`/`classify_rel` return
-/// the per-topic keep bitmask (`None`/`0` = kept by nobody); tag rows are emitted as a side effect
-/// (see this module's own doc for why that can't wait for `SelectionContext`).
-pub struct Callbacks<CR, CW, CN> {
+/// The topic-agnostic callbacks driving the "select" phase. `classify_way`/`classify_rel`/
+/// `classify_node` are now pure — they return their tag rows (and, for a way/relation, the keep
+/// mask) instead of routing them as a side effect. Routing is a separate `route_*` callback, called
+/// by the ordered fast path from its blob-order sequential fold (not from the parallel decode
+/// section the classify closures run in) — see `sorted::FOLD_CHUNK_BLOBS`'s own doc for why that
+/// fold is already blob-ordered, and `classify_and_index`'s own doc for why tag routing used to
+/// race ahead of it. The fallback scan (`fallback::stream_osm_fallback`) calls `route_*` right next
+/// to `classify_*` instead, same as before — it has no ordering guarantee to preserve.
+pub struct Callbacks<CR, CW, CN, RT, RM, RP> {
     /// Whether any topic declares relation categories — gates the relations pass entirely.
     pub has_relations: bool,
-    /// Relations pass: emit relation tag rows + `relation_members`; return the keep mask (`None`
-    /// if kept by nobody). Fully independent of the ways pass for classification purposes —
-    /// relation membership never affects whether a way is tag-kept.
+    /// Relations pass: classify one relation, returning its keep mask (`None` if kept by nobody),
+    /// its per-topic tag rows, and its member-way link rows (empty unless kept). Pure — no routing.
+    /// Fully independent of the ways pass for classification purposes — relation membership never
+    /// affects whether a way is tag-kept.
     pub classify_rel: CR,
     /// OR of every topic index bit that wants *any* relation geometry (line/point/polygon) — i.e.
     /// `GeometryPlan::relation_geom_mask`. Gates which kept relations' member ways get their node
@@ -76,16 +95,17 @@ pub struct Callbacks<CR, CW, CN> {
     /// have their coordinates decoded for nothing (this used to balloon Pass A/B cost whenever
     /// relations were enabled, regardless of how many relation topics were attribute-only).
     pub relation_geom_mask: u32,
-    /// Ways pass: emit tag rows; return the keep mask (`None` if kept by nobody). Relation
-    /// membership has no bearing on this — see `classify_and_index`'s own doc.
+    /// Ways pass: classify one way, returning its keep mask (`None` if kept by nobody) and its
+    /// per-topic tag rows. Pure — no routing. Relation membership has no bearing on this — see
+    /// `classify_and_index`'s own doc.
     pub classify_way: CW,
     /// Whether any topic declares node categories — gates node tag decoding in Pass B.
     pub has_nodes: bool,
-    /// Nodes pass: emit node tag rows; return `true` if the node should be a forced graph cut
-    /// point (classified by a topic that declared `"geometry": {"node": ["graph"]}` — not merely
-    /// classified at all, see `GeometryPlan::node_graph_mask`). A node's own point-geometry row (if
-    /// wanted) is built and routed right here too, by the caller — a node is a leaf, its point
-    /// shape needs nothing `SelectionContext` provides.
+    /// Nodes pass: classify one node, returning whether it should be a forced graph cut point
+    /// (classified by a topic that declared `"geometry": {"node": ["graph"]}` — not merely
+    /// classified at all, see `GeometryPlan::node_graph_mask`), its per-topic tag rows, and (only
+    /// when kept) its own point-geometry row paired with the keep mask — a node is a leaf, its
+    /// point shape needs nothing `SelectionContext` provides. Pure — no routing.
     pub classify_node: CN,
     /// Every node-processing topic provably yields nothing for a node with no tags, so untagged
     /// nodes can be skipped without decoding them (see `TopicRunner::skips_untagged`). The great
@@ -103,6 +123,24 @@ pub struct Callbacks<CR, CW, CN> {
     /// gates `assign_node_ids`/cut-point logic on the same flag) — see `NodeRefCounts`'s own doc
     /// for the cheaper shape Pass A builds instead when this is `false`.
     pub needs_graph: bool,
+    /// Whether tag-row/geometry-row correlation needs to survive as matching output row order (CSV/
+    /// GeoJSON/GeoJSONSeq, which join tag and geometry files by position to avoid a hashmap join —
+    /// see `WayRefsStore::par_route_ordered`'s own doc) versus not (`pg`, which correlates by the
+    /// `osm_id` column instead and pays nothing for row order). When `true`, the ordered fast path
+    /// routes from its sequential, blob-order fold (this struct's own doc); when `false`, it routes
+    /// straight from the parallel decode section instead, trading the row-order guarantee for full
+    /// thread-pool occupancy (no barrier between decode and route) — see `sorted::FOLD_CHUNK_BLOBS`'s
+    /// own doc for why that barrier exists regardless (accumulator determinism, unrelated to tag
+    /// routing). The fallback scan ignores this — it never had an ordering guarantee to preserve.
+    pub ordered: bool,
+    /// Route a classified element's per-topic tag rows to the tag-table writers. Called from the
+    /// ordered fast path's sequential, blob-order fold when `ordered`, or straight from the parallel
+    /// decode section otherwise — see this struct's own doc.
+    pub route_tag: RT,
+    /// Route a kept relation's member-way link rows.
+    pub route_member: RM,
+    /// Route a kept node's own point-geometry row (mask, row).
+    pub route_point: RP,
 }
 
 /// Log what the reader's own long-lived structures occupy at a phase boundary, next to the
@@ -184,11 +222,17 @@ pub fn assign_node_ids(
 ///     topics exist) classify node tags, collecting the selected-node set.
 ///
 /// Fallback (unsorted / boundary check fails / `PBF_FORCE_FALLBACK`): full parallel scans.
-pub fn stream_osm<CR, CW, CN>(path: &str, cb: Callbacks<CR, CW, CN>) -> anyhow::Result<SelectionContext>
+pub fn stream_osm<CR, CW, CN, RT, RM, RP>(
+    path: &str,
+    cb: Callbacks<CR, CW, CN, RT, RM, RP>,
+) -> anyhow::Result<SelectionContext>
 where
-    CR: for<'a> Fn(&RelData<'a>) -> Option<u32> + Sync + Send,
-    CW: for<'a> Fn(&WayData<'a>) -> Option<u32> + Sync + Send,
-    CN: for<'a> Fn(&NodeData<'a>) -> bool + Sync + Send,
+    CR: for<'a> Fn(&RelData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) + Sync + Send,
+    CW: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync + Send,
+    CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) + Sync + Send,
+    RT: Fn(Vec<Vec<TopicRow>>) + Sync + Send,
+    RM: Fn(Vec<MemberRow>) + Sync + Send,
+    RP: Fn(u32, GeomRow) + Sync + Send,
 {
     info!("Building blob index (no decompression)...");
     let t_idx = std::time::Instant::now();
@@ -228,13 +272,15 @@ where
                 );
 
                 // Relations pass — classify + emit relation rows, collect member-way requests.
-                let rel_members = if cb.has_relations && !rel_offsets.is_empty() {
+                let (rel_members, kept_relation_order) = if cb.has_relations && !rel_offsets.is_empty() {
                     let t = std::time::Instant::now();
-                    let m = classify_relations(&mmap, rel_offsets, &cb.classify_rel)?;
+                    let (m, order) = classify_relations(
+                        &mmap, rel_offsets, &cb.classify_rel, &cb.route_tag, &cb.route_member, cb.ordered,
+                    )?;
                     info!("[phase] Relations pass (classify + emit): {:.1}s ({} kept)", t.elapsed().as_secs_f32(), m.len());
-                    m
+                    (m, order)
                 } else {
-                    FxHashMap::default()
+                    (FxHashMap::default(), Vec::new())
                 };
                 // Every relation-member way id needs its node refs recorded too (as a `mask == 0`
                 // `way_refs` entry) even when its own tags never tag-keep it — see
@@ -252,8 +298,10 @@ where
                 // comes back straight from the fold instead of a second scan over the finished
                 // `way_refs` — see `classify_and_index`'s own doc.
                 let t = std::time::Instant::now();
-                let (use_counts, way_refs, extra_node_ids) =
-                    classify_and_index(&mmap, way_offsets, &cb.classify_way, &extra_way_ids, cb.needs_graph)?;
+                let (use_counts, way_refs, extra_node_ids, kept_way_order) = classify_and_index(
+                    &mmap, way_offsets, &cb.classify_way, &cb.route_tag, &extra_way_ids, cb.needs_graph,
+                    cb.ordered,
+                )?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
                 log_struct_sizes(
                     "after Pass A",
@@ -267,8 +315,8 @@ where
                 // Pass B — node region: coords for every referenced node (+ classify nodes).
                 let t = std::time::Instant::now();
                 let (node_coords, selected, standalone_classified) = collect_coords(
-                    &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &extra_node_ids,
-                    cb.skip_untagged_nodes,
+                    &mmap, node_offsets, &use_counts, cb.has_nodes, &cb.classify_node, &cb.route_tag,
+                    &cb.route_point, &extra_node_ids, cb.skip_untagged_nodes, cb.ordered,
                 )?;
                 info!(
                     "[phase] Pass B (collect node coords{}): {:.1}s",
@@ -294,7 +342,14 @@ where
                 // to do) costs the same order of memory as the coordinate map itself, for nothing.
                 drop(use_counts);
 
-                return Ok(SelectionContext { node_coords, way_refs, rel_members: RelMembers::build(rel_members), selected });
+                return Ok(SelectionContext {
+                    node_coords,
+                    way_refs,
+                    rel_members: RelMembers::build(rel_members),
+                    selected,
+                    kept_way_order,
+                    kept_relation_order,
+                });
             }
             Err(e) => {
                 warn!("ordered fast-path boundary check failed ({e:#}); falling back to full scan");

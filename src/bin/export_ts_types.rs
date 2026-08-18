@@ -39,7 +39,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     let mut contributions: std::collections::BTreeMap<String, Vec<Contribution>> = std::collections::BTreeMap::new();
-    for field in runner.default_producers.iter().chain(runner.category_producers.values().flatten()) {
+    for field in runner.default_producers.iter().chain(runner.category_producers.iter().flatten()) {
         contributions.entry(field.output.clone()).or_default().push(collect(field));
     }
 

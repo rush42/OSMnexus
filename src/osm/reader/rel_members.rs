@@ -73,9 +73,31 @@ impl RelMembers {
         self.0.iter().flat_map(|(_, bytes, _)| decode_members(bytes).into_iter().map(|(w, _)| w)).collect()
     }
 
-    /// `(relation_id, member ways with role, keep mask)` for every relation — `geom::materialize`'s
-    /// relation-geometry assembly input.
-    pub fn requests(&self) -> Vec<(i64, Vec<(i64, MemberRole)>, u32)> {
+    /// `(relation_id, member ways with role, keep mask)` for every relation in `order` —
+    /// `geom::materialize`'s relation-geometry assembly input. Takes an explicit order (rather than
+    /// walking the arena's own MPHF-slot order, an id-derived order unrelated to when relations were
+    /// classified) so the caller can pass `SelectionContext::kept_relation_order` — the same blob
+    /// order the relations pass already routed each relation's tag row in — and get relation
+    /// geometry rows out in matching order, same reasoning as `WayRefsStore::par_route_ordered`.
+    /// Sequential, not chunked/parallel like the way equivalent: relation counts are orders of
+    /// magnitude smaller than way counts (see this module's own doc), so there's no transient-size
+    /// concern worth the complexity.
+    pub fn requests_ordered(&self, order: &[i64]) -> Vec<(i64, Vec<(i64, MemberRole)>, u32)> {
+        order
+            .iter()
+            .filter_map(|&id| {
+                let (bytes, mask) = self.0.get(id)?;
+                Some((id, decode_members(bytes), mask))
+            })
+            .collect()
+    }
+
+    /// Every relation's `(id, member ways with role, keep mask)`, in the arena's own MPHF-slot order
+    /// — for output backends with no row-order correlation to preserve (e.g. `pg`, joined on
+    /// `osm_id` downstream). Cheaper than `requests_ordered` only in that it skips
+    /// `SelectionContext::kept_relation_order`'s construction upstream; relation counts are small
+    /// enough (see this module's own doc) that this method's own cost difference is negligible.
+    pub fn requests_all(&self) -> Vec<(i64, Vec<(i64, MemberRole)>, u32)> {
         self.0.iter().map(|(id, bytes, mask)| (id, decode_members(bytes), mask)).collect()
     }
 }
@@ -105,7 +127,7 @@ mod tests {
         way_ids.sort();
         assert_eq!(way_ids, vec![10, 20, 30]);
 
-        let mut requests = store.requests();
+        let mut requests = store.requests_ordered(&[1, 2]);
         requests.sort_by_key(|&(id, ..)| id);
         assert_eq!(
             requests,

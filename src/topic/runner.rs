@@ -245,7 +245,9 @@ impl TopicRunner {
                 .with_context(|| format!("resolving topics/{name}/topic.json"))?,
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
-        spec.geometry.validate().with_context(|| format!("topics/{name}/topic.json: geometry"))?;
+        spec.geometry_output
+            .validate()
+            .with_context(|| format!("topics/{name}/topic.json: geometry_output"))?;
         let exclude_condition = spec.exclude_condition.take();
 
         // Load the named producer library. Optional: a topic with no named producers (e.g.
@@ -456,22 +458,33 @@ impl TopicRunner {
     pub fn skips_untagged(&self, kind: ElementKind) -> bool {
         !self.has_kind(kind) || self.skip_untagged.contains(&kind)
     }
-    /// Whether this topic declared `shape` for `kind` (`topic.json`'s `"geometry"` — see
-    /// `GeometrySpec`). Replaces the old per-(kind,shape) accessors (`wants_way_graph`/
-    /// `wants_way_linestring`/`wants_relation_linestring`) with one generalized lookup, now that
-    /// `node`/`way`/`relation` all share the same `GeometryShape` vocabulary.
+    /// Whether this topic declared `shape` as its one geometry output for `kind` (`topic.json`'s
+    /// `"geometry_output"` — see `GeometryOutputSpec`). Now that a kind has at most one shape,
+    /// "wants" is really "is this the declared shape" — kept as a `(kind, shape)` lookup rather than
+    /// exposing the `Option<GeometryShape>` directly since most call sites just want the bool.
     pub fn wants(&self, kind: ElementKind, shape: GeometryShape) -> bool {
+        self.geometry_output(kind) == Some(shape)
+    }
+
+    /// This topic's one declared geometry output for `kind`, if any.
+    pub fn geometry_output(&self, kind: ElementKind) -> Option<GeometryShape> {
         match kind {
-            ElementKind::Node => self.spec.geometry.node.contains(&shape),
-            ElementKind::Way => self.spec.geometry.way.contains(&shape),
-            ElementKind::Relation => self.spec.geometry.relation.contains(&shape),
+            ElementKind::Node => self.spec.geometry_output.node,
+            ElementKind::Way => self.spec.geometry_output.way,
+            ElementKind::Relation => self.spec.geometry_output.relation,
         }
     }
 
     /// This topic wants a per-topic `{table}_edge` pgRouting table (see `db::topic_edges`) —
-    /// shorthand for `wants(Way, Graph)`, the one shape lookup common enough to keep a name.
+    /// `topic.json`'s `"graph": { "way": true }`.
     pub fn wants_way_graph(&self) -> bool {
-        self.wants(ElementKind::Way, GeometryShape::Graph)
+        self.spec.graph.way
+    }
+
+    /// This topic's classified nodes force a cut point in the shared graph — `topic.json`'s
+    /// `"graph": { "node": true }`.
+    pub fn wants_node_graph(&self) -> bool {
+        self.spec.graph.node
     }
 
     /// Run the topic's pipeline for one element of `kind`, handing off to `build_topic_rows`, which

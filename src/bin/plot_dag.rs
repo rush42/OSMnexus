@@ -48,7 +48,16 @@ fn main() -> Result<()> {
         by_field.entry(field.output.clone()).or_default()
             .entry(repr).or_insert((&field.source, Vec::new())).1.push("default".to_owned());
     }
-    for (category, fields) in &runner.category_producers {
+    // `category_producers` is indexed by `CategoryDef::idx`, so recover each slot's name from the
+    // category set it came from.
+    let mut category_names: Vec<String> = vec![String::new(); runner.category_producers.len()];
+    for cats in runner.categories.values() {
+        for cat in &cats.categories {
+            category_names[cat.idx] = cat.id.clone();
+        }
+    }
+    for (idx, fields) in runner.category_producers.iter().enumerate() {
+        let category = &category_names[idx];
         for field in fields {
             let repr = format!("{:?}", field.source);
             by_field.entry(field.output.clone()).or_default()

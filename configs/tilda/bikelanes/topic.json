@@ -1,7 +1,7 @@
 {
   "table": "bikelanes",
-  "geometry": {
-    "way": ["line"]
+  "geometry_output": {
+    "way": "line"
   },
   "passthrough_tags": [
     "source:width",

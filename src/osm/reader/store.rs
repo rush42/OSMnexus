@@ -87,7 +87,13 @@ impl<T: Copy + Send + Sync> MphfArena<T> {
         (0..self.ids.len()).map(move |idx| self.slot(idx))
     }
 
-    pub fn par_iter(&self) -> impl ParallelIterator<Item = (i64, &[u8], T)> + '_ {
+    /// Same records as [`iter`](Self::iter), in arena (MPHF-slot) order rather than any caller-given
+    /// order — for callers with no row-order correlation to preserve downstream (see
+    /// `WayRefsStore::par_route_all`).
+    pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = (i64, &[u8], T)> + '_
+    where
+        T: Send,
+    {
         (0..self.ids.len()).into_par_iter().map(move |idx| self.slot(idx))
     }
 }

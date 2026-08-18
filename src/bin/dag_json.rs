@@ -134,7 +134,7 @@ fn main() -> Result<()> {
                 // Field names only — no `Producer` repr formatting, no `producer_dag` walks, so this
                 // stays cheap even when some field's tree is huge.
                 let mut names: Vec<String> = runner.default_producers.iter().map(|f| f.output.clone())
-                    .chain(runner.category_producers.values().flatten().map(|f| f.output.clone()))
+                    .chain(runner.category_producers.iter().flatten().map(|f| f.output.clone()))
                     .filter(|name| !runner.passthrough_producers.contains(name))
                     .collect();
                 names.sort();
@@ -149,10 +149,21 @@ fn main() -> Result<()> {
                 let repr = format!("{:?}", field.source);
                 by_repr.entry(repr).or_insert((&field.source, Vec::new())).1.push("default".to_owned());
             }
-            for (category, fields) in &runner.category_producers {
+            // `category_producers` is indexed by `CategoryDef::idx`; recover each slot's name.
+            let mut category_names: Vec<String> = vec![String::new(); runner.category_producers.len()];
+            for cats in runner.categories.values() {
+                for cat in &cats.categories {
+                    category_names[cat.idx] = cat.id.clone();
+                }
+            }
+            for (idx, fields) in runner.category_producers.iter().enumerate() {
                 for field in fields.iter().filter(|f| f.output == selector) {
                     let repr = format!("{:?}", field.source);
-                    by_repr.entry(repr).or_insert((&field.source, Vec::new())).1.push(category.clone());
+                    by_repr
+                        .entry(repr)
+                        .or_insert((&field.source, Vec::new()))
+                        .1
+                        .push(category_names[idx].clone());
                 }
             }
             if by_repr.is_empty() {

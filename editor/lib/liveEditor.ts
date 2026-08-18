@@ -25,7 +25,8 @@ const PIPELINE_BIN = process.env.PIPELINE_BIN_PATH || path.join(REPO_DIR, "targe
 const DAG_JSON_BIN = process.env.DAG_JSON_BIN_PATH || path.join(REPO_DIR, "target", "release", "dag_json");
 const CONFIGS_ROOT = path.join(REPO_DIR, "configs");
 // The table an "all ways + nodes + relations" ingest loaded a whole region into — tags in
-// `SOURCE_TABLE`, way geometry in `SOURCE_TABLE`_geom, node geometry in `SOURCE_TABLE`_point (see
+// `SOURCE_TABLE`, way geometry in `SOURCE_TABLE`_way_geom, node geometry in
+// `SOURCE_TABLE`_node_geom (see
 // `configs/live_raw/topic.json` and `fetchFeatures` below). A bbox selection is a spatial query
 // against these tables, not an `osmium extract` + full PBF reparse. A relation has no geometry
 // table of its own — `fetchFeatures` approximates one from `relation_members` instead (see that
@@ -256,11 +257,11 @@ function psqlCopyBinary(sql: string): Promise<Buffer> {
 async function baseTableBounds(): Promise<[number, number, number, number]> {
   const row = await psqlQuery(
     `SELECT ST_XMin(e)||','||ST_YMin(e)||','||ST_XMax(e)||','||ST_YMax(e) ` +
-      `FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) e FROM ${SOURCE_TABLE}_geom) s`,
+      `FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) e FROM ${SOURCE_TABLE}_way_geom) s`,
   );
   const bbox = row.split(",").map(Number);
   if (bbox.length !== 4 || bbox.some((n) => Number.isNaN(n))) {
-    throw new Error(`could not read bounds from ${SOURCE_TABLE}_geom — did you run the "all ways" ingest pass?`);
+    throw new Error(`could not read bounds from ${SOURCE_TABLE}_way_geom — did you run the "all ways" ingest pass?`);
   }
   return bbox as [number, number, number, number];
 }
@@ -277,15 +278,15 @@ export async function findWay(osmId: string): Promise<{ bbox: [number, number, n
   if (!/^-?\d+$/.test(osmId)) throw new ApiError(400, "way id must be an integer");
   const bboxRow = await psqlQuery(
     `SELECT ST_XMin(e)||','||ST_YMin(e)||','||ST_XMax(e)||','||ST_YMax(e) ` +
-      `FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) e FROM ${SOURCE_TABLE}_geom WHERE osm_id = ${osmId}) s`,
+      `FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) e FROM ${SOURCE_TABLE}_way_geom WHERE osm_id = ${osmId}) s`,
   );
   const bbox = bboxRow.split(",").map(Number);
   if (bbox.length !== 4 || bbox.some((n) => Number.isNaN(n))) {
-    throw new ApiError(404, `way ${osmId} not found in ${SOURCE_TABLE}_geom`);
+    throw new ApiError(404, `way ${osmId} not found in ${SOURCE_TABLE}_way_geom`);
   }
   const detailRow = await psqlQuery(
     `SELECT t.produced::text || chr(30) || ST_AsGeoJSON(ST_Transform(g.geom, 4326)) ` +
-      `FROM ${SOURCE_TABLE} t JOIN ${SOURCE_TABLE}_geom g ON g.osm_id = t.osm_id WHERE t.osm_id = ${osmId} LIMIT 1`,
+      `FROM ${SOURCE_TABLE} t JOIN ${SOURCE_TABLE}_way_geom g ON g.osm_id = t.osm_id WHERE t.osm_id = ${osmId} LIMIT 1`,
   );
   const sep = detailRow.indexOf("\x1e");
   if (sep === -1) throw new ApiError(500, `could not read tags/geometry for way ${osmId}`);
@@ -348,29 +349,29 @@ async function fetchFeatures(
 
   if ("wayId" in target) {
     if (!/^-?\d+$/.test(target.wayId)) throw new ApiError(400, "way id must be an integer");
-    await fetchOne(`${SOURCE_TABLE}_geom`, "W", `t.osm_id = ${target.wayId}`, (buf) => ({
+    await fetchOne(`${SOURCE_TABLE}_way_geom`, "W", `t.osm_id = ${target.wayId}`, (buf) => ({
       type: "LineString",
       coordinates: linestringFromEwkb(buf),
     }));
   } else {
     const [minLon, minLat, maxLon, maxLat] = target.bounds;
     const envelope = `ST_Transform(ST_MakeEnvelope(${minLon}, ${minLat}, ${maxLon}, ${maxLat}, 4326), 3857)`;
-    await fetchOne(`${SOURCE_TABLE}_geom`, "W", `ST_Intersects(g.geom, ${envelope})`, (buf) => ({
+    await fetchOne(`${SOURCE_TABLE}_way_geom`, "W", `ST_Intersects(g.geom, ${envelope})`, (buf) => ({
       type: "LineString",
       coordinates: linestringFromEwkb(buf),
     }));
-    await fetchOne(`${SOURCE_TABLE}_point`, "N", `ST_Intersects(g.geom, ${envelope})`, (buf) => ({
+    await fetchOne(`${SOURCE_TABLE}_node_geom`, "N", `ST_Intersects(g.geom, ${envelope})`, (buf) => ({
       type: "Point",
       coordinates: pointFromEwkb(buf),
     }));
 
     // Relations: no real assembled geometry (`geom::relation`'s inner/outer-ring multipolygon
     // logic, member ordering/dissolving) — `live_raw`'s topic.json declares `"relation": true` in
-    // `accept_all` but nothing under `geometry`, so `main.rs`'s relation pass only ever writes tag
-    // rows + `relation_members` links (see that table's own doc, `src/db/schema.rs`), never a
-    // `{table}_relation_geom`/`_relation_polygon` table. Good enough for a bbox-scoped editor
-    // preview of a line relation (e.g. a train route) — not accurate for a polygon relation, which
-    // this can't distinguish outer rings from inner ones for.
+    // `accept_all` but no `"geometry_output": { "relation": ... }`, so `main.rs`'s relation pass
+    // only ever writes tag rows + `relation_members` links (see that table's own doc,
+    // `src/db/schema.rs`), never a `{table}_relation_geom` table. Good enough for a bbox-scoped
+    // editor preview of a line relation (e.g. a train route) — not accurate for a polygon
+    // relation, which this can't distinguish outer rings from inner ones for.
     //
     // `relation_members` is a single global table (not `SOURCE_TABLE`-prefixed — see its own doc),
     // joined to the way geometry table with the same bbox filter as the way query above so this
@@ -381,7 +382,7 @@ async function fetchFeatures(
     // bbox-scoped.
     const memberBuf = await psqlCopyBinary(
       `COPY (SELECT m.relation_osm_id, m.way_osm_id FROM relation_members m ` +
-        `JOIN ${SOURCE_TABLE}_geom g ON g.osm_id = m.way_osm_id WHERE ST_Intersects(g.geom, ${envelope})) TO STDOUT (FORMAT binary)`,
+        `JOIN ${SOURCE_TABLE}_way_geom g ON g.osm_id = m.way_osm_id WHERE ST_Intersects(g.geom, ${envelope})) TO STDOUT (FORMAT binary)`,
     );
     const memberWays = new Map<string, string[]>();
     for (const [relField, wayField] of parseCopyBinary(memberBuf)) {
@@ -436,7 +437,7 @@ export async function getBounds(): Promise<{ bounds: [number, number, number, nu
 
 // Selecting a bbox used to shell out to `osmium extract` (cut a fresh PBF slice, then re-parse it
 // from scratch on every single edit). Now it's just recording the bounds — the pipeline queries
-// `SOURCE_TABLE`/`SOURCE_TABLE`_geom for exactly this bbox on every run instead (see `runPipeline`).
+// `SOURCE_TABLE`/`SOURCE_TABLE`_way_geom for exactly this bbox on every run instead (see `runPipeline`).
 // Clears `currentWayId` — a fresh manual bbox drag supersedes any earlier way-id search.
 export function selectBbox(bounds: [number, number, number, number]): { bounds: [number, number, number, number] } {
   state.currentBounds = bounds;

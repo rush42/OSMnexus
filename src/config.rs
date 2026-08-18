@@ -70,14 +70,14 @@ pub struct Config {
     #[arg(long, default_value_t = 4)]
     pub db_writers: usize,
 
-    /// Output backend: `pg` (COPY into PostGIS), `csv` (one file per tag table + geometries.csv),
-    /// `geojson` (same CSV files, plus one `<table>.geojson` `FeatureCollection` per topic),
-    /// `geojsonseq` (same CSV files, plus one `<table>.geojsonseq` newline-delimited GeoJSON
-    /// Feature stream per topic — RFC 8142), or `parquet` (same CSV files, plus one
-    /// `<table>.parquet` GeoParquet file per topic). The GeoJSON variants and parquet are built by
-    /// joining tag rows to edge geometries on `osm_id`, for local tooling like the live editor;
-    /// `geojsonseq` streams without buffering the whole topic, `geojson` is simpler to consume
-    /// whole.
+    /// Output backend: `pg` (COPY into PostGIS), `csv` (one text file per tag/geometry table), or
+    /// `geojson`/`geojsonseq`/`parquet`, which stage their tag/geometry tables as `.bin` files (the
+    /// same Postgres `COPY BINARY` wire format `pg` streams live — see `output::rows`' own doc)
+    /// instead of text CSV, then join them into one `<table>.geojson` `FeatureCollection` per topic /
+    /// one `<table>.geojsonseq` newline-delimited GeoJSON Feature stream per topic (RFC 8142) / one
+    /// `<table>.parquet` GeoParquet file per topic, forward-joining tag rows to geometry rows on
+    /// `osm_id` without a hashmap (see `output::cursor`'s own doc) — for local tooling like the live
+    /// editor, or downstream analytical tools that read Parquet/GeoParquet directly.
     #[arg(long, value_enum, default_value_t = Output::Pg)]
     pub output: Output,
 

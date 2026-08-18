@@ -39,10 +39,10 @@ use tracing::info;
 
 use config::{Config, Output};
 use db::schema;
-use geom::rows::{POINT_COLUMNS, POLYGON_COLUMNS, WAY_COLUMNS};
+use geom::rows::{GeomRow, GEOM_COLUMNS};
 use topic::TopicRunner;
 use osm::types::{ElementKind, NodeData, RelData, WayData};
-use output::rows::MemberRow;
+use output::rows::{MemberRow, TopicRow};
 use output::sinks::{write_rows_once, TableWriters};
 use processing::{classify_node, classify_relation, classify_way};
 
@@ -130,32 +130,25 @@ async fn main() -> anyhow::Result<()> {
     // `geom::plan::GeometryPlan`'s own doc.
     let plan = geom::plan::GeometryPlan::build(&runners);
 
-    // Every non-tag-table geometry table this run needs (see `schema::GeomTableShape`'s own doc) —
-    // one consolidated list instead of a parallel `&[&str]` per shape.
-    let geom_tables: Vec<(String, schema::GeomTableShape)> = plan
-        .way_line_topics
+    // Every non-tag-table geometry table this run needs — one consolidated list instead of a
+    // parallel `&[&str]` per shape. One table per (kind, topic) now, not per (kind, shape, topic):
+    // `geom_type` self-describes the shape within each table (see `geom::rows::GeomRow`'s own doc).
+    let geom_tables: Vec<String> = plan
+        .node_geom_topics
         .iter()
-        .map(|&i| (schema::way_geom_table(table_refs[i]), schema::GeomTableShape::LineString))
-        .chain(plan.way_polygon_topics.iter().map(|&i| (schema::polygon_table(table_refs[i]), schema::GeomTableShape::Polygon)))
-        .chain(plan.point_topics.iter().map(|&i| (schema::point_table(table_refs[i]), schema::GeomTableShape::Point)))
-        .chain(plan.relation_line_topics.iter().map(|&i| (schema::relation_geom_table(table_refs[i]), schema::GeomTableShape::MultiLineString)))
-        .chain(plan.relation_point_topics.iter().map(|&i| (schema::relation_point_table(table_refs[i]), schema::GeomTableShape::Point)))
-        .chain(plan.relation_polygon_topics.iter().map(|&i| (schema::relation_polygon_table(table_refs[i]), schema::GeomTableShape::Polygon)))
+        .map(|&i| schema::node_geom_table(table_refs[i]))
+        .chain(plan.way_geom_topics.iter().map(|&i| schema::way_geom_table(table_refs[i])))
+        .chain(plan.relation_geom_topics.iter().map(|&i| schema::relation_geom_table(table_refs[i])))
         .collect();
-    let relation_line_table_refs: Vec<&str> = plan.relation_line_topics.iter().map(|&i| table_refs[i]).collect();
-    let relation_point_table_refs: Vec<&str> = plan.relation_point_topics.iter().map(|&i| table_refs[i]).collect();
-    let relation_polygon_table_refs: Vec<&str> = plan.relation_polygon_topics.iter().map(|&i| table_refs[i]).collect();
+    let relation_table_refs: Vec<&str> = plan.relation_geom_topics.iter().map(|&i| table_refs[i]).collect();
 
     let n = tables.len();
     // Extra sharded-writer tables beyond the per-topic tag tables: members, plus edges+nodes when
-    // any topic wants the graph, plus one per topic wanting a way-shaped geometry table (relation
+    // any topic wants the graph, plus one per topic wanting node or way geometry (relation
     // geometry writes separately, after the main streaming pass, so it isn't part of this
     // pool-sizing count — see below).
-    let extra_tables = 1
-        + if plan.any_way_graph { 2 } else { 0 }
-        + plan.way_line_topics.len()
-        + plan.way_polygon_topics.len()
-        + plan.point_topics.len();
+    let extra_tables =
+        1 + if plan.any_way_graph { 2 } else { 0 } + plan.node_geom_topics.len() + plan.way_geom_topics.len();
 
     // Output backend. `w` = parallel writers per table: k sharded COPY connections for Postgres, a
     // single file writer for CSV. `pool` is `None` for CSV.
@@ -185,13 +178,19 @@ async fn main() -> anyhow::Result<()> {
         Output::Parquet => {
             std::fs::create_dir_all(&cfg.out_dir)
                 .with_context(|| format!("creating output dir {}", cfg.out_dir))?;
-            info!("Parquet output → {}/ (CSV staging files + one {{topic}}.parquet per topic)", cfg.out_dir);
+            info!("Parquet output → {}/ (one {{topic}}.parquet per topic)", cfg.out_dir);
             (None, 1)
         }
     };
 
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
+
+    // CSV/GeoJSON/GeoJSONSeq join tag and geometry rows by output-file *position* (a forward-cursor
+    // join, avoiding a hashmap — see `WayRefsStore::par_route_ordered`'s own doc), so they need
+    // blob-order-deterministic routing. `pg` correlates by the `osm_id` column instead, so row order
+    // is free to relax — see `osm::reader::Callbacks::ordered`'s own doc for what that buys.
+    let ordered = cfg.output != Output::Pg;
 
     // Spawn `w` writers per tag table + `w` for each shared table. For Postgres these are sharded
     // COPY connections (rows round-robined for k-way parallel serialization + ingest); for CSV, w=1,
@@ -237,22 +236,26 @@ async fn main() -> anyhow::Result<()> {
         // Ways pass: emit tag rows; a way is kept purely by its own tag classification — relation
         // membership has no bearing here (see `osm::reader::Callbacks::classify_way`'s own doc).
         // The returned mask becomes `SelectionContext::way_refs`' per-way keep mask.
+        // Pure — no writer side effects. The ordered fast path routes tag rows from its blob-order
+        // sequential fold instead of from here (see `osm::reader::Callbacks`' own doc); the fallback
+        // scan routes right next to calling this, same as before.
         let classify_way_cb = {
-            let (runners, writers) = (runners.clone(), writers.clone());
-            move |wd: &WayData| -> Option<u32> {
+            let runners = runners.clone();
+            move |wd: &WayData| -> (Option<u32>, Vec<Vec<TopicRow>>) {
                 let out = classify_way(&runners, wd);
-                let kept_by_topic = writers.route_tag(out.topic_rows);
-                kept_by_topic.then_some(out.mask)
+                let kept = out.mask != 0;
+                (kept.then_some(out.mask), out.topic_rows)
             }
         };
-        // Relations pass: emit relation tag rows + `relation_members` links; return the keep mask.
-        // Fully independent of the ways pass for classification purposes — a kept relation's
-        // member ways are recorded into `SelectionContext::rel_members` by the reader itself
-        // (regardless of whether any topic wants relation *geometry*; that decision is
-        // `geom::materialize`'s, using `plan`, not made here).
+        // Relations pass: classify one relation, returning its keep mask, tag rows, and member-way
+        // link rows (empty unless kept) — pure, routed by the caller. Fully independent of the ways
+        // pass for classification purposes — a kept relation's member ways are recorded into
+        // `SelectionContext::rel_members` by the reader itself (regardless of whether any topic
+        // wants relation *geometry*; that decision is `geom::materialize`'s, using `plan`, not made
+        // here).
         let classify_rel_cb = {
-            let (runners, writers) = (runners.clone(), writers.clone());
-            move |rd: &RelData| -> Option<u32> {
+            let runners = runners.clone();
+            move |rd: &RelData| -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) {
                 let rows = classify_relation(&runners, rd);
                 let mut mask = 0u32;
                 for (i, r) in rows.iter().enumerate() {
@@ -260,28 +263,28 @@ async fn main() -> anyhow::Result<()> {
                         mask |= 1 << i;
                     }
                 }
-                let kept = writers.route_tag(rows);
-                if kept && !rd.member_ways.is_empty() {
-                    let links: Vec<MemberRow> = rd
-                        .member_ways
+                let kept = mask != 0;
+                let links = if kept && !rd.member_ways.is_empty() {
+                    rd.member_ways
                         .iter()
                         .map(|&(wid, _)| MemberRow { relation_osm_id: rd.id, way_osm_id: wid })
-                        .collect();
-                    writers.route_member(links);
-                }
-                kept.then_some(mask)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (kept.then_some(mask), rows, links)
             }
         };
-        // Nodes pass: emit node tag rows; also builds + routes this node's own point row right here
-        // — a node is a leaf, its point shape needs nothing `SelectionContext` provides, so there's
-        // no reason to defer it to the materialize phase the way way/relation geometry is deferred.
-        // The callback's return value becomes `SelectionContext::selected` (forced graph cut
-        // point) — true only when a *matching* topic declared `"geometry": {"node": ["graph"]}`
-        // (`plan.node_graph_mask`), not merely "some topic classified this node" — a point-only (or
-        // bare) node topic never affects how ways get cut.
+        // Nodes pass: classify one node, returning whether it's a forced graph cut point
+        // (`SelectionContext::selected` — true only when a *matching* topic declared `"geometry":
+        // {"node": ["graph"]}`, `plan.node_graph_mask`, not merely "some topic classified this
+        // node"), its tag rows, and (if kept) its own point row paired with its mask — a node is a
+        // leaf, its point shape needs nothing `SelectionContext` provides, so there's no reason to
+        // defer it to the materialize phase the way way/relation geometry is deferred. Pure — the
+        // caller routes both.
         let classify_node_cb = {
-            let (runners, writers, plan) = (runners.clone(), writers.clone(), plan.clone());
-            move |nd: &NodeData| -> bool {
+            let (runners, plan) = (runners.clone(), plan.clone());
+            move |nd: &NodeData| -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) {
                 let rows = classify_node(&runners, nd);
                 let mut mask = 0u32;
                 for (i, r) in rows.iter().enumerate() {
@@ -289,13 +292,31 @@ async fn main() -> anyhow::Result<()> {
                         mask |= 1 << i;
                     }
                 }
-                let kept = writers.route_tag(rows);
-                if kept {
-                    if let Some(row) = geom::materialize::node_point(nd.id, nd.lon, nd.lat, &plan) {
-                        writers.route_node_point(mask, row, &plan);
-                    }
-                }
-                kept && (mask & plan.node_graph_mask != 0)
+                let kept = mask != 0;
+                let point = kept
+                    .then(|| geom::materialize::node_point(nd.id, nd.lon, nd.lat, &plan))
+                    .flatten()
+                    .map(|row| (mask, row));
+                let forced_cut = kept && (mask & plan.node_graph_mask != 0);
+                (forced_cut, rows, point)
+            }
+        };
+        let route_tag_cb = {
+            let writers = writers.clone();
+            move |rows: Vec<Vec<TopicRow>>| {
+                writers.route_tag(rows);
+            }
+        };
+        let route_member_cb = {
+            let writers = writers.clone();
+            move |links: Vec<MemberRow>| {
+                writers.route_member(links);
+            }
+        };
+        let route_point_cb = {
+            let (writers, plan) = (writers.clone(), plan.clone());
+            move |mask: u32, row: GeomRow| {
+                writers.route_node_point(mask, row, &plan);
             }
         };
         osm::reader::stream_osm(
@@ -309,6 +330,10 @@ async fn main() -> anyhow::Result<()> {
                 classify_node: classify_node_cb,
                 skip_untagged_nodes,
                 needs_graph: plan.any_way_graph,
+                ordered,
+                route_tag: route_tag_cb,
+                route_member: route_member_cb,
+                route_point: route_point_cb,
             },
         )
     });
@@ -336,7 +361,7 @@ async fn main() -> anyhow::Result<()> {
     let materialize_writers = writers.clone();
     let relations_batch = tokio::task::spawn_blocking(move || {
         let writers = materialize_writers;
-        let m = geom::materialize::run(&ctx, &materialize_plan, |_way_id, mask, g| {
+        let m = geom::materialize::run(&ctx, &materialize_plan, ordered, |_way_id, mask, g| {
             writers.route_way(mask, g, &materialize_plan);
         });
         writers.route_node_rows(m.node_rows);
@@ -351,26 +376,15 @@ async fn main() -> anyhow::Result<()> {
     writers.finish_materialize(plan.any_way_graph).await?;
     mem_snapshot("materialize");
 
-    // Relation geometry (line/point/polygon): already built by the materialize phase above, from
-    // `ctx.rel_members` — just write it out. Works the same for CSV/GeoJSON as for Postgres
-    // (unlike the old SQL-post-processing approach, which needed a live database to merge from).
+    // Relation geometry: already built by the materialize phase above, from `ctx.rel_members` —
+    // just write it out. Works the same for CSV/GeoJSON as for Postgres (unlike the old
+    // SQL-post-processing approach, which needed a live database to merge from). One table per
+    // topic now (`geom_type` distinguishes shapes within it), not one per (topic, shape).
     let mut batch = relations_batch;
-    for (i, &table_name) in relation_line_table_refs.iter().enumerate() {
+    for (i, &table_name) in relation_table_refs.iter().enumerate() {
         let out_table = schema::relation_geom_table(table_name);
-        let rows = std::mem::take(&mut batch.line_rows[i]);
-        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, WAY_COLUMNS, rows).await?;
-        info!("Wrote {count} rows → {out_table}");
-    }
-    for (i, &table_name) in relation_point_table_refs.iter().enumerate() {
-        let out_table = schema::relation_point_table(table_name);
-        let rows = std::mem::take(&mut batch.point_rows[i]);
-        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POINT_COLUMNS, rows).await?;
-        info!("Wrote {count} rows → {out_table}");
-    }
-    for (i, &table_name) in relation_polygon_table_refs.iter().enumerate() {
-        let out_table = schema::relation_polygon_table(table_name);
-        let rows = std::mem::take(&mut batch.polygon_rows[i]);
-        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, POLYGON_COLUMNS, rows).await?;
+        let rows = std::mem::take(&mut batch.rows[i]);
+        let count = write_rows_once(cfg.output, &pool, &out_dir, &out_table, GEOM_COLUMNS, rows).await?;
         info!("Wrote {count} rows → {out_table}");
     }
 
@@ -379,16 +393,16 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cfg.output == Output::GeoJson {
-        info!("Building GeoJSON from CSV output...");
-        output::geojson::write_geojson_from_csv(&out_dir, &tables)?;
+        info!("Building GeoJSON from staged output...");
+        output::geojson::write_geojson(&out_dir, &tables)?;
         for table in &tables {
             info!("Wrote {}/{table}.geojson", cfg.out_dir);
         }
     }
 
     if cfg.output == Output::GeoJsonSeq {
-        info!("Building GeoJSONSeq from CSV output...");
-        output::geojson::write_geojsonseq_from_csv(&out_dir, &tables)?;
+        info!("Building GeoJSONSeq from staged output...");
+        output::geojson::write_geojsonseq(&out_dir, &tables)?;
         for table in &tables {
             info!("Wrote {}/{table}.geojsonseq", cfg.out_dir);
         }
@@ -397,8 +411,8 @@ async fn main() -> anyhow::Result<()> {
     if cfg.output == Output::Parquet {
         #[cfg(feature = "parquet")]
         {
-            info!("Building Parquet from CSV output...");
-            output::parquet::write_parquet_from_csv(&out_dir, &tables)?;
+            info!("Building Parquet from staged output...");
+            output::parquet::write_parquet(&out_dir, &tables)?;
             for table in &tables {
                 info!("Wrote {}/{table}.parquet", cfg.out_dir);
             }

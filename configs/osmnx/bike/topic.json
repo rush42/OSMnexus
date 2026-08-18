@@ -1,8 +1,8 @@
 {
   "table": "bike",
   "accept_all": { "way": true },
-  "geometry": {
-    "way": ["line"]
+  "geometry_output": {
+    "way": "line"
   },
   "passthrough_tags": [
     "highway",
