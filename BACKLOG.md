@@ -316,6 +316,20 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
     simpler, given the one-table-per-kind schema) would apply there once that branch is picked back
     up.
 
+- **`categorize::linter::tests::categories_are_disjoint` (and its underlying `find_overlaps`) hangs
+  in practice — an algorithmic complexity bug, not a deadlock.** Confirmed via instrumentation:
+  `to_dnf` (`src/categorize/linter.rs:218`) does the textbook exponential DNF blowup for `And`-of-`Or`
+  filter conditions — several `configs/tilda/bikelanes` categories alone produce 1,000–6,400 raw DNF
+  terms each from modestly-sized JSON filter trees (e.g. `foot_and_cycleway_shared_adjoining` → 6,426
+  terms). `find_overlaps`'s pairwise loop (`src/categorize/linter.rs:367`) then does an
+  `O(terms_a × terms_b)` nested scan via `check_term_consistency` for every one of `O(n²)` category
+  pairs per topic — with per-category term counts in the thousands, this multiplies into billions of
+  calls. Reproduced single-threaded, in isolation (`--test-threads=1`, exact test name), on
+  unmodified `main` — not related to any in-flight branch work. The `bikelanes` topic (26 categories)
+  finished DNF-precompute for all 26 within 20s but never got past its own pairwise phase in that
+  window. Needs a real fix (memoize/short-circuit `check_term_consistency`, cap DNF term explosion,
+  or avoid full DNF materialization entirely) — not attempted yet, flagged as its own task.
+
 - **Root `Dockerfile` (standalone one-container live-editor demo) is stale.** It bundles a single
   container with no Postgres service, but the live editor now requires `db`
   (`editor/docker-compose.yml`) plus a one-time "all ways" ingest pass — see the Next.js migration
