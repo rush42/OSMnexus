@@ -76,7 +76,7 @@ pub struct SelectionContext {
 /// `classify_node` are now pure — they return their tag rows (and, for a way/relation, the keep
 /// mask) instead of routing them as a side effect. Routing is a separate `route_*` callback, called
 /// by the ordered fast path from its blob-order sequential fold (not from the parallel decode
-/// section the classify closures run in) — see `sorted::FOLD_CHUNK_BLOBS`'s own doc for why that
+/// section the classify closures run in) — see `sorted::fold_chunk_blobs`'s own doc for why that
 /// fold is already blob-ordered, and `classify_and_index`'s own doc for why tag routing used to
 /// race ahead of it. The fallback scan (`fallback::stream_osm_fallback`) calls `route_*` right next
 /// to `classify_*` instead, same as before — it has no ordering guarantee to preserve.
@@ -129,7 +129,7 @@ pub struct Callbacks<CR, CW, CN, RT, RM, RP> {
     /// `osm_id` column instead and pays nothing for row order). When `true`, the ordered fast path
     /// routes from its sequential, blob-order fold (this struct's own doc); when `false`, it routes
     /// straight from the parallel decode section instead, trading the row-order guarantee for full
-    /// thread-pool occupancy (no barrier between decode and route) — see `sorted::FOLD_CHUNK_BLOBS`'s
+    /// thread-pool occupancy (no barrier between decode and route) — see `sorted::fold_chunk_blobs`'s
     /// own doc for why that barrier exists regardless (accumulator determinism, unrelated to tag
     /// routing). The fallback scan ignores this — it never had an ordering guarantee to preserve.
     pub ordered: bool,

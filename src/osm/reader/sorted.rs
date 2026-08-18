@@ -36,7 +36,7 @@ fn merge_topic_rows(batch: &mut Vec<Vec<TopicRow>>, rows: Vec<Vec<TopicRow>>) {
     }
 }
 
-/// Relations pass — decode the relation region once, in bounded parallel chunks (`FOLD_CHUNK_BLOBS`,
+/// Relations pass — decode the relation region once, in bounded parallel chunks (`fold_chunk_blobs`,
 /// same pattern as Pass A/B below), folding each chunk sequentially in blob order. `classify_rel` is
 /// pure (no routing); each kept relation's tag rows and member-way links are routed from the
 /// sequential fold via `route_tag`/`route_member`, so relation tag-row order is a deterministic
@@ -62,7 +62,7 @@ where
     // `sorted::classify_and_index`'s `kept_way_order` for the way-side equivalent of this. Left
     // empty when `!ordered` (nobody reads it — routing already happened from the parallel section).
     let mut kept_relation_order: Vec<i64> = Vec::new();
-    for blob_chunk in rel_offsets.chunks(FOLD_CHUNK_BLOBS) {
+    for blob_chunk in rel_offsets.chunks(fold_chunk_blobs(ordered)) {
         let per_blob: Vec<Vec<KeptRel>> = blob_chunk
             .par_iter()
             .map(|&off| -> anyhow::Result<Vec<KeptRel>> {
@@ -129,9 +129,35 @@ where
 /// accumulators held) precisely because the transient now also holds a whole chunk's worth of
 /// pre-serialized `TopicRow`s (JSON `String`s) awaiting routing — at `256` this measured +80% peak
 /// RSS on `brandenburg-latest.osm.pbf` (550MB → 990MB) for no measurable time benefit; at `16` RSS
-/// matches the pre-routing-reorder baseline with no measurable slowdown. Re-measure before raising
-/// this if decode ever shows up as CPU-bound on the folding step (it hasn't).
-const FOLD_CHUNK_BLOBS: usize = 64;
+/// matches the pre-routing-reorder baseline with no measurable slowdown.
+///
+/// **That RSS ceiling is `ordered`-only.** The row payload is carried through the transient just to
+/// reach the sequential fold's `route_tag`; when `!ordered` every pass routes from inside its own
+/// parallel closure and stores nothing — `ClassifiedWay.topic_rows` is `Vec::new()`,
+/// `classify_relations` pushes `None`, `collect_coords` never fills `classified`. So an unordered
+/// run's transient is only the cheap ref/id/coord data this constant was originally sized for, and
+/// the 256-blob blowup cannot happen there. See `fold_chunk_blobs`.
+const FOLD_CHUNK_BLOBS_MIN: usize = 64;
+
+/// Blobs decoded per parallel batch, sized against the actual rayon pool — for `!ordered` only.
+///
+/// A fixed chunk is a fork/join barrier whose cost does not shrink as the pool grows: at 56 threads
+/// a 64-blob chunk leaves ~1 blob of work per thread per barrier. Scaling by pool size keeps each
+/// worker's share roughly constant, so the barrier is amortised the same at 8 threads as at 56 —
+/// the same reasoning as `way_refs::route_chunk_ways`, and measured there as a real regression
+/// (see `output_master_plan.md` §1.3/§2).
+///
+/// `ordered` deliberately stays at the floor: its transient still carries a whole chunk's worth of
+/// `TopicRow`s, which is exactly what blew peak RSS up 80% at 256. Once that payload stops crossing
+/// the fold boundary (master plan Phase 2), this distinction can go and both modes can scale.
+fn fold_chunk_blobs(ordered: bool) -> usize {
+    const PER_THREAD: usize = 4;
+    if ordered {
+        FOLD_CHUNK_BLOBS_MIN
+    } else {
+        (rayon::current_num_threads() * PER_THREAD).max(FOLD_CHUNK_BLOBS_MIN)
+    }
+}
 
 /// One classified way, ready to fold into Pass A's accumulators: its id, encoded node refs, and
 /// per-topic keep mask, plus (only when tag-kept — `mask != 0`) its absolute node ids, needed to
@@ -149,7 +175,7 @@ struct ClassifiedWay {
     topic_rows: Vec<Vec<TopicRow>>,
 }
 
-/// Pass A — decode the way-region blobs once, in bounded parallel chunks (`FOLD_CHUNK_BLOBS`, same
+/// Pass A — decode the way-region blobs once, in bounded parallel chunks (`fold_chunk_blobs`, same
 /// pattern as Pass B's `collect_coords`), folding each chunk's ways sequentially into three
 /// accumulators, plus routing each way's tag rows via `route_tag` — from the fold, not from the
 /// parallel section, so tag-row order is a deterministic function of blob order (previously
@@ -204,7 +230,7 @@ where
     // ~100s of MB, the same order of magnitude `way_refs` itself already holds.
     let mut kept_way_order: Vec<i64> = Vec::new();
 
-    for blob_chunk in way_offsets.chunks(FOLD_CHUNK_BLOBS) {
+    for blob_chunk in way_offsets.chunks(fold_chunk_blobs(ordered)) {
         let mut per_blob: Vec<Vec<ClassifiedWay>> = blob_chunk
             .par_iter()
             .map(|&off| -> anyhow::Result<Vec<ClassifiedWay>> {
@@ -319,7 +345,7 @@ where
 
 /// Pass B — collect coordinates (as fixed-point decimicrodegrees, the PBF's own exact integer form
 /// — see `NodeCoords`) for the needed nodes from the node-region blobs, in parallel (in chunks of
-/// `FOLD_CHUNK_BLOBS`, see its doc). Each node's `shared` flag
+/// `fold_chunk_blobs`, see its doc). Each node's `shared` flag
 /// (used by ≥2 mask-!=0 ways) is read from `use_counts` here and baked into the value.
 ///
 /// When `classify_nodes` is set, every needed node's tags are also decoded and passed to
@@ -372,7 +398,7 @@ where
     let mut standalone_total: u64 = 0;
 
     type NodeClassified = (Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>);
-    for blob_chunk in node_offsets.chunks(FOLD_CHUNK_BLOBS) {
+    for blob_chunk in node_offsets.chunks(fold_chunk_blobs(ordered)) {
         type BlobResult = (Vec<(i64, i32, i32, bool)>, FxHashSet<i64>, u64, Vec<NodeClassified>);
         let per_blob: Vec<BlobResult> = blob_chunk
             .par_iter()
