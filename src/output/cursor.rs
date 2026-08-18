@@ -1,22 +1,18 @@
-//! Shared forward-cursor join machinery for output backends that re-read the binary-staged tag/
-//! geometry/edges tables after the main run finishes (`output::geojson`'s `.geojson`/`.geojsonseq`,
-//! `output::parquet`'s `.parquet`) — see `output::rows`' own doc for why the staging format is the
-//! same wire bytes `--output pg` streams to Postgres, and `output::geojson`'s own (fuller) doc for
-//! why walking these files forward, in lockstep, needs no hashmap for node/way/relation geometry or
-//! a way's own graph-fallback edges (only a relation's graph-fallback edges, which need random
-//! access by arbitrary member way id, still do).
+//! Shared forward-cursor join machinery for output backends that re-read the staged tag/geometry/
+//! edges tables after the main run finishes (`output::geojson`'s `.geojson`/`.geojsonseq`,
+//! `output::parquet`'s `.parquet`) — see `output::stage` for the file format these read, and
+//! `output::geojson`'s own (fuller) doc for why walking these files forward, in lockstep, needs no
+//! hashmap for node/way/relation geometry or a way's own graph-fallback edges (only a relation's
+//! graph-fallback edges, which need random access by arbitrary member way id, still do).
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::Path;
 
 use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, multilinestring_from_ewkb, point_from_ewkb};
-use crate::geom::rows::{edge_binary_schema, geom_binary_schema, EdgeRow, GeomRow};
-use crate::output::rows::{
-    member_binary_schema, read_binary_header, read_binary_row, tag_binary_schema, BinaryFieldType,
-    FromBinaryRow, MemberRow,
-};
+use crate::geom::rows::{EdgeRow, GeomRow};
+use crate::output::rows::MemberRow;
+use crate::output::stage::StageReader;
 
 pub struct EdgeGeom {
     pub seg_idx: usize,
@@ -62,12 +58,9 @@ pub fn read_relation_members(path: &Path) -> anyhow::Result<HashMap<i64, Vec<i64
     if !path.exists() {
         return Ok(HashMap::new());
     }
-    let mut reader = BufReader::new(File::open(path)?);
-    read_binary_header(&mut reader)?;
-    let schema = member_binary_schema();
+    let mut reader = StageReader::<MemberRow>::open(path)?;
     let mut by_relation_id: HashMap<i64, Vec<i64>> = HashMap::new();
-    while let Some(fields) = read_binary_row(&mut reader, &schema)? {
-        let row = MemberRow::from_binary_fields(fields)?;
+    while let Some(row) = reader.next_row()? {
         by_relation_id.entry(row.relation_osm_id).or_default().push(row.way_osm_id);
     }
     Ok(by_relation_id)
@@ -81,12 +74,9 @@ pub fn read_edges(path: &Path) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let mut reader = BufReader::new(File::open(path)?);
-    read_binary_header(&mut reader)?;
-    let schema = edge_binary_schema();
+    let mut reader = StageReader::<EdgeRow>::open(path)?;
     let mut out = Vec::new();
-    while let Some(fields) = read_binary_row(&mut reader, &schema)? {
-        let row = EdgeRow::from_binary_fields(fields)?;
+    while let Some(row) = reader.next_row()? {
         if row.geom_ewkb.is_empty() {
             continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
         }
@@ -255,8 +245,7 @@ fn wkb_multilinestring(lines: &[Vec<[f64; 2]>]) -> Vec<u8> {
 /// `GeomRow`'s own doc), so this single cursor type covers node/way/relation geometry alike; the
 /// shape a given row decodes to comes from its own `geom_type` column, not which file it's in.
 pub struct OrderedGeomCursor {
-    reader: Option<BufReader<File>>,
-    schema: Vec<BinaryFieldType>,
+    reader: Option<StageReader<GeomRow>>,
     /// The next record read but not yet known to belong to the element being asked about — held
     /// across calls so a mismatch (this element has no entry) doesn't lose the record, which
     /// belongs to some later element.
@@ -270,22 +259,17 @@ pub struct OrderedGeomCursor {
 impl OrderedGeomCursor {
     /// `None` if `path` doesn't exist — this topic declared no geometry output for this kind.
     pub fn open(path: &Path) -> anyhow::Result<Option<Self>> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let mut reader = BufReader::new(File::open(path)?);
-        read_binary_header(&mut reader)?;
-        Ok(Some(OrderedGeomCursor { reader: Some(reader), schema: geom_binary_schema(), pending: None, last: None }))
+        Ok(StageReader::<GeomRow>::open_optional(path)?
+            .map(|reader| OrderedGeomCursor { reader: Some(reader), pending: None, last: None }))
     }
 
     fn read_one(&mut self) -> anyhow::Result<Option<(i64, GeomValue)>> {
         loop {
             let Some(reader) = self.reader.as_mut() else { return Ok(None) };
-            let Some(fields) = read_binary_row(reader, &self.schema)? else {
+            let Some(row) = reader.next_row()? else {
                 self.reader = None; // exhausted — stop trying to read further
                 return Ok(None);
             };
-            let row = GeomRow::from_binary_fields(fields)?;
             if row.geom_ewkb.is_empty() {
                 continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
             }
@@ -314,26 +298,6 @@ impl OrderedGeomCursor {
             _ => Ok(None),
         }
     }
-}
-
-/// Peek the next binary row's field count without consuming it — lets a tag-row reader infer
-/// whether this table emits the `id` column (6 vs 7 fields, matching `tag_columns`' `emits_id`
-/// conditional) straight from the data instead of needing that boolean threaded in from the caller
-/// (there's no header line to read it from, unlike the old CSV path's header-driven column lookup).
-pub fn peek_tag_field_count(reader: &mut BufReader<File>) -> anyhow::Result<i16> {
-    let buf = reader.fill_buf()?;
-    anyhow::ensure!(buf.len() >= 2, "empty or truncated tag binary file");
-    Ok(i16::from_be_bytes([buf[0], buf[1]]))
-}
-
-/// Open `{table}.bin`, skip its header, and return a reader plus the schema its rows decode with
-/// (`tag_binary_schema`, resolved from `peek_tag_field_count`) — the common setup both
-/// `output::geojson` and `output::parquet` need before streaming its rows.
-pub fn open_tag_reader(out_dir: &Path, table: &str) -> anyhow::Result<(BufReader<File>, Vec<BinaryFieldType>)> {
-    let mut reader = BufReader::new(File::open(out_dir.join(format!("{table}.bin")))?);
-    read_binary_header(&mut reader)?;
-    let emits_id = peek_tag_field_count(&mut reader)? == 7;
-    Ok((reader, tag_binary_schema(emits_id)))
 }
 
 #[cfg(test)]

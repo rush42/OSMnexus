@@ -1,13 +1,12 @@
-//! Builds GeoJSON output per topic from the binary-staged output `--output geojson`/`geojsonseq`
-//! write during the main run (`{table}.bin` tag rows + this topic's own `{table}_node_geom`/
+//! Builds GeoJSON output per topic from the staged output `--output geojson`/`geojsonseq` write
+//! during the main run (`{table}.bin` tag rows + this topic's own `{table}_node_geom`/
 //! `{table}_way_geom`/`{table}_relation_geom` tables, plus the shared `edges.bin`/
-//! `relation_members.bin` — same wire format `--output pg` streams to Postgres, just written to a
-//! file instead of a live connection, see `output::rows`' own doc) — for local tooling (e.g. the
-//! live editor) that wants one self-contained file instead of a table pair. Two sinks share the same
-//! `build_features` collection step and differ only in framing: `write_geojson` wraps them in one
-//! `{table}.geojson` `FeatureCollection` (simple, but buffers the whole topic in memory and isn't
-//! streamable); `write_geojsonseq` writes one `{table}.geojsonseq` Feature object per line
-//! (RFC 8142) instead.
+//! `relation_members.bin` — the pipeline's own staging format, see `output::stage`) — for local
+//! tooling (e.g. the live editor) that wants one self-contained file instead of a table pair. Both
+//! sinks share the same `for_each_feature` pass and differ only in framing: `write_geojson` wraps
+//! the features in one `{table}.geojson` `FeatureCollection`, `write_geojsonseq` writes one
+//! `{table}.geojsonseq` Feature object per line (RFC 8142). Neither buffers the topic — see
+//! `for_each_feature`'s own doc.
 //!
 //! The tag/geometry files are read forward, in one pass each, never randomly seeked — safe because
 //! `geom::materialize` resolves+routes a table's node/way/relation geometry (and the shared graph's
@@ -31,10 +30,11 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 use crate::output::cursor::{
-    group_edges_by_way, open_tag_reader, read_edges, read_relation_members, EdgeCursor, EdgeGeom,
-    GeomValue, OrderedGeomCursor,
+    group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, GeomValue,
+    OrderedGeomCursor,
 };
-use crate::output::rows::{read_binary_row, FromBinaryRow, TopicRow};
+use crate::output::rows::TopicRow;
+use crate::output::stage::StageReader;
 
 fn merge_properties(target: &mut Map<String, Value>, json_str: &str) {
     if !json_str.is_empty() {
@@ -114,10 +114,9 @@ where
     let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")))?;
     let mut edge_cursor = EdgeCursor::new(edges);
 
-    let (mut reader, schema) = open_tag_reader(out_dir, table)?;
+    let mut tags = StageReader::<TopicRow>::open(&out_dir.join(format!("{table}.bin")))?;
 
-    while let Some(fields) = read_binary_row(&mut reader, &schema)? {
-        let row = TopicRow::from_binary_fields(fields)?;
+    while let Some(row) = tags.next_row()? {
         let osm_id = row.osm_id;
 
         match row.osm_type {
@@ -205,8 +204,8 @@ where
     Ok(())
 }
 
-/// Reads each of `tables`' binary-staged output (see `build_features`) and writes
-/// `{table}.geojsonseq` alongside them: one GeoJSON `Feature` object per line (RFC 8142).
+/// Reads each of `tables`' staged output (see `for_each_feature`) and writes `{table}.geojsonseq`
+/// alongside them: one GeoJSON `Feature` object per line (RFC 8142).
 pub fn write_geojsonseq(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
     let edges = read_edges(&out_dir.join("edges.bin"))?;
     let edges_by_way = group_edges_by_way(&edges);
@@ -224,9 +223,9 @@ pub fn write_geojsonseq(out_dir: &Path, tables: &[String]) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Reads each of `tables`' binary-staged output (see `build_features`) and writes `{table}.geojson`
+/// Reads each of `tables`' staged output (see `for_each_feature`) and writes `{table}.geojson`
 /// alongside them: a single `{"type": "FeatureCollection", "features": [...]}` object — simpler to
-/// consume whole than `geojsonseq`, at the cost of buffering the whole topic in memory.
+/// consume whole than `geojsonseq`, and streamed into just the same (see the framing note below).
 pub fn write_geojson(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
     let edges = read_edges(&out_dir.join("edges.bin"))?;
     let edges_by_way = group_edges_by_way(&edges);

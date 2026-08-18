@@ -1,4 +1,4 @@
-//! Builds one `{table}.parquet` (GeoParquet) file per topic from the same binary-staged output
+//! Builds one `{table}.parquet` (GeoParquet) file per topic from the same staged output
 //! `--output geojson`/`geojsonseq` read (see `output::cursor`'s own doc) — `{table}.bin` tag rows
 //! joined forward, in lockstep, to this topic's own `{table}_node_geom`/`{table}_way_geom`/
 //! `{table}_relation_geom` tables (or the shared `edges.bin` graph-shape fallback for a topic that
@@ -25,8 +25,9 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::format::KeyValue;
 use serde_json::json;
 
-use crate::output::cursor::{group_edges_by_way, open_tag_reader, read_edges, read_relation_members, EdgeCursor, EdgeGeom, GeomValue, OrderedGeomCursor};
-use crate::output::rows::{read_binary_row, FromBinaryRow, TopicRow};
+use crate::output::cursor::{group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, GeomValue, OrderedGeomCursor};
+use crate::output::rows::TopicRow;
+use crate::output::stage::StageReader;
 
 fn geoparquet_crs84() -> serde_json::Value {
     json!({
@@ -192,7 +193,7 @@ impl MergedBuilders {
     }
 }
 
-/// Same collection pass as `output::geojson::build_features`, but appending into `MergedBuilders`
+/// Same join pass as `output::geojson::for_each_feature`, but appending into `MergedBuilders`
 /// instead of building `serde_json::Value` features — see this module's own doc for the row shape.
 fn write_table_parquet(
     out_dir: &Path,
@@ -206,7 +207,7 @@ fn write_table_parquet(
     let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")))?;
     let mut edge_cursor = EdgeCursor::new(edges);
 
-    let (mut reader, schema) = open_tag_reader(out_dir, table)?;
+    let mut tags = StageReader::<TopicRow>::open(&out_dir.join(format!("{table}.bin")))?;
     let mut geometry_types = BTreeSet::new();
     let mut builders = MergedBuilders::new();
 
@@ -217,8 +218,7 @@ fn write_table_parquet(
     let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
     let mut writer = ArrowWriter::try_new(file, arrow_schema.clone(), Some(writer_props()))?;
 
-    while let Some(fields) = read_binary_row(&mut reader, &schema)? {
-        let row = TopicRow::from_binary_fields(fields)?;
+    while let Some(row) = tags.next_row()? {
         let osm_id = row.osm_id;
 
         match row.osm_type {
@@ -296,7 +296,7 @@ fn write_table_parquet(
     Ok(())
 }
 
-/// Reads each of `tables`' binary-staged output (see `output::cursor`'s own doc) and writes one
+/// Reads each of `tables`' staged output (see `output::cursor`'s own doc) and writes one
 /// `{table}.parquet` file beside them.
 pub fn write_parquet(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
     let edges = read_edges(&out_dir.join("edges.bin"))?;

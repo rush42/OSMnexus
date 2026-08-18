@@ -72,8 +72,8 @@ pub struct Config {
 
     /// Output backend: `pg` (COPY into PostGIS), `csv` (one text file per tag/geometry table), or
     /// `geojson`/`geojsonseq`/`parquet`, which stage their tag/geometry tables as `.bin` files (the
-    /// same Postgres `COPY BINARY` wire format `pg` streams live — see `output::rows`' own doc)
-    /// instead of text CSV, then join them into one `<table>.geojson` `FeatureCollection` per topic /
+    /// pipeline's own row-struct staging format — see `output::stage`'s own doc) instead of text
+    /// CSV, then join them into one `<table>.geojson` `FeatureCollection` per topic /
     /// one `<table>.geojsonseq` newline-delimited GeoJSON Feature stream per topic (RFC 8142) / one
     /// `<table>.parquet` GeoParquet file per topic, forward-joining tag rows to geometry rows on
     /// `osm_id` without a hashmap (see `output::cursor`'s own doc) — for local tooling like the live
