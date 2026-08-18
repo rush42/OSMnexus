@@ -28,6 +28,9 @@ dhat = { version = "0.3.3", optional = true }
 memmap2 = "0.9"
 tempfile = "3"
 boomphf = "0.6"
+arrow-array = { version = "53", optional = true }
+arrow-schema = { version = "53", optional = true }
+parquet = { version = "53", features = ["arrow"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -47,6 +50,11 @@ debug = false
 incremental = true
 
 [features]
+# GeoParquet output backend. Default-on, so plain builds behave as before;
+# `--no-default-features` skips the heavy arrow/parquet dependency tree
+# (useful for minimal or wasm builds).
+default = ["parquet"]
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
 dhat = ["dep:dhat"]
 
 [[bench]]

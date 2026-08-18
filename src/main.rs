@@ -175,6 +175,12 @@ async fn main() -> anyhow::Result<()> {
             info!("GeoJSONSeq output → {}/ (one {{topic}}.geojsonseq Feature stream per topic)", cfg.out_dir);
             (None, 1)
         }
+        Output::Parquet => {
+            std::fs::create_dir_all(&cfg.out_dir)
+                .with_context(|| format!("creating output dir {}", cfg.out_dir))?;
+            info!("Parquet output → {}/ (one {{topic}}.parquet per topic)", cfg.out_dir);
+            (None, 1)
+        }
     };
 
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
@@ -400,6 +406,22 @@ async fn main() -> anyhow::Result<()> {
         for table in &tables {
             info!("Wrote {}/{table}.geojsonseq", cfg.out_dir);
         }
+    }
+
+    if cfg.output == Output::Parquet {
+        #[cfg(feature = "parquet")]
+        {
+            info!("Building Parquet from staged output...");
+            output::parquet::write_parquet(&out_dir, &tables)?;
+            for table in &tables {
+                info!("Wrote {}/{table}.parquet", cfg.out_dir);
+            }
+        }
+        #[cfg(not(feature = "parquet"))]
+        anyhow::bail!(
+            "this binary was built without the `parquet` feature; \
+             rebuild with `--features parquet` (on by default)"
+        );
     }
 
     mem_snapshot("relation-geom+finalize");

@@ -56,11 +56,11 @@ impl<T: BinaryRow + Send + Sync + 'static> Shard<T> {
             let h = match output {
                 Output::Pg => tokio::spawn(copy_writer::<T>(pool.clone().unwrap(), table.to_owned(), columns, rx)),
                 Output::Csv => tokio::spawn(csv_writer::<T>(out_dir.join(format!("{table}.csv")), columns, rx)),
-                // Staged for `output::geojson`'s post-run cursor join — the same binary wire format
-                // `Output::Pg` streams live, written to a file instead (see
+                // Staged for `output::geojson`/`output::parquet`'s post-run cursor join — the same
+                // binary wire format `Output::Pg` streams live, written to a file instead (see
                 // `writers::binary_file_writer`'s own doc). No header line/SQL, so `columns` (used
                 // by the other two arms) doesn't apply here.
-                Output::GeoJson | Output::GeoJsonSeq => {
+                Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => {
                     tokio::spawn(binary_file_writer::<T>(out_dir.join(format!("{table}.bin")), rx))
                 }
             };
@@ -353,7 +353,7 @@ pub async fn write_rows_once<R: BinaryRow + Send + Sync + 'static>(
     let handle = match output {
         Output::Pg => tokio::spawn(copy_writer::<R>(pool.clone().unwrap(), table.to_owned(), columns, rx)),
         Output::Csv => tokio::spawn(csv_writer::<R>(out_dir.join(format!("{table}.csv")), columns, rx)),
-        Output::GeoJson | Output::GeoJsonSeq => {
+        Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => {
             tokio::spawn(binary_file_writer::<R>(out_dir.join(format!("{table}.bin")), rx))
         }
     };

@@ -4,6 +4,8 @@
 # OSM extracts (downloaded, not versioned)
 *.osm
 *.pbf
+*.csv
+*.parquet
 
 # Local env / logs
 .env
