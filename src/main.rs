@@ -184,7 +184,10 @@ async fn main() -> anyhow::Result<()> {
     // join, avoiding a hashmap — see `WayRefsStore::par_route_ordered`'s own doc), so they need
     // blob-order-deterministic routing. `pg` correlates by the `osm_id` column instead, so row order
     // is free to relax — see `osm::reader::Callbacks::ordered`'s own doc for what that buys.
-    let ordered = cfg.output != Output::Pg;
+    // `OSMNEXUS_FORCE_ORDERED=1` forces the ordered path even for `pg` — debugging/benchmarking only
+    // (confirmed a real ~57% wall-clock cost on germany-latest.osm.pbf this way; see `output_plan.md`),
+    // never needed for correctness since `pg` doesn't read its own output back.
+    let ordered = cfg.output != Output::Pg || std::env::var_os("OSMNEXUS_FORCE_ORDERED").is_some();
 
     // Spawn `w` writers per tag table + `w` for each shared table. For Postgres these are sharded
     // COPY connections (rows round-robined for k-way parallel serialization + ingest); for CSV, w=1,
