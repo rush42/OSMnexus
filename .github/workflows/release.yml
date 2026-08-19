@@ -1,0 +1,107 @@
+# Builds the production binary and publishes it as a GitHub Release.
+#
+# Merging `develop` into `main` lands as a push to `main`, which is the trigger. If you would rather
+# cut releases on version bumps or on tags, that is a change to `on:` alone — nothing below depends
+# on how the workflow was started.
+#
+# Deliberately build-only: there is no test gate here. The lib suite takes ~5 minutes on a 64-core
+# machine and would be considerably slower on a 2-core runner, so gating releases on it belongs in a
+# separate workflow that runs on pull requests into `develop`, where the wait costs nothing at merge
+# time. Worth adding — this workflow will happily publish a binary that does not pass its tests.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  # Lets you cut a build from the Actions tab without pushing anything.
+  workflow_dispatch:
+
+# Needed to create the release and upload assets. Nothing else in this workflow writes.
+permissions:
+  contents: write
+
+# Never publish two releases concurrently; queue instead of cancelling, so a merge that lands during
+# an in-flight build still produces its own artifact.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # `Cargo.toml` sets `lto = "thin"` and `codegen-units = 1`, so a release build recompiles the
+    # whole crate from scratch every time and takes ~60s+ even on a 64-core machine (see CLAUDE.md).
+    # A 2-core hosted runner is far slower than that, hence the generous ceiling.
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version and tag
+        id: meta
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          # `run_number` is monotonic per workflow, so tags never collide across merges even when
+          # the crate version hasn't been bumped.
+          echo "version=$version"                              >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}-build${{ github.run_number }}"  >> "$GITHUB_OUTPUT"
+          echo "asset=osmnexus-v${version}-build${{ github.run_number }}-x86_64-linux.tar.gz" >> "$GITHUB_OUTPUT"
+
+      # Caches the dependency tree. The crate's *own* codegen is not cached in any useful way —
+      # `codegen-units = 1` plus LTO means it is rebuilt whole on every run regardless — so this
+      # saves dependency compilation, not the expensive final link.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      # `--locked` so a release is built from the committed Cargo.lock and never from a silently
+      # resolved newer dependency. The `parquet` feature is default-on, so this is the full binary.
+      - name: Build release binary
+        run: cargo build --release --bin osmnexus --locked
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          # tar rather than the bare binary: GitHub release assets do not preserve the executable
+          # bit, so a raw download would need a chmod before it runs.
+          tar -czf "${{ steps.meta.outputs.asset }}" -C target/release osmnexus
+          sha256sum "${{ steps.meta.outputs.asset }}" | tee SHA256SUMS
+          ls -l "${{ steps.meta.outputs.asset }}"
+
+      # Kept even though the release below carries the same files: artifacts survive on
+      # `workflow_dispatch` runs and on failures after this point, releases do not.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: osmnexus-${{ steps.meta.outputs.tag }}
+          path: |
+            ${{ steps.meta.outputs.asset }}
+            SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='${{ steps.meta.outputs.tag }}'
+          # A re-run of the same run reuses its run_number, so the tag can already exist; upload into
+          # the existing release rather than failing.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${{ steps.meta.outputs.asset }}" SHA256SUMS --clobber
+          else
+            gh release create "$tag" \
+              --title "osmnexus $tag" \
+              --notes "Automated build of \`${{ github.sha }}\` (crate version ${{ steps.meta.outputs.version }}).
+
+          x86_64 Linux, built with the release profile (\`lto = \"thin\"\`, \`codegen-units = 1\`), \`parquet\` feature enabled.
+          Not gated on the test suite — see the note at the top of \`.github/workflows/release.yml\`." \
+              "${{ steps.meta.outputs.asset }}" SHA256SUMS
+          fi
