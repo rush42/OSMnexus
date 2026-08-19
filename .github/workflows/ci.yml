@@ -1,0 +1,59 @@
+# Test gate for changes heading into `develop` (and for the `develop` -> `main` PR itself).
+#
+# This is the gate `release.yml` deliberately does not have: releases build on a push to `main`,
+# where waiting several minutes on a test suite is worst-timed. Running here instead means the wait
+# is absorbed while a pull request is open.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Superseding a PR check is the right call, unlike the release workflow, where a queued build still
+# has to produce its artifact.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # The lib suite measured ~5 minutes of *run* time (317s) on a 64-core machine, on top of
+    # compilation; a 2-core hosted runner will want considerably more than that.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-ci-
+
+      # Covers what `cargo test` alone does not: benches and examples. Both broke during the output
+      # rework and only `--all-targets` caught it. `--all-features` also compiles the `dhat` feature,
+      # whose global allocator is binary-only and so never affects the tests below.
+      - name: Check all targets
+        run: cargo check --all-targets --all-features --locked
+
+      # `--no-default-features` (no arrow/parquet tree) is a documented supported configuration, so
+      # it needs a gate or it rots. Not run with `-D warnings`: dropping the parquet feature
+      # currently leaves 5 dead-code warnings in geometry helpers that only that backend uses.
+      - name: Check minimal build
+        run: cargo check --no-default-features --locked
+
+      # Default features, which is what actually ships — `parquet` is default-on.
+      - name: Test
+        run: cargo test --locked
