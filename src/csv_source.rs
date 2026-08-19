@@ -92,7 +92,7 @@ pub async fn run(runners: Arc<Vec<TopicRunner>>, writers: Arc<crate::output::sin
             }
 
             let topic_rows: Vec<Vec<crate::output::rows::TopicRow>> =
-                runners.iter().map(|r| r.process(element.kind, element.osm_id, &tags, &no_meta)).collect();
+                runners.iter().map(|r| r.process(element.kind, element.osm_id, &tags, &no_meta, &[])).collect();
             writers.route_tag(topic_rows);
         }
     })

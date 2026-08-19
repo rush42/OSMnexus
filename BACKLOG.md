@@ -431,3 +431,18 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
     graph topic — the cursor interplay between `EdgeCursor::get_all` and the tag stream, and the
     cut/endpoint interleaving. That needs a fixture config declaring `"graph"`, which no shipped
     config does. Until then the byte-identity gate still cannot see this path.
+
+- **`inherit_to_member`'s parent read is UNVERIFIED end to end.** The mechanism is built: a member
+  way's parent relation is exposed as `ExtractCtx::parent_tags`, fanned out *before* categorization
+  so each row is categorized and evaluated against its own parent, and a way topic is meant to read
+  it with the existing `{"parent": {"key": ..}}` / `parent_or_obj` producer syntax. Fan-out itself is
+  confirmed on bremen (way 132726057 emitted 16 times, one per route, ids suffixed
+  `/relation/<id>`), and `configs/tilda` stays byte-identical.
+  - **What is not confirmed** is that a way producer actually reads a value out of that parent. The
+    scratch config built to test it could not get *any* topic-level producer to emit — a plain
+    object-tag probe (`{"match": [{"key": "railway"}]}`) was absent from `produced` too, so the
+    failure is in how that config declares producers, not necessarily in the parent plumbing. Both
+    readings are still open.
+  - **Cheapest way to settle it**: a unit test over `build_topic_rows` with a hand-built
+    `TopicRunner` whose producers read `{"parent": ...}`, rather than another config round trip.
+    That also gives the feature the regression cover it currently lacks entirely.

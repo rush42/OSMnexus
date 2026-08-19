@@ -117,6 +117,10 @@ pub fn build_topic_rows<'a>(
     osm_id: i64,
     raw_tags: &'a RawTags<'a>,
     meta: &WayMeta,
+    // Parent relations this element inherits from, already filtered to those that exported
+    // something (`topic::inherit`). Empty for every kind but ways, and for every topic that
+    // declares no `inherit_to_member`.
+    parents: &[(i64, crate::topic::inherit::ExportedFields)],
 ) -> Vec<TopicRow> {
     // The category set for this element kind. Absent → either this kind is flagged `accept_all`
     // (every element passes straight through, no category match — see `TopicSpec::accept_all`) or
@@ -288,7 +292,26 @@ pub fn build_topic_rows<'a>(
         rows.push(TopicRow { osm_id, osm_type: kind.osm_type(), id, category, produced, annotations, meta });
     };
 
-    emit(&*tags, None, default_id, base_annotations);
+    // The parent relation is handed to the base object as its `parent_tags`, so a topic reads
+    // inherited values with the ordinary `{"parent": {"tag": ..}}` producer syntax and *chooses*
+    // what to output from them — rather than having them merged into `produced` behind its back.
+    // Fanning out here, before categorization, is what makes that work: each row is categorized and
+    // evaluated against its own parent, so a category condition can branch on the parent too.
+    match (parents.is_empty(), runner.spec.inherit_to_member.as_ref().map(|s| s.mode)) {
+        (false, Some(crate::topic::spec::InheritMode::FanOut)) => {
+            for (rel_id, fields) in parents {
+                let id = format!("{default_id}/relation/{rel_id}");
+                emit(&*tags, Some(fields), &id, base_annotations.clone());
+            }
+        }
+        (false, Some(crate::topic::spec::InheritMode::Merge)) => {
+            let merged = crate::topic::inherit::merge_parents(parents);
+            emit(&*tags, Some(&merged), default_id, base_annotations);
+        }
+        _ => emit(&*tags, None, default_id, base_annotations),
+    }
+    // Side objects keep the base object's tags as their parent, as they always have — a topic that
+    // both side-splits and inherits is not supported, and no config does both.
     for (clone_tags, clone_annotations, id) in clones {
         emit(&clone_tags, Some(&*tags), &id, Cow::Owned(clone_annotations));
     }

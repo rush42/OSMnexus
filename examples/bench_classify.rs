@@ -21,6 +21,9 @@ fn main() -> anyhow::Result<()> {
     let has_relations = runners.iter().any(|r| r.has_kind(osmnexus::osm::types::ElementKind::Relation));
     let has_nodes = runners.iter().any(|r| r.has_kind(osmnexus::osm::types::ElementKind::Node));
 
+    // No topic in a benchmark config declares `inherit_to_member`; an empty store is the
+    // no-inheritance path.
+    let inherit = osmnexus::topic::inherit::InheritStore::new(&runners);
     let cb = Callbacks {
         has_relations,
         classify_rel: |rd: &RelData| {
@@ -33,8 +36,9 @@ fn main() -> anyhow::Result<()> {
             }
             (mask.ne(&0).then_some(mask), rows, Vec::new())
         },
-        classify_way: |wd: &WayData| {
-            let out = classify_way(&runners, wd);
+        inherit_to_member: false,
+        classify_way: |wd: &WayData, _parents: &[i64]| {
+            let out = classify_way(&runners, wd, &inherit, &[]);
             ((out.mask != 0).then_some(out.mask), out.topic_rows)
         },
         has_nodes,

@@ -35,7 +35,7 @@ fn classify_element(
     tags: &crate::osm::types::RawTags<'_>,
     meta: &WayMeta,
 ) -> Vec<Vec<TopicRow>> {
-    runners.iter().map(|r| r.process(kind, id, tags, meta)).collect()
+    runners.iter().map(|r| r.process(kind, id, tags, meta, &[])).collect()
 }
 
 /// Tag rows for one way: per-topic tag rows plus a bitmask of which topics kept the way (produced
@@ -47,13 +47,22 @@ pub struct ClassifyOutput {
 
 /// Tag-only classification for one way (Pass A). Runs every topic's way pipeline against the way's
 /// raw tags. No geometry — coords are not needed and not available yet.
-pub fn classify_way(runners: &[TopicRunner], wd: &WayData<'_>) -> ClassifyOutput {
+/// `parents` is the way's parent relation ids (empty unless some topic declares
+/// `inherit_to_member`); each topic resolves its own exported parent tagsets out of `inherit`, since
+/// what a parent exports is per-topic. See `topic::inherit`.
+pub fn classify_way(
+    runners: &[TopicRunner],
+    wd: &WayData<'_>,
+    inherit: &crate::topic::inherit::InheritStore,
+    parents: &[i64],
+) -> ClassifyOutput {
     let mut mask = 0u32;
     let topic_rows: Vec<Vec<TopicRow>> = runners
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let rows = r.process(ElementKind::Way, wd.id, &wd.tags, &wd.meta);
+            let parents = inherit.parents_for(i, parents);
+            let rows = r.process(ElementKind::Way, wd.id, &wd.tags, &wd.meta, &parents);
             if !rows.is_empty() {
                 mask |= 1 << i;
             }

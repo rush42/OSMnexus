@@ -442,7 +442,7 @@ impl TopicRunner {
             .into_iter()
             .filter(|&kind| {
                 self.has_kind(kind)
-                    && build_topic_rows(self, kind, 0, &empty_tags, &no_meta).is_empty()
+                    && build_topic_rows(self, kind, 0, &empty_tags, &no_meta, &[]).is_empty()
             })
             .collect()
     }
@@ -498,11 +498,12 @@ impl TopicRunner {
         osm_id: i64,
         raw_tags: &'a RawTags<'a>,
         meta: &WayMeta,
+        parents: &[(i64, crate::topic::inherit::ExportedFields)],
     ) -> Vec<TopicRow> {
         if !self.has_kind(kind) {
             return Vec::new();
         }
-        build_topic_rows(self, kind, osm_id, raw_tags, meta)
+        build_topic_rows(self, kind, osm_id, raw_tags, meta, parents)
     }
 }
 
@@ -705,6 +706,7 @@ mod skip_untagged_tests {
                     0,
                     &RawTags::default(),
                     &WayMeta { timestamp: None, user: None, changeset: None },
+                    &[],
                 );
                 assert_eq!(
                     r.skips_untagged(kind),

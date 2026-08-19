@@ -25,7 +25,7 @@ fn bench_build_topic_rows(c: &mut Criterion) {
     ]);
 
     c.bench_function("build_topic_rows/roads/residential_way", |b| {
-        b.iter(|| build_topic_rows(black_box(&runner), ElementKind::Way, black_box(1), black_box(&tags), &meta))
+        b.iter(|| build_topic_rows(black_box(&runner), ElementKind::Way, black_box(1), black_box(&tags), &meta, &[]))
     });
 }
 

@@ -20,15 +20,20 @@
 use std::sync::{Arc, RwLock};
 
 use rustc_hash::FxHashMap;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-use crate::output::rows::TopicRow;
+use crate::osm::types::RawTags;
 use crate::topic::spec::InheritMode;
 use crate::topic::TopicRunner;
 
 /// One parent relation's exported fields, extracted once at relation-classify time and shared by
 /// every member way that inherits them.
-pub type ExportedFields = Arc<Map<String, Value>>;
+///
+/// A `RawTags` rather than a JSON map, because that is the shape the extraction context already
+/// speaks: the member way sees these as its `ExtractCtx::parent_tags`, so a way topic reads them
+/// with the *existing* `{"parent": {"tag": "ref"}}` / `parent_or_obj` producer syntax, and can match
+/// conditions and categories on them too. Nothing new was added to the producer language for this.
+pub type ExportedFields = Arc<RawTags<'static>>;
 
 /// Per-topic `relation osm_id -> exported fields`. `None` for a topic that declares no
 /// `inherit_to_member`, so a config that doesn't use the feature allocates nothing and pays no
@@ -64,10 +69,10 @@ impl InheritStore {
             return;
         }
         let Ok(Value::Object(map)) = serde_json::from_str::<Value>(produced) else { return };
-        let mut exported = Map::new();
+        let mut exported = RawTags::default();
         for field in &spec.fields {
             if let Some(v) = map.get(field) {
-                exported.insert(field.clone(), v.clone());
+                exported.insert(field.clone().into(), value_to_tag(v).into());
             }
         }
         if exported.is_empty() {
@@ -80,122 +85,65 @@ impl InheritStore {
         self.per_topic.get(idx)?.as_ref()?.read().unwrap().get(&rel_osm_id).cloned()
     }
 
-    /// Rewrite one topic's rows for a member way, per that topic's `mode`. `parents` is the way's
-    /// parent relation ids in the order the relations pass saw them, so the result is a
-    /// deterministic function of blob order like everything else on the ordered path.
+    /// This topic's parent tagsets for a member way, in `parents` order (sorted ids — see
+    /// `osm::reader::build_way_parents`), skipping parents that exported nothing.
     ///
-    /// Returns `rows` untouched when the topic declares no inheritance, the way has no parents, or
-    /// no parent exported anything — including for `FanOut`, so a member way whose parents all
-    /// exported nothing keeps exactly one row rather than vanishing.
-    pub fn apply(
-        &self,
-        runners: &[TopicRunner],
-        idx: usize,
-        parents: &[i64],
-        rows: Vec<TopicRow>,
-    ) -> Vec<TopicRow> {
-        if rows.is_empty() || parents.is_empty() {
-            return rows;
+    /// Empty when the topic declares no inheritance or the way has no exporting parent, which is
+    /// what `build_topic_rows` treats as "emit exactly one row with no parent" — so a member way
+    /// whose parents all exported nothing behaves exactly like a non-member way.
+    pub fn parents_for(&self, idx: usize, parents: &[i64]) -> Vec<(i64, ExportedFields)> {
+        if parents.is_empty() || self.per_topic.get(idx).map_or(true, Option::is_none) {
+            return Vec::new();
         }
-        let Some(spec) = runners[idx].spec.inherit_to_member.as_ref() else { return rows };
-        let found: Vec<(i64, ExportedFields)> =
-            parents.iter().filter_map(|&id| self.get(idx, id).map(|f| (id, f))).collect();
-        if found.is_empty() {
-            return rows;
-        }
-        match spec.mode {
-            InheritMode::Merge => rows
-                .into_iter()
-                .map(|mut row| {
-                    let merged: Map<String, Value> =
-                        found.iter().flat_map(|(_, f)| f.iter()).map(|(k, v)| (k.clone(), v.clone())).collect();
-                    row.produced = merge_into_produced(&row.produced, merged.iter());
-                    row
-                })
-                .collect(),
-            // One row per (row, parent). Rows for one way stay contiguous, which is what the output
-            // cursors' repeated-`osm_id` caching needs (`OrderedGeomCursor::last`) — the same shape
-            // side-split already produces.
-            InheritMode::FanOut => {
-                let mut out = Vec::with_capacity(rows.len() * found.len());
-                for row in &rows {
-                    for (rel_id, fields) in &found {
-                        let mut cloned = clone_row(row);
-                        cloned.produced = merge_into_produced(&row.produced, fields.iter());
-                        if let Some(id) = &mut cloned.id {
-                            id.push_str(&format!("/relation/{rel_id}"));
-                        }
-                        out.push(cloned);
-                    }
-                }
-                out
-            }
-        }
+        parents.iter().filter_map(|&id| self.get(idx, id).map(|f| (id, f))).collect()
+    }
+
+    /// This topic's `mode`, or `None` if it declares no inheritance.
+    pub fn mode(&self, runners: &[TopicRunner], idx: usize) -> Option<InheritMode> {
+        runners[idx].spec.inherit_to_member.as_ref().map(|s| s.mode)
     }
 }
 
-/// `TopicRow` isn't `Clone` (nothing else needs it — every other producer of rows builds them once
-/// and hands them straight to a sink), so fan-out clones explicitly here.
-fn clone_row(row: &TopicRow) -> TopicRow {
-    TopicRow {
-        osm_id: row.osm_id,
-        osm_type: row.osm_type,
-        id: row.id.clone(),
-        category: row.category.clone(),
-        produced: row.produced.clone(),
-        annotations: row.annotations.clone(),
-        meta: row.meta.clone(),
+/// A relation's produced value as a tag string. `produced` holds real JSON (numbers, bools), while
+/// tags are text — `Value::String` unwraps rather than serializing, so `"6"` stays `6` and not
+/// `"\"6\""`.
+fn value_to_tag(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 
-/// Merge inherited fields into a member's own pre-serialized `produced`. The member's own values
-/// win: a way's own `name` is about the way, and must not be overwritten by its route's.
-///
-/// This parses and reprints `produced`, which is exactly what the output path was just changed to
-/// stop doing — but here it runs on the parallel classify workers and only for ways that actually
-/// have an exporting parent, and the alternative (splicing text) would emit unsorted keys, breaking
-/// the sorted-key shape every other row has.
-fn merge_into_produced<'a>(
-    produced: &str,
-    inherited: impl Iterator<Item = (&'a String, &'a Value)>,
-) -> String {
-    let mut map: Map<String, Value> = match serde_json::from_str(produced) {
-        Ok(Value::Object(m)) => m,
-        _ => Map::new(),
-    };
-    for (k, v) in inherited {
-        map.entry(k.clone()).or_insert_with(|| v.clone());
+/// Fold several parents into one tagset for `InheritMode::Merge`, later parent winning on collision.
+pub fn merge_parents(parents: &[(i64, ExportedFields)]) -> RawTags<'static> {
+    let mut merged = RawTags::default();
+    for (_, fields) in parents {
+        for (k, v) in fields.iter() {
+            merged.insert(k.clone(), v.clone());
+        }
     }
-    serde_json::to_string(&Value::Object(map)).unwrap_or_else(|_| produced.to_owned())
+    merged
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn produced_values_become_plain_tag_text_not_json_literals() {
+        assert_eq!(value_to_tag(&Value::String("6".into())), "6");
+        assert_eq!(value_to_tag(&serde_json::json!(0)), "0");
+        assert_eq!(value_to_tag(&serde_json::json!(true)), "true");
+    }
+
     fn fields(pairs: &[(&str, &str)]) -> ExportedFields {
-        Arc::new(pairs.iter().map(|(k, v)| ((*k).to_owned(), Value::String((*v).to_owned()))).collect())
+        Arc::new(pairs.iter().map(|(k, v)| ((*k).to_owned().into(), (*v).to_owned().into())).collect())
     }
 
     #[test]
-    fn inherited_fields_do_not_overwrite_the_members_own_values() {
-        let out = merge_into_produced(
-            r#"{"name":"Hauptstraße","highway":"secondary"}"#,
-            fields(&[("name", "Tram 6"), ("ref", "6")]).iter(),
-        );
-        // The way's own `name` survives; the parent's `ref` is added.
-        assert_eq!(out, r#"{"highway":"secondary","name":"Hauptstraße","ref":"6"}"#);
-    }
-
-    #[test]
-    fn merged_output_keeps_keys_sorted_like_every_other_row() {
-        let out = merge_into_produced(r#"{"z":"1"}"#, fields(&[("a", "2"), ("m", "3")]).iter());
-        assert_eq!(out, r#"{"a":"2","m":"3","z":"1"}"#);
-    }
-
-    #[test]
-    fn an_empty_or_malformed_produced_still_receives_the_inherited_fields() {
-        assert_eq!(merge_into_produced("", fields(&[("ref", "6")]).iter()), r#"{"ref":"6"}"#);
-        assert_eq!(merge_into_produced("not json", fields(&[("ref", "6")]).iter()), r#"{"ref":"6"}"#);
+    fn merge_lets_the_later_parent_win_on_collision() {
+        let merged = merge_parents(&[(1, fields(&[("ref", "6"), ("route", "tram")])), (2, fields(&[("ref", "8")]))]);
+        assert_eq!(merged.get("ref").map(|c| c.as_ref()), Some("8"));
+        assert_eq!(merged.get("route").map(|c| c.as_ref()), Some("tram"));
     }
 }

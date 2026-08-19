@@ -261,20 +261,9 @@ async fn main() -> anyhow::Result<()> {
         let classify_way_cb = {
             let (runners, inherit) = (runners.clone(), inherit.clone());
             move |wd: &WayData, parents: &[i64]| -> (Option<u32>, Vec<Vec<TopicRow>>) {
-                let out = classify_way(&runners, wd);
+                let out = classify_way(&runners, wd, &inherit, parents);
                 let kept = out.mask != 0;
-                if parents.is_empty() {
-                    return (kept.then_some(out.mask), out.topic_rows);
-                }
-                // `apply` never turns a non-empty row list empty (nor a topic's absent rows into
-                // present ones), so the keep mask computed above still holds after inheritance.
-                let rows = out
-                    .topic_rows
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, rows)| inherit.apply(&runners, i, parents, rows))
-                    .collect();
-                (kept.then_some(out.mask), rows)
+                (kept.then_some(out.mask), out.topic_rows)
             }
         };
         // Relations pass: classify one relation, returning its keep mask, tag rows, and member-way
