@@ -162,9 +162,20 @@ fn emit_graph_fallback_features<F>(
 where
     F: FnMut(&Feature<'_>) -> anyhow::Result<()>,
 {
+    if segments.is_empty() {
+        return Ok(());
+    }
+    // Cloned once for the whole run of segments, not once per segment: the only thing that differs
+    // between them is `seg_idx`, so seed the key here and overwrite its value in place below. A
+    // way's segment count is unbounded, and the clone copies an owned `String` per property key.
+    let mut properties = properties.clone();
+    properties.insert("seg_idx".to_owned(), PropValue::Int(0));
     for segment in segments {
-        let mut properties = properties.clone();
-        properties.insert("seg_idx".to_owned(), PropValue::Int(segment.seg_idx as i64));
+        // Present since the insert above, so this is an in-place write with no allocation. Every
+        // other entry is left exactly as the caller built it.
+        if let Some(seg_idx) = properties.get_mut("seg_idx") {
+            *seg_idx = PropValue::Int(segment.seg_idx as i64);
+        }
         emit(&Feature {
             geometry: FeatureGeometry::Segment(&segment.coordinates),
             properties: &properties,
@@ -337,4 +348,98 @@ pub fn write_geojson(out_dir: &Path, tables: &[String], precision: CoordPrecisio
         writer.flush()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // No shipped config declares `"graph"`, so nothing in `configs/` reaches the graph-fallback
+    // path and the bremen byte-identity gate every other output change is verified against says
+    // nothing about it. These tests are that path's only coverage.
+
+    fn seg(seg_idx: usize, x: f64) -> EdgeGeom {
+        EdgeGeom { seg_idx, coordinates: vec![[x, 0.0], [x + 1.0, 1.0]] }
+    }
+
+    fn base_props() -> Properties<'static> {
+        let mut properties = Properties::new();
+        properties.insert("category".to_owned(), PropValue::Str("road"));
+        properties.insert("osm_id".to_owned(), PropValue::Int(7));
+        properties
+    }
+
+    fn emitted(segments: &[&EdgeGeom], properties: &Properties<'_>) -> Vec<String> {
+        let mut out = Vec::new();
+        emit_graph_fallback_features(
+            &mut |feature: &Feature<'_>| {
+                out.push(serde_json::to_string(feature)?);
+                Ok(())
+            },
+            segments,
+            properties,
+        )
+        .unwrap();
+        out
+    }
+
+    #[test]
+    fn each_segment_gets_its_own_seg_idx_and_its_own_coordinates() {
+        let (a, b, c) = (seg(0, 0.0), seg(1, 10.0), seg(2, 20.0));
+        let out = emitted(&[&a, &b, &c], &base_props());
+        assert_eq!(out.len(), 3);
+        for (i, feature) in out.iter().enumerate() {
+            assert!(feature.contains(&format!(r#""seg_idx":{i}"#)), "segment {i}: {feature}");
+            assert!(feature.contains(r#""type":"LineString""#));
+            assert!(feature.contains(r#""category":"road""#), "base properties lost: {feature}");
+            assert!(feature.contains(r#""osm_id":7"#));
+        }
+        assert!(out[1].contains("[10.0,0.0]"), "wrong coordinates: {}", out[1]);
+    }
+
+    /// The reason the shared-buffer rewrite needs a test at all: reusing one map across segments
+    /// must not let one segment's `seg_idx` survive into the next feature.
+    #[test]
+    fn seg_idx_does_not_leak_between_segments() {
+        let (a, b) = (seg(0, 0.0), seg(5, 1.0));
+        let out = emitted(&[&a, &b], &base_props());
+        assert_eq!(out[0].matches(r#""seg_idx""#).count(), 1);
+        assert!(out[0].contains(r#""seg_idx":0"#));
+        assert!(!out[0].contains(r#""seg_idx":5"#));
+        assert!(out[1].contains(r#""seg_idx":5"#));
+        assert!(!out[1].contains(r#""seg_idx":0"#));
+    }
+
+    #[test]
+    fn a_seg_idx_already_in_the_base_properties_is_overwritten_not_duplicated() {
+        let mut properties = base_props();
+        properties.insert("seg_idx".to_owned(), PropValue::Int(99));
+        let a = seg(3, 0.0);
+        let out = emitted(&[&a], &properties);
+        assert_eq!(out[0].matches(r#""seg_idx""#).count(), 1);
+        assert!(out[0].contains(r#""seg_idx":3"#));
+        assert!(!out[0].contains("99"));
+    }
+
+    #[test]
+    fn no_segments_emits_no_features() {
+        assert!(emitted(&[], &base_props()).is_empty());
+    }
+
+    /// Keys serialize sorted (`Properties` is a `BTreeMap`), so `kind` precedes `osm_id`. Worth
+    /// pinning: everywhere else this ordering is held in place by the byte-identity gate, which
+    /// does not reach these features.
+    #[test]
+    fn marker_properties_serialize_kind_before_osm_id() {
+        let properties = marker_properties(42, "cut");
+        let json = serde_json::to_string(&Feature {
+            geometry: FeatureGeometry::Point([1.0, 2.0]),
+            properties: &properties,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"geometry":{"coordinates":[1.0,2.0],"type":"Point"},"properties":{"kind":"cut","osm_id":42},"type":"Feature"}"#
+        );
+    }
 }

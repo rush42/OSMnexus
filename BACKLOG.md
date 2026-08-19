@@ -422,9 +422,12 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   features, and the `"cut"`/`"endpoint"` marker features never execute — not in the test suite, and
   not under the bremen byte-identity gate that every output change on this branch has been verified
   with. `68c77604f` noted this in passing; it is worth stating as its own gap, because it means that
-  code is currently changed on inspection alone. A unit test over a synthetic `EdgeGeom` sequence
-  would cost little and would cover the marker key ordering (`kind` sorts before `osm_id`), which is
-  exactly the kind of detail the gate catches everywhere else.
-  - Also on that path: `emit_graph_fallback_features` clones the whole property map once per segment
-    just to add `seg_idx`. Build the shared prefix once and append the tail. Left alone so far
-    precisely because nothing exercises it.
+  code is otherwise changed on inspection alone.
+  - **Partly closed.** `output::geojson`'s unit tests now cover `emit_graph_fallback_features`
+    directly (per-segment `seg_idx`, no leakage between segments, an existing `seg_idx` being
+    overwritten rather than duplicated, empty input, and the marker key ordering `kind` < `osm_id`),
+    added alongside the shared-buffer rewrite of that function so the change was verifiable at all.
+  - **Still open:** nothing covers `for_each_feature`'s *integration* over real staged files for a
+    graph topic — the cursor interplay between `EdgeCursor::get_all` and the tag stream, and the
+    cut/endpoint interleaving. That needs a fixture config declaring `"graph"`, which no shipped
+    config does. Until then the byte-identity gate still cannot see this path.
