@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
+use serde::ser::SerializeMap;
 use serde_json::{json, Map, Value};
 
 use crate::output::cursor::{
@@ -35,6 +36,62 @@ use crate::output::cursor::{
 };
 use crate::output::rows::TopicRow;
 use crate::output::stage::StageReader;
+
+/// One feature's geometry, as one of the three shapes this module emits: a joined geometry row, a
+/// single graph-edge segment, or a bare point (a cut/endpoint marker).
+enum FeatureGeometry<'a> {
+    Geom(&'a GeomValue),
+    Segment(&'a [[f64; 2]]),
+    Point([f64; 2]),
+}
+
+impl serde::Serialize for FeatureGeometry<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            FeatureGeometry::Geom(g) => g.serialize(serializer),
+            FeatureGeometry::Segment(coords) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("coordinates", coords)?;
+                map.serialize_entry("type", "LineString")?;
+                map.end()
+            }
+            FeatureGeometry::Point(p) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("coordinates", p)?;
+                map.serialize_entry("type", "Point")?;
+                map.end()
+            }
+        }
+    }
+}
+
+/// One GeoJSON `Feature`, borrowing its geometry and properties rather than owning a
+/// `serde_json::Value` tree — see `GeomValue`'s `Serialize` impl for why that tree was the dominant
+/// cost of this backend. Key order is alphabetical (`geometry`, `properties`, `type`) to match what
+/// `json!` emitted through `serde_json::Map`'s `BTreeMap`.
+pub struct Feature<'a> {
+    geometry: FeatureGeometry<'a>,
+    properties: &'a Map<String, Value>,
+}
+
+impl serde::Serialize for Feature<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("geometry", &self.geometry)?;
+        map.serialize_entry("properties", self.properties)?;
+        map.serialize_entry("type", "Feature")?;
+        map.end()
+    }
+}
+
+/// A cut/endpoint marker's properties — the only features whose properties aren't
+/// `base_properties`.
+fn marker_properties(osm_id: i64, kind: &str) -> Map<String, Value> {
+    let mut properties = Map::new();
+    properties.insert("kind".to_owned(), json!(kind));
+    properties.insert("osm_id".to_owned(), json!(osm_id));
+    properties
+}
 
 fn merge_properties(target: &mut Map<String, Value>, json_str: &str) {
     if !json_str.is_empty() {
@@ -72,16 +129,15 @@ fn emit_graph_fallback_features<F>(
     properties: &Map<String, Value>,
 ) -> anyhow::Result<()>
 where
-    F: FnMut(&Value) -> anyhow::Result<()>,
+    F: FnMut(&Feature<'_>) -> anyhow::Result<()>,
 {
     for segment in segments {
         let mut properties = properties.clone();
         properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));
-        emit(&json!({
-            "type": "Feature",
-            "geometry": { "type": "LineString", "coordinates": segment.coordinates },
-            "properties": properties,
-        }))?;
+        emit(&Feature {
+            geometry: FeatureGeometry::Segment(&segment.coordinates),
+            properties: &properties,
+        })?;
     }
     Ok(())
 }
@@ -98,6 +154,10 @@ where
 /// cache — the peak lands in this phase, after the PBF mmap is gone). `serde_json::Value` is a very
 /// fat representation of a coordinate list, so a topic's features cost far more resident than the
 /// `.geojsonseq` bytes they serialize to. Streaming makes both framings bounded by one feature.
+///
+/// `emit` takes a borrowed [`Feature`], not a `Value`: the features are serialized straight from the
+/// cursors' native types, so no `Value` tree is built even transiently — see `GeomValue`'s
+/// `Serialize` impl for why that tree dominated this backend's cost.
 fn for_each_feature<F>(
     out_dir: &Path,
     table: &str,
@@ -107,7 +167,7 @@ fn for_each_feature<F>(
     mut emit: F,
 ) -> anyhow::Result<()>
 where
-    F: FnMut(&Value) -> anyhow::Result<()>,
+    F: FnMut(&Feature<'_>) -> anyhow::Result<()>,
 {
     let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")))?;
     let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")))?;
@@ -126,11 +186,8 @@ where
                     None => None,
                 };
                 if let Some(geom) = geom {
-                    emit(&json!({
-                        "type": "Feature",
-                        "geometry": geom.to_geojson(),
-                        "properties": base_properties(&row),
-                    }))?;
+                    let properties = base_properties(&row);
+                    emit(&Feature { geometry: FeatureGeometry::Geom(geom), properties: &properties })?;
                 } else if let Some(way_ids) = relation_members.get(&osm_id) {
                     // Graph-shape fallback: no per-topic relation geometry table, stitch the
                     // shared graph's edges for this relation's member ways instead.
@@ -144,12 +201,11 @@ where
                     Some(cursor) => cursor.get(osm_id)?,
                     None => None,
                 };
-                let Some(GeomValue::Point(p)) = geom else { continue };
-                emit(&json!({
-                    "type": "Feature",
-                    "geometry": { "type": "Point", "coordinates": p },
-                    "properties": base_properties(&row),
-                }))?;
+                // Still filtered to `Point`: a node's geometry table can only hold points, and a
+                // non-point row here would be a bug rather than something to render.
+                let Some(geom @ GeomValue::Point(_)) = geom else { continue };
+                let properties = base_properties(&row);
+                emit(&Feature { geometry: FeatureGeometry::Geom(geom), properties: &properties })?;
             }
             _ => {
                 let geom = match way_geom.as_mut() {
@@ -157,11 +213,8 @@ where
                     None => None,
                 };
                 if let Some(geom) = geom {
-                    emit(&json!({
-                        "type": "Feature",
-                        "geometry": geom.to_geojson(),
-                        "properties": base_properties(&row),
-                    }))?;
+                    let properties = base_properties(&row);
+                    emit(&Feature { geometry: FeatureGeometry::Geom(geom), properties: &properties })?;
                 } else {
                     // Graph-shape fallback (see module doc): split into intersection segments,
                     // surfacing the shared node between consecutive segments as a cut point.
@@ -171,29 +224,29 @@ where
                         emit_graph_fallback_features(&mut emit, &segments, &properties)?;
                         for segment in segments.iter().skip(1) {
                             if let Some(&start) = segment.coordinates.first() {
-                                emit(&json!({
-                                    "type": "Feature",
-                                    "geometry": { "type": "Point", "coordinates": start },
-                                    "properties": { "osm_id": osm_id, "kind": "cut" },
-                                }))?;
+                                let properties = marker_properties(osm_id, "cut");
+                                emit(&Feature {
+                                    geometry: FeatureGeometry::Point(start),
+                                    properties: &properties,
+                                })?;
                             }
                         }
                         // The way's own two ends — never a "cut" (that's reserved for splits
                         // *within* this way, see above), but still worth surfacing since they may
                         // coincide with another way's endpoint or a cut point of its own.
-                        if let Some(first) = segments.first().and_then(|s| s.coordinates.first()) {
-                            emit(&json!({
-                                "type": "Feature",
-                                "geometry": { "type": "Point", "coordinates": first },
-                                "properties": { "osm_id": osm_id, "kind": "endpoint" },
-                            }))?;
+                        if let Some(&first) = segments.first().and_then(|s| s.coordinates.first()) {
+                            let properties = marker_properties(osm_id, "endpoint");
+                            emit(&Feature {
+                                geometry: FeatureGeometry::Point(first),
+                                properties: &properties,
+                            })?;
                         }
-                        if let Some(last) = segments.last().and_then(|s| s.coordinates.last()) {
-                            emit(&json!({
-                                "type": "Feature",
-                                "geometry": { "type": "Point", "coordinates": last },
-                                "properties": { "osm_id": osm_id, "kind": "endpoint" },
-                            }))?;
+                        if let Some(&last) = segments.last().and_then(|s| s.coordinates.last()) {
+                            let properties = marker_properties(osm_id, "endpoint");
+                            emit(&Feature {
+                                geometry: FeatureGeometry::Point(last),
+                                properties: &properties,
+                            })?;
                         }
                     }
                 }

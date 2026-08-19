@@ -139,10 +139,10 @@ impl<'a> EdgeCursor<'a> {
 /// One decoded row of a `{table}_node_geom`/`{table}_way_geom`/`{table}_relation_geom` file —
 /// `geom_type` says which shape `coordinates` decodes to (`Point` → `[f64; 2]`, `LineString`/
 /// `Polygon` → `Vec<[f64; 2]>`, `MultiLineString` → `Vec<Vec<[f64; 2]>>`, hence the enum rather than
-/// one fixed shape). `to_geojson`/`to_wkb` are the two encodings its two consumers need — GeoJSON's
-/// native JSON geometry object, and plain (SRID-less; the CRS is declared once in Parquet file
-/// metadata instead — see `output::parquet::geoparquet_crs84`) little-endian WKB for GeoParquet's
-/// `geometry` column.
+/// one fixed shape). Its two consumers need two encodings: the [`serde::Serialize`] impl below
+/// writes GeoJSON's geometry object, and `to_wkb` writes plain (SRID-less; the CRS is declared once
+/// in Parquet file metadata instead — see `output::parquet::geoparquet_crs84`) little-endian WKB for
+/// GeoParquet's `geometry` column.
 pub enum GeomValue {
     Point([f64; 2]),
     Line(Vec<[f64; 2]>),
@@ -170,15 +170,6 @@ impl GeomValue {
         }
     }
 
-    pub fn to_geojson(&self) -> serde_json::Value {
-        use serde_json::json;
-        match self {
-            GeomValue::Point(p) => json!({ "type": "Point", "coordinates": p }),
-            GeomValue::Line(l) => json!({ "type": "LineString", "coordinates": l }),
-            GeomValue::MultiLine(m) => json!({ "type": "MultiLineString", "coordinates": m }),
-            GeomValue::Polygon(p) => json!({ "type": "Polygon", "coordinates": [p] }),
-        }
-    }
 
     /// Plain little-endian WKB — GeoParquet's `geometry` column encoding.
     pub fn to_wkb(&self) -> Vec<u8> {
@@ -188,6 +179,29 @@ impl GeomValue {
             GeomValue::MultiLine(m) => wkb_multilinestring(m),
             GeomValue::Polygon(p) => wkb_polygon(std::slice::from_ref(p)),
         }
+    }
+}
+
+/// GeoJSON's geometry object: `{"coordinates": .., "type": ..}`. Serialized straight from the
+/// native coordinate vectors — building a `serde_json::Value` first turned every coordinate pair
+/// into its own heap-allocated `Vec<Value>` of two `Value::Number`s, which on a country-sized run is
+/// ~10^8 short-lived allocations for a tree that is serialized and dropped immediately. Key order is
+/// alphabetical to match what `serde_json::Map` (a `BTreeMap` here) emitted when this was built with
+/// `json!`.
+impl serde::Serialize for GeomValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        match self {
+            GeomValue::Point(p) => map.serialize_entry("coordinates", p)?,
+            GeomValue::Line(l) => map.serialize_entry("coordinates", l)?,
+            GeomValue::MultiLine(m) => map.serialize_entry("coordinates", m)?,
+            // A Polygon's `coordinates` is a *list of rings*; this enum carries the single outer
+            // ring, so it nests one level on the way out.
+            GeomValue::Polygon(p) => map.serialize_entry("coordinates", &[p])?,
+        }
+        map.serialize_entry("type", self.geom_type())?;
+        map.end()
     }
 }
 
