@@ -28,7 +28,7 @@ use std::io::Write;
 use std::path::Path;
 
 use serde::ser::SerializeMap;
-use serde_json::{json, Map, Value};
+use serde_json::value::RawValue;
 
 use crate::output::cursor::{
     group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, GeomValue,
@@ -71,7 +71,7 @@ impl serde::Serialize for FeatureGeometry<'_> {
 /// `json!` emitted through `serde_json::Map`'s `BTreeMap`.
 pub struct Feature<'a> {
     geometry: FeatureGeometry<'a>,
-    properties: &'a Map<String, Value>,
+    properties: &'a Properties<'a>,
 }
 
 impl serde::Serialize for Feature<'_> {
@@ -86,31 +86,61 @@ impl serde::Serialize for Feature<'_> {
 
 /// A cut/endpoint marker's properties — the only features whose properties aren't
 /// `base_properties`.
-fn marker_properties(osm_id: i64, kind: &str) -> Map<String, Value> {
-    let mut properties = Map::new();
-    properties.insert("kind".to_owned(), json!(kind));
-    properties.insert("osm_id".to_owned(), json!(osm_id));
+fn marker_properties(osm_id: i64, kind: &'static str) -> Properties<'static> {
+    let mut properties = Properties::new();
+    properties.insert("kind".to_owned(), PropValue::Str(kind));
+    properties.insert("osm_id".to_owned(), PropValue::Int(osm_id));
     properties
 }
 
-fn merge_properties(target: &mut Map<String, Value>, json_str: &str) {
-    if !json_str.is_empty() {
-        if let Ok(Value::Object(map)) = serde_json::from_str(json_str) {
-            target.extend(map);
+/// One entry in a feature's `properties`. `Raw` is the point of this type: `TopicRow::produced`/
+/// `annotations` are *already* JSON text (pre-serialized on the classify workers — see the field's
+/// own doc), so their values are spliced through as borrowed slices of that text rather than parsed
+/// into a `serde_json::Value` and printed straight back out. Only the keys are parsed, because the
+/// keys are what carries the sort order and the later-wins dedup this map relies on.
+#[derive(Clone)]
+enum PropValue<'a> {
+    Raw(&'a RawValue),
+    Int(i64),
+    Str(&'a str),
+}
+
+impl serde::Serialize for PropValue<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            PropValue::Raw(raw) => raw.serialize(serializer),
+            PropValue::Int(v) => serializer.serialize_i64(*v),
+            PropValue::Str(v) => serializer.serialize_str(v),
         }
     }
 }
 
-fn base_properties(row: &TopicRow) -> Map<String, Value> {
-    let mut properties = Map::new();
-    properties.insert("osm_id".to_owned(), json!(row.osm_id));
+/// A feature's `properties` object. A `BTreeMap`, matching what `serde_json::Map` was here (its
+/// `preserve_order` feature is off), so keys still serialize sorted and a later insert still wins.
+type Properties<'a> = std::collections::BTreeMap<String, PropValue<'a>>;
+
+/// Merge one pre-serialized JSON object's entries into `target`. Parse failures and non-object
+/// values are ignored rather than reported — unchanged behaviour, and load-bearing: a topic is free
+/// to leave these empty, and a malformed value should drop the property, not fail the run.
+fn merge_properties<'a>(target: &mut Properties<'a>, json_str: &'a str) {
+    if json_str.is_empty() {
+        return;
+    }
+    if let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, &'a RawValue>>(json_str) {
+        target.extend(map.into_iter().map(|(k, v)| (k, PropValue::Raw(v))));
+    }
+}
+
+fn base_properties(row: &TopicRow) -> Properties<'_> {
+    let mut properties = Properties::new();
+    properties.insert("osm_id".to_owned(), PropValue::Int(row.osm_id));
     if let Some(id) = &row.id {
-        properties.insert("id".to_owned(), json!(id));
+        properties.insert("id".to_owned(), PropValue::Str(id));
     }
     // `None` means `accept_all` (no category matched — see `TopicRow::category`); keep the column
     // out of GeoJSON properties entirely rather than emitting a misleading empty string.
     if let Some(category) = &row.category {
-        properties.insert("category".to_owned(), json!(category.as_ref()));
+        properties.insert("category".to_owned(), PropValue::Str(category.as_ref()));
     }
     merge_properties(&mut properties, &row.produced);
     // `annotations` carries engine-attached bookkeeping (e.g. `_side`, the side-split object's
@@ -126,14 +156,14 @@ fn base_properties(row: &TopicRow) -> Map<String, Value> {
 fn emit_graph_fallback_features<F>(
     emit: &mut F,
     segments: &[&EdgeGeom],
-    properties: &Map<String, Value>,
+    properties: &Properties<'_>,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&Feature<'_>) -> anyhow::Result<()>,
 {
     for segment in segments {
         let mut properties = properties.clone();
-        properties.insert("seg_idx".to_owned(), json!(segment.seg_idx));
+        properties.insert("seg_idx".to_owned(), PropValue::Int(segment.seg_idx as i64));
         emit(&Feature {
             geometry: FeatureGeometry::Segment(&segment.coordinates),
             properties: &properties,
