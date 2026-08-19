@@ -65,6 +65,10 @@ pub struct TopicSpec {
     /// once: routing table plus a rendered line). See `GraphSpec`'s own doc.
     #[serde(default)]
     pub graph: GraphSpec,
+    /// Fields this topic's kept *relations* hand down to their member ways, stamped onto each
+    /// member's own tag row during the way's own classification. See `InheritToMember`.
+    #[serde(default)]
+    pub inherit_to_member: Option<InheritToMember>,
     /// Per-kind "no subcategorization" opt-out from the `topics/<name>/{node,way,relation}/`
     /// category-file convention — a kind flagged here accepts every (non-`exclude_condition`-
     /// matched) element straight through the topic's own `producers`/`defaults`, with no category
@@ -210,6 +214,53 @@ impl GeometryOutputSpec {
         }
         Ok(())
     }
+}
+
+/// Fields a kept relation hands down to its member ways.
+///
+/// Inheritance is **within one topic**: this topic's relation rows export to this topic's way rows.
+/// It happens during the way's own classification (Pass A), which is possible because the relations
+/// pass runs before Pass A (`osm::reader::sorted`'s module doc) — so by the time a member way is
+/// classified, every parent it could have is already known. That is the whole point: a way ends up
+/// carrying its relation-derived context in its *own* tag row, instead of a relation borrowing the
+/// way's geometry back at output-build time through a hashmap keyed on scattered member ids.
+///
+/// Source is the relation's `produced` (its configured producer outputs), never its raw tags — and
+/// currently never its `annotations`, which only ever receives engine bookkeeping (`_side`/`_prefix`
+/// from side-split, `<output>_source`/`_confidence` from producer `annotate`). Measured on
+/// `configs/public_transport`: 0 of 665 relations have a non-empty `annotations`, while every useful
+/// field (`ref`/`name`/`colour`/`route`) is in `produced`.
+///
+/// `fields` is not optional, and the reason is output size rather than memory. All 665 of that
+/// config's relations' `produced` totals ~163 KB, so retaining it is free; but stamping it onto
+/// 184,918 (relation, way) pairs unrestricted is ~45 MB of duplicated output against ~11 MB for four
+/// fields.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InheritToMember {
+    /// Keys to copy out of the parent relation's `produced`. A key the parent didn't produce is
+    /// simply absent from the member — not an error, since a relation's outputs are
+    /// category-dependent.
+    pub fields: Vec<String>,
+    /// What to do when a way belongs to several relations — the common case, not the exception:
+    /// measured mean 3.11 parents per member way, max 85.
+    #[serde(default)]
+    pub mode: InheritMode,
+}
+
+/// How a member way with several parent relations is emitted. See `InheritToMember::mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InheritMode {
+    /// One tag row per (way, parent), each carrying that parent's fields and distinguished by a
+    /// `/relation/<id>` id suffix. Lossless, and structurally the same fan-out side-split already
+    /// performs — the rows for one way stay contiguous, which is what the output cursors' repeated-
+    /// `osm_id` caching relies on. Multiplies a member way's tag rows by its parent count.
+    #[default]
+    FanOut,
+    /// One tag row per way, with every parent's fields merged in and a later parent overwriting an
+    /// earlier one on key collision. Keeps row counts stable at the cost of reporting only one
+    /// parent's values for a way that has several.
+    Merge,
 }
 
 /// Forces a cut point in the shared routing graph — orthogonal to `GeometryOutputSpec` (see

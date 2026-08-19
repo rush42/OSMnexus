@@ -252,12 +252,29 @@ async fn main() -> anyhow::Result<()> {
         // Pure — no writer side effects. The ordered fast path routes tag rows from its blob-order
         // sequential fold instead of from here (see `osm::reader::Callbacks`' own doc); the fallback
         // scan routes right next to calling this, same as before.
+        // Shared by the relations pass (writes each kept relation's exported fields) and Pass A
+        // (reads them for a member way). Safe in that order because the relations pass completes
+        // before Pass A starts — see `topic::inherit`'s own doc.
+        let inherit = Arc::new(topic::inherit::InheritStore::new(&runners));
+        let inherit_enabled = inherit.any();
+
         let classify_way_cb = {
-            let runners = runners.clone();
-            move |wd: &WayData| -> (Option<u32>, Vec<Vec<TopicRow>>) {
+            let (runners, inherit) = (runners.clone(), inherit.clone());
+            move |wd: &WayData, parents: &[i64]| -> (Option<u32>, Vec<Vec<TopicRow>>) {
                 let out = classify_way(&runners, wd);
                 let kept = out.mask != 0;
-                (kept.then_some(out.mask), out.topic_rows)
+                if parents.is_empty() {
+                    return (kept.then_some(out.mask), out.topic_rows);
+                }
+                // `apply` never turns a non-empty row list empty (nor a topic's absent rows into
+                // present ones), so the keep mask computed above still holds after inheritance.
+                let rows = out
+                    .topic_rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, rows)| inherit.apply(&runners, i, parents, rows))
+                    .collect();
+                (kept.then_some(out.mask), rows)
             }
         };
         // Relations pass: classify one relation, returning its keep mask, tag rows, and member-way
@@ -267,13 +284,24 @@ async fn main() -> anyhow::Result<()> {
         // wants relation *geometry*; that decision is `geom::materialize`'s, using `plan`, not made
         // here).
         let classify_rel_cb = {
-            let runners = runners.clone();
+            let (runners, inherit) = (runners.clone(), inherit.clone());
             move |rd: &RelData| -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) {
                 let rows = classify_relation(&runners, rd);
                 let mut mask = 0u32;
                 for (i, r) in rows.iter().enumerate() {
                     if !r.is_empty() {
                         mask |= 1 << i;
+                    }
+                }
+                // Retain whatever this relation exports to its member ways, before the rows are
+                // routed away to a writer. Reaching Pass A is the whole point of `inherit_to_member`
+                // — a member way carries this in its own tag row instead of a relation borrowing the
+                // way's geometry back at output time.
+                if inherit_enabled {
+                    for (i, r) in rows.iter().enumerate() {
+                        if let Some(first) = r.first() {
+                            inherit.capture(&runners, i, rd.id, &first.produced);
+                        }
                     }
                 }
                 let kept = mask != 0;
@@ -339,6 +367,7 @@ async fn main() -> anyhow::Result<()> {
                 classify_rel: classify_rel_cb,
                 relation_geom_mask: plan.relation_geom_mask,
                 classify_way: classify_way_cb,
+                inherit_to_member: inherit_enabled,
                 has_nodes,
                 classify_node: classify_node_cb,
                 skip_untagged_nodes,

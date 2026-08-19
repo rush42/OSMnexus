@@ -204,11 +204,14 @@ pub(super) fn classify_and_index<C, RT>(
     classify: &C,
     route_tag: &RT,
     extra_way_ids: &FxHashSet<i64>,
+    // Way id -> the relations it belongs to, from the relations pass (which runs first). Empty
+    // unless some topic declares `inherit_to_member` — see `topic::inherit`.
+    way_parents: &FxHashMap<i64, Vec<i64>>,
     needs_graph: bool,
     ordered: bool,
 ) -> anyhow::Result<(NodeRefCounts, WayRefsStore, FxHashSet<i64>, Vec<i64>)>
 where
-    C: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync,
+    C: for<'a> Fn(&WayData<'a>, &[i64]) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync,
     RT: Fn(Vec<Vec<TopicRow>>) + Sync,
 {
     let mut counts: FxHashMap<i64, u32> = FxHashMap::default();
@@ -242,7 +245,9 @@ where
                 for group in block.groups() {
                     for way in group.ways() {
                         let wd = way_data(&way);
-                        let (kept_mask, topic_rows) = classify(&wd);
+                        let parents =
+                            way_parents.get(&wd.id).map_or::<&[i64], _>(&[], Vec::as_slice);
+                        let (kept_mask, topic_rows) = classify(&wd, parents);
                         let is_extra = !extra_way_ids.is_empty() && extra_way_ids.contains(&wd.id);
                         if kept_mask.is_none() && !is_extra {
                             continue;

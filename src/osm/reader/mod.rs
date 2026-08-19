@@ -99,6 +99,10 @@ pub struct Callbacks<CR, CW, CN, RT, RM, RP> {
     /// per-topic tag rows. Pure — no routing. Relation membership has no bearing on this — see
     /// `classify_and_index`'s own doc.
     pub classify_way: CW,
+    /// Whether any topic declares `inherit_to_member` — gates building the way -> parent-relation
+    /// index, the one part of that feature whose size scales with the extract. False for every
+    /// config that doesn't use it, which is all of them today.
+    pub inherit_to_member: bool,
     /// Whether any topic declares node categories — gates node tag decoding in Pass B.
     pub has_nodes: bool,
     /// Nodes pass: classify one node, returning whether it should be a forced graph cut point
@@ -228,7 +232,7 @@ pub fn stream_osm<CR, CW, CN, RT, RM, RP>(
 ) -> anyhow::Result<SelectionContext>
 where
     CR: for<'a> Fn(&RelData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) + Sync + Send,
-    CW: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync + Send,
+    CW: for<'a> Fn(&WayData<'a>, &[i64]) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync + Send,
     CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) + Sync + Send,
     RT: Fn(Vec<Vec<TopicRow>>) + Sync + Send,
     RM: Fn(Vec<MemberRow>) + Sync + Send,
@@ -287,6 +291,11 @@ where
                 // `SelectionContext::way_refs`'s own doc. But only for relations whose mask
                 // intersects `relation_geom_mask`: a relation kept purely for attribute output (no
                 // topic wants its geometry) has nothing to gain from its member ways' coordinates.
+                // Way -> its parent relations, for `inherit_to_member`. Built here because this
+                // is the one point where the relations pass has finished and Pass A hasn't started:
+                // a member way's parents are all known, and nothing has classified a way yet.
+                let way_parents = build_way_parents(&rel_members, cb.inherit_to_member);
+
                 let extra_way_ids: FxHashSet<i64> = rel_members
                     .values()
                     .filter(|(_, mask)| mask & cb.relation_geom_mask != 0)
@@ -299,8 +308,8 @@ where
                 // `way_refs` — see `classify_and_index`'s own doc.
                 let t = std::time::Instant::now();
                 let (use_counts, way_refs, extra_node_ids, kept_way_order) = classify_and_index(
-                    &mmap, way_offsets, &cb.classify_way, &cb.route_tag, &extra_way_ids, cb.needs_graph,
-                    cb.ordered,
+                    &mmap, way_offsets, &cb.classify_way, &cb.route_tag, &extra_way_ids,
+                    &way_parents, cb.needs_graph, cb.ordered,
                 )?;
                 info!("[phase] Pass A (classify ways + emit tags): {:.1}s", t.elapsed().as_secs_f32());
                 log_struct_sizes(
@@ -367,4 +376,32 @@ fn find_regions(mmap: &osmpbf::Mmap, data: &[osmpbf::ByteOffset]) -> anyhow::Res
     let way_start = find_way_section_start(mmap, data)?;
     let rel_start = find_relation_section_start(mmap, data, way_start)?;
     Ok((way_start, rel_start))
+}
+
+/// Invert the relations pass's `relation -> member ways` into `way -> parent relations`, for
+/// `topic::inherit`. Returns empty unless some topic declares `inherit_to_member`: this is the only
+/// structure the feature adds whose size scales with the extract (measured on
+/// `configs/public_transport` over bremen: 184,918 pairs over 59,502 member ways), so a config that
+/// doesn't use it must not pay for it.
+///
+/// Parent order follows `rel_members`' iteration, which is a hashmap and therefore arbitrary — so
+/// the ids are sorted, keeping a member way's inherited output a deterministic function of the input
+/// rather than of allocator behaviour.
+pub(crate) fn build_way_parents(
+    rel_members: &FxHashMap<i64, (Vec<(i64, crate::osm::types::MemberRole)>, u32)>,
+    enabled: bool,
+) -> FxHashMap<i64, Vec<i64>> {
+    let mut out: FxHashMap<i64, Vec<i64>> = FxHashMap::default();
+    if !enabled {
+        return out;
+    }
+    for (&rel_id, (members, _)) in rel_members {
+        for &(way_id, _) in members {
+            out.entry(way_id).or_default().push(rel_id);
+        }
+    }
+    for parents in out.values_mut() {
+        parents.sort_unstable();
+    }
+    out
 }
