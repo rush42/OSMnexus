@@ -147,9 +147,9 @@ image is a screenshot rather than hand-drawn from the JSON: the actual merged tr
 any single config file, only in what `TopicRunner` resolves at load time.
 
 Every field, category, and sanitizer in a topic can be visualized the same way straight from
-config — `cargo run --bin plot_dag -- <topic> -o <dir>` walks the actual producer/sanitizer
+config — `cargo run --bin plot_tree -- <topic> -o <dir>` walks the actual producer/sanitizer
 trees `TopicRunner` resolves and emits Graphviz DOT (`dot -Tsvg` to render); `cargo run --bin
-dag_json` emits the same trees, plus flat category order and the compiled decision tree, as JSON
+tree_json` emits the same trees, plus flat category order and the compiled decision tree, as JSON
 — what the [live editor](editor/)'s browser-side tree views run on.
 
 ## How classification works
@@ -267,9 +267,9 @@ Shared macros/sanitizers/producers/value-sets across topics live in `<config-dir
 
 - `check_overlaps` — lint every topic's categories for pairs that could match the same object
   without excluding each other.
-- `plot_dag -- <topic> [-o <out-dir>]` — render a topic's producer/sanitizer trees as Graphviz
+- `plot_tree -- <topic> [-o <out-dir>]` — render a topic's producer/sanitizer trees as Graphviz
   DOT, one file per output field per distinct resolved producer.
-- `dag_json -- <config-dir> <topic> [category|decision-tree]` — the same trees (default), flat
+- `tree_json -- <config-dir> <topic> [category|decision-tree]` — the same trees (default), flat
   category-priority order, or the compiled decision tree, as JSON — feeds the live editor's
   browser-rendered tree views.
 

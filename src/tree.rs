@@ -1,7 +1,7 @@
 //! JSON node/edge tree for a `Producer` (and the `Sanitizer` chains hanging off its `Extract`
-//! leaves) — the same walk `bin/plot_dag` does to emit Graphviz DOT, but structured for a browser
-//! graph renderer instead. Kept as a lib module (not folded into `bin/plot_dag`) so both the DOT
-//! binary and `bin/dag_json` (the live editor's backend) can build a tree from the same `Producer`
+//! leaves) — the same walk `bin/plot_tree` does to emit Graphviz DOT, but structured for a browser
+//! graph renderer instead. Kept as a lib module (not folded into `bin/plot_tree`) so both the DOT
+//! binary and `bin/tree_json` (the live editor's backend) can build a tree from the same `Producer`
 //! without duplicating the walk.
 
 use serde::Serialize;
@@ -16,7 +16,7 @@ use crate::lang::producer::Producer;
 use crate::lang::sanitize::{ReplaceAt, Sanitizer};
 
 #[derive(Serialize)]
-pub struct DagNode {
+pub struct TreeNode {
     pub id: String,
     pub label: String,
     /// One of "match"/"rule"/"extract"/"const"/"parent"/"sanitizer"/"step" —
@@ -25,7 +25,7 @@ pub struct DagNode {
 }
 
 #[derive(Serialize)]
-pub struct DagEdge {
+pub struct TreeEdge {
     pub id: String,
     pub source: String,
     pub target: String,
@@ -33,21 +33,21 @@ pub struct DagEdge {
 }
 
 #[derive(Serialize, Default)]
-pub struct DagGraph {
-    pub nodes: Vec<DagNode>,
-    pub edges: Vec<DagEdge>,
+pub struct TreeGraph {
+    pub nodes: Vec<TreeNode>,
+    pub edges: Vec<TreeEdge>,
 }
 
-impl DagGraph {
+impl TreeGraph {
     fn node(&mut self, label: String, kind: &'static str) -> String {
         let id = format!("n{}", self.nodes.len());
-        self.nodes.push(DagNode { id: id.clone(), label, kind });
+        self.nodes.push(TreeNode { id: id.clone(), label, kind });
         id
     }
 
     fn edge(&mut self, source: &str, target: &str, label: &str) {
         let id = format!("e{}", self.edges.len());
-        self.edges.push(DagEdge { id, source: source.to_owned(), target: target.to_owned(), label: label.to_owned() });
+        self.edges.push(TreeEdge { id, source: source.to_owned(), target: target.to_owned(), label: label.to_owned() });
     }
 }
 
@@ -59,7 +59,7 @@ fn truncate(s: &str, max: usize) -> String {
 /// "annotate") instead of cramming it into `owner`'s own label — the frontend positions an
 /// "annotate" node beside its owner rather than as a real tree child (see `DagView.tsx`'s
 /// `layoutTree`), so it reads as a side note on the branch, not another step in the value's flow.
-fn annotate_node(g: &mut DagGraph, owner: &str, annotate: &Map<String, Value>) {
+fn annotate_node(g: &mut TreeGraph, owner: &str, annotate: &Map<String, Value>) {
     if annotate.is_empty() {
         return;
     }
@@ -72,16 +72,16 @@ fn annotate_node(g: &mut DagGraph, owner: &str, annotate: &Map<String, Value>) {
 }
 
 /// The pure `Producer` tree — no synthetic root node, no "who uses this" bookkeeping (that's a
-/// `topic::runner`/`bin/dag_json` concern; a node here is only ever a step in how the value itself
+/// `topic::runner`/`bin/tree_json` concern; a node here is only ever a step in how the value itself
 /// gets built: `Match`/`Parent` branches down to `Extract`/`Const` leaves, plus
 /// any `Sanitizer` chain hanging off an `Extract`).
-pub fn producer_dag(producer: &Producer) -> DagGraph {
-    let mut g = DagGraph::default();
+pub fn producer_tree(producer: &Producer) -> TreeGraph {
+    let mut g = TreeGraph::default();
     render_producer(&mut g, producer);
     g
 }
 
-fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
+fn render_producer(g: &mut TreeGraph, p: &Producer) -> String {
     match p {
         Producer::Match { rules, default: Some(d), annotate, tree: _ } if rules.is_empty() => {
             // No real branching — a `defaults` JSON entry bundled straight into a producer
@@ -147,7 +147,7 @@ fn render_producer(g: &mut DagGraph, p: &Producer) -> String {
 /// the actual data flow (sanitize steps, then the extract they feed) rather than a side branch
 /// hanging off the extract. Returns the entry point: the first step's node, or `sink` itself if the
 /// chain has no steps.
-fn render_chain(g: &mut DagGraph, chain: &[Sanitizer], sink: &str) -> String {
+fn render_chain(g: &mut TreeGraph, chain: &[Sanitizer], sink: &str) -> String {
     let mut next = sink.to_owned();
     for step in chain.iter().rev() {
         let id = g.node(step_label(step), "step");
@@ -161,8 +161,8 @@ fn render_chain(g: &mut DagGraph, chain: &[Sanitizer], sink: &str) -> String {
 /// reference it (unlike `render_chain`, which only ever appears as a tail hanging off one). Reads
 /// top-down: the root names the sanitizer, each step feeds the next in application order, ending
 /// at the last step (there's no downstream consumer to wire into here — this *is* the sink).
-pub fn sanitizer_dag(name: &str, chain: &[Sanitizer]) -> DagGraph {
-    let mut g = DagGraph::default();
+pub fn sanitizer_tree(name: &str, chain: &[Sanitizer]) -> TreeGraph {
+    let mut g = TreeGraph::default();
     let root = g.node(format!("Sanitizer\n{name}"), "sanitizer");
     if chain.is_empty() {
         let identity = g.node("Identity\n(no steps)".to_owned(), "const");
@@ -216,9 +216,9 @@ fn step_label(step: &Sanitizer) -> String {
 /// (`categorize_linear`'s reference walk, laid out flat); that stopped being readable past a
 /// handful of categories, so the live editor now drives this one-category-at-a-time view off a
 /// dropdown instead, ordered the same way `order` (the compiled priority list) already is — see
-/// `bin/dag_json.rs`'s category-mode list/selector handling.
-pub fn category_condition_dag(cats: &CategoriesFile, order_idx: usize) -> DagGraph {
-    let mut g = DagGraph::default();
+/// `bin/tree_json.rs`'s category-mode list/selector handling.
+pub fn category_condition_tree(cats: &CategoriesFile, order_idx: usize) -> TreeGraph {
+    let mut g = TreeGraph::default();
     let node = &cats.order[order_idx];
     let (header_label, condition) = match node {
         OrderedNode::Category { idx } => {
@@ -241,7 +241,7 @@ pub fn category_condition_dag(cats: &CategoriesFile, order_idx: usize) -> DagGra
 /// node so nested boolean structure is visible in the graph; every other `Filter` variant already
 /// has a precise one-line rendering (`Filter::describe`), so it's a single leaf node rather than
 /// broken down further (there's nothing more to a tag predicate that a sub-tree would clarify).
-fn render_filter(g: &mut DagGraph, f: &Filter) -> String {
+fn render_filter(g: &mut TreeGraph, f: &Filter) -> String {
     match f {
         Filter::And { and } => {
             let node = g.node("And".to_owned(), "match");
@@ -270,13 +270,13 @@ fn render_filter(g: &mut DagGraph, f: &Filter) -> String {
 }
 
 /// The compiled discrimination net (`decision_tree::DecisionTree`) that prunes
-/// `categorize`'s first-match walk for one `ElementKind` — unlike `category_order_dag`'s flat
+/// `categorize`'s first-match walk for one `ElementKind` — unlike `category_condition_tree`'s flat
 /// priority list, this shows the actual branch-on-tag/atom structure the tree walks per object,
 /// with each leaf naming the (small, order-preserving) subset of categories/skips it still has to
-/// try. Node/edge shape mirrors `producer_dag`: reuses the "match"/"rule" kinds for branches so the
+/// try. Node/edge shape mirrors `producer_tree`: reuses the "match"/"rule" kinds for branches so the
 /// frontend styles them consistently, with leaves rendered as their own kind.
-pub fn decision_tree_dag(cats: &CategoriesFile) -> DagGraph {
-    let mut g = DagGraph::default();
+pub fn decision_tree(cats: &CategoriesFile) -> TreeGraph {
+    let mut g = TreeGraph::default();
     render_decision_tree(&mut g, &cats.tree, cats);
     g
 }
@@ -288,7 +288,7 @@ pub fn order_label(cats: &CategoriesFile, idx: usize) -> String {
     }
 }
 
-fn render_decision_tree(g: &mut DagGraph, tree: &DecisionTree, cats: &CategoriesFile) -> String {
+fn render_decision_tree(g: &mut TreeGraph, tree: &DecisionTree, cats: &CategoriesFile) -> String {
     match tree {
         DecisionTree::Leaf(idxs) => {
             let label = if idxs.is_empty() {

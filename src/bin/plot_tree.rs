@@ -1,10 +1,11 @@
 //! Plot a topic's output `Producer` trees (and the sanitizer chains hanging off their `Extract`
-//! leaves) as Graphviz DOT — each output field's `Producer` is itself a DAG (`Match` rule table,
-//! `Extract` leaf), and each `Extract`'s resolved `sanitize` chain is a small DAG of its own, so we
+//! leaves) as Graphviz DOT — each output field's `Producer` walks out to a tree (`Match` rule
+//! table, `Extract` leaf), and each `Extract`'s resolved `sanitize` chain to a small tree of its own,
+//! so we
 //! draw the sanitizer chain as a subgraph hanging off its `Extract` node rather than a separate
 //! file.
 //!
-//! Usage: `plot_dag <topic-name> [-o <out-dir>]`, e.g. `plot_dag tilda/bikelanes -o dag_out`.
+//! Usage: `plot_tree <topic-name> [-o <out-dir>]`, e.g. `plot_tree tilda/bikelanes -o tree_out`.
 //! `<topic-name>` is the same string `TopicRunner::load` takes — `<config_root>/<topic-name>/`.
 //!
 //! One `.dot` file is written per output field per *distinct* resolved producer (topic default,
@@ -24,8 +25,8 @@ use osmnexus::topic::runner::TopicRunner;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let topic_name = args.next().context("usage: plot_dag <topic-name> [-o <out-dir>]")?;
-    let mut out_dir = PathBuf::from("dag_out");
+    let topic_name = args.next().context("usage: plot_tree <topic-name> [-o <out-dir>]")?;
+    let mut out_dir = PathBuf::from("tree_out");
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--out" => out_dir = PathBuf::from(args.next().context("-o needs a value")?),
@@ -83,7 +84,7 @@ fn main() -> Result<()> {
         }
     }
 
-    eprintln!("wrote {written} DAG(s) to {}", out_dir.display());
+    eprintln!("wrote {written} tree(s) to {}", out_dir.display());
     Ok(())
 }
 
@@ -132,7 +133,7 @@ fn render_dot(topic: &str, field: &str, labels: &[String], producer: &Producer) 
     let child = render_producer(&mut g, producer);
     g.edge(&root, &child, "");
     format!(
-        "digraph dag {{\n  rankdir=TB;\n  node [fontname=\"sans-serif\", fontsize=11];\n  edge [fontname=\"sans-serif\", fontsize=9];\n{}}}\n",
+        "digraph tree {{\n  rankdir=TB;\n  node [fontname=\"sans-serif\", fontsize=11];\n  edge [fontname=\"sans-serif\", fontsize=9];\n{}}}\n",
         g.lines.join("")
     )
 }

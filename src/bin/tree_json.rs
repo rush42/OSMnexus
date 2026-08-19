@@ -1,10 +1,10 @@
 //! Emit a topic's output `Producer` trees, or its categorization trees, as JSON node/edge graphs
-//! (see `osmnexus::dag`) — the live editor's backend spawns this to feed its browser-rendered tree
-//! views. Same field/variant grouping as `bin/plot_dag` (which emits Graphviz DOT instead, deriver
+//! (see `osmnexus::tree`) — the live editor's backend spawns this to feed its browser-rendered tree
+//! views. Same field/variant grouping as `bin/plot_tree` (which emits Graphviz DOT instead, deriver
 //! trees only), just JSON on stdout rather than one `.dot` file per variant.
 //!
-//! Usage: `dag_json <config-dir> <topic-name> <mode> <selector> [order-idx]`, e.g. `dag_json
-//! configs tilda/bikelanes deriver list` or `dag_json configs tilda/bikelanes deriver surface`.
+//! Usage: `tree_json <config-dir> <topic-name> <mode> <selector> [order-idx]`, e.g. `tree_json
+//! configs tilda/bikelanes deriver list` or `tree_json configs tilda/bikelanes deriver surface`.
 //! `<topic-name>` is the same string `TopicRunner::load` takes — `<config-dir>/topics/<topic-name>/`.
 //! `<mode>` is `deriver` (per-field output producer trees), `category` (one category's own
 //! condition + what it excludes, picked from its kind's priority order), `decision-tree` (the
@@ -24,7 +24,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
 
-use osmnexus::tree::{self, category_condition_dag, decision_tree_dag, producer_dag, sanitizer_dag, DagGraph};
+use osmnexus::tree::{self, category_condition_tree, decision_tree, producer_tree, sanitizer_tree, TreeGraph};
 use osmnexus::lang::producer::Producer;
 use osmnexus::topic::load::load_topic_sanitizers;
 use osmnexus::topic::runner::TopicRunner;
@@ -33,7 +33,7 @@ use osmnexus::topic::runner::TopicRunner;
 struct Variant {
     labels: Vec<String>,
     #[serde(flatten)]
-    graph: DagGraph,
+    graph: TreeGraph,
 }
 
 #[derive(Serialize)]
@@ -51,7 +51,7 @@ struct GraphResponse {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: dag_json <config-dir> <topic-name> <deriver|category|decision-tree|sanitizer> <list|name> [order-idx]";
+    let usage = "usage: tree_json <config-dir> <topic-name> <deriver|category|decision-tree|sanitizer> <list|name> [order-idx]";
     let config_dir = args.next().context(usage)?;
     let topic_name = args.next().context(usage)?;
     let mode = args.next().context(usage)?;
@@ -76,7 +76,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         let chain = sanitizers.get(&selector).with_context(|| format!("unknown sanitizer '{selector}'"))?;
-        let variant = Variant { labels: Vec::new(), graph: sanitizer_dag(&selector, chain) };
+        let variant = Variant { labels: Vec::new(), graph: sanitizer_tree(&selector, chain) };
         let resp = GraphResponse { topic: topic_name, name: selector, variants: vec![variant] };
         println!("{}", serde_json::to_string(&resp)?);
         return Ok(());
@@ -84,7 +84,7 @@ fn main() -> Result<()> {
 
     // Compiling the per-kind decision tree (`CategoriesFile::build_order`'s `decision_tree::build`
     // call, skipped via `tree_max_depth == 0`) is by far the most expensive part of loading a
-    // topic — and it's only ever read by `decision_tree_dag` below, for an actual (non-`list`)
+    // topic — and it's only ever read by `decision_tree` below, for an actual (non-`list`)
     // decision-tree request. Every other mode/selector, including the decision-tree view's own
     // field-name `list`, never looks at `cats.tree`, so there's no reason to pay for it.
     let build_tree = mode == "decision-tree" && selector != "list";
@@ -100,7 +100,7 @@ fn main() -> Result<()> {
             }
             let (kind, cats) = runner.categories.iter().find(|(k, _)| k.id_prefix() == selector)
                 .with_context(|| format!("unknown kind '{selector}'"))?;
-            let variant = Variant { labels: vec![kind.id_prefix().to_owned()], graph: decision_tree_dag(cats) };
+            let variant = Variant { labels: vec![kind.id_prefix().to_owned()], graph: decision_tree(cats) };
             let resp = GraphResponse { topic: topic_name, name: selector, variants: vec![variant] };
             println!("{}", serde_json::to_string(&resp)?);
         }
@@ -123,7 +123,7 @@ fn main() -> Result<()> {
                 Some(idx) => {
                     ensure!(idx < cats.order.len(), "order index {idx} out of range for kind '{selector}'");
                     let label = tree::order_label(cats, idx);
-                    let variant = Variant { labels: vec![label.clone()], graph: category_condition_dag(cats, idx) };
+                    let variant = Variant { labels: vec![label.clone()], graph: category_condition_tree(cats, idx) };
                     let resp = GraphResponse { topic: topic_name, name: label, variants: vec![variant] };
                     println!("{}", serde_json::to_string(&resp)?);
                 }
@@ -131,7 +131,7 @@ fn main() -> Result<()> {
         }
         "deriver" => {
             if selector == "list" {
-                // Field names only — no `Producer` repr formatting, no `producer_dag` walks, so this
+                // Field names only — no `Producer` repr formatting, no `producer_tree` walks, so this
                 // stays cheap even when some field's tree is huge.
                 let mut names: Vec<String> = runner.default_producers.iter().map(|f| f.output.clone())
                     .chain(runner.category_producers.iter().flatten().map(|f| f.output.clone()))
@@ -142,7 +142,7 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string(&ListResponse { topic: topic_name, names })?);
                 return Ok(());
             }
-            // Same dedup `bin/plot_dag` does: producers sharing a repr for this field collapse into
+            // Same dedup `bin/plot_tree` does: producers sharing a repr for this field collapse into
             // one variant, labeled by who produces it that way — but only for the requested field.
             let mut by_repr: std::collections::HashMap<String, (&Producer, Vec<String>)> = std::collections::HashMap::new();
             for field in runner.default_producers.iter().filter(|f| f.output == selector) {
@@ -172,7 +172,7 @@ fn main() -> Result<()> {
             let mut variants: Vec<Variant> = by_repr.into_values()
                 .map(|(producer, mut labels)| {
                     labels.sort();
-                    Variant { labels, graph: producer_dag(producer) }
+                    Variant { labels, graph: producer_tree(producer) }
                 })
                 .collect();
             variants.sort_by(|a, b| a.labels.cmp(&b.labels));

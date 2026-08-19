@@ -80,7 +80,7 @@ pub struct TopicRunner {
     /// `TopicSpec::passthrough_tags`) rather than an authored producer. Once resolved, such an entry
     /// is a `Producer::Extract` indistinguishable in shape from a hand-written single-key extract,
     /// so this has to be captured pre-resolution — used to keep passthrough tags out of
-    /// `bin/dag_json`'s "Producer" picker list, where showing them (there's no real producer tree
+    /// `bin/tree_json`'s "Producer" picker list, where showing them (there's no real producer tree
     /// to plot) is just noise.
     pub passthrough_producers: std::collections::HashSet<String>,
     /// Kinds for which an element with **no tags at all** provably yields no rows, so the caller can

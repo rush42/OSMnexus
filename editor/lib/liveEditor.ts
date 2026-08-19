@@ -21,8 +21,8 @@ const REPO_DIR = path.resolve(EDITOR_DIR, "..");
 // host-built target/release/osmnexus instead, for iterating on Rust code without a full image
 // rebuild (e.g. `PIPELINE_BIN_PATH=/repo/target/release/osmnexus docker compose up`).
 const PIPELINE_BIN = process.env.PIPELINE_BIN_PATH || path.join(REPO_DIR, "target", "release", "osmnexus");
-// Emits a topic's output Producer trees as node/edge JSON for the tree view — see `src/bin/dag_json.rs`.
-const DAG_JSON_BIN = process.env.DAG_JSON_BIN_PATH || path.join(REPO_DIR, "target", "release", "dag_json");
+// Emits a topic's output Producer trees as node/edge JSON for the tree view — see `src/bin/tree_json.rs`.
+const TREE_JSON_BIN = process.env.TREE_JSON_BIN_PATH || path.join(REPO_DIR, "target", "release", "tree_json");
 const CONFIGS_ROOT = path.join(REPO_DIR, "configs");
 // The table an "all ways + nodes + relations" ingest loaded a whole region into — tags in
 // `SOURCE_TABLE`, way geometry in `SOURCE_TABLE`_way_geom, node geometry in
@@ -77,7 +77,7 @@ export class ApiError extends Error {
 //   `currentTopicDir` is a scratch copy under the OS temp dir containing ONLY that topic's
 //   subdirectory plus `currentConfigName`'s shared root-level files (`macros.json`,
 //   `sanitizers.json`, etc. — see `switchTopic`) — never the real configs/* tree, and never the
-//   other topics in that config. This is what every file read/write and pipeline/dag_json
+//   other topics in that config. This is what every file read/write and pipeline/tree_json
 //   invocation resolves against. Edits made in the live editor are therefore discarded when the
 //   dev server restarts and never touch the repo's actual configs/*.
 const globalState = globalThis as unknown as {
@@ -473,7 +473,7 @@ async function runPipeline(
 }
 
 // Deletes a scratch topic dir some time after it stops being `currentTopicDir` — not immediately.
-// An in-flight pipeline/dag_json subprocess call captures `currentTopicDir`'s value up front (see
+// An in-flight pipeline/tree_json subprocess call captures `currentTopicDir`'s value up front (see
 // `runPipeline`/`getDag`) and keeps reading files out of it for the life of that one request; if a
 // second `switchTopic`/`switchConfig` call landed in the meantime (e.g. two topic-select requests
 // firing close together) and deleted that same directory immediately, the in-flight request could
@@ -507,7 +507,7 @@ export async function switchConfig(config: string): Promise<void> {
 // than a hardcoded name list, since every topic is a directory and every shared file lives flat
 // at the config root, per `TopicRunner::load`'s own file layout). This is the "run this topic as
 // if it were its own config" piece: `--config-dir` ends up pointing at a dir containing exactly
-// one topic subdirectory, so the pipeline/dag_json classify only that topic, not its siblings.
+// one topic subdirectory, so the pipeline/tree_json classify only that topic, not its siblings.
 export async function switchTopic(topic: string): Promise<void> {
   const config = requireConfig();
   const topics = await listTopicsForConfig(config);
@@ -759,7 +759,7 @@ export async function setTopicJson(topic: string, json: string, file: TopicLevel
 // kind's) variants. `category` mode has a third level: `name` alone (a kind) returns that kind's
 // category names in priority order instead of one crammed-together tree of every category at
 // once; `idx` (an index into that list) then builds the single-category graph — see
-// `src/bin/dag_json.rs`'s own usage doc.
+// `src/bin/tree_json.rs`'s own usage doc.
 export async function getDag(
   routeMode: "dag" | "categorize-dag" | "decision-tree-dag" | "sanitizer-dag",
   topic: string,
@@ -770,11 +770,11 @@ export async function getDag(
   const topicDir = requireCurrentTopic(topic);
   const dagArgs = [topicDir, topic, dagMode, name ?? "list"];
   if (idx != null) dagArgs.push(idx);
-  const result = await run(DAG_JSON_BIN, dagArgs);
+  const result = await run(TREE_JSON_BIN, dagArgs);
   if (!result.ok) throw new ApiError(500, result.message);
   try {
     return JSON.parse(result.stdout);
   } catch (err) {
-    throw new ApiError(500, `dag_json produced invalid JSON: ${String(err)}`);
+    throw new ApiError(500, `tree_json produced invalid JSON: ${String(err)}`);
   }
 }

@@ -9,7 +9,7 @@ For day-to-day compile checks and running binaries during development, use:
 ```
 cargo check                          # fastest, no codegen — use this first
 cargo build --profile dev-fast --bin osmnexus   # ~0.5s incremental rebuilds, runnable binary
-cargo build --profile dev-fast --bin dag_json
+cargo build --profile dev-fast --bin tree_json
 ```
 
 Only build `--release` when producing the actual optimized binary is required (e.g. the

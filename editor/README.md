@@ -18,10 +18,10 @@ docker compose up
 
 `docker compose up` builds the image automatically the first time (rebuild explicitly with
 `docker compose up --build` after changing Rust code, `Dockerfile`, or `package.json`) — the pipeline
-binary (and the `dag_json` tree-view binary) is compiled into the image, no host Rust toolchain
+binary (and the `tree_json` tree-view binary) is compiled into the image, no host Rust toolchain
 needed. To iterate on Rust code without a full image rebuild each time, point at host-built binaries
-instead: `PIPELINE_BIN_PATH=/repo/target/release/osmnexus DAG_JSON_BIN_PATH=/repo/target/release/dag_json
-docker compose up` (after `cargo build --release --bin osmnexus --bin dag_json` from the repo root).
+instead: `PIPELINE_BIN_PATH=/repo/target/release/osmnexus TREE_JSON_BIN_PATH=/repo/target/release/tree_json
+docker compose up` (after `cargo build --release --bin osmnexus --bin tree_json` from the repo root).
 
 This also starts a `db` (PostGIS) container. Before the editor has anything to show, load a
 region's ways into it once (see `docker-compose.yml`'s comment on the `db` service for the exact
@@ -75,7 +75,7 @@ earlier version that also shipped geometry (hex-encoded EWKB) turned out to be t
 - **Each topic is run as if it were its own config.** Picking a topic (`POST /api/topic-select`,
   `switchTopic` in `lib/liveEditor.ts`) copies *only* that topic's subdirectory plus the config's
   shared root-level files (`macros.json`, `sanitizers.json`, `producers.json`, `units.json`,
-  `value_sets.json` — whichever exist) into a fresh scratch dir, and every pipeline/`dag_json`
+  `value_sets.json` — whichever exist) into a fresh scratch dir, and every pipeline/`tree_json`
   invocation for that topic points `--config-dir` at it. Editing `bikelanes` in a config that also
   has `roads` no longer pays for classifying `roads` on every single edit — confirmed against
   `TopicRunner::load_all`/`src/paths.rs`, which never assumed a config-dir holds more than one
@@ -86,7 +86,7 @@ It's a Next.js (App Router) app — a real Next.js server, not the old Vite-dev-
 - **`app/api/**/route.ts`** — one route handler per endpoint (selecting a config, selecting a
   topic, recording a bbox selection, listing topics/categories, reading/writing a category or
   topic's JSON file, re-running the pipeline after every write, and plotting a topic's output
-  `Producer` trees via `dag_json`). Business logic lives in **`lib/liveEditor.ts`**, which every
+  `Producer` trees via `tree_json`). Business logic lives in **`lib/liveEditor.ts`**, which every
   route handler imports; its module state (current bbox/config/topic) is pinned to `globalThis`
   because Next.js compiles each route file into its own module graph — see that file's own comment
   for why a plain module-level variable silently doesn't work here.
@@ -97,7 +97,7 @@ It's a Next.js (App Router) app — a real Next.js server, not the old Vite-dev-
   Categorize/Decision tree/Sanitizers) that plots the selected topic's output-field `Producer`
   trees (each field's `Match`/`Extract`/`Const`/... tree, with the `Sanitizer` chain hanging off
   any `Extract` leaf inline), or, standalone, one named sanitizer's own mapping/replace/builtin
-  chain (`src/dag.rs`'s `sanitizer_dag`, `dag_json`'s `sanitizer` mode) — same node/edge JSON shape
+  chain (`src/tree.rs`'s `sanitizer_dag`, `tree_json`'s `sanitizer` mode) — same node/edge JSON shape
   either way, so `DagView` needed no new rendering code, just a fourth `mode`. `LiveEditor` (the
   main UI, everything but the map/category/JSON-editor/tree machinery being config/topic-aware
   itself) takes `config`/`topics`/`topic`/`onTopicChange` as props from `app/editor/[config]/page.tsx`

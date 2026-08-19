@@ -8,7 +8,7 @@ WORKDIR /repo
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY benches ./benches
-RUN cargo build --release --bin osmnexus --bin dag_json
+RUN cargo build --release --bin osmnexus --bin tree_json
 
 FROM node:20-bookworm-slim
 # osmium-tool: the one-off "all ways" ingest pass still extracts/reads a PBF. postgresql-client:
@@ -17,9 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends osmium-tool pos
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=rust-builder /repo/target/release/osmnexus /opt/osmnexus/osmnexus
-COPY --from=rust-builder /repo/target/release/dag_json /opt/osmnexus/dag_json
+COPY --from=rust-builder /repo/target/release/tree_json /opt/osmnexus/tree_json
 ENV PIPELINE_BIN_PATH=/opt/osmnexus/osmnexus
-ENV DAG_JSON_BIN_PATH=/opt/osmnexus/dag_json
+ENV TREE_JSON_BIN_PATH=/opt/osmnexus/tree_json
 
 WORKDIR /repo/editor
 # Installed at image-build time so `node_modules` lands in the anonymous volume that
