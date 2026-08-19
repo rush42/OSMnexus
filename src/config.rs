@@ -86,6 +86,26 @@ pub struct Config {
     #[arg(long, default_value = "out")]
     pub out_dir: String,
 
+    /// Decimal places to round output coordinates to.
+    ///
+    /// The PBF stores coordinates as fixed-point *decimicrodegrees* (1e-7 degrees), so **7 is the
+    /// source data's exact resolution** — nothing in the input is more precise than that. The
+    /// pipeline projects to Web Mercator internally and unprojects on the way out, and the inverse
+    /// projection's `atan`/`exp` leaves latitudes carrying round-trip noise far past that: a stored
+    /// `53.1016340` comes back out as `53.101634000000004`. (Longitude survives — its transform is
+    /// linear.) So `--coordinate-precision 7` *recovers* the stored value rather than discarding
+    /// information, and drops roughly a third of the coordinate bytes in GeoJSON output, which is
+    /// dominated by them.
+    ///
+    /// The default is deliberately above anything an `f64` can express (its shortest round-trip
+    /// form is at most 17 significant digits), so by default this rounds nothing at all and output
+    /// stays byte-identical to previous releases. Rounding is opt-in.
+    ///
+    /// Applies to every backend that writes coordinates, not just GeoJSON — a run emits one
+    /// coordinate precision, so `.parquet` WKB and `.geojson` agree.
+    #[arg(long, default_value_t = 21)]
+    pub coordinate_precision: u32,
+
     /// Max branch depth of the `categorize` discrimination net (see `decision_tree`).
     /// Deeper trees prune more aggressively at the cost of build time; shallower trees fall back to
     /// larger leaves sooner. `0` skips compiling a tree at all and classifies by walking
@@ -139,4 +159,54 @@ pub enum TopicEdgeMode {
     Pgrouting,
     /// The above, plus the topic's own tag columns (`produced`/`annotations`/`meta`) joined in.
     All,
+}
+
+/// How many decimal places output coordinates are rounded to — see `Config::coordinate_precision`
+/// for why 7 is the meaningful value and why the default rounds nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct CoordPrecision(pub u32);
+
+impl CoordPrecision {
+    /// At or above this, rounding is skipped entirely. Not just an optimization: an `f64`'s
+    /// shortest round-trip form is at most 17 significant digits, so a larger precision cannot
+    /// change any value — but computing it anyway would, since `v * 1e21` overflows past the range
+    /// where `round()` means anything and dividing back does not recover `v`. The guard is what
+    /// makes a large default a true no-op rather than silent corruption.
+    const PASSTHROUGH: u32 = 17;
+
+    pub fn round(self, v: f64) -> f64 {
+        if self.0 >= Self::PASSTHROUGH {
+            return v;
+        }
+        let factor = 10f64.powi(self.0 as i32);
+        (v * factor).round() / factor
+    }
+}
+
+#[cfg(test)]
+mod coord_precision_tests {
+    use super::CoordPrecision;
+
+    #[test]
+    fn rounds_away_the_unprojection_noise_to_the_stored_value() {
+        // What `mercator_to_wgs84` hands back for a PBF-stored 53.1016340.
+        assert_eq!(CoordPrecision(7).round(53.101634000000004), 53.101634);
+        assert_eq!(CoordPrecision(7).round(53.10165960000001), 53.1016596);
+        // Longitude is already clean; rounding must leave it alone.
+        assert_eq!(CoordPrecision(7).round(8.8805731), 8.8805731);
+    }
+
+    #[test]
+    fn the_default_precision_changes_nothing() {
+        // The guard, not the arithmetic, is what makes this hold: `v * 1e21` would not survive the
+        // round trip.
+        for v in [53.101634000000004, 8.8805731, -0.0001, 179.9999999999, 0.0] {
+            assert_eq!(CoordPrecision(21).round(v), v, "default precision altered {v}");
+        }
+    }
+
+    #[test]
+    fn negative_coordinates_round_symmetrically() {
+        assert_eq!(CoordPrecision(7).round(-53.101634000000004), -53.101634);
+    }
 }

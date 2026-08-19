@@ -37,7 +37,7 @@ use clap::Parser;
 use deadpool_postgres::Pool;
 use tracing::info;
 
-use config::{Config, Output};
+use config::{Config, CoordPrecision, Output};
 use db::schema;
 use geom::rows::{GeomRow, GEOM_COLUMNS};
 use topic::TopicRunner;
@@ -407,7 +407,7 @@ async fn main() -> anyhow::Result<()> {
 
     if cfg.output == Output::GeoJson {
         info!("Building GeoJSON from staged output...");
-        output::geojson::write_geojson(&out_dir, &tables)?;
+        output::geojson::write_geojson(&out_dir, &tables, CoordPrecision(cfg.coordinate_precision))?;
         for table in &tables {
             info!("Wrote {}/{table}.geojson", cfg.out_dir);
         }
@@ -415,7 +415,7 @@ async fn main() -> anyhow::Result<()> {
 
     if cfg.output == Output::GeoJsonSeq {
         info!("Building GeoJSONSeq from staged output...");
-        output::geojson::write_geojsonseq(&out_dir, &tables)?;
+        output::geojson::write_geojsonseq(&out_dir, &tables, CoordPrecision(cfg.coordinate_precision))?;
         for table in &tables {
             info!("Wrote {}/{table}.geojsonseq", cfg.out_dir);
         }
@@ -425,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "parquet")]
         {
             info!("Building Parquet from staged output...");
-            output::parquet::write_parquet(&out_dir, &tables)?;
+            output::parquet::write_parquet(&out_dir, &tables, CoordPrecision(cfg.coordinate_precision))?;
             for table in &tables {
                 info!("Wrote {}/{table}.parquet", cfg.out_dir);
             }

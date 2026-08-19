@@ -30,6 +30,7 @@ use std::path::Path;
 use serde::ser::SerializeMap;
 use serde_json::value::RawValue;
 
+use crate::config::CoordPrecision;
 use crate::output::cursor::{
     group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, GeomValue,
     OrderedGeomCursor,
@@ -194,14 +195,15 @@ fn for_each_feature<F>(
     edges: &[(i64, EdgeGeom)],
     edges_by_way: &HashMap<i64, Vec<&EdgeGeom>>,
     relation_members: &HashMap<i64, Vec<i64>>,
+    precision: CoordPrecision,
     mut emit: F,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&Feature<'_>) -> anyhow::Result<()>,
 {
-    let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")))?;
-    let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")))?;
-    let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")))?;
+    let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")), precision)?;
+    let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")), precision)?;
+    let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")), precision)?;
     let mut edge_cursor = EdgeCursor::new(edges);
 
     let mut tags = StageReader::<TopicRow>::open(&out_dir.join(format!("{table}.bin")))?;
@@ -289,14 +291,14 @@ where
 
 /// Reads each of `tables`' staged output (see `for_each_feature`) and writes `{table}.geojsonseq`
 /// alongside them: one GeoJSON `Feature` object per line (RFC 8142).
-pub fn write_geojsonseq(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
-    let edges = read_edges(&out_dir.join("edges.bin"))?;
+pub fn write_geojsonseq(out_dir: &Path, tables: &[String], precision: CoordPrecision) -> anyhow::Result<()> {
+    let edges = read_edges(&out_dir.join("edges.bin"), precision)?;
     let edges_by_way = group_edges_by_way(&edges);
     let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 
     for table in tables {
         let mut writer = std::io::BufWriter::new(std::fs::File::create(out_dir.join(format!("{table}.geojsonseq")))?);
-        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, |feature| {
+        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, precision, |feature| {
             serde_json::to_writer(&mut writer, feature)?;
             writer.write_all(b"\n")?;
             Ok(())
@@ -309,8 +311,8 @@ pub fn write_geojsonseq(out_dir: &Path, tables: &[String]) -> anyhow::Result<()>
 /// Reads each of `tables`' staged output (see `for_each_feature`) and writes `{table}.geojson`
 /// alongside them: a single `{"type": "FeatureCollection", "features": [...]}` object — simpler to
 /// consume whole than `geojsonseq`, and streamed into just the same (see the framing note below).
-pub fn write_geojson(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
-    let edges = read_edges(&out_dir.join("edges.bin"))?;
+pub fn write_geojson(out_dir: &Path, tables: &[String], precision: CoordPrecision) -> anyhow::Result<()> {
+    let edges = read_edges(&out_dir.join("edges.bin"), precision)?;
     let edges_by_way = group_edges_by_way(&edges);
     let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 
@@ -323,7 +325,7 @@ pub fn write_geojson(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
         // serialized its keys sorted, i.e. `features` before `type`.
         writer.write_all(br#"{"features":["#)?;
         let mut first = true;
-        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, |feature| {
+        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, precision, |feature| {
             if !first {
                 writer.write_all(b",")?;
             }

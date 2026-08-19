@@ -25,6 +25,7 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::format::KeyValue;
 use serde_json::json;
 
+use crate::config::CoordPrecision;
 use crate::output::cursor::{group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, GeomValue, OrderedGeomCursor};
 use crate::output::rows::TopicRow;
 use crate::output::stage::StageReader;
@@ -201,10 +202,11 @@ fn write_table_parquet(
     edges: &[(i64, EdgeGeom)],
     edges_by_way: &HashMap<i64, Vec<&EdgeGeom>>,
     relation_members: &HashMap<i64, Vec<i64>>,
+    precision: CoordPrecision,
 ) -> anyhow::Result<()> {
-    let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")))?;
-    let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")))?;
-    let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")))?;
+    let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")), precision)?;
+    let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")), precision)?;
+    let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")), precision)?;
     let mut edge_cursor = EdgeCursor::new(edges);
 
     let mut tags = StageReader::<TopicRow>::open(&out_dir.join(format!("{table}.bin")))?;
@@ -298,13 +300,13 @@ fn write_table_parquet(
 
 /// Reads each of `tables`' staged output (see `output::cursor`'s own doc) and writes one
 /// `{table}.parquet` file beside them.
-pub fn write_parquet(out_dir: &Path, tables: &[String]) -> anyhow::Result<()> {
-    let edges = read_edges(&out_dir.join("edges.bin"))?;
+pub fn write_parquet(out_dir: &Path, tables: &[String], precision: CoordPrecision) -> anyhow::Result<()> {
+    let edges = read_edges(&out_dir.join("edges.bin"), precision)?;
     let edges_by_way = group_edges_by_way(&edges);
     let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 
     for table in tables {
-        write_table_parquet(out_dir, table, &edges, &edges_by_way, &relation_members)?;
+        write_table_parquet(out_dir, table, &edges, &edges_by_way, &relation_members, precision)?;
     }
     Ok(())
 }

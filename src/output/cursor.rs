@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
+use crate::config::CoordPrecision;
 use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, multilinestring_from_ewkb, point_from_ewkb};
 use crate::geom::rows::{EdgeRow, GeomRow};
 use crate::output::rows::MemberRow;
@@ -22,34 +23,34 @@ pub struct EdgeGeom {
     pub coordinates: Vec<[f64; 2]>,
 }
 
-fn lonlat_coordinates(geom: &[u8]) -> anyhow::Result<Vec<[f64; 2]>> {
+fn lonlat_coordinates(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<Vec<[f64; 2]>> {
     Ok(linestring_from_ewkb(geom)?
         .into_iter()
         .map(|(x, y)| {
             let (lon, lat) = mercator_to_wgs84(x, y);
-            [lon, lat]
+            [precision.round(lon), precision.round(lat)]
         })
         .collect())
 }
 
-fn lonlat_multi_coordinates(geom: &[u8]) -> anyhow::Result<Vec<Vec<[f64; 2]>>> {
+fn lonlat_multi_coordinates(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<Vec<Vec<[f64; 2]>>> {
     Ok(multilinestring_from_ewkb(geom)?
         .into_iter()
         .map(|run| {
             run.into_iter()
                 .map(|(x, y)| {
                     let (lon, lat) = mercator_to_wgs84(x, y);
-                    [lon, lat]
+                    [precision.round(lon), precision.round(lat)]
                 })
                 .collect()
         })
         .collect())
 }
 
-fn lonlat_point(geom: &[u8]) -> anyhow::Result<[f64; 2]> {
+fn lonlat_point(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<[f64; 2]> {
     let (x, y) = point_from_ewkb(geom)?;
     let (lon, lat) = mercator_to_wgs84(x, y);
-    Ok([lon, lat])
+    Ok([precision.round(lon), precision.round(lat)])
 }
 
 /// Reads `relation_members.bin` (`relation_osm_id,way_osm_id`), keyed by `relation_osm_id`. Empty
@@ -70,7 +71,7 @@ pub fn read_relation_members(path: &Path) -> anyhow::Result<HashMap<i64, Vec<i64
 /// `output::geojson`'s own doc), i.e. every way's own segments are contiguous and `seg_idx`-ascending
 /// already, with no re-sort needed. Empty if the file doesn't exist — no topic declared `"graph": {
 /// "way": true }`.
-pub fn read_edges(path: &Path) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
+pub fn read_edges(path: &Path, precision: CoordPrecision) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -80,7 +81,7 @@ pub fn read_edges(path: &Path) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
         if row.geom_ewkb.is_empty() {
             continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
         }
-        let coordinates = lonlat_coordinates(&row.geom_ewkb)?;
+        let coordinates = lonlat_coordinates(&row.geom_ewkb, precision)?;
         out.push((row.osm_id, EdgeGeom { seg_idx: row.seg_idx, coordinates }));
     }
     Ok(out)
@@ -151,12 +152,12 @@ pub enum GeomValue {
 }
 
 impl GeomValue {
-    fn decode(geom_type: &str, geom_ewkb: &[u8]) -> anyhow::Result<Self> {
+    fn decode(geom_type: &str, geom_ewkb: &[u8], precision: CoordPrecision) -> anyhow::Result<Self> {
         Ok(match geom_type {
-            "Point" => GeomValue::Point(lonlat_point(geom_ewkb)?),
-            "LineString" => GeomValue::Line(lonlat_coordinates(geom_ewkb)?),
-            "MultiLineString" => GeomValue::MultiLine(lonlat_multi_coordinates(geom_ewkb)?),
-            "Polygon" => GeomValue::Polygon(lonlat_coordinates(geom_ewkb)?),
+            "Point" => GeomValue::Point(lonlat_point(geom_ewkb, precision)?),
+            "LineString" => GeomValue::Line(lonlat_coordinates(geom_ewkb, precision)?),
+            "MultiLineString" => GeomValue::MultiLine(lonlat_multi_coordinates(geom_ewkb, precision)?),
+            "Polygon" => GeomValue::Polygon(lonlat_coordinates(geom_ewkb, precision)?),
             other => anyhow::bail!("unknown geom_type {other:?} in geometry table"),
         })
     }
@@ -260,6 +261,7 @@ fn wkb_multilinestring(lines: &[Vec<[f64; 2]>]) -> Vec<u8> {
 /// shape a given row decodes to comes from its own `geom_type` column, not which file it's in.
 pub struct OrderedGeomCursor {
     reader: Option<StageReader<GeomRow>>,
+    precision: CoordPrecision,
     /// The next record read but not yet known to belong to the element being asked about — held
     /// across calls so a mismatch (this element has no entry) doesn't lose the record, which
     /// belongs to some later element.
@@ -272,9 +274,9 @@ pub struct OrderedGeomCursor {
 
 impl OrderedGeomCursor {
     /// `None` if `path` doesn't exist — this topic declared no geometry output for this kind.
-    pub fn open(path: &Path) -> anyhow::Result<Option<Self>> {
+    pub fn open(path: &Path, precision: CoordPrecision) -> anyhow::Result<Option<Self>> {
         Ok(StageReader::<GeomRow>::open_optional(path)?
-            .map(|reader| OrderedGeomCursor { reader: Some(reader), pending: None, last: None }))
+            .map(|reader| OrderedGeomCursor { reader: Some(reader), precision, pending: None, last: None }))
     }
 
     fn read_one(&mut self) -> anyhow::Result<Option<(i64, GeomValue)>> {
@@ -287,7 +289,7 @@ impl OrderedGeomCursor {
             if row.geom_ewkb.is_empty() {
                 continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
             }
-            let value = GeomValue::decode(row.geom_type, &row.geom_ewkb)?;
+            let value = GeomValue::decode(row.geom_type, &row.geom_ewkb, self.precision)?;
             return Ok(Some((row.osm_id, value)));
         }
     }
