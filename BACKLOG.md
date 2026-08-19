@@ -337,3 +337,94 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   process, or switch it to `docker compose`-based too) plus the ingest command run at build/start
   time, or retiring it in favor of `editor/docker-compose.yml` everywhere. Low urgency — it's a
   convenience demo image, not the primary dev path.
+
+- **`produced`/`annotations` are parsed and reprinted on every GeoJSON feature — NOT BUILT.**
+  `TopicRow::produced`/`annotations` are already JSON *text*, pre-serialized on the rayon classify
+  workers (that's deliberate — see the field's own doc for why it isn't left as a `Map`).
+  `output::geojson::merge_properties` then does `serde_json::from_str` into a `Value` tree, extends
+  it into the feature's property map, and `to_writer` prints it straight back out. So the bulk of
+  every feature's payload is parsed and reprinted for nothing.
+  - **Shape.** Enable serde_json's `raw_value` feature (`Cargo.toml` currently has a bare
+    `serde_json = "1"`) and parse into `BTreeMap<String, &RawValue>` instead: keys still get parsed,
+    which is required — they carry the sort order and the later-wins dedup that `Map::extend`
+    provides today — while values stay borrowed slices of the original text, never parsed, never
+    reprinted.
+  - **Sizing.** After the `Serialize`-instead-of-`Value` change, germany's geojsonseq join is 35.0s
+    against `parquet`'s 13.4s on identical cursors and identical data. That ~21.6s gap is text-vs-WKB
+    plus this round trip; this entry targets the second half of it. Coordinates are already handled.
+  - **Hazards.**
+    - Byte-identity holds only if the stored text is already in serde_json's canonical form. It
+      should be — serde_json wrote it — but escapes and float formatting are exactly where that
+      assumption breaks quietly. Verify with the bremen gate, don't assume it.
+    - `merge_properties` today silently ignores both a parse failure and a non-object value
+      (`if let Ok(Value::Object(map))`). Preserving that leniency is a behaviour requirement, not an
+      oversight to clean up.
+    - `base_properties` mixes in `osm_id`/`id`/`category` as real `Value`s. A `&RawValue` map needs
+      those unified — either a small enum, or emit the merged map by hand in sorted key order.
+
+- **Sharded intermediate staging files, for a parallel join — NOT BUILT.** The join is currently one
+  worker walking one `{table}.bin` against the per-kind geometry files. Splitting a *single* staged
+  file across workers doesn't work: geometry is a subset of tags (bremen: 7.1 MB against 11.9 MB,
+  different row counts), so a frame boundary in the tag file says nothing about where to cut the
+  geometry file — aligning them needs an actual key search. Sharding removes that by construction:
+  shard *i*'s tag file and shard *i*'s geometry files cover the same element set in matching order.
+  - **Partition key is the real decision.** `osm_id % S` balances near-perfectly but reorders the
+    output, which breaks the byte-identity gate every change on this branch has been verified with.
+    Contiguous *blob ranges* preserve output order exactly (concatenating shards in shard order
+    reproduces today's sequence) and the blob index is already built up front, at some risk of skew
+    from uneven kept-element density. Try blob ranges first; measure the skew before paying for
+    hashing. Round-robin is simply wrong here — it puts a way's tag row and its geometry in
+    different shards.
+  - **All three element kinds need their own geometry file per shard; they cannot be merged.** Tag
+    rows are emitted relations → ways → nodes (`osm::reader::sorted`'s own module doc), while
+    geometry is written nodes (Pass B) → ways (materialize) → relations (after materialize,
+    `main.rs:400`). That is the *exact reverse*, so every pairing (N+W, W+R, N+R) is out of order
+    against the tag stream and no forward cursor can serve it. The three-way split from `68c77604f`
+    is forced, not incidental — its own commit message only had evidence for the N/W case.
+  - **Note.** `edges` is dual-use: `EdgeCursor` walks it in lockstep (shards fine, keyed by
+    `osm_id`), but `group_edges_by_way` needs a map across *all* shards for the relation fallback.
+    File count also grows to 4 per shard per topic — S=32 with 2 topics is ~256 staging files.
+
+- **In-memory staging, auto-selected — NOT BUILT.** `sinks::memory_sink` exists, is documented, and
+  is dead code: nothing calls it, and there is no `Output::Memory`. The write half is easy (file
+  backends already run `w = 1`, so a single shard collects in routing order). The read half is the
+  work, and it is now cheap because everything funnels through `next_row() -> Result<Option<R>>`:
+  add `RowSource<R>`, impl it for `StageReader<R>` and `vec::IntoIter<R>`, and make
+  `OrderedGeomCursor` / `for_each_feature` / `write_table_parquet` generic over it. Before the
+  struct-contract change there was no such seam — the read side was `read_binary_row(&mut reader,
+  &schema)`, a decode welded to a byte stream plus a Postgres schema vec.
+  - **Don't select on input file size.** Staged volume tracks the *config*, not the input: bremen is
+    1.28× its PBF, germany ~1.1×, both on `configs/tilda`, and a config that keeps more moves that
+    a lot. Live structs also cost more than their staged bytes. Gate on available RAM and carry a
+    **byte budget with spill-to-disk** — then the heuristic only has to be safe, not right. Guessing
+    "disk" wrongly costs a little speed; guessing "memory" wrongly OOMs after minutes of work.
+    `RowSource` makes the spill nearly free (chained iterator: these rows, then this file).
+  - **Sizing.** germany stages ~10.2 GB of `.bin`. This is an extract-scale / live-editor feature;
+    the file path stays the default.
+
+- **Stream the join during materialize — NOT BUILT.** Tag rows all exist before materialize starts,
+  so as each way geometry is produced in `kept_way_order` the tag cursor can advance and emit that
+  feature immediately; node features can stream during select. **Relations can't** — a relation's
+  graph-fallback geometry pools edges of arbitrary member ways (`group_edges_by_way`, keyed by
+  non-adjacent ids), so it needs every edge first, and relation geometry is resolved after
+  materialize anyway. Relations stay a post-pass.
+  - **The prize is peak memory, not wall-clock.** You stop holding tag rows *and* geometry rows at
+    once — on bremen's roads pair, geometry is 7.1 MB of 19.0 MB, so ~37% off. The floor you can't
+    stream away is the tag rows themselves (63% of that pair), which are produced a phase earlier
+    than the geometry they join to.
+  - **Unverified assumption.** The claim that this buys little wall-clock rests on materialize
+    already saturating its threads. That has not been measured. If materialize has idle threads or a
+    serial tail, the join genuinely hides in it and the win is larger than assumed. Measure before
+    designing around either answer.
+
+- **The graph-fallback feature path has no coverage at all.** No shipped config declares `"graph"`
+  (`grep` finds it nowhere in `configs/`), so `emit_graph_fallback_features`, the `seg_idx` segment
+  features, and the `"cut"`/`"endpoint"` marker features never execute — not in the test suite, and
+  not under the bremen byte-identity gate that every output change on this branch has been verified
+  with. `68c77604f` noted this in passing; it is worth stating as its own gap, because it means that
+  code is currently changed on inspection alone. A unit test over a synthetic `EdgeGeom` sequence
+  would cost little and would cover the marker key ordering (`kind` sorts before `osm_id`), which is
+  exactly the kind of detail the gate catches everywhere else.
+  - Also on that path: `emit_graph_fallback_features` clones the whole property map once per segment
+    just to add `seg_idx`. Build the shared prefix once and append the tail. Left alone so far
+    precisely because nothing exercises it.
