@@ -446,3 +446,16 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   - **Cheapest way to settle it**: a unit test over `build_topic_rows` with a hand-built
     `TopicRunner` whose producers read `{"parent": ...}`, rather than another config round trip.
     That also gives the feature the regression cover it currently lacks entirely.
+
+- **Node point coverage in `configs/public_transport` is 93 of 1,994 — unexplained.** Declaring
+  `"geometry_output": { "node": "point" }` alongside the relation-line fix yields 93 Point features
+  against 1,994 node tag rows (4.7%), on bremen. The relation half of the same declaration covers
+  665 of 665, so this is specific to nodes. Two readings, and they have very different consequences:
+  - most of those node rows are for elements the point routing deliberately skips (a config gap,
+    harmless); or
+  - `OrderedGeomCursor` is losing alignment on the node arm. Node geometry is written during the
+    select phase and joined positionally against the tag stream, so a misalignment would silently
+    drop features **for every file backend and every config with node geometry**, not just this one.
+  The `node: point` declaration was deliberately left out of the shipped fix until this is settled —
+  it is cheap to check (compare `{table}_node_geom.bin` row count against the tag file's `N` rows)
+  and should be checked before anyone adds it.

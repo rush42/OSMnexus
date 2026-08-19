@@ -1,5 +1,6 @@
 {
   "table": "public_transport",
+  "geometry_output": { "relation": "line" },
   "passthrough_tags": [
     "type",
     "route",
