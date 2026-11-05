@@ -4,6 +4,25 @@ Working plan for making the existing responsibility boundaries explicit and enfo
 crates. Based on `develop` @ `e2fea85`. Every step is a behaviour-preserving refactor and its own
 PR into `develop`; none changes pipeline output. See `BACKLOG.md` for the summary entry.
 
+## Status (branch `refactor/boundaries`)
+
+| Step | State | Notes |
+|---|---|---|
+| 0 | done | `scripts/regress.sh`; baseline from `develop` @ `e2fea85` |
+| 1–4 | done | `lang::expr`, `lang::tags`, `lang::json`; stale crate deleted |
+| 5 | done (hot path) | `Filter::InSet` holds a resolved `ValueSetRef`; `DirectedExtract` precomputes its keys. Deviation: the set is a `&'static` borrow of the existing table rather than a `SetId`, because the table source is still the global (step 6). Borrowing never touches a refcount, so the contention concern doesn't apply; revisit the representation together with `CompileEnv`. Not done: the `length` unit table is still looked up per `parse_length` call (needs manual `Ord`/`Hash` on `Builtin`; small win, deferred). |
+| 6 | open | `CompileEnv` / `ConfigSources`: file I/O and the three globals still live in the core; listed as known leaks in `scripts/check_boundaries.sh` |
+| 7 | done | `CompiledTopic` + by-value `TopicRunner` newtype; `OutputSchema`; `Send + Sync` guard. Open question found: the empty-tags probe (`skip_untagged`) runs the real pipeline (`build_topic_rows`) at compile time, so `compiled` depends on `topic::pipeline` |
+| 8 | half | boundary check in CI (`scripts/check_boundaries.sh`); workspace split not started |
+| 9–11 | open | |
+
+Every done step: `scripts/regress.sh` identical on `tiny.osm.pbf` + Berlin (incl. all
+`tree_json`/`export_ts_types` output), 86 lib tests green. Release build on Berlin (2-core
+machine, interleaved runs): 1 thread 14.7 s vs 14.75 s, 2 threads 9.09 s vs 9.17 s (7 runs each,
+within noise), peak RSS unchanged (398 MB / ~410 MB). Note: `--threads` defaults to 1, so
+benchmarks must pass it explicitly. A full `bench_sweep.sh` + `dhat` run on a bigger machine is
+still due before the workspace split.
+
 ## Principles this plan follows
 
 Each one is here because it fixes something concrete in this codebase, not for its own sake.
