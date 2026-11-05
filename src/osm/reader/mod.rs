@@ -112,7 +112,7 @@ pub struct Callbacks<CR, CW, CN, RT, RM, RP> {
     /// point shape needs nothing `SelectionContext` provides. Pure — no routing.
     pub classify_node: CN,
     /// Every node-processing topic provably yields nothing for a node with no tags, so untagged
-    /// nodes can be skipped without decoding them (see `TopicRunner::skips_untagged`). The great
+    /// nodes can be skipped without decoding them (see `Topic::skips_untagged`). The great
     /// majority of nodes in an OSM extract carry no tags at all — they exist only as way geometry —
     /// so on a category-based node topic this elides nearly the whole per-node cost (tag decode,
     /// `NodeData` construction, classification) that Pass B would otherwise pay to reject them.

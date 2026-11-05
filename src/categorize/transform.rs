@@ -6,7 +6,7 @@
 //! step, a pipeline of them, and the couple of primitives no bare `Producer` output can express
 //! (dynamic key iteration) — not separate subsystems. Nothing here is topic-directory-specific;
 //! only the *construction* of a `Vec<TransformStep>` from `topic.json`'s `input_transforms`/
-//! `split_sides` is (see `topic::runner::TopicRunner::load`).
+//! `split_sides` is (see `topic::model::Topic::load`).
 
 use std::borrow::Cow;
 use serde::Deserialize;
@@ -206,7 +206,7 @@ impl InputTransform {
 /// One step in a topic's transform pipeline: either an ordinary in-place `InputTransform`, or a
 /// `Clone` that spawns an additional object alongside the current one. This is the generic
 /// mechanism cardinality-changing transforms (side-splitting today, anything else needing it
-/// tomorrow) are built from — nothing here is side/cycleway-specific; `topic::runner` is what
+/// tomorrow) are built from — nothing here is side/cycleway-specific; `topic::model` is what
 /// turns `split_sides`/`input_transforms` JSON into a `Vec<TransformStep>`.
 #[derive(Clone)]
 pub enum TransformStep {
@@ -669,7 +669,7 @@ mod run_transform_steps_tests {
         m.get(key).and_then(Value::as_str)
     }
 
-    /// A left/right cycleway split, hand-built the same way `topic::runner` synthesizes one from
+    /// A left/right cycleway split, hand-built the same way `topic::model` synthesizes one from
     /// `SplitSidesSpec` — one `TransformStep::Clone` per side, each running the same
     /// bare/`both`/side-specific `UnnestTags` priority chain, a `TagsEmpty` drop, and a literal
     /// `highway` injection.

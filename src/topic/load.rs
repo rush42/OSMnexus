@@ -38,7 +38,7 @@ use crate::topic::spec::TransformsSpec;
 /// (`HashMap`, `serde_json::Map`) via the standard `IntoIterator`/`Extend` traits, so one
 /// implementation covers every level any concept happens to have — there's no single universal
 /// shared→topic→category cascade, different concepts stop at different levels (see the doc on
-/// `TopicRunner::load`'s macro/sanitizer loading).
+/// `Topic::load`'s macro/sanitizer loading).
 pub fn merge<K, V, M>(base: &M, over: &M) -> M
 where
     K: Clone,
@@ -151,7 +151,7 @@ pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<Map<S
 
 /// Recursively macro-inline every entry in `raw_macros` against itself, so a macro body
 /// referencing another macro is expanded too. The result is what `inline_macro_refs` needs
-/// elsewhere (a fully macro-free JSON per name) — see `topic::runner::TopicRunner::load`.
+/// elsewhere (a fully macro-free JSON per name) — see `topic::model::Topic::load`.
 /// Only inlines macro-in-macro refs — `sanitize:` references inside a macro body are deliberately
 /// left as names. This table is later spliced (`inline_macro_refs`) into other raw documents
 /// (`topic.json`, `producers.json`, category files) which each still go through their own
@@ -168,7 +168,7 @@ pub fn resolve_macros(raw_macros: &Map<String, Value>) -> anyhow::Result<Map<Str
 /// Read a topic's own `transforms.json` — its whole transform pipeline, explicit about where
 /// `exclude_condition` is evaluated (see `TransformsSpec`) — if present, fully macro/sanitizer
 /// resolved. `None` when the topic still uses the legacy `input_transforms`/`split_sides`
-/// `topic.json` keys instead; `TopicRunner::load` falls back to synthesizing an equivalent
+/// `topic.json` keys instead; `Topic::load` falls back to synthesizing an equivalent
 /// pipeline from those in that case. Topic-local only, no shared config-root variant (unlike
 /// `macros.json`/`sanitizers.json`) — nothing shares a transform pipeline across topics today.
 pub fn load_topic_transforms(

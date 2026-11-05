@@ -20,7 +20,7 @@ use crate::lang::producer::ExtractCtx;
 #[derive(Debug, Clone, Deserialize)]
 pub struct CategoryDef {
     pub id: String,
-    /// This category's index into its topic's `TopicRunner::category_producers`, assigned at load.
+    /// This category's index into its topic's `Topic::category_producers`, assigned at load.
     ///
     /// `categorize` already hands back the matched `&CategoryDef`, so the runtime can reach that
     /// category's resolved producers directly rather than hashing `id` — which it previously did
@@ -120,7 +120,7 @@ pub fn categorize_linear<'a>(ctx: &ExtractCtx, cats: &'a CategoriesFile) -> Opti
 /// Evaluate one order node against `ctx`. `Some(Some(cat))` = category matched (answer);
 /// `Some(None)` = disqualifier matched (no category); `None` = no match, continue. Both
 /// `cat.condition` and a `Skip`'s `condition` are already fully macro/sanitizer-resolved by load
-/// time (see `topic::runner::TopicRunner::load`), so `eval` needs nothing beyond `ctx`.
+/// time (see `topic::model::Topic::load`), so `eval` needs nothing beyond `ctx`.
 fn eval_node<'a>(
     node: &OrderedNode,
     ctx: &ExtractCtx,
@@ -213,7 +213,7 @@ impl CategoriesFile {
         self.order = order;
         // `tree_max_depth == 0` skips compiling a tree at all (rather than paying the NNF/simplify
         // compile-time cost just to produce a single all-candidates leaf) — the caller
-        // (`TopicRunner::load`) notices the same `tree_max_depth == 0` and switches this topic's
+        // (`Topic::load`) notices the same `tree_max_depth == 0` and switches this topic's
         // runtime dispatch to `categorize_linear`'s walk over `order` directly instead of `categorize`.
         self.tree = if tree_max_depth == 0 {
             DecisionTree::default()

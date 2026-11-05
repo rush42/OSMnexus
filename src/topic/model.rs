@@ -1,6 +1,7 @@
-//! The compile phase of a topic: load its config directory, resolve every reference, build the
-//! category decision trees, and hold the result as plain data (`CompiledTopic`). No per-element
-//! work happens here; see `topic::runner` for that.
+//! `Topic`: a topic as loaded at startup — its config directory read, every reference resolved,
+//! its category decision trees built — held as plain, immutable data. Built once per run
+//! (`Topic::load`) and then shared read-only across worker threads; per-element evaluation is the
+//! free function `topic::pipeline::process`.
 
 use std::collections::HashMap;
 
@@ -21,10 +22,9 @@ use crate::topic::pipeline::build_topic_rows;
 use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, TopicSpec, TransformsSpec};
 use crate::osm::types::{ElementKind, RawTags, WayMeta};
 
-/// A fully loaded and compiled topic: everything derived from its config directory, and nothing
-/// that depends on OSM input. Building it (`load`) is the compile phase; running it over elements
-/// is `TopicRunner`'s job (see `boundaries_plan.md`, step 7).
-pub struct CompiledTopic {
+/// A fully loaded topic: everything derived from its config directory, and nothing that depends on
+/// OSM input. Built once at startup by `load`; evaluated per element by `topic::pipeline::process`.
+pub struct Topic {
     pub spec: TopicSpec,
     /// Category sets keyed by element kind — one per `topics/<t>/{node,way,relation}/` subfolder
     /// that exists. Each pass (relations → ways → nodes) classifies with its kind's set; a topic
@@ -41,7 +41,7 @@ pub struct CompiledTopic {
     /// simply has no entry here — see `topic::spec::TransformsSpec::into_pipelines`.
     pub pipelines: HashMap<ElementKind, Vec<TransformStep>>,
     /// The topic's `exclude_condition` (`topic.json`), already macro/sanitizer-resolved by the time
-    /// `TopicSpec` deserializes it (see `TopicRunner::load`). Held here (taken out of `spec`, not
+    /// `TopicSpec` deserializes it (see `Topic::load`). Held here (taken out of `spec`, not
     /// duplicated) so the runtime pipeline (`topic::pipeline::build_topic_rows`) reads it directly.
     pub exclude_condition: Option<Filter>,
     /// Topic-default fields (`spec.producers`, resolved, with topic-level `defaults` folded in as
@@ -179,7 +179,7 @@ fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -
     fields
 }
 
-impl CompiledTopic {
+impl Topic {
     /// Discover and load every topic under the active config directory. Only directories are
     /// considered (the shared `macros.json`/`sanitizers.json`/`producers.json`/`value_sets.json`/
     /// `units.json` files at the config root are skipped automatically), and any `_`-prefixed
@@ -505,5 +505,217 @@ impl CompiledTopic {
 // loses `Send + Sync` (e.g. an `Rc` or `RefCell` sneaking in). See `boundaries_plan.md`, step 7.
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<CompiledTopic>();
+    assert_send_sync::<Topic>();
 };
+
+#[cfg(test)]
+mod producer_tree_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use serde_json::Map;
+
+    use crate::lang::expr::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
+    use crate::lang::producer::{ExtractCtx, Producer, Rule};
+    use crate::osm::types::RawTags;
+    use crate::topic::Topic;
+
+    /// Positive `Eq` atoms in `e` → tag → observed values (mirrors
+    /// `decision_tree::tests::collect_pairs`, duplicated here to avoid depending on that module's
+    /// private test helper).
+    fn collect_pairs(e: &Expr, out: &mut BTreeMap<String, BTreeSet<String>>) {
+        match e {
+            Expr::Lit(Literal::Pos(Predicate::Eq(extract, v))) => {
+                for k in extract.tag_names() {
+                    out.entry(k).or_default().insert(v.clone());
+                }
+            }
+            Expr::Lit(_) | Expr::True | Expr::False => {}
+            Expr::Not(x) => collect_pairs(x, out),
+            Expr::And(xs) | Expr::Or(xs) => xs.iter().for_each(|x| collect_pairs(x, out)),
+        }
+    }
+
+    /// Every `Match`'s `rules` that got a compiled tree, anywhere inside `p` (a rule's own `value`,
+    /// or `Parent`'s inner producer, can itself be a further `Match`).
+    fn find_compiled_matches<'a>(p: &'a Producer, out: &mut Vec<&'a [Rule]>) {
+        match p {
+            Producer::Match { rules, tree, .. } => {
+                if tree.is_some() {
+                    out.push(rules);
+                }
+                for r in rules {
+                    find_compiled_matches(&r.value, out);
+                }
+            }
+            Producer::Parent(inner) => find_compiled_matches(inner, out),
+            Producer::Extract { .. } | Producer::Const { .. } => {}
+        }
+    }
+
+    /// A compiled `Producer::Match` tree must produce the exact same `Produced` (value + annotate)
+    /// as a plain linear scan over the same rules, for every object — the tree only prunes
+    /// candidates it can prove don't apply (see `decision_tree::build`'s own doc on why
+    /// `Producer::Match` needs `assume_match_is_final: false`).
+    #[test]
+    fn producer_tree_matches_linear() {
+        let runner = Topic::load("roads", crate::decision_tree::DEFAULT_TREE_MAX_DEPTH)
+            .expect("load roads topic");
+
+        let mut checked_any_field = false;
+        for field in runner.default_producers.iter().chain(runner.category_producers.iter().flatten()) {
+            let mut compiled = Vec::new();
+            find_compiled_matches(&field.source, &mut compiled);
+            if compiled.is_empty() {
+                continue;
+            }
+            checked_any_field = true;
+
+            let mut refs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for rules in &compiled {
+                for r in rules.iter() {
+                    collect_pairs(&to_nnf(filter_to_expr(&r.when)), &mut refs);
+                }
+            }
+
+            let mut linear = field.source.clone();
+            linear.clear_trees();
+
+            // Cartesian product over every referenced tag's observed values plus "absent" — small
+            // per-tag domains here (a handful of values each), so this stays bounded.
+            let keys: Vec<&String> = refs.keys().collect();
+            let mut combos: Vec<Vec<Option<&str>>> = vec![vec![]];
+            for k in &keys {
+                let mut vals: Vec<Option<&str>> = refs[*k].iter().map(|v| Some(v.as_str())).collect();
+                vals.push(None);
+                let mut next = Vec::with_capacity(combos.len() * vals.len());
+                for combo in &combos {
+                    for v in &vals {
+                        let mut c = combo.clone();
+                        c.push(*v);
+                        next.push(c);
+                    }
+                }
+                combos = next;
+            }
+
+            let mut checked = 0usize;
+            for has_parent in [false, true] {
+                for combo in &combos {
+                    let mut tags: RawTags = RawTags::default();
+                    for (k, v) in keys.iter().zip(combo.iter()) {
+                        if let Some(v) = v {
+                            tags.insert((*k).clone().into(), v.to_string().into());
+                        }
+                    }
+                    let parent_tags = if has_parent { Some(tags.clone()) } else { None };
+                    let annotations = Map::new();
+                    let ctx = ExtractCtx {
+                        obj_tags: &tags,
+                        parent_tags: parent_tags.as_ref(),
+                        id: "",
+                        annotations: &annotations,
+                    };
+                    let a = field.source.eval(&ctx).map(|p| (p.value, p.annotate));
+                    let b = linear.eval(&ctx).map(|p| (p.value, p.annotate));
+                    assert_eq!(
+                        a, b,
+                        "[{}] tree≠linear for tags={tags:?} has_parent={has_parent}",
+                        field.output
+                    );
+                    checked += 1;
+                }
+            }
+            assert!(checked > 0, "[{}] no test cases generated", field.output);
+        }
+        assert!(checked_any_field, "no compiled Producer::Match trees found to test against");
+    }
+}
+
+#[cfg(test)]
+mod skip_untagged_tests {
+    use crate::osm::types::ElementKind;
+    use crate::topic::Topic;
+
+    /// Whichever config the process-global root happens to point at — these tests mutate a loaded
+    /// runner rather than loading a specific config, because `paths::CONFIG_ROOT` is a `OnceLock`
+    /// (first caller wins) and the test binary runs every test in one process, so a test that set
+    /// its own root would silently get whichever config another test set first.
+    fn any_runner() -> Topic {
+        let runners = Topic::load_all(6).expect("loading topics");
+        runners.into_iter().next().expect("config has at least one topic")
+    }
+
+    /// `accept_all` keeps every element regardless of tags, so untagged nodes must never be
+    /// skipped — the case where the optimization has to switch itself off or rows would be lost.
+    ///
+    /// `exclude_condition` is cleared to isolate `accept_all`: a topic whose exclude filter already
+    /// rejects untagged elements is *still* legitimately skippable, so leaving a real config's
+    /// filter in place would test the wrong thing (and did, on first writing).
+    #[test]
+    fn accept_all_never_skips_untagged() {
+        let mut r = any_runner();
+        r.categories.remove(&ElementKind::Node);
+        r.exclude_condition = None;
+        r.accept_all.insert(ElementKind::Node);
+        assert!(
+            !r.probe_skip_untagged().contains(&ElementKind::Node),
+            "an accept_all node topic matches untagged nodes, so skipping them would drop rows"
+        );
+    }
+
+    /// The converse of the above, and the case that motivates probing rather than analysing filter
+    /// shapes: an `exclude_condition` satisfied by an untagged element makes the kind skippable even
+    /// though `accept_all` would otherwise keep everything.
+    #[test]
+    fn exclude_condition_can_make_accept_all_skippable() {
+        let mut r = any_runner();
+        r.categories.remove(&ElementKind::Node);
+        r.accept_all.insert(ElementKind::Node);
+        // `railway` absent → true for an untagged element, so everything untagged is excluded.
+        r.exclude_condition = Some(
+            serde_json::from_value(serde_json::json!({ "not": { "tag": "railway", "exists": true } }))
+                .expect("filter parses"),
+        );
+        assert!(r.probe_skip_untagged().contains(&ElementKind::Node));
+    }
+
+    /// A kind the topic doesn't handle at all is trivially skippable, and `skips_untagged` reports
+    /// that without the probe having to say anything about it.
+    #[test]
+    fn unhandled_kind_is_skippable() {
+        let mut r = any_runner();
+        r.categories.remove(&ElementKind::Node);
+        r.accept_all.remove(&ElementKind::Node);
+        assert!(r.skips_untagged(ElementKind::Node));
+    }
+
+    /// The probe must agree with the real pipeline for every kind the loaded config handles: if it
+    /// says a kind is skippable, `build_topic_rows` on empty tags really does yield nothing. This is
+    /// what makes the optimization safe against a filter that's satisfied by a tag's *absence*
+    /// (a negated existence check), which no filter-shape heuristic would catch reliably.
+    #[test]
+    fn probe_matches_real_pipeline_on_empty_tags() {
+        use crate::osm::types::{RawTags, WayMeta};
+        for r in Topic::load_all(6).expect("loading topics") {
+            for kind in [ElementKind::Node, ElementKind::Way, ElementKind::Relation] {
+                if !r.has_kind(kind) {
+                    continue;
+                }
+                let rows = crate::topic::pipeline::build_topic_rows(
+                    &r,
+                    kind,
+                    0,
+                    &RawTags::default(),
+                    &WayMeta { timestamp: None, user: None, changeset: None },
+                    &[],
+                );
+                assert_eq!(
+                    r.skips_untagged(kind),
+                    rows.is_empty(),
+                    "[{}] {kind:?}: skips_untagged disagrees with the pipeline on empty tags",
+                    r.table()
+                );
+            }
+        }
+    }
+}

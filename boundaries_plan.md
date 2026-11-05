@@ -12,7 +12,7 @@ PR into `develop`; none changes pipeline output. See `BACKLOG.md` for the summar
 | 1–4 | done | `lang::expr`, `lang::tags`, `lang::json`; stale crate deleted |
 | 5 | done (hot path) | `Filter::InSet` holds a resolved `ValueSetRef`; `DirectedExtract` precomputes its keys. Deviation: the set is a `&'static` borrow of the existing table rather than a `SetId`, because the table source is still the global (step 6). Borrowing never touches a refcount, so the contention concern doesn't apply; revisit the representation together with `CompileEnv`. Not done: the `length` unit table is still looked up per `parse_length` call (needs manual `Ord`/`Hash` on `Builtin`; small win, deferred). |
 | 6 | open | `CompileEnv` / `ConfigSources`: file I/O and the three globals still live in the core; listed as known leaks in `scripts/check_boundaries.sh` |
-| 7 | done | `CompiledTopic` + by-value `TopicRunner` newtype; `OutputSchema`; `Send + Sync` guard. Open question found: the empty-tags probe (`skip_untagged`) runs the real pipeline (`build_topic_rows`) at compile time, so `compiled` depends on `topic::pipeline` |
+| 7 | done | `Topic` (`topic::model`, built once at startup) + the free function `topic::pipeline::process` for per-element evaluation (an interim `CompiledTopic` + `TopicRunner` newtype was dropped again: the wrapper held no state, and `Deref`-as-inheritance hid that); `OutputSchema`; `Send + Sync` guard. Open question found: the empty-tags probe (`skip_untagged`) runs the real pipeline (`build_topic_rows`) at compile time, so `topic::model` depends on `topic::pipeline` |
 | 8 | half | boundary check in CI (`scripts/check_boundaries.sh`); workspace split not started |
 | 9–11 | open | |
 
@@ -40,7 +40,7 @@ Each one is here because it fixes something concrete in this codebase, not for i
    `CompileEnv` passed in.
 4. **Parse, don't validate; one type per phase.** The compiler phases get distinct types, so a
    later phase can't receive input an earlier phase hasn't processed: `RawDecl` (serde shapes +
-   sugar) → `ResolvedDecl` (macros, sanitizer refs, shared producers inlined) → `CompiledTopic`
+   sugar) → `ResolvedDecl` (macros, sanitizer refs, shared producers inlined) → `Topic`
    (decision tree built, output schema inferred). Today ref inlining runs on `serde_json::Value`
    *before* deserialization, so unresolved refs are untyped.
 5. **The output schema is a first-class compile result.** Type inference for output fields
@@ -50,7 +50,7 @@ Each one is here because it fixes something concrete in this codebase, not for i
    `postgis`) and sinks (`pg`, `csv`, `geojson[seq]`, `parquet`, `memory`) already are adapters;
    formalise them as traits in the pipeline and gate heavy adapters behind Cargo features
    (`postgres`, `parquet`) rather than separate crates.
-7. **Small public surface.** Each crate exposes a deliberate facade (`compile`, `CompiledTopic`,
+7. **Small public surface.** Each crate exposes a deliberate facade (`compile`, `Topic`,
    `OutputSchema`, `eval`, diagnostics); internals are `pub(crate)`. That's what makes later
    refactors inside a crate free.
 8. **Contracts are versioned and tested.** The editor talks to `osmnexus`/`tree_json` over CLI +
@@ -69,7 +69,7 @@ Each one is here because it fixes something concrete in this codebase, not for i
 12. **No unmeasured performance changes.** Every PR from step 5 on is compared against a
     release-build baseline (see step 0). Refactors must be neutral or faster.
 13. **The compiled IR is immutable, `Send + Sync`, and shared by reference; parallelism belongs
-    to the shell.** Today `&[TopicRunner]` is shared read-only across rayon workers
+    to the shell.** Today `&[Topic]` (then `&[TopicRunner]`) is shared read-only across rayon workers
     (`osm::reader::fallback`'s `par_map_reduce`, `way_refs::par_route_*`, `processing::classify_*`).
     That must stay exactly so: no interior mutability, no per-thread clones of the IR, no
     reference-count traffic in the hot path. `lang` itself stays single-threaded, pure code
@@ -93,13 +93,13 @@ consumer needs it.
     pub struct CompileEnv { value_sets, unit_tables, left_hand_traffic, tree_max_depth, … }
     pub struct ConfigSources { files: BTreeMap<RelPath, String> } // contents, not paths
     pub fn compile(env: &CompileEnv, src: &ConfigSources, topic: &str)
-        -> Result<CompiledTopic, Diagnostics>;
-    impl CompiledTopic { pub fn schema(&self) -> &OutputSchema; pub fn eval(&self, tags: &RawTags, …) }
+        -> Result<Topic, Diagnostics>;
+    impl Topic { pub fn schema(&self) -> &OutputSchema; pub fn eval(&self, tags: &RawTags, …) }
     ```
   - Dependencies: serde, serde_json, rustc-hash, thiserror. Nothing async, no I/O crates.
 - **`osmnexus-codegen`: views of the compiled IR.** `tree.rs`, the bodies of
   `bin/{export_ts_types, plot_tree, tree_json}`, later TileJSON / JSON Schema / Mermaid / JGF.
-  Input: `&CompiledTopic` / `&OutputSchema` only.
+  Input: `&Topic` / `&OutputSchema` only.
 - **`osmnexus` (pipeline): the imperative shell.** Config-dir loader (filesystem → `ConfigSources`
   + `CompileEnv`), `osm::reader`, `geom`, `output`, `db`, `processing`, `csv_source`, `config`,
   `main`, `topic::{runner, pipeline, inherit}`, `bin/check_overlaps`. Source/sink adapters
@@ -164,7 +164,7 @@ tables, traffic side and tree depth become fields loaded once by the shell. `Com
 an input to compilation; it is **not** threaded through eval. Instead, compilation resolves every
 reference into the IR:
 - `Filter::InSet { in_set: String }` → a `SetId(u32)` index into a set table owned by
-  `CompiledTopic`, borrowed during eval. Today `filter.rs:151` does an `OnceLock` check plus a
+  `Topic`, borrowed during eval. Today `filter.rs:151` does an `OnceLock` check plus a
   by-name hash lookup on *every* evaluation; afterwards it's one `contains`. Prefer the index over
   storing an `Arc` per filter: each set is stored once however many filters (and decision-tree
   copies of them) reference it, and eval never touches a reference count. Cloning an `Arc` per
@@ -181,17 +181,18 @@ This is the largest mechanical diff, and the first one that should measurably *s
 loader walks the config dir once and fills it; core functions take `&ConfigSources` instead of
 paths. `categorize::linter`'s directory walking moves to the shell; its checks stay in the core.
 `ConfigSources` lives only for the duration of `compile()` and is dropped afterwards;
-`CompiledTopic` must not keep the raw JSON text or `serde_json::Value` trees alive.
+`Topic` must not keep the raw JSON text or `serde_json::Value` trees alive.
 
-**7. `compile()` and `OutputSchema`.** Split `TopicRunner::load` into the pure
-`lang::compile(env, sources, topic) -> CompiledTopic` and a `TopicRunner` that wraps a
-`CompiledTopic`. Move the closed/open inference from `export_ts_types` into
-`CompiledTopic::schema()`. Switch the three codegen bins to `compile`. Keep `tree_json`'s CLI and
+**7. `compile()` and `OutputSchema`.** Split the old `TopicRunner::load` into the pure
+`lang::compile(env, sources, topic) -> Topic` and per-element evaluation as a free function
+(`topic::pipeline::process`) over a
+`Topic`. Move the closed/open inference from `export_ts_types` into
+`Topic::schema()`. Switch the three codegen bins to `compile`. Keep `tree_json`'s CLI and
 JSON unchanged. This is the step that needs the most careful review: the merge order of shared vs
 topic-local macros/sanitizers must be preserved exactly; the step-0 snapshots catch deviations.
-`TopicRunner` holds its `CompiledTopic` by value (or `&'static` after leaking once at startup),
-not behind an `Arc` that eval would clone. Add a compile-time guard so the IR can't silently lose
-thread-safety: `const _: () = { fn assert<T: Send + Sync>() {} let _ = assert::<CompiledTopic>; };`
+Topics are held by value in a `Vec<Topic>` (or `&'static` after leaking once at startup), not
+behind an `Arc` that eval would clone. Add a compile-time guard so the IR can't silently lose
+thread-safety: `const _: () = { fn assert<T: Send + Sync>() {} let _ = assert::<Topic>; };`
 Since `load_all` compiles independent topics, the shell may compile them in parallel at startup;
 optional, startup is not the bottleneck.
 
@@ -205,7 +206,7 @@ functions (`Extract::read_str`, `filter::eval`, sanitizer steps) now sit in anot
 release profile (`lto = "thin"`, `codegen-units = 1`) should keep them inlined; confirm against
 the step-0 baseline and add `#[inline]` where a regression shows up.
 
-**9. `crates/osmnexus-codegen`** with a `Backend` trait over `&CompiledTopic`; bins become thin
+**9. `crates/osmnexus-codegen`** with a `Backend` trait over `&Topic`; bins become thin
 CLIs with unchanged names and output. `insta` snapshots per backend (seeded from step 0).
 Version the `tree_json` output and generate its TS types (`ts-rs`/`specta`) for `DagView`.
 
@@ -242,7 +243,7 @@ write" signature; that would undo the streaming GeoJSON/Parquet work on `develop
 
 - **Step 5 touches many call sites.** Mechanical, but wide; the global shims keep the pipeline
   unchanged in that PR. Do it right after step 4 so nothing new grows on the old globals.
-- **Step 7 is the only semantic step** (merge order in `TopicRunner::load`). Snapshots from step 0
+- **Step 7 is the only semantic step** (merge order in the old `TopicRunner::load`). Snapshots from step 0
   are the guard.
 - **Editor coupling.** CLIs and JSON of `osmnexus`/`tree_json` must stay stable through steps 7–9;
   the versioned contract in step 9 makes future changes explicit.

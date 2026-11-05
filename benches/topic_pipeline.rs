@@ -5,14 +5,14 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use osmnexus::osm::types::{ElementKind, RawTags};
 use osmnexus::osm::types::WayMeta;
 use osmnexus::topic::pipeline::build_topic_rows;
-use osmnexus::topic::runner::TopicRunner;
+use osmnexus::topic::Topic;
 
 fn way_tags(pairs: &[(&str, &str)]) -> RawTags<'static> {
     pairs.iter().map(|&(k, v)| (k.to_owned().into(), v.to_owned().into())).collect()
 }
 
 fn bench_build_topic_rows(c: &mut Criterion) {
-    let runner = TopicRunner::load("roads", 4).expect("load 'roads' topic from configs/tilda");
+    let runner = Topic::load("roads", 4).expect("load 'roads' topic from configs/tilda");
     let meta = WayMeta { timestamp: None, user: None, changeset: None };
 
     let tags = way_tags(&[

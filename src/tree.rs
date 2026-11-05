@@ -72,7 +72,7 @@ fn annotate_node(g: &mut TreeGraph, owner: &str, annotate: &Map<String, Value>) 
 }
 
 /// The pure `Producer` tree — no synthetic root node, no "who uses this" bookkeeping (that's a
-/// `topic::runner`/`bin/tree_json` concern; a node here is only ever a step in how the value itself
+/// `topic::model`/`bin/tree_json` concern; a node here is only ever a step in how the value itself
 /// gets built: `Match`/`Parent` branches down to `Extract`/`Const` leaves, plus
 /// any `Sanitizer` chain hanging off an `Extract`).
 pub fn producer_tree(producer: &Producer) -> TreeGraph {
@@ -85,7 +85,7 @@ fn render_producer(g: &mut TreeGraph, p: &Producer) -> String {
     match p {
         Producer::Match { rules, default: Some(d), annotate, tree: _ } if rules.is_empty() => {
             // No real branching — a `defaults` JSON entry bundled straight into a producer
-            // (`topic::runner::default_value_producer`), always empty `rules`. Shown as a plain
+            // (`topic::model::default_value_producer`), always empty `rules`. Shown as a plain
             // literal, not a one-branch "match" wrapper around nothing.
             let label = format!("Default\n{}", truncate(&d.to_string(), 40));
             let node = g.node(label, "const");

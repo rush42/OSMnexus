@@ -1,7 +1,7 @@
 //! The boolean expression IR shared by the category linter and the decision-tree compiler:
 //! atoms (`Predicate`), literals, `Expr` trees, and the normal-form rewrites (`to_nnf`,
 //! `to_dnf`) plus the `Filter` → `Expr` lowering (`filter_to_expr`). Moved here from
-//! `categorize::linter` so the compiler passes (`decision_tree`) and the runtime (`topic::runner`)
+//! `categorize::linter` so the compiler passes (`decision_tree`) and the runtime (`topic::model`)
 //! no longer depend on the linter to get at core IR (see `boundaries_plan.md`, step 2).
 
 use std::ops::Bound;
@@ -84,9 +84,9 @@ pub enum Expr {
 
 /// Convert a resolved `Filter` (no macro/named-sanitizer reference left — see `Filter`'s own doc)
 /// to an overlap-analysis `Expr`. Used by both `decision_tree::build` (an already-resolved
-/// `CategoriesFile`, built earlier in `topic::runner::TopicRunner::load` for unrelated reasons) and
+/// `CategoriesFile`, built earlier in `topic::model::Topic::load` for unrelated reasons) and
 /// the standalone overlap lint (`find_all_topic_overlaps`, which builds its own resolved
-/// `CategoriesFile` via the same `topic::load` pipeline `TopicRunner` uses). Every tag-bearing
+/// `CategoriesFile` via the same `topic::load` pipeline `Topic` uses). Every tag-bearing
 /// `Predicate` now carries the full `Extract` (see `Predicate`'s own doc) — the overlap lint keeps
 /// grouping by `tags_involved()` (still `sanitize`-blind, same conservative approximation as
 /// before), while `decision_tree::build` uses the `Extract` itself to evaluate branches correctly

@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use crate::osm::types::RawTags;
 use crate::topic::spec::InheritMode;
-use crate::topic::TopicRunner;
+use crate::topic::Topic;
 
 /// One parent relation's exported fields, extracted once at relation-classify time and shared by
 /// every member way that inherits them.
@@ -43,7 +43,7 @@ pub struct InheritStore {
 }
 
 impl InheritStore {
-    pub fn new(runners: &[TopicRunner]) -> Self {
+    pub fn new(runners: &[Topic]) -> Self {
         InheritStore {
             per_topic: runners
                 .iter()
@@ -62,7 +62,7 @@ impl InheritStore {
     /// Extract topic `idx`'s declared fields from a just-classified relation's `produced` and retain
     /// them for its member ways. `produced` is the relation's own pre-serialized JSON; a declared
     /// field the relation didn't produce is simply absent (its outputs are category-dependent).
-    pub fn capture(&self, runners: &[TopicRunner], idx: usize, rel_osm_id: i64, produced: &str) {
+    pub fn capture(&self, runners: &[Topic], idx: usize, rel_osm_id: i64, produced: &str) {
         let Some(slot) = self.per_topic.get(idx).and_then(Option::as_ref) else { return };
         let Some(spec) = runners[idx].spec.inherit_to_member.as_ref() else { return };
         if produced.is_empty() {
@@ -99,7 +99,7 @@ impl InheritStore {
     }
 
     /// This topic's `mode`, or `None` if it declares no inheritance.
-    pub fn mode(&self, runners: &[TopicRunner], idx: usize) -> Option<InheritMode> {
+    pub fn mode(&self, runners: &[Topic], idx: usize) -> Option<InheritMode> {
         runners[idx].spec.inherit_to_member.as_ref().map(|s| s.mode)
     }
 }

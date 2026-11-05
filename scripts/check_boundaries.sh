@@ -17,7 +17,7 @@ core=(
     src/decision_tree
     src/topic/spec.rs
     src/topic/load.rs
-    src/topic/compiled.rs
+    src/topic/model.rs
     src/topic/schema.rs
     src/value_sets.rs
     src/units.rs
@@ -31,7 +31,7 @@ forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|main|
 ALLOWED=(
     # step 6: config root + file reads move to the shell (ConfigSources / CompileEnv)
     'src/topic/load.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/topic/compiled.rs:std::fs|fs::read|read_dir|crate::paths'
+    'src/topic/model.rs:std::fs|fs::read|read_dir|crate::paths'
     'src/categorize/linter.rs:std::fs|fs::read|read_dir|crate::paths'
     'src/categorize/transform.rs:std::fs|fs::read|read_dir|crate::paths'
     'src/decision_tree/optimal.rs:std::fs|fs::read|read_dir|crate::paths'
@@ -40,8 +40,8 @@ ALLOWED=(
     'src/traffic.rs:static LEFT_HAND_TRAFFIC'
     # the empty-tags probe runs the real pipeline at compile time; revisit when the pipeline crate
     # exists (move the probe there, or move build_topic_rows into the core)
-    'src/topic/compiled.rs:crate::topic::pipeline'
-    'src/topic/compiled.rs:crate::osm::types'
+    'src/topic/model.rs:crate::topic::pipeline'
+    'src/topic/model.rs:crate::osm::types'
     # an immutable empty map constant, not config state (no input flows into it)
     'src/lang/producer.rs:OnceLock'
     # `#[cfg(test)]` helpers that load real configs

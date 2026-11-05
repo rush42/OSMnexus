@@ -40,7 +40,7 @@ use tracing::info;
 use config::{Config, CoordPrecision, Output};
 use db::schema;
 use geom::rows::{GeomRow, GEOM_COLUMNS};
-use topic::TopicRunner;
+use topic::Topic;
 use osm::types::{ElementKind, NodeData, RelData, WayData};
 use output::rows::{MemberRow, TopicRow};
 use output::sinks::{write_rows_once, TableWriters};
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     // it's picked up — no code changes needed.
     osmnexus::paths::set_config_root(cfg.config_dir.clone());
     info!("Config directory: {}", cfg.config_dir.display());
-    let runners: Vec<TopicRunner> = TopicRunner::load_all(cfg.tree_max_depth)?;
+    let runners: Vec<Topic> = Topic::load_all(cfg.tree_max_depth)?;
 
     let tables: Vec<String> = runners.iter().map(|r| r.table().to_owned()).collect();
     let table_refs: Vec<&str> = tables.iter().map(String::as_str).collect();
@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
     let has_nodes = runners.iter().any(|r| r.has_kind(ElementKind::Node));
     // Only safe when *every* topic rejects an untagged node — one `accept_all` (or one filter
     // satisfied by a tag's absence) and the whole optimization is off. See
-    // `TopicRunner::skips_untagged` for why this is decided by probing the real pipeline.
+    // `Topic::skips_untagged` for why this is decided by probing the real pipeline.
     let skip_untagged_nodes = runners.iter().all(|r| r.skips_untagged(ElementKind::Node));
 
     // Every geometry decision (which topic wants which shape, for which kind) computed once —

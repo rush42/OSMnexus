@@ -176,7 +176,7 @@ pub fn topic_category_dirs() -> Vec<(String, PathBuf)> {
 }
 
 /// Load every topic's per-kind categories, fully macro/sanitizer-resolved (the same
-/// `topic::load` pipeline `TopicRunner::load` uses, minus the `producers`/`transforms.json`/
+/// `topic::load` pipeline `Topic::load` uses, minus the `producers`/`transforms.json`/
 /// `producers.json` machinery this lint has no use for), and collect overlaps per (topic, kind).
 /// Shared entry point.
 pub fn find_all_topic_overlaps() -> anyhow::Result<Vec<(String, Vec<Overlap>)>> {

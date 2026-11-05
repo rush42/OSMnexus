@@ -171,7 +171,7 @@ fn tag_index_stmts(table: &str, emits_id: bool) -> [String; 2] {
         } else {
             // Without the `id` column, `(osm_type, osm_id)` is the row's identity — and it really is
             // unique there, since only a side-splitting topic emits several rows per `osm_id`, which
-            // `IdType::None` refuses to coexist with (see `TopicRunner::load`).
+            // `IdType::None` refuses to coexist with (see `Topic::load`).
             format!("CREATE UNIQUE INDEX IF NOT EXISTS {table}_id_idx ON {table} (osm_type, osm_id)")
         },
         format!("CREATE INDEX IF NOT EXISTS {table}_osm_id_idx ON {table} (osm_id)"),

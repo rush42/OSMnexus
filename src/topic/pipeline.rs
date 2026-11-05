@@ -6,7 +6,7 @@ use crate::categorize::categories::{categorize, categorize_linear};
 use crate::lang::filter::eval_filter;
 use crate::lang::producer::ExtractCtx;
 use crate::categorize::transform::{run_transform_steps, TransformStep};
-use crate::topic::compiled::CompiledTopic;
+use crate::topic::Topic;
 use crate::topic::spec::{Field, IdType};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::osm::types::WayMeta;
@@ -48,7 +48,7 @@ fn eval_fields(
 
 /// The base object's annotations, shared rather than rebuilt per element.
 ///
-/// `{"_side": "self"}` only for a kind that actually side-splits (`TopicRunner::stamps_side`), so
+/// `{"_side": "self"}` only for a kind that actually side-splits (`Topic::stamps_side`), so
 /// that such a topic's rows uniformly carry the key and a consumer can read it without a coalesce.
 /// For every other kind it's empty: stamping a constant `"self"` on every row of a topic that never
 /// splits stored 22 bytes/row of nothing (9.5 GB on a 434M-row import) and cloned a one-entry map
@@ -111,8 +111,28 @@ impl std::fmt::Write for IdBuf {
     }
 }
 
+/// Run a topic's pipeline for one element of `kind`: a no-op for a kind the topic doesn't handle,
+/// otherwise `build_topic_rows`, which applies `kind`'s own transform pipeline (if any),
+/// `exclude_condition`, side-split, categorize/extract into tag rows against the kind's category
+/// set. `raw_tags` are the element's untouched tags — `build_topic_rows` only clones them if it
+/// actually needs to mutate a copy (an excluded element, or one with no transform pipeline, never
+/// pays for it).
+pub fn process<'a>(
+    topic: &Topic,
+    kind: ElementKind,
+    osm_id: i64,
+    raw_tags: &'a RawTags<'a>,
+    meta: &WayMeta,
+    parents: &[(i64, crate::topic::inherit::ExportedFields)],
+) -> Vec<TopicRow> {
+    if !topic.has_kind(kind) {
+        return Vec::new();
+    }
+    build_topic_rows(topic, kind, osm_id, raw_tags, meta, parents)
+}
+
 pub fn build_topic_rows<'a>(
-    runner: &CompiledTopic,
+    runner: &Topic,
     kind: ElementKind,
     osm_id: i64,
     raw_tags: &'a RawTags<'a>,
@@ -222,7 +242,7 @@ pub fn build_topic_rows<'a>(
         eval_fields(producers, &ectx, &mut produced, &mut extra_annotations);
         if runner.pass_through_remaining_tags {
             // `"producers": true` or a `null` `passthrough_tags` entry (see
-            // `TopicRunner::pass_through_remaining_tags`'s own doc) — every raw tag `eval_fields`
+            // `Topic::pass_through_remaining_tags`'s own doc) — every raw tag `eval_fields`
             // above didn't already produce a value for, verbatim. `producers: true` means `producers`
             // was empty to begin with, so this ends up filling every key in that case.
             //

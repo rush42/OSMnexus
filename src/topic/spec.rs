@@ -31,14 +31,14 @@ pub struct TopicSpec {
     /// Sugar for a batch of `"<tag>": true` entries in `producers` (verbatim extract of the
     /// identically-named tag — see `resolve_producer_entry`) pulled out into their own list, so a
     /// topic with many untouched passthrough tags doesn't have to sprinkle `true` throughout its
-    /// `producers` map. Folded into `producers` at load time (`TopicRunner::load`); a tag named here
+    /// `producers` map. Folded into `producers` at load time (`Topic::load`); a tag named here
     /// that's also an explicit `producers` key is a load-time error rather than a silent shadow.
     ///
     /// A bare `null` entry is a wildcard: "every tag not already claimed by `producers` or a named
     /// entry here" — for a topic that wants a handful of *derived* fields plus everything else
     /// verbatim, which `producers: true` (`ProducersSpec::All`) can't express (that's *only* every raw
     /// tag, no room for a computed field alongside). Unlike a named entry, a `null` here can't be
-    /// folded into a fixed `producers` key (there's no name to fold it under) — `TopicRunner::load`
+    /// folded into a fixed `producers` key (there's no name to fold it under) — `Topic::load`
     /// pulls it out into `pass_through_remaining_tags` instead, applied at row-build time after
     /// every named output has already run, so an explicit output always wins over the wildcard's
     /// raw value for the same key. Redundant (and a load-time error) alongside `producers: true`.
@@ -128,7 +128,7 @@ fn default_true() -> bool {
 
 /// `topic.json`'s `"accept_all"`: which element kinds skip category matching entirely (see
 /// `TopicSpec::accept_all`). A kind can have a category directory *or* be listed here, never both
-/// — `TopicRunner::load` rejects that combination.
+/// — `Topic::load` rejects that combination.
 #[derive(Debug, Deserialize, Default)]
 pub struct AcceptAllSpec {
     #[serde(default)]
@@ -152,7 +152,7 @@ impl AcceptAllSpec {
 /// `topic.json`'s top-level `producers`: normally a `{field: producer}` map, but a bare `true`/
 /// `false` is also accepted — `false` behaves exactly like `{}` (no fields; `into_fields_map`
 /// treats both the same way), while `true` means "pass every tag through verbatim" and is read via
-/// `is_all` into `TopicRunner::pass_through_remaining_tags` (same flag a `null` `passthrough_tags`
+/// `is_all` into `Topic::pass_through_remaining_tags` (same flag a `null` `passthrough_tags`
 /// entry sets — see that field's own doc) rather than expanding to one `Field` per possible tag.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -410,7 +410,7 @@ pub fn resolve_producer_entry(
 /// topic can define separate pipelines for its nodes, ways, and relations instead of one
 /// way-oriented pipeline for the whole topic. Optional per topic (see
 /// `topic::load::load_topic_transforms`) — a topic with no `transforms.json` simply has an empty
-/// pipeline for every kind (`TopicRunner::load` defaults to an empty `HashMap`).
+/// pipeline for every kind (`Topic::load` defaults to an empty `HashMap`).
 #[derive(Debug, Deserialize, Default)]
 pub struct TransformsSpec {
     #[serde(default)]
@@ -445,7 +445,7 @@ impl KindTransformsSpec {
 
 impl TransformsSpec {
     /// Build the ready-to-run per-kind pipelines, keyed by `ElementKind` — only kinds with a
-    /// non-empty pipeline get an entry, so `TopicRunner::pipelines.get(&kind)` naturally falls
+    /// non-empty pipeline get an entry, so `Topic::pipelines.get(&kind)` naturally falls
     /// back to "no transforms" for the rest.
     pub fn into_pipelines(self) -> HashMap<crate::lang::tags::ElementKind, Vec<TransformStep>> {
         use crate::lang::tags::ElementKind;

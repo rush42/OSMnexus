@@ -50,7 +50,7 @@ pub enum TagSet {
 /// The `ParentOrObj` equivalent for `p` — see `Producer::Parent`'s doc for why this is built here
 /// rather than existing as its own variant. Used by `ProducerJson::ParentOrObj`'s `parent_or_obj`
 /// JSON sugar, `topic::spec`'s sanitizer-shorthand `from: parent_or_obj`, and Rust-side synthesis
-/// (`topic::runner`) that composes already-resolved producers — all three build/compose plain
+/// (`topic::model`) that composes already-resolved producers — all three build/compose plain
 /// `Producer` values now, no separate as-parsed tier. Its two rules are tried in priority order
 /// like any other `Match`.
 pub fn parent_or_obj(p: Producer) -> Producer {

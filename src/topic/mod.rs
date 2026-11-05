@@ -8,21 +8,19 @@
 //!   (`TopicSpec`/`TransformsSpec`/`Field`/...).
 //! - `load`: reading a topic's categories/macros/sanitizers/transforms off disk, following the
 //!   `topics/<name>/...` directory convention.
-//! - `runner`: `TopicRunner`, the fully loaded, ready-to-run topic — load-time orchestration
+//! - `runner`: `Topic`, the fully loaded, ready-to-run topic — load-time orchestration
 //!   (`load`/`load_all`) plus a thin per-element dispatch (`process`).
 //! - `pipeline`: the actual per-element runtime pipeline (transform pipeline → `exclude_condition`
-//!   → side-split → categorize → field evaluation), which `TopicRunner::process` delegates to.
+//!   → side-split → categorize → field evaluation), which `Topic::process` delegates to.
 //!
 //! Geometry (row builders, primitives, relation resolution) lives in the top-level `geom` module,
 //! not here — it's topic-independent, so it's kept out of the topic-loading/running engine.
 
-pub mod compiled;
 pub mod inherit;
 pub mod load;
+pub mod model;
 pub mod pipeline;
-pub mod runner;
 pub mod schema;
 pub mod spec;
 
-pub use compiled::CompiledTopic;
-pub use runner::TopicRunner;
+pub use model::Topic;

@@ -5,12 +5,12 @@
 //!
 //! Usage: `tree_json <config-dir> <topic-name> <mode> <selector> [order-idx]`, e.g. `tree_json
 //! configs tilda/bikelanes deriver list` or `tree_json configs tilda/bikelanes deriver surface`.
-//! `<topic-name>` is the same string `CompiledTopic::load` takes — `<config-dir>/topics/<topic-name>/`.
+//! `<topic-name>` is the same string `Topic::load` takes — `<config-dir>/topics/<topic-name>/`.
 //! `<mode>` is `deriver` (per-field output producer trees), `category` (one category's own
 //! condition + what it excludes, picked from its kind's priority order), `decision-tree` (the
 //! *compiled* discrimination net that actually prunes the runtime walk), or `sanitizer` (one named
 //! sanitizer's own mapping/replace/builtin chain, shared+topic-local merged the same way
-//! `CompiledTopic::load` resolves `sanitize:` references — see `load_topic_sanitizers`). `<selector>`
+//! `Topic::load` resolves `sanitize:` references — see `load_topic_sanitizers`). `<selector>`
 //! is either `list` — cheap, no graphs built, just the available field/kind/sanitizer names for the
 //! picker — or one of those names. For `deriver`/`decision-tree`/`sanitizer`, a name alone builds
 //! that field's/kind's/sanitizer's graph. `category` has a third level: a kind name alone (no
@@ -27,7 +27,7 @@ use serde::Serialize;
 use osmnexus::tree::{self, category_condition_tree, decision_tree, producer_tree, sanitizer_tree, TreeGraph};
 use osmnexus::lang::producer::Producer;
 use osmnexus::topic::load::load_topic_sanitizers;
-use osmnexus::topic::CompiledTopic;
+use osmnexus::topic::Topic;
 
 #[derive(Serialize)]
 struct Variant {
@@ -60,8 +60,8 @@ fn main() -> Result<()> {
 
     osmnexus::paths::set_config_root(config_dir);
 
-    // `sanitizer` mode never needs a fully-loaded `CompiledTopic` — `load_topic_sanitizers` is the
-    // same shared+topic-local merge `CompiledTopic::load` itself does internally (see its own doc),
+    // `sanitizer` mode never needs a fully-loaded `Topic` — `load_topic_sanitizers` is the
+    // same shared+topic-local merge `Topic::load` itself does internally (see its own doc),
     // called here directly instead of paying for the whole topic's categories/producers/transforms
     // to be compiled just to read back the one map it doesn't otherwise expose.
     if mode == "sanitizer" {
@@ -88,7 +88,7 @@ fn main() -> Result<()> {
     // decision-tree request. Every other mode/selector, including the decision-tree view's own
     // field-name `list`, never looks at `cats.tree`, so there's no reason to pay for it.
     let build_tree = mode == "decision-tree" && selector != "list";
-    let runner = CompiledTopic::load(&topic_name, if build_tree { 64 } else { 0 })
+    let runner = Topic::load(&topic_name, if build_tree { 64 } else { 0 })
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     match mode.as_str() {

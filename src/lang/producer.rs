@@ -160,7 +160,7 @@ pub enum Producer {
         /// `assume_match_is_final: false` — see its own doc for why `Producer::Match` needs that
         /// mode, not `categorize`'s), or `None` for a rule table too small to be worth it. Always
         /// starts `None` at parse time — no JSON shape ever sets it — and is filled in by a
-        /// post-load compile pass (`topic::runner::compile_producer_trees`) once every rule's
+        /// post-load compile pass (`topic::model::compile_producer_trees`) once every rule's
         /// `when`/`value` is fully macro/sanitizer-resolved. `match_rules` uses it when present,
         /// falls back to a plain linear scan otherwise; same answers either way (see
         /// `producer_tree_matches_linear`).
@@ -212,7 +212,7 @@ impl Producer {
     /// `Match::tree`'s own doc) and stash it in `tree`. Recurses into every rule's `value` and into
     /// `Parent`'s inner producer first — a large `Match` can be nested arbitrarily deep (e.g. a rule
     /// whose own value is a further `Match`). Call once per topic load
-    /// (`topic::runner::TopicRunner::load`), after every macro/sanitizer/shared-producer reference is
+    /// (`topic::model::Topic::load`), after every macro/sanitizer/shared-producer reference is
     /// already resolved — a `Rule`'s `when`/`value` built straight from resolved JSON needs nothing
     /// further before this can run.
     pub fn compile_trees(&mut self, max_depth: usize) {

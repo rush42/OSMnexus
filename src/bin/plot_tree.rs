@@ -6,7 +6,7 @@
 //! file.
 //!
 //! Usage: `plot_tree <topic-name> [-o <out-dir>]`, e.g. `plot_tree tilda/bikelanes -o tree_out`.
-//! `<topic-name>` is the same string `CompiledTopic::load` takes — `<config_root>/<topic-name>/`.
+//! `<topic-name>` is the same string `Topic::load` takes — `<config_root>/<topic-name>/`.
 //!
 //! One `.dot` file is written per output field per *distinct* resolved producer (topic default,
 //! plus each category whose effective producer for that field differs) — categories sharing the
@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use osmnexus::lang::extract::Extract;
 use osmnexus::lang::producer::Producer;
 use osmnexus::lang::sanitize::Sanitizer;
-use osmnexus::topic::CompiledTopic;
+use osmnexus::topic::Topic;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -39,7 +39,7 @@ fn main() -> Result<()> {
     // tree — neither is ever read here (this binary only plots producer/sanitizer trees from their
     // raw `rules`/chain data, never `CategoriesFile::tree`; see `tree.rs`'s `Producer::Match` arm,
     // which explicitly ignores its compiled `tree` field), so there's nothing to lose skipping it.
-    let runner = CompiledTopic::load(&topic_name, 0)
+    let runner = Topic::load(&topic_name, 0)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     // field -> repr(producer) -> (one instance, labels of who produces it this way)
