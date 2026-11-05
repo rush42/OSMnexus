@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Core = the future `osmnexus-lang` crate.
-core=(crates/osmnexus-lang/src)
+core=(crates/osmnexus-lang/src crates/osmnexus-codegen/src)
 
 # Shell modules the core must not import, plus I/O and global-state markers.
 forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|config_dir|main|topic::(pipeline|inherit)|paths)\b|std::fs\b|fs::read|\bread_dir\(|OnceLock|static [A-Z_]+: (Atomic|OnceLock|Mutex|RwLock)'

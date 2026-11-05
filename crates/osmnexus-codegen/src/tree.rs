@@ -8,12 +8,12 @@ use serde::Serialize;
 
 use serde_json::{Map, Value};
 
-use crate::categorize::categories::{CategoriesFile, OrderedNode};
-use crate::decision_tree::DecisionTree;
-use crate::lang::extract::Extract;
-use crate::lang::filter::Filter;
-use crate::lang::producer::Producer;
-use crate::lang::sanitize::{ReplaceAt, Sanitizer};
+use osmnexus_lang::categorize::categories::{CategoriesFile, OrderedNode};
+use osmnexus_lang::decision_tree::DecisionTree;
+use osmnexus_lang::lang::extract::Extract;
+use osmnexus_lang::lang::filter::Filter;
+use osmnexus_lang::lang::producer::Producer;
+use osmnexus_lang::lang::sanitize::{ReplaceAt, Sanitizer};
 
 #[derive(Serialize)]
 pub struct TreeNode {

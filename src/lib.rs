@@ -4,6 +4,8 @@
 //! users keep working.
 
 pub use osmnexus_lang::{categorize, decision_tree, lang, units, value_sets};
+pub use osmnexus_codegen as codegen;
+pub use osmnexus_codegen::tree;
 
 pub mod config;
 pub mod db;
@@ -15,4 +17,3 @@ pub mod config_dir;
 pub mod paths;
 pub mod processing;
 pub mod topic;
-pub mod tree;

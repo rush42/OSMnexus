@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["crates/osmnexus-lang"]
+members = ["crates/osmnexus-lang", "crates/osmnexus-codegen"]
 
 [dependencies]
 osmnexus-lang = { path = "crates/osmnexus-lang" }
+osmnexus-codegen = { path = "crates/osmnexus-codegen" }
 osmpbf = "0.3"
 rayon = "1"
 tokio = { version = "1", features = ["full"] }
@@ -38,6 +39,7 @@ parquet = { version = "53", features = ["arrow"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
+insta = "1"
 
 [profile.release]
 lto = "thin"
