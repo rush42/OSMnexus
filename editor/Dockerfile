@@ -7,6 +7,7 @@ FROM rust:1-bookworm AS rust-builder
 WORKDIR /repo
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY crates ./crates
 COPY benches ./benches
 RUN cargo build --release --bin osmnexus --bin tree_json
 

@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::db::pool::build_pool;
 use crate::db::schema;
 use crate::db::topic_edges;
-use crate::topic::TopicRunner;
+use crate::topic::Topic;
 
 /// `tag_tables` is `(table name, whether it emits the `id` column)` — see `TopicSpec::id_type`.
 ///
@@ -52,7 +52,7 @@ pub async fn finalize(
     tag_tables: &[(&str, bool)],
     geom_tables: &[String],
     emit_graph: bool,
-    runners: &[TopicRunner],
+    runners: &[Topic],
 ) -> anyhow::Result<()> {
     if cfg.create_index {
         info!("Creating indexes...");

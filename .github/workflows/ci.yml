@@ -48,14 +48,14 @@ jobs:
       - name: Check module boundaries
         run: scripts/check_boundaries.sh
       - name: Check all targets
-        run: cargo check --all-targets --all-features --locked
+        run: cargo check --workspace --all-targets --all-features --locked
 
       # `--no-default-features` (no arrow/parquet tree) is a documented supported configuration, so
       # it needs a gate or it rots. Not run with `-D warnings`: dropping the parquet feature
       # currently leaves 5 dead-code warnings in geometry helpers that only that backend uses.
       - name: Check minimal build
-        run: cargo check --no-default-features --locked
+        run: cargo check --workspace --no-default-features --locked
 
       # Default features, which is what actually ships — `parquet` is default-on.
       - name: Test
-        run: cargo test --locked
+        run: cargo test --workspace --locked

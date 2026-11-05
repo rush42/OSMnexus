@@ -1,6 +1,6 @@
 //! Alternate element source for the live editor: instead of decoding a PBF file, classify elements
 //! from their tags alone, read as CSV from stdin — **no geometry, ever**. Feeds the exact same
-//! `TopicRunner::process`/`TableWriters::route_tag` machinery the PBF path uses (see `main.rs`) for
+//! `Topic::process`/`TableWriters::route_tag` machinery the PBF path uses (see `main.rs`) for
 //! tag classification; unlike the PBF path (and unlike this module's previous incarnation,
 //! `live_source.rs`), it never touches `route_way` or any geometry table, so `--source csv` only
 //! ever makes sense with `--output csv` (enforced in `main.rs`) — there's nothing to build a
@@ -32,7 +32,7 @@ use tracing::info;
 
 use crate::osm::types::{ElementKind, RawTags};
 use crate::osm::types::WayMeta;
-use crate::topic::TopicRunner;
+use crate::topic::Topic;
 
 /// One element as read back off stdin: its id, kind, and tags (already flattened by the caller's
 /// selection query) — see this module's own doc for the CSV schema.
@@ -71,7 +71,7 @@ fn read_elements<R: std::io::Read>(r: R) -> anyhow::Result<Vec<RawElement>> {
 /// Run the live-editor topic set (`runners`) over every element read from stdin, routing tag rows
 /// into `writers` exactly like the PBF path's select phase does — minus everything geometry-related
 /// (node resolution, way/edge materialization) since there is none here; see this module's own doc.
-pub async fn run(runners: Arc<Vec<TopicRunner>>, writers: Arc<crate::output::sinks::TableWriters>) -> anyhow::Result<usize> {
+pub async fn run(runners: Arc<Vec<Topic>>, writers: Arc<crate::output::sinks::TableWriters>) -> anyhow::Result<usize> {
     let t0 = std::time::Instant::now();
     let elements = tokio::task::spawn_blocking(|| read_elements(std::io::stdin().lock()))
         .await
@@ -92,7 +92,7 @@ pub async fn run(runners: Arc<Vec<TopicRunner>>, writers: Arc<crate::output::sin
             }
 
             let topic_rows: Vec<Vec<crate::output::rows::TopicRow>> =
-                runners.iter().map(|r| r.process(element.kind, element.osm_id, &tags, &no_meta, &[])).collect();
+                runners.iter().map(|r| crate::topic::pipeline::process(r, element.kind, element.osm_id, &tags, &no_meta, &[])).collect();
             writers.route_tag(topic_rows);
         }
     })

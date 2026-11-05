@@ -109,7 +109,7 @@ pub struct Config {
 
     /// Shape of the per-topic `{table}_edge` pgRouting table, for topics that declare
     /// `"geometry": { "way": ["graph"] }` in their `topic.json` (see
-    /// `TopicRunner::wants_way_graph`) — built as a post-processing SQL step after the shared edge
+    /// `Topic::wants_way_graph`) — built as a post-processing SQL step after the shared edge
     /// table is loaded (and indexed, if `--create-index` is set). `pgrouting` emits only the
     /// routing columns; `all` additionally joins in the topic's own tag columns
     /// (`produced`/`annotations`/`meta`). Postgres output only; ignored by topics that don't

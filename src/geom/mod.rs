@@ -11,7 +11,7 @@
 //!   coordinates. Resolving those coordinates isn't here — it rides along in `osm::reader`'s own
 //!   Pass A/B decode as a side channel (`Callbacks::extra_way_ids`/`build_extra_geom`), so relation
 //!   geometry costs no second PBF scan.
-//! - `plan`: `GeometryPlan`, precomputed once from `&[TopicRunner]` — which topics want which
+//! - `plan`: `GeometryPlan`, precomputed once from `&[Topic]` — which topics want which
 //!   shape, in one place instead of scattered `Vec<usize>` locals.
 //! - `materialize`: given a resolved element + `GeometryPlan`, decide which shapes are wanted and
 //!   build all their rows in one call — the actual "materialize" half of the select/materialize

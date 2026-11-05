@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Architecture fitness function (see `boundaries_plan.md`, step 8): the functional core must not
-# depend on the imperative shell. Fails if a core module imports a shell module, touches the
-# filesystem, or holds process-global state — except for the explicitly listed, known leaks that
-# later steps remove. Shrink ALLOWED as those steps land; never grow it.
+# Architecture fitness function (see `boundaries_plan.md`, step 8): the functional core
+# (`crates/osmnexus-lang`) must stay pure. Cargo already makes importing the shell impossible
+# (the shell depends on the core, not the other way round); this additionally fails if the core
+# touches the filesystem or holds process-global state, except for the listed exceptions. Shrink
+# ALLOWED over time; never grow it without a reason next to the entry.
 #
 # Usage: scripts/check_boundaries.sh   (exit 0 = clean)
 
@@ -11,41 +12,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Core = the future `osmnexus-lang` crate.
-core=(
-    src/lang
-    src/categorize
-    src/decision_tree
-    src/topic/spec.rs
-    src/topic/load.rs
-    src/topic/compiled.rs
-    src/topic/schema.rs
-    src/value_sets.rs
-    src/units.rs
-    src/traffic.rs
-)
+core=(crates/osmnexus-lang/src crates/osmnexus-codegen/src)
 
 # Shell modules the core must not import, plus I/O and global-state markers.
-forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|main|topic::(runner|pipeline|inherit)|paths)\b|std::fs\b|fs::read|read_dir|OnceLock|static [A-Z_]+: (Atomic|OnceLock|Mutex|RwLock)'
+forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|config_dir|main|topic::(pipeline|inherit)|paths)\b|std::fs\b|fs::read|\bread_dir\(|OnceLock|static [A-Z_]+: (Atomic|OnceLock|Mutex|RwLock)'
 
-# Known leaks, as "file:pattern" (grep -E on the matching line). Each names the step that removes it.
+# Known exceptions, as "file:pattern" (grep -E on the matching line), each with its reason.
 ALLOWED=(
-    # step 6: config root + file reads move to the shell (ConfigSources / CompileEnv)
-    'src/topic/load.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/topic/compiled.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/categorize/linter.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/categorize/transform.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/decision_tree/optimal.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/value_sets.rs:OnceLock|std::fs|fs::read|crate::paths'
-    'src/units.rs:OnceLock|std::fs|fs::read|crate::paths'
-    'src/traffic.rs:static LEFT_HAND_TRAFFIC'
-    # the empty-tags probe runs the real pipeline at compile time; revisit when the pipeline crate
-    # exists (move the probe there, or move build_topic_rows into the core)
-    'src/topic/compiled.rs:crate::topic::pipeline'
-    'src/topic/compiled.rs:crate::osm::types'
     # an immutable empty map constant, not config state (no input flows into it)
-    'src/lang/producer.rs:OnceLock'
-    # `#[cfg(test)]` helpers that load real configs
-    'src/decision_tree/tests.rs:.'
+    'crates/osmnexus-lang/src/lang/producer.rs:OnceLock'
+    # `#[cfg(test)]` code: tests read real configs from the repository
+    'crates/osmnexus-lang/src/test_support.rs:.'
+    'crates/osmnexus-lang/src/decision_tree/optimal.rs:.'
 )
 
 violations=0
