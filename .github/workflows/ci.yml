@@ -45,6 +45,8 @@ jobs:
       # Covers what `cargo test` alone does not: benches and examples. Both broke during the output
       # rework and only `--all-targets` caught it. `--all-features` also compiles the `dhat` feature,
       # whose global allocator is binary-only and so never affects the tests below.
+      - name: Check module boundaries
+        run: scripts/check_boundaries.sh
       - name: Check all targets
         run: cargo check --all-targets --all-features --locked
 

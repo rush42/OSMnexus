@@ -9,7 +9,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::kleene::{decide_value, decide_wildcard, keep_for, simplify, K};
 use super::walkers::{collect_atom_candidates, collect_branch_keys, collect_eq_values};
 use super::{BranchKey, DecisionTree, HAS_PARENT_KEY, SIDE_KEY};
-use crate::categorize::linter::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
+use crate::lang::expr::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
 use crate::lang::filter::Filter;
 
 /// Stop branching once a candidate set shrinks to this size — below this, the eval cost of a leaf

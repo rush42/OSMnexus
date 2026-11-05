@@ -6,9 +6,10 @@ use crate::topic::load::{
 use crate::categorize::categories::{categorize, categorize_linear, CategoriesFile, OrderedNode};
 use crate::lang::filter::Filter;
 use crate::lang::producer::ExtractCtx;
-use crate::categorize::linter::{filter_to_expr, to_nnf, topic_category_dirs, Expr, Literal, Predicate};
+use crate::categorize::linter::topic_category_dirs;
+use crate::lang::expr::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
 use serde_json::{Map, Value};
-use crate::osm::types::RawTags;
+use crate::lang::tags::RawTags;
 
 /// Positive Eq (plain-tag) atoms across every order-node condition → tag → observed values.
 fn referenced_eq(cats: &CategoriesFile) -> BTreeMap<String, BTreeSet<String>> {
@@ -54,7 +55,7 @@ fn tree_matches_linear() {
           .expect("parse resolved macros");
       for (kind, mut cats) in load_topic_categories(&dir, &resolved_macros, &macros, &sanitizers).expect("load categories") {
         let topic = format!("{topic}/{}", kind.subdir());
-        cats.build_order(crate::config::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
+        cats.build_order(crate::decision_tree::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
 
         let refs = referenced_eq(&cats);
         let hw_vals: Vec<Option<String>> = {

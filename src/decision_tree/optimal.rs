@@ -22,7 +22,7 @@ use super::build::{
     Candidate, LEAF_MAX,
 };
 use super::{BranchKey, DecisionTree};
-use crate::categorize::linter::Predicate;
+use crate::lang::expr::Predicate;
 use crate::lang::filter::Filter;
 
 /// `(worst_leaf_size, node_count)`, compared lexicographically — minimize the worst leaf first
@@ -158,7 +158,7 @@ fn greedy_vs_optimal_on_real_configs() {
         ("public_transport/producers.json:road", "configs/public_transport/producers.json"),
     ] {
         let conditions = load_road_rule_conditions(path);
-        compare(label, &conditions, crate::config::DEFAULT_TREE_MAX_DEPTH);
+        compare(label, &conditions, crate::decision_tree::DEFAULT_TREE_MAX_DEPTH);
     }
 
     for (label, path, field) in [
@@ -166,7 +166,7 @@ fn greedy_vs_optimal_on_real_configs() {
         ("bikelanes/producers.json:smoothness", "configs/tilda/bikelanes/producers.json", "smoothness"),
     ] {
         let conditions = load_match_rule_conditions(path, field);
-        compare(label, &conditions, crate::config::DEFAULT_TREE_MAX_DEPTH);
+        compare(label, &conditions, crate::decision_tree::DEFAULT_TREE_MAX_DEPTH);
     }
 }
 

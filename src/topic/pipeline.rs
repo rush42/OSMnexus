@@ -6,7 +6,7 @@ use crate::categorize::categories::{categorize, categorize_linear};
 use crate::lang::filter::eval_filter;
 use crate::lang::producer::ExtractCtx;
 use crate::categorize::transform::{run_transform_steps, TransformStep};
-use crate::topic::runner::TopicRunner;
+use crate::topic::compiled::CompiledTopic;
 use crate::topic::spec::{Field, IdType};
 use crate::osm::types::{ElementKind, RawTags};
 use crate::osm::types::WayMeta;
@@ -112,7 +112,7 @@ impl std::fmt::Write for IdBuf {
 }
 
 pub fn build_topic_rows<'a>(
-    runner: &TopicRunner,
+    runner: &CompiledTopic,
     kind: ElementKind,
     osm_id: i64,
     raw_tags: &'a RawTags<'a>,

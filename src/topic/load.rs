@@ -27,8 +27,8 @@ use serde_json::{Map, Value};
 use crate::categorize::categories::CategoriesFile;
 use crate::lang::filter::Filter;
 use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer};
-use crate::parser::parse_sanitize_chain;
-use crate::osm::types::ElementKind;
+use crate::lang::json::parse_sanitize_chain;
+use crate::lang::tags::ElementKind;
 use crate::topic::spec::TransformsSpec;
 
 /// Shallow merge, more-specific-scope-wins: every key in `over` overwrites the same key in

@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
 use crate::lang::producer::Producer;
-use crate::parser::TagSet;
+use crate::lang::json::TagSet;
 use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer, StrOrVec};
 use crate::categorize::transform::{CloneStep, DirectedFrom, InputTransform, TransformStep};
 
@@ -140,11 +140,11 @@ pub struct AcceptAllSpec {
 }
 
 impl AcceptAllSpec {
-    pub fn get(&self, kind: crate::osm::types::ElementKind) -> bool {
+    pub fn get(&self, kind: crate::lang::tags::ElementKind) -> bool {
         match kind {
-            crate::osm::types::ElementKind::Node => self.node,
-            crate::osm::types::ElementKind::Way => self.way,
-            crate::osm::types::ElementKind::Relation => self.relation,
+            crate::lang::tags::ElementKind::Node => self.node,
+            crate::lang::tags::ElementKind::Way => self.way,
+            crate::lang::tags::ElementKind::Relation => self.relation,
         }
     }
 }
@@ -382,7 +382,7 @@ pub fn resolve_producer_entry(
         match r.from {
             TagSet::Obj => extract,
             TagSet::Parent => Producer::Parent(Box::new(extract)),
-            TagSet::ParentOrObj => crate::parser::parent_or_obj(extract),
+            TagSet::ParentOrObj => crate::lang::json::parent_or_obj(extract),
         }
     } else {
         match value {
@@ -447,8 +447,8 @@ impl TransformsSpec {
     /// Build the ready-to-run per-kind pipelines, keyed by `ElementKind` — only kinds with a
     /// non-empty pipeline get an entry, so `TopicRunner::pipelines.get(&kind)` naturally falls
     /// back to "no transforms" for the rest.
-    pub fn into_pipelines(self) -> HashMap<crate::osm::types::ElementKind, Vec<TransformStep>> {
-        use crate::osm::types::ElementKind;
+    pub fn into_pipelines(self) -> HashMap<crate::lang::tags::ElementKind, Vec<TransformStep>> {
+        use crate::lang::tags::ElementKind;
         [(ElementKind::Node, self.node), (ElementKind::Way, self.way), (ElementKind::Relation, self.relation)]
             .into_iter()
             .filter(|(_, spec)| !spec.0.is_empty())
@@ -546,7 +546,7 @@ impl<'de> Deserialize<'de> for TransformSpec {
                 key: String,
                 #[serde(default)]
                 from: DirectedFrom,
-                #[serde(default, deserialize_with = "crate::parser::deserialize_sanitize_chain")]
+                #[serde(default, deserialize_with = "crate::lang::json::deserialize_sanitize_chain")]
                 sanitize: Vec<Sanitizer>,
             }
             #[derive(Deserialize)]
@@ -580,7 +580,7 @@ impl TransformSpec {
         match self {
             TransformSpec::TagRule { output, source } => InputTransform::TagRule { output, source },
             TransformSpec::DirectedExtract { output, key, from, sanitize } =>
-                InputTransform::DirectedExtract { output, key, from, sanitize },
+                InputTransform::directed_extract(output, key, from, sanitize, crate::traffic::is_left_hand_traffic()),
             TransformSpec::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } =>
                 InputTransform::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under },
             TransformSpec::Unnest { prefix, infix, meta, guard, record_infix_as } => InputTransform::UnnestTags {
@@ -655,7 +655,7 @@ impl PipelineStepSpec {
 #[cfg(test)]
 mod transforms_spec_tests {
     use super::*;
-    use crate::osm::types::RawTags;
+    use crate::lang::tags::RawTags;
 
     fn tags<'a>(pairs: &[(&'a str, &'a str)]) -> RawTags<'a> {
         pairs.iter().map(|&(k, v)| (std::borrow::Cow::Borrowed(k), std::borrow::Cow::Borrowed(v))).collect()

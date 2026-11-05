@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use serde_json::Value;
 
 use super::{num_matches, BranchKey, DecisionTree, HAS_PARENT_KEY, INFIX_KEY, PREFIX_KEY, SIDE_KEY};
-use crate::categorize::linter::{Expr, Literal, Predicate};
+use crate::lang::expr::{Expr, Literal, Predicate};
 use crate::lang::extract::Extract;
 use crate::lang::filter::read_num;
 use crate::lang::producer::ExtractCtx;
@@ -37,7 +37,7 @@ fn parent_scoped(extract: &Extract) -> bool {
 /// Read `extract` against `ctx`, transparently switching to `ctx.parent_tags` for a parent-scoped
 /// `Extract` (see `parent_scoped`). The leaf-time evaluator (`eval_expr`) works from the flattened
 /// `Expr` — no `Filter::Parent` wrapper survives into it, just every key renamed `parent_<key>` by
-/// `categorize::linter::prefix_expr_tags` — so this is what replays `Filter::Parent`'s own
+/// `lang::expr::prefix_expr_tags` — so this is what replays `Filter::Parent`'s own
 /// `None => false, Some(parent_tags) => eval(parent, parent_tags)` semantics for a single predicate.
 fn read_extract<'a>(extract: &Extract, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
     if parent_scoped(extract) {

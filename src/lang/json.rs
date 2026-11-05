@@ -337,7 +337,10 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::And { and } => Filter::And { and },
             FilterJson::Or { or } => Filter::Or { or },
             FilterJson::Not { not } => Filter::Not { not },
-            FilterJson::InSet { extract, in_set } => Filter::InSet { extract, in_set },
+            FilterJson::InSet { extract, in_set } => Filter::InSet {
+                extract,
+                in_set: crate::value_sets::ValueSetRef::resolve(in_set).map_err(serde::de::Error::custom)?,
+            },
             FilterJson::In { extract, r#in } => Filter::In { extract, r#in },
             FilterJson::Contains { extract, contains, case_insensitive } =>
                 Filter::Contains { extract, contains, case_insensitive },

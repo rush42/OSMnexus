@@ -459,3 +459,11 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   The `node: point` declaration was deliberately left out of the shipped fix until this is settled —
   it is cheap to check (compare `{table}_node_geom.bin` row count against the tag file's `N` rows)
   and should be checked before anyone adds it.
+
+- **Make the lang / codegen / pipeline boundaries explicit and split them into crates — IN
+  PROGRESS on `refactor/boundaries`.** Full plan, principles, measured leaks and step order in
+  `boundaries_plan.md`. In short: `lang` becomes a pure functional core (no file I/O, no
+  process-global state, config references resolved into the IR at compile time), codegen consumes
+  only the compiled IR + inferred `OutputSchema`, and the pipeline is the imperative shell. Every
+  step is behaviour-preserving, checked by `scripts/regress.sh` (identical output) and
+  `scripts/bench_sweep.sh` / `--features dhat` (no time, scaling or allocation regression).

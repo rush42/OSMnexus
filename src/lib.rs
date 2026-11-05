@@ -7,7 +7,6 @@ pub mod lang;
 pub mod csv_source;
 pub mod osm;
 pub mod output;
-mod parser;
 pub mod paths;
 pub mod processing;
 pub mod topic;
