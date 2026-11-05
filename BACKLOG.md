@@ -337,3 +337,23 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   process, or switch it to `docker compose`-based too) plus the ingest command run at build/start
   time, or retiring it in favor of `editor/docker-compose.yml` everywhere. Low urgency — it's a
   convenience demo image, not the primary dev path.
+
+- **Split into `osmnexus-lang` / `osmnexus-codegen` / pipeline crates — NOT STARTED.** The module
+  layout already follows a compiler shape (frontend: `lang`, `topic::{spec,load}`, `categorize`,
+  `value_sets`; optimisation pass: `decision_tree`; codegen: `tree.rs`, `bin/{export_ts_types,
+  plot_dag,dag_json}`; runtime: `osm`, `parser`, `geom`, `processing`, `topic::{runner,pipeline}`,
+  `output`, `db`). Cargo forbids cyclic crate deps, so these leaks need cutting first:
+  - **Move the boolean expression IR out of the linter.** `decision_tree` imports
+    `Expr`/`Predicate`/`Literal` from `categorize::linter`; that's core IR, belongs in `lang`.
+  - **Split `topic`.** `spec`/`load` (macro merging, `inline_sanitize_refs`) are frontend and are
+    used by `categorize::linter`/`decision_tree`; `runner`/`pipeline` are runtime.
+  - **Codegen must not load via `TopicRunner`.** `export_ts_types`/`dag_json` should use a pure
+    loader that returns IR only.
+  - **`lang` → `osm::types::RawTags`.** `lang` holds both AST and eval; either move a small
+    tag-access trait into the lang crate or split AST+typing from eval.
+  - **Delete or rebuild `crates/topic-engine-core`.** Its `#[path]` includes point at modules that
+    no longer exist (`src/classify`, `src/engine`, `src/lint`, `src/transform`, …) and it isn't in
+    a workspace.
+  - **Follow-ups once split:** codegen backends as a trait (TS types, TileJSON 3.0.0, JSON Schema,
+    Mermaid docs, DOT); DAG output as JGF with structured node `metadata` instead of pre-rendered
+    `label`s; TS types for the DAG JSON via `ts-rs`/`specta`; `insta` snapshot tests per backend.
