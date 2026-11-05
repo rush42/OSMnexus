@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Architecture fitness function (see `boundaries_plan.md`, step 8): the functional core must not
-# depend on the imperative shell. Fails if a core module imports a shell module, touches the
-# filesystem, or holds process-global state — except for the explicitly listed, known leaks that
-# later steps remove. Shrink ALLOWED as those steps land; never grow it.
+# Architecture fitness function (see `boundaries_plan.md`, step 8): the functional core
+# (`crates/osmnexus-lang`) must stay pure. Cargo already makes importing the shell impossible
+# (the shell depends on the core, not the other way round); this additionally fails if the core
+# touches the filesystem or holds process-global state, except for the listed exceptions. Shrink
+# ALLOWED over time; never grow it without a reason next to the entry.
 #
 # Usage: scripts/check_boundaries.sh   (exit 0 = clean)
 
@@ -11,18 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Core = the future `osmnexus-lang` crate.
-core=(
-    src/lang
-    src/categorize
-    src/decision_tree
-    src/topic/spec.rs
-    src/topic/load.rs
-    src/topic/model.rs
-    src/topic/schema.rs
-    src/topic/sources.rs
-    src/value_sets.rs
-    src/units.rs
-)
+core=(crates/osmnexus-lang/src)
 
 # Shell modules the core must not import, plus I/O and global-state markers.
 forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|config_dir|main|topic::(pipeline|inherit)|paths)\b|std::fs\b|fs::read|\bread_dir\(|OnceLock|static [A-Z_]+: (Atomic|OnceLock|Mutex|RwLock)'
@@ -30,13 +20,10 @@ forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|confi
 # Known exceptions, as "file:pattern" (grep -E on the matching line), each with its reason.
 ALLOWED=(
     # an immutable empty map constant, not config state (no input flows into it)
-    'src/lang/producer.rs:OnceLock'
-    # `#[cfg(test)]` code: tests read the default config through the shell
-    'src/decision_tree/tests.rs:.'
-    'src/decision_tree/optimal.rs:.'
-    'src/topic/model.rs:crate::config_dir::Config::default_root'
-    'src/categorize/linter.rs:crate::config_dir::Config::default_root'
-    'src/categorize/transform.rs:crate::config_dir::Config::default_root'
+    'crates/osmnexus-lang/src/lang/producer.rs:OnceLock'
+    # `#[cfg(test)]` code: tests read real configs from the repository
+    'crates/osmnexus-lang/src/test_support.rs:.'
+    'crates/osmnexus-lang/src/decision_tree/optimal.rs:.'
 )
 
 violations=0

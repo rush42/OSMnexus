@@ -3,7 +3,11 @@ name = "osmnexus"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["crates/osmnexus-lang"]
+
 [dependencies]
+osmnexus-lang = { path = "crates/osmnexus-lang" }
 osmpbf = "0.3"
 rayon = "1"
 tokio = { version = "1", features = ["full"] }

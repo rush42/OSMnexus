@@ -1593,6 +1593,7 @@ dependencies = [
  "geo",
  "hex",
  "memmap2 0.9.11",
+ "osmnexus-lang",
  "osmpbf",
  "parquet",
  "rayon",
@@ -1605,6 +1606,17 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "osmnexus-lang"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rayon",
+ "rustc-hash 2.1.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

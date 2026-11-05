@@ -214,7 +214,7 @@ mod tests {
     /// false positive (add an `excludes` entry to resolve), never misses a structural overlap.
     #[test]
     fn categories_are_disjoint() {
-        let cfg = crate::config_dir::Config::default_root().expect("reading config");
+        let cfg = crate::test_support::Config::default_root().expect("reading config");
         let per_topic = find_all_topic_overlaps(&cfg.sources, &cfg.env).expect("loading topic categories");
         let mut msg = String::new();
         for (topic, overlaps) in &per_topic {

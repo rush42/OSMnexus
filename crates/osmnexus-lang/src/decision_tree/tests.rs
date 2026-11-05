@@ -42,7 +42,7 @@ fn collect_pairs(e: &Expr, out: &mut BTreeMap<String, BTreeSet<String>>) {
 /// object we can construct — the tree only drops provably-false nodes.
 #[test]
 fn tree_matches_linear() {
-    let cfg = crate::config_dir::Config::default_root().expect("reading config");
+    let cfg = crate::test_support::Config::default_root().expect("reading config");
     let src = &cfg.sources;
     crate::lang::env::with_env(&cfg.env, || {
     for topic in topic_category_dirs(src) {

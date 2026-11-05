@@ -107,7 +107,7 @@ impl AtomicJson {
         }
     }
 
-    pub(crate) fn into_value(self) -> Value {
+    pub fn into_value(self) -> Value {
         match self {
             AtomicJson::Str(s) => Value::String(s),
             AtomicJson::Bool(b) => Value::Bool(b),
@@ -221,10 +221,10 @@ impl serde::Serialize for Sanitizer {
 /// One literal rewrite for a `replace` step.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct ReplaceRule {
-    pub(crate) from: String,
-    pub(crate) to: String,
+    pub from: String,
+    pub to: String,
     #[serde(default)]
-    pub(crate) at: ReplaceAt,
+    pub at: ReplaceAt,
 }
 
 /// Where a `ReplaceRule` matches: anywhere (replace every occurrence) or only as a prefix

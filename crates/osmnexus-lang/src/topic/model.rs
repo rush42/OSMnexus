@@ -545,7 +545,7 @@ mod producer_tree_tests {
     /// `Producer::Match` needs `assume_match_is_final: false`).
     #[test]
     fn producer_tree_matches_linear() {
-        let cfg = crate::config_dir::Config::default_root().expect("reading config");
+        let cfg = crate::test_support::Config::default_root().expect("reading config");
         let runner = cfg.load("roads", crate::decision_tree::DEFAULT_TREE_MAX_DEPTH)
             .expect("load roads topic");
 

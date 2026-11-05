@@ -491,7 +491,7 @@ mod unnest_tags_tests {
             guard: Some(Filter::InSet {
                 extract: crate::lang::extract::Extract::Value { key: "highway".to_owned(), sanitize: vec![] },
                 in_set: {
-                    let cfg = crate::config_dir::Config::default_root().unwrap();
+                    let cfg = crate::test_support::Config::default_root().unwrap();
                     crate::lang::env::with_env(&cfg.env, || crate::value_sets::ValueSetRef::resolve("sidepath_highway")).unwrap()
                 },
             }),

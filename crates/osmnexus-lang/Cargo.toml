@@ -1,0 +1,14 @@
+[package]
+name = "osmnexus-lang"
+version = "0.1.0"
+edition = "2021"
+description = "The osmnexus topic language: parse, resolve and compile topic declarations, and evaluate them against an element's tags. Pure: no file I/O, no global state."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+anyhow = "1"
+rustc-hash = "2"
+# Load-time only: decision-tree construction and producer-tree compilation run in parallel.
+# Evaluation itself is single-threaded; the shell decides how to parallelise over elements.
+rayon = "1"
