@@ -16,7 +16,7 @@ use crate::lang::extract::first_present;
 use crate::lang::filter::{eval, Filter};
 use crate::lang::producer::{ExtractCtx, Producer};
 use crate::lang::sanitize::{eval_sanitize, Sanitizer};
-use crate::osm::types::RawTags;
+use crate::lang::tags::RawTags;
 
 // ── InputTransform ──────────────────────────────────────────────────────────────
 

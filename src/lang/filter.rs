@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::lang::extract::Extract;
 use crate::lang::producer::ExtractCtx;
-use crate::osm::types::RawTags;
+use crate::lang::tags::RawTags;
 use crate::value_sets::value_set;
 
 /// Filter expression. On-disk shapes are enumerated by `parser::FilterJson` (untagged, tried in

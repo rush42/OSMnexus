@@ -53,9 +53,19 @@ mod optimal;
 
 use rustc_hash::FxHashMap;
 
-use crate::categorize::linter::{Expr, NumOp, Predicate};
+use crate::lang::expr::{Expr, NumOp, Predicate};
 use crate::lang::extract::Extract;
 use crate::lang::producer::ExtractCtx;
+
+/// Default max branch depth of the `categorize` discrimination net (`decision_tree`).
+/// The single source of truth for this default — `config` re-exports it as the
+/// `--tree-max-depth` CLI default, so the dependency points from the shell into the core.
+/// Tried raising this to 10 for `bikelanes/way`'s benefit (smaller worst-case/avg leaf size: 14→12,
+/// 5.07→3.59) but measured ~30% *slower* end-to-end on a real Brandenburg run (Pass A 18.0s→24.8s,
+/// total 26.8s→35.0s, cache-warm-controlled) — building the larger tree (554→970 nodes) apparently
+/// costs more than the smaller leaves save at this data volume. Reverted; leaf-size metrics don't
+/// predict real throughput here, so don't raise this without benchmarking end-to-end again.
+pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
 
 pub use build::build;
 pub(crate) use runtime::resolve_first;

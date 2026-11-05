@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::lang::producer::ExtractCtx;
 use crate::lang::sanitize::{eval_sanitize, Sanitizer};
-use crate::osm::types::RawTags;
+use crate::lang::tags::RawTags;
 
 /// A candidate-key read spec plus its `sanitize` chain. `key`/`keys` accept `Producer`'s
 /// historical field names as canonical with `Filter`'s historical names (`tag`/`first_tag`) as
@@ -39,14 +39,14 @@ pub enum Extract {
     Candidates {
         #[serde(alias = "first_tag")]
         keys: Vec<String>,
-        #[serde(default, deserialize_with = "crate::parser::deserialize_sanitize_chain")]
+        #[serde(default, deserialize_with = "crate::lang::json::deserialize_sanitize_chain")]
         sanitize: Vec<Sanitizer>,
     },
     /// A single, specific key.
     Value {
         #[serde(alias = "tag")]
         key: String,
-        #[serde(default, deserialize_with = "crate::parser::deserialize_sanitize_chain")]
+        #[serde(default, deserialize_with = "crate::lang::json::deserialize_sanitize_chain")]
         sanitize: Vec<Sanitizer>,
     },
 }
@@ -99,7 +99,7 @@ impl Extract {
     }
 
     /// This extract with every key prefixed (e.g. `"parent_"`), same `sanitize` chain — the
-    /// `Filter::Parent` case: `categorize::linter::prefix_expr_tags` models a parent-scoped
+    /// `Filter::Parent` case: `lang::expr::prefix_expr_tags` models a parent-scoped
     /// condition as an ordinary predicate on a synthetic `parent_<key>` name.
     pub fn prefixed(&self, prefix: &str) -> Extract {
         match self {

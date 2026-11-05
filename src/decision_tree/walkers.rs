@@ -2,7 +2,7 @@
 //! walks — no build-time folding (that's `kleene`) and no per-object evaluation (that's `runtime`).
 
 use super::{BranchKey, HAS_PARENT_KEY, INFIX_KEY, PREFIX_KEY, SIDE_KEY};
-use crate::categorize::linter::{Expr, Literal, Predicate};
+use crate::lang::expr::{Expr, Literal, Predicate};
 use crate::lang::extract::Extract;
 
 /// Invoke `f` on every literal `e` contains, recursing through `Not`/`And`/`Or` — the one place the

@@ -513,7 +513,7 @@ mod producer_tree_tests {
 
     use serde_json::Map;
 
-    use crate::categorize::linter::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
+    use crate::lang::expr::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
     use crate::lang::producer::{ExtractCtx, Producer, Rule};
     use crate::osm::types::RawTags;
     use crate::topic::TopicRunner;
@@ -557,7 +557,7 @@ mod producer_tree_tests {
     /// `Producer::Match` needs `assume_match_is_final: false`).
     #[test]
     fn producer_tree_matches_linear() {
-        let runner = TopicRunner::load("roads", crate::config::DEFAULT_TREE_MAX_DEPTH)
+        let runner = TopicRunner::load("roads", crate::decision_tree::DEFAULT_TREE_MAX_DEPTH)
             .expect("load roads topic");
 
         let mut checked_any_field = false;

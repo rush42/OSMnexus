@@ -20,7 +20,7 @@ use serde_json::{Map, Value};
 use crate::decision_tree::{self, DecisionTree};
 use crate::lang::extract::Extract;
 use crate::lang::filter::{self, Filter};
-use crate::osm::types::RawTags;
+use crate::lang::tags::RawTags;
 
 /// One classifier rule — `when`/`value` are already-resolved `Filter`/`Producer` (no macro or
 /// named-sanitizer reference can reach here; see their own docs). What `match_rules` evaluates.
@@ -274,7 +274,7 @@ impl Producer {
 mod classify_bool_tests {
     use super::*;
     use crate::lang::filter::Filter;
-    use crate::parser::TagSet;
+    use crate::lang::json::TagSet;
 
     fn ctx<'a>(obj: &'a RawTags<'a>, parent: Option<&'a RawTags<'a>>) -> ExtractCtx<'a> {
         ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations() }
@@ -295,7 +295,7 @@ mod classify_bool_tests {
         match from {
             TagSet::Obj => base,
             TagSet::Parent => Producer::Parent(Box::new(base)),
-            TagSet::ParentOrObj => crate::parser::parent_or_obj(base),
+            TagSet::ParentOrObj => crate::lang::json::parent_or_obj(base),
         }
     }
 

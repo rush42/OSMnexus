@@ -4,7 +4,7 @@
 //! along one branch path without needing a concrete object.
 
 use super::{num_matches, BranchKey, HAS_PARENT_KEY, INFIX_KEY, PREFIX_KEY, SIDE_KEY};
-use crate::categorize::linter::{Expr, Literal, Predicate};
+use crate::lang::expr::{Expr, Literal, Predicate};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum K {

@@ -21,8 +21,16 @@
 //!   `Filter`'s tag/num predicates and `Producer::Extract` — factored out so it's written once.
 //! - `sanitize`: the atomic `&str -> atomic` chain machinery (`Sanitizer`/`Step`) underneath an
 //!   `Extract`'s `sanitize:` field, plus the one built-in, `parse_length`.
+//! - `expr`: the boolean expression IR (`Expr`/`Literal`/`Predicate`) a `Filter` lowers to, and
+//!   its normal forms — shared by the category linter and the `decision_tree` compiler.
+//! - `tags`: the tag-level input types (`RawTags`, `ElementKind`) everything here evaluates
+//!   against; `osm::types` re-exports them for the reader side.
+//! - `json`: crate-private JSON sugar for the types above (formerly `parser.rs`).
 
+pub mod expr;
 pub mod extract;
 pub mod filter;
+pub(crate) mod json;
 pub mod producer;
 pub mod sanitize;
+pub mod tags;
