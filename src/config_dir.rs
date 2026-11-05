@@ -32,13 +32,24 @@ impl Config {
         Self::read(crate::paths::config_root(), false)
     }
 
+    /// Load every topic, ready to run (see `prepare`).
     pub fn load_all(&self, tree_max_depth: usize) -> anyhow::Result<Vec<Topic>> {
-        Topic::load_all(&self.sources, &self.env, tree_max_depth)
+        Ok(Topic::load_all(&self.sources, &self.env, tree_max_depth)?.into_iter().map(prepare).collect())
     }
 
+    /// Load one topic, ready to run (see `prepare`).
     pub fn load(&self, name: &str, tree_max_depth: usize) -> anyhow::Result<Topic> {
-        Topic::load(&self.sources, &self.env, name, tree_max_depth)
+        Topic::load(&self.sources, &self.env, name, tree_max_depth).map(prepare)
     }
+}
+
+/// The run-side finishing step for a freshly loaded topic: probe which kinds can skip untagged
+/// elements (`topic::pipeline::probe_skip_untagged`). A topic used without this is still correct,
+/// just never skips.
+pub fn prepare(mut topic: Topic) -> Topic {
+    let kinds = crate::topic::pipeline::probe_skip_untagged(&topic);
+    topic.set_skip_untagged(kinds);
+    topic
 }
 
 /// Walk `root` recursively: every directory is registered (so an empty kind folder still counts

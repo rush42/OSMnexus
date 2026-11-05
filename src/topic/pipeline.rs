@@ -111,6 +111,19 @@ impl std::fmt::Write for IdBuf {
     }
 }
 
+/// Run the finished pipeline against an empty tag map, once per handled kind, and collect the
+/// kinds that produced nothing — the input to `Topic::set_skip_untagged` (see `Topic`'s
+/// `skip_untagged` doc for why this is a probe of the real matcher rather than an analysis of
+/// filter shapes). Lives on the run side because it executes the pipeline.
+pub fn probe_skip_untagged(topic: &Topic) -> std::collections::HashSet<ElementKind> {
+    let empty_tags = RawTags::default();
+    let no_meta = WayMeta { timestamp: None, user: None, changeset: None };
+    [ElementKind::Node, ElementKind::Way, ElementKind::Relation]
+        .into_iter()
+        .filter(|&kind| topic.has_kind(kind) && build_topic_rows(topic, kind, 0, &empty_tags, &no_meta, &[]).is_empty())
+        .collect()
+}
+
 /// Run a topic's pipeline for one element of `kind`: a no-op for a kind the topic doesn't handle,
 /// otherwise `build_topic_rows`, which applies `kind`'s own transform pipeline (if any),
 /// `exclude_condition`, side-split, categorize/extract into tag rows against the kind's category
@@ -337,4 +350,91 @@ pub fn build_topic_rows<'a>(
     }
 
     rows
+}
+
+#[cfg(test)]
+mod skip_untagged_tests {
+    use crate::osm::types::ElementKind;
+    use crate::topic::Topic;
+
+    /// Whichever topic comes first in the default config — these tests mutate a loaded topic to
+    /// construct the case they need rather than relying on a particular config's contents.
+    fn any_runner() -> Topic {
+        let runners = crate::config_dir::Config::default_root().and_then(|c| c.load_all(6)).expect("loading topics");
+        runners.into_iter().next().expect("config has at least one topic")
+    }
+
+    /// `accept_all` keeps every element regardless of tags, so untagged nodes must never be
+    /// skipped — the case where the optimization has to switch itself off or rows would be lost.
+    ///
+    /// `exclude_condition` is cleared to isolate `accept_all`: a topic whose exclude filter already
+    /// rejects untagged elements is *still* legitimately skippable, so leaving a real config's
+    /// filter in place would test the wrong thing (and did, on first writing).
+    #[test]
+    fn accept_all_never_skips_untagged() {
+        let mut r = any_runner();
+        r.categories.remove(&ElementKind::Node);
+        r.exclude_condition = None;
+        r.accept_all.insert(ElementKind::Node);
+        assert!(
+            !crate::topic::pipeline::probe_skip_untagged(&r).contains(&ElementKind::Node),
+            "an accept_all node topic matches untagged nodes, so skipping them would drop rows"
+        );
+    }
+
+    /// The converse of the above, and the case that motivates probing rather than analysing filter
+    /// shapes: an `exclude_condition` satisfied by an untagged element makes the kind skippable even
+    /// though `accept_all` would otherwise keep everything.
+    #[test]
+    fn exclude_condition_can_make_accept_all_skippable() {
+        let mut r = any_runner();
+        r.categories.remove(&ElementKind::Node);
+        r.accept_all.insert(ElementKind::Node);
+        // `railway` absent → true for an untagged element, so everything untagged is excluded.
+        r.exclude_condition = Some(
+            serde_json::from_value(serde_json::json!({ "not": { "tag": "railway", "exists": true } }))
+                .expect("filter parses"),
+        );
+        assert!(crate::topic::pipeline::probe_skip_untagged(&r).contains(&ElementKind::Node));
+    }
+
+    /// A kind the topic doesn't handle at all is trivially skippable, and `skips_untagged` reports
+    /// that without the probe having to say anything about it.
+    #[test]
+    fn unhandled_kind_is_skippable() {
+        let mut r = any_runner();
+        r.categories.remove(&ElementKind::Node);
+        r.accept_all.remove(&ElementKind::Node);
+        assert!(r.skips_untagged(ElementKind::Node));
+    }
+
+    /// The probe must agree with the real pipeline for every kind the loaded config handles: if it
+    /// says a kind is skippable, `build_topic_rows` on empty tags really does yield nothing. This is
+    /// what makes the optimization safe against a filter that's satisfied by a tag's *absence*
+    /// (a negated existence check), which no filter-shape heuristic would catch reliably.
+    #[test]
+    fn probe_matches_real_pipeline_on_empty_tags() {
+        use crate::osm::types::{RawTags, WayMeta};
+        for r in crate::config_dir::Config::default_root().and_then(|c| c.load_all(6)).expect("loading topics") {
+            for kind in [ElementKind::Node, ElementKind::Way, ElementKind::Relation] {
+                if !r.has_kind(kind) {
+                    continue;
+                }
+                let rows = crate::topic::pipeline::build_topic_rows(
+                    &r,
+                    kind,
+                    0,
+                    &RawTags::default(),
+                    &WayMeta { timestamp: None, user: None, changeset: None },
+                    &[],
+                );
+                assert_eq!(
+                    r.skips_untagged(kind),
+                    rows.is_empty(),
+                    "[{}] {kind:?}: skips_untagged disagrees with the pipeline on empty tags",
+                    r.table()
+                );
+            }
+        }
+    }
 }

@@ -29,10 +29,6 @@ forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|confi
 
 # Known exceptions, as "file:pattern" (grep -E on the matching line), each with its reason.
 ALLOWED=(
-    # the empty-tags probe runs the real pipeline at compile time; revisit when the pipeline crate
-    # exists (move the probe there, or move build_topic_rows into the core)
-    'src/topic/model.rs:crate::topic::pipeline'
-    'src/topic/model.rs:crate::osm::types'
     # an immutable empty map constant, not config state (no input flows into it)
     'src/lang/producer.rs:OnceLock'
     # `#[cfg(test)]` code: tests read the default config through the shell
