@@ -16,10 +16,13 @@
 //! Geometry (row builders, primitives, relation resolution) lives in the top-level `geom` module,
 //! not here — it's topic-independent, so it's kept out of the topic-loading/running engine.
 
+pub mod compiled;
 pub mod inherit;
 pub mod load;
 pub mod pipeline;
 pub mod runner;
+pub mod schema;
 pub mod spec;
 
+pub use compiled::CompiledTopic;
 pub use runner::TopicRunner;
