@@ -490,7 +490,10 @@ mod unnest_tags_tests {
             prefix: "cycleway", infix: "", meta_prefixes: &[],
             guard: Some(Filter::InSet {
                 extract: crate::lang::extract::Extract::Value { key: "highway".to_owned(), sanitize: vec![] },
-                in_set: crate::value_sets::ValueSetRef::resolve("sidepath_highway").unwrap(),
+                in_set: {
+                    let cfg = crate::config_dir::Config::default_root().unwrap();
+                    crate::lang::env::with_env(&cfg.env, || crate::value_sets::ValueSetRef::resolve("sidepath_highway")).unwrap()
+                },
             }),
             record_infix_as: None,
         };
@@ -589,7 +592,7 @@ mod directed_extract_tests {
     fn handedness_flips_suffix() {
         let parent = tags(&[("cycleway:lanes:backward", "lane")]);
 
-        // Right-hand traffic (global default in tests): Side::Right reads `:forward`, not
+        // Right-hand traffic: Side::Right reads `:forward`, not
         // `:backward` — so this should NOT match.
         let mut obj = RawTags::default();
         let mut right = side_annotations("right");
@@ -600,6 +603,18 @@ mod directed_extract_tests {
         let mut left = side_annotations("left");
         step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut left, Some(&parent));
         assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("lane"));
+
+        // Left-hand traffic swaps it: Side::Right now reads `:backward`, Side::Left `:forward`.
+        let lht = |key: &str| InputTransform::directed_extract(key.to_owned(), key.to_owned(), DirectedFrom::Parent, Vec::new(), true);
+        let mut obj = RawTags::default();
+        let mut right = side_annotations("right");
+        lht("cycleway:lanes").apply(&mut obj, &mut right, Some(&parent));
+        assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("lane"));
+
+        let mut obj = RawTags::default();
+        let mut left = side_annotations("left");
+        lht("cycleway:lanes").apply(&mut obj, &mut left, Some(&parent));
+        assert!(!obj.contains_key("cycleway:lanes"));
     }
 }
 

@@ -21,6 +21,7 @@ pub mod load;
 pub mod model;
 pub mod pipeline;
 pub mod schema;
+pub mod sources;
 pub mod spec;
 
 pub use model::Topic;

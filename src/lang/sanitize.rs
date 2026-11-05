@@ -36,7 +36,7 @@ fn identity(raw: &str) -> Value {
 pub fn resolve_named_sanitizer(name: &str, sanitizers: &HashMap<String, Vec<Sanitizer>>) -> anyhow::Result<Vec<Sanitizer>> {
     match sanitizers.get(name) {
         Some(chain) => Ok(chain.clone()),
-        None => Builtin::from_name(name)
+        None => Builtin::from_name(name)?
             .map(|b| vec![Sanitizer::Builtin(b)])
             .with_context(|| format!("`{name}` is not a named sanitizer or a built-in")),
     }
@@ -154,31 +154,36 @@ pub enum Sanitizer {
 /// string can resolve to. A closed enum (not a `String`) so an unrecognized name is a load-time
 /// error (`resolve_named_sanitizer`, `parser`'s `Sanitizer` `Deserialize` impl) rather than a
 /// per-row runtime warn-and-drop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// A builtin carries whatever config data it needs, resolved at load time (`parse_length` its
+/// `"length"` unit table), so applying it never looks anything up by name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Builtin {
-    ParseLength,
+    ParseLength(crate::lang::env::UnitTable),
 }
 
 impl Builtin {
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
+    /// Resolve a builtin by name against the compile environment in scope. `Ok(None)` for a name
+    /// that isn't a builtin; `Err` if it is one but its config data is missing.
+    pub(crate) fn from_name(name: &str) -> anyhow::Result<Option<Self>> {
         match name {
-            "parse_length" => Some(Builtin::ParseLength),
-            _ => None,
+            "parse_length" => Ok(Some(Builtin::ParseLength(crate::lang::env::current()?.unit_table("length")?))),
+            _ => Ok(None),
         }
     }
 
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self {
-            Builtin::ParseLength => "parse_length",
+            Builtin::ParseLength(_) => "parse_length",
         }
     }
 
-    fn apply(self, raw: &str) -> Option<Value> {
+    fn apply(&self, raw: &str) -> Option<Value> {
         match self {
             // `parse_length` is the lone built-in: universal unit arithmetic, not a finite table.
             // Everything else (incl. the former `traffic_sign` country normalizer) lives in
             // sanitizers.json — as mapping/cases/filter/replace chains.
-            Builtin::ParseLength => parse_length(raw).map(|v| Value::Number(float_to_json(v))),
+            Builtin::ParseLength(units) => parse_length(raw, &units.0).map(|v| Value::Number(float_to_json(v))),
         }
     }
 }
@@ -284,7 +289,8 @@ fn float_to_json(v: f32) -> serde_json::Number {
 
 /// Converts OSM length strings to metres. Handles: "2.5", "2.5 m", "250 cm", "2500 mm", "8 ft",
 /// "8'6\"", … — the general `parse_compound_unit` algorithm over the `"length"` unit table
-/// (`<config_root>/units.json`); no unit-specific logic lives here.
-pub fn parse_length(raw: &str) -> Option<f32> {
-    crate::units::parse_compound_unit(raw, crate::units::unit_table("length"))
+/// (`<config_root>/units.json`, bound into `Builtin::ParseLength` at load time); no unit-specific
+/// logic lives here.
+pub fn parse_length(raw: &str, units: &[(String, f32)]) -> Option<f32> {
+    crate::units::parse_compound_unit(raw, units)
 }

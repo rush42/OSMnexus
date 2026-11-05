@@ -8,15 +8,15 @@ use std::time::Instant;
 use osmnexus::osm::reader::{stream_osm, Callbacks};
 use osmnexus::osm::types::{NodeData, RelData, WayData};
 use osmnexus::processing::{classify_node, classify_relation, classify_way};
-use osmnexus::topic::Topic;
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: bench_classify <path.osm.pbf>");
 
-    osmnexus::paths::set_config_root("configs/tilda");
+
     let t_init = Instant::now();
     let linear_classify = std::env::args().nth(2).as_deref() == Some("--linear-classify");
-    let runners = Topic::load_all(if linear_classify { 0 } else { 6 })?;
+    let config = osmnexus::config_dir::Config::read("configs/tilda", false)?;
+    let runners = config.load_all(if linear_classify { 0 } else { 6 })?;
     println!("init (Topic::load_all): {:.3}s", t_init.elapsed().as_secs_f64());
     let has_relations = runners.iter().any(|r| r.has_kind(osmnexus::osm::types::ElementKind::Relation));
     let has_nodes = runners.iter().any(|r| r.has_kind(osmnexus::osm::types::ElementKind::Node));

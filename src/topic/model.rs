@@ -19,7 +19,10 @@ use crate::topic::load::{
     load_topic_macros, load_topic_sanitizers, load_topic_transforms, merge, resolve_macros, resolve_refs,
 };
 use crate::topic::pipeline::build_topic_rows;
-use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, TopicSpec, TransformsSpec};
+use crate::topic::sources::{join, ConfigSources};
+use crate::lang::env::CompileEnv;
+use std::sync::Arc;
+use crate::topic::spec::{resolve_producer_entry, Field, GeometryShape, TopicSpec};
 use crate::osm::types::{ElementKind, RawTags, WayMeta};
 
 /// A fully loaded topic: everything derived from its config directory, and nothing that depends on
@@ -180,41 +183,34 @@ fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -
 }
 
 impl Topic {
-    /// Discover and load every topic under the active config directory. Only directories are
-    /// considered (the shared `macros.json`/`sanitizers.json`/`producers.json`/`value_sets.json`/
-    /// `units.json` files at the config root are skipped automatically), and any `_`-prefixed
-    /// directory is skipped too, as a general hidden-directory convention. Returned in sorted
-    /// name order for deterministic output.
-    pub fn load_all(tree_max_depth: usize) -> anyhow::Result<Vec<Self>> {
-        let topics_dir = crate::paths::config_root();
-        let mut names: Vec<String> = std::fs::read_dir(&topics_dir)
-            .with_context(|| format!("reading {}", topics_dir.display()))?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                if !entry.file_type().ok()?.is_dir() {
-                    return None;
-                }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                (!name.starts_with('_')).then_some(name)
-            })
-            .collect();
-        names.sort();
-        names.iter().map(|name| Self::load(name, tree_max_depth)).collect()
+    /// Discover and load every topic in `src`. Only directories are considered (the shared
+    /// `macros.json`/`sanitizers.json`/`producers.json`/`value_sets.json`/`units.json` files at the
+    /// config root are skipped automatically), and any `_`-prefixed directory is skipped too, as a
+    /// general hidden-directory convention. Returned in sorted name order for deterministic output.
+    pub fn load_all(src: &ConfigSources, env: &Arc<CompileEnv>, tree_max_depth: usize) -> anyhow::Result<Vec<Self>> {
+        src.subdirs("")
+            .iter()
+            .filter(|name| !name.starts_with('_'))
+            .map(|name| Self::load(src, env, name, tree_max_depth))
+            .collect()
     }
 
-    /// Load a topic from its directory `<config_root>/<name>/`. `tree_max_depth == 0` skips
-    /// compiling a decision tree entirely (see `build_order`) and switches this topic's category
-    /// classification to the linear reference walk (`categorize_linear`) at runtime.
-    pub fn load(name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
-        let base = crate::paths::config_root().join(name);
-        let config_root = base.parent().expect("topics/<name> has a parent").to_path_buf();
+    /// Load the topic in directory `<name>/` of `src`. A pure function of `src` and `env`: no
+    /// filesystem access, no global state. `tree_max_depth == 0` skips compiling a decision tree
+    /// entirely (see `build_order`) and switches this topic's category classification to the
+    /// linear reference walk (`categorize_linear`) at runtime.
+    pub fn load(src: &ConfigSources, env: &Arc<CompileEnv>, name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
+        crate::lang::env::with_env(env, || Self::load_in_env(src, env, name, tree_max_depth))
+    }
+
+    fn load_in_env(src: &ConfigSources, env: &CompileEnv, name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
 
         // Named atomic transforms (`sanitize:` targets), shared+topic-local. A separate
         // registry/namespace from the producer library below — atomic chains and composite
         // producers are different *types* (`Sanitizer`/`Producer`), so there's no risk of a
         // name meaning two things at once. Loaded before macros, since a macro's own condition can
         // carry a `sanitize:` too.
-        let sanitizers = load_topic_sanitizers(&base, &config_root)?;
+        let sanitizers = load_topic_sanitizers(src, name)?;
 
         // Every macro this topic can reference: shared (config root's macros.json) plus the
         // topic's own macros.json, topic-local winning on name conflict — raw JSON, still possibly
@@ -222,8 +218,8 @@ impl Topic {
         // cycle-checked) and inlines any `sanitize:` reference too, producing a fully macro-free
         // JSON per name — what `inline_macro_refs`/`topic::load::resolve_refs` need to substitute
         // `{"macro": "<name>"}` sites everywhere else in this topic's JSON.
-        let shared_macros = load_shared_macros(&config_root).with_context(|| "loading shared macros.json")?;
-        let topic_macros = load_topic_macros(&base)?;
+        let shared_macros = load_shared_macros(src).with_context(|| "loading shared macros.json")?;
+        let topic_macros = load_topic_macros(src, name)?;
         let raw_macros = merge(&shared_macros, &topic_macros);
         let resolved_macros = resolve_macros(&raw_macros)
             .with_context(|| format!("resolving macros for topics/{name}"))?;
@@ -241,8 +237,8 @@ impl Topic {
         // `defaults`' values (still untyped `Value`s at this level) already carry no unresolved
         // reference either, letting `resolve_producers` below skip a further resolve pass.
         let raw_topic: Value = serde_json::from_str(
-            &std::fs::read_to_string(base.join("topic.json"))
-                .with_context(|| format!("reading topics/{name}/topic.json"))?,
+            src.read(&join(name, "topic.json"))
+                .with_context(|| format!("reading topics/{name}/topic.json: not found"))?,
         )
         .with_context(|| format!("parsing topics/{name}/topic.json"))?;
         let mut spec: TopicSpec = serde_json::from_value(
@@ -261,10 +257,9 @@ impl Topic {
         // `road` classifier) as raw JSON first, then macro/sanitizer-resolved the same way
         // `topic.json` is, before `Producer` deserialization ever runs — so `Producer` itself never
         // represents any of the three kinds of named reference.
-        let shared_producers = load_shared_producers(&config_root)?;
-        let producers_path = base.join("producers.json");
-        let producer_lib: HashMap<String, Producer> = if producers_path.exists() {
-            let raw: Value = serde_json::from_str(&std::fs::read_to_string(&producers_path)?)
+        let shared_producers = load_shared_producers(src)?;
+        let producer_lib: HashMap<String, Producer> = if let Some(raw) = src.read(&join(name, "producers.json")) {
+            let raw: Value = serde_json::from_str(raw)
                 .with_context(|| format!("parsing topics/{name}/producers.json"))?;
             let inlined = inline_shared_producers(raw, &shared_producers)
                 .with_context(|| format!("topics/{name}/producers.json: inlining shared producers"))?;
@@ -279,7 +274,7 @@ impl Topic {
         // Load per-kind category sets from topics/<name>/{node,way,relation}/, each already fully
         // macro/sanitizer-resolved by `load_topic_categories`, then compile the exclude relation
         // into a priority order + discrimination tree via `build_order`.
-        let categories_loaded = load_topic_categories(&base, &resolved_macros, &macros, &sanitizers)
+        let categories_loaded = load_topic_categories(src, name, &resolved_macros, &macros, &sanitizers)
             .with_context(|| format!("loading topics/{name}/ categories"))?;
         let mut categories: HashMap<ElementKind, CategoriesFile> = HashMap::new();
         for (kind, mut cats) in categories_loaded {
@@ -304,8 +299,8 @@ impl Topic {
         // `transforms.json`, if the topic has one, is the whole per-kind pipeline set (already
         // resolved by `load_topic_transforms`); a topic with none simply has no pipelines (see
         // `TransformsSpec`'s own doc).
-        let pipelines = load_topic_transforms(&base, &resolved_macros, &sanitizers)?
-            .map(TransformsSpec::into_pipelines)
+        let pipelines = load_topic_transforms(src, name, &resolved_macros, &sanitizers)?
+            .map(|t| t.into_pipelines(env.left_hand_traffic))
             .unwrap_or_default();
 
         // `true` here means "pass every tag through verbatim" (see `ProducersSpec`) — read before
@@ -517,7 +512,6 @@ mod producer_tree_tests {
     use crate::lang::expr::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
     use crate::lang::producer::{ExtractCtx, Producer, Rule};
     use crate::osm::types::RawTags;
-    use crate::topic::Topic;
 
     /// Positive `Eq` atoms in `e` → tag → observed values (mirrors
     /// `decision_tree::tests::collect_pairs`, duplicated here to avoid depending on that module's
@@ -558,7 +552,8 @@ mod producer_tree_tests {
     /// `Producer::Match` needs `assume_match_is_final: false`).
     #[test]
     fn producer_tree_matches_linear() {
-        let runner = Topic::load("roads", crate::decision_tree::DEFAULT_TREE_MAX_DEPTH)
+        let cfg = crate::config_dir::Config::default_root().expect("reading config");
+        let runner = cfg.load("roads", crate::decision_tree::DEFAULT_TREE_MAX_DEPTH)
             .expect("load roads topic");
 
         let mut checked_any_field = false;
@@ -636,12 +631,10 @@ mod skip_untagged_tests {
     use crate::osm::types::ElementKind;
     use crate::topic::Topic;
 
-    /// Whichever config the process-global root happens to point at — these tests mutate a loaded
-    /// runner rather than loading a specific config, because `paths::CONFIG_ROOT` is a `OnceLock`
-    /// (first caller wins) and the test binary runs every test in one process, so a test that set
-    /// its own root would silently get whichever config another test set first.
+    /// Whichever topic comes first in the default config — these tests mutate a loaded topic to
+    /// construct the case they need rather than relying on a particular config's contents.
     fn any_runner() -> Topic {
-        let runners = Topic::load_all(6).expect("loading topics");
+        let runners = crate::config_dir::Config::default_root().and_then(|c| c.load_all(6)).expect("loading topics");
         runners.into_iter().next().expect("config has at least one topic")
     }
 
@@ -696,7 +689,7 @@ mod skip_untagged_tests {
     #[test]
     fn probe_matches_real_pipeline_on_empty_tags() {
         use crate::osm::types::{RawTags, WayMeta};
-        for r in Topic::load_all(6).expect("loading topics") {
+        for r in crate::config_dir::Config::default_root().and_then(|c| c.load_all(6)).expect("loading topics") {
             for kind in [ElementKind::Node, ElementKind::Way, ElementKind::Relation] {
                 if !r.has_kind(kind) {
                     continue;

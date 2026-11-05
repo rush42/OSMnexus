@@ -1,13 +1,16 @@
 use anyhow::Result;
 
 use osmnexus::categorize::linter::find_all_topic_overlaps;
+use osmnexus::config_dir::Config;
 
 /// Lint: report category pairs that can match the same object without excluding each other
 /// (first-match order would then silently pick the winner). Runs across every topic. The same
 /// check is enforced by the `categories_are_disjoint` test; this binary is for ad-hoc inspection.
 fn main() -> Result<()> {
+    // Config root: `TILDA_CONFIG_DIR` or the default (see `paths::config_root`).
+    let cfg = Config::default_root()?;
     let mut found_any = false;
-    for (topic, overlaps) in find_all_topic_overlaps()? {
+    for (topic, overlaps) in find_all_topic_overlaps(&cfg.sources, &cfg.env)? {
         println!("── {topic} ──");
         if overlaps.is_empty() {
             println!("  No overlaps found.");

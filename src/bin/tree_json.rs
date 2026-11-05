@@ -27,7 +27,6 @@ use serde::Serialize;
 use osmnexus::tree::{self, category_condition_tree, decision_tree, producer_tree, sanitizer_tree, TreeGraph};
 use osmnexus::lang::producer::Producer;
 use osmnexus::topic::load::load_topic_sanitizers;
-use osmnexus::topic::Topic;
 
 #[derive(Serialize)]
 struct Variant {
@@ -58,16 +57,14 @@ fn main() -> Result<()> {
     let selector = args.next().context(usage)?;
     let order_idx: Option<usize> = args.next().map(|s| s.parse()).transpose().context("order-idx must be a number")?;
 
-    osmnexus::paths::set_config_root(config_dir);
+    let config = osmnexus::config_dir::Config::read(&config_dir, false)?;
 
     // `sanitizer` mode never needs a fully-loaded `Topic` — `load_topic_sanitizers` is the
     // same shared+topic-local merge `Topic::load` itself does internally (see its own doc),
     // called here directly instead of paying for the whole topic's categories/producers/transforms
     // to be compiled just to read back the one map it doesn't otherwise expose.
     if mode == "sanitizer" {
-        let base = osmnexus::paths::config_root().join(&topic_name);
-        let config_root = base.parent().expect("topics/<name> has a parent").to_path_buf();
-        let sanitizers = load_topic_sanitizers(&base, &config_root)
+        let sanitizers = osmnexus::lang::env::with_env(&config.env, || load_topic_sanitizers(&config.sources, &topic_name))
             .with_context(|| format!("loading sanitizers for topic '{topic_name}'"))?;
         if selector == "list" {
             let mut names: Vec<String> = sanitizers.keys().cloned().collect();
@@ -88,7 +85,7 @@ fn main() -> Result<()> {
     // decision-tree request. Every other mode/selector, including the decision-tree view's own
     // field-name `list`, never looks at `cats.tree`, so there's no reason to pay for it.
     let build_tree = mode == "decision-tree" && selector != "list";
-    let runner = Topic::load(&topic_name, if build_tree { 64 } else { 0 })
+    let runner = config.load(&topic_name, if build_tree { 64 } else { 0 })
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     match mode.as_str() {

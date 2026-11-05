@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::lang::env::CompileEnv;
+use crate::topic::sources::{join, ConfigSources};
 
 use crate::topic::load::{
     load_shared_macros, load_topic_categories, load_topic_macros, load_topic_sanitizers, resolve_macros,
@@ -158,36 +161,31 @@ pub fn find_overlaps(cats: &CategoriesFile) -> Vec<Overlap> {
     overlaps
 }
 
-/// Every topic directory holding at least one category kind subfolder, as `(topic name, topic dir)`,
-/// sorted by name (skips shared config-root files and any topic without categories). Used by
-/// lint + tests.
-pub fn topic_category_dirs() -> Vec<(String, PathBuf)> {
-    let topics = crate::paths::config_root();
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&topics).into_iter().flatten().flatten() {
-        let dir = entry.path();
-        let has_kind = ElementKind::ALL.iter().any(|k| dir.join(k.subdir()).is_dir());
-        if has_kind {
-            out.push((entry.file_name().to_string_lossy().into_owned(), dir));
-        }
-    }
-    out.sort();
-    out
+/// Every topic directory holding at least one category kind subfolder, by name, sorted (skips
+/// shared config-root files and any topic without categories). Used by lint + tests.
+pub fn topic_category_dirs(src: &ConfigSources) -> Vec<String> {
+    src.subdirs("")
+        .into_iter()
+        .filter(|topic| ElementKind::ALL.iter().any(|k| src.is_dir(&join(topic, k.subdir()))))
+        .collect()
 }
 
 /// Load every topic's per-kind categories, fully macro/sanitizer-resolved (the same
 /// `topic::load` pipeline `Topic::load` uses, minus the `producers`/`transforms.json`/
 /// `producers.json` machinery this lint has no use for), and collect overlaps per (topic, kind).
 /// Shared entry point.
-pub fn find_all_topic_overlaps() -> anyhow::Result<Vec<(String, Vec<Overlap>)>> {
+pub fn find_all_topic_overlaps(src: &ConfigSources, env: &Arc<CompileEnv>) -> anyhow::Result<Vec<(String, Vec<Overlap>)>> {
+    crate::lang::env::with_env(env, || find_all_topic_overlaps_in_env(src))
+}
+
+fn find_all_topic_overlaps_in_env(src: &ConfigSources) -> anyhow::Result<Vec<(String, Vec<Overlap>)>> {
     let mut out = Vec::new();
-    for (topic, dir) in topic_category_dirs() {
-        let config_root = dir.parent().expect("topics/<name> has parent");
-        let sanitizers = load_topic_sanitizers(&dir, config_root)
+    for topic in topic_category_dirs(src) {
+        let sanitizers = load_topic_sanitizers(src, &topic)
             .map_err(|e| anyhow::anyhow!("loading {topic} sanitizers: {e}"))?;
-        let shared_macros = load_shared_macros(config_root)
+        let shared_macros = load_shared_macros(src)
             .map_err(|e| anyhow::anyhow!("loading shared macros.json: {e}"))?;
-        let topic_macros = load_topic_macros(&dir)
+        let topic_macros = load_topic_macros(src, &topic)
             .map_err(|e| anyhow::anyhow!("loading {topic} macros: {e}"))?;
         let raw_macros = crate::topic::load::merge(&shared_macros, &topic_macros);
         let resolved_macros = resolve_macros(&raw_macros)
@@ -197,7 +195,7 @@ pub fn find_all_topic_overlaps() -> anyhow::Result<Vec<(String, Vec<Overlap>)>> 
             .collect::<anyhow::Result<_>>()
             .map_err(|e: anyhow::Error| anyhow::anyhow!("parsing {topic} resolved macros: {e}"))?;
 
-        let per_kind = load_topic_categories(&dir, &resolved_macros, &macros, &sanitizers)
+        let per_kind = load_topic_categories(src, &topic, &resolved_macros, &macros, &sanitizers)
             .map_err(|e| anyhow::anyhow!("loading {topic} categories: {e}"))?;
         for (kind, cats) in per_kind {
             let label = format!("{topic}/{}", kind.subdir());
@@ -216,7 +214,8 @@ mod tests {
     /// false positive (add an `excludes` entry to resolve), never misses a structural overlap.
     #[test]
     fn categories_are_disjoint() {
-        let per_topic = find_all_topic_overlaps().expect("loading topic categories");
+        let cfg = crate::config_dir::Config::default_root().expect("reading config");
+        let per_topic = find_all_topic_overlaps(&cfg.sources, &cfg.env).expect("loading topic categories");
         let mut msg = String::new();
         for (topic, overlaps) in &per_topic {
             for o in overlaps {

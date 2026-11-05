@@ -438,8 +438,8 @@ impl KindTransformsSpec {
     /// — the whole `transforms.json` document went through `topic::load::resolve_refs` before it
     /// was deserialized into `Self` — so this is pure reshaping into `InputTransform`/
     /// `TransformStep`, no macro/sanitizer lookup left to do.
-    pub fn into_pipeline(self) -> Vec<TransformStep> {
-        self.0.into_iter().map(PipelineStepSpec::into_transform_step).collect()
+    pub fn into_pipeline(self, left_hand_traffic: bool) -> Vec<TransformStep> {
+        self.0.into_iter().map(|s| s.into_transform_step(left_hand_traffic)).collect()
     }
 }
 
@@ -447,12 +447,12 @@ impl TransformsSpec {
     /// Build the ready-to-run per-kind pipelines, keyed by `ElementKind` — only kinds with a
     /// non-empty pipeline get an entry, so `Topic::pipelines.get(&kind)` naturally falls
     /// back to "no transforms" for the rest.
-    pub fn into_pipelines(self) -> HashMap<crate::lang::tags::ElementKind, Vec<TransformStep>> {
+    pub fn into_pipelines(self, left_hand_traffic: bool) -> HashMap<crate::lang::tags::ElementKind, Vec<TransformStep>> {
         use crate::lang::tags::ElementKind;
         [(ElementKind::Node, self.node), (ElementKind::Way, self.way), (ElementKind::Relation, self.relation)]
             .into_iter()
             .filter(|(_, spec)| !spec.0.is_empty())
-            .map(|(kind, spec)| (kind, spec.into_pipeline()))
+            .map(|(kind, spec)| (kind, spec.into_pipeline(left_hand_traffic)))
             .collect()
     }
 }
@@ -576,11 +576,11 @@ impl<'de> Deserialize<'de> for TransformSpec {
 }
 
 impl TransformSpec {
-    fn into_input_transform(self) -> InputTransform {
+    fn into_input_transform(self, left_hand_traffic: bool) -> InputTransform {
         match self {
             TransformSpec::TagRule { output, source } => InputTransform::TagRule { output, source },
             TransformSpec::DirectedExtract { output, key, from, sanitize } =>
-                InputTransform::directed_extract(output, key, from, sanitize, crate::traffic::is_left_hand_traffic()),
+                InputTransform::directed_extract(output, key, from, sanitize, left_hand_traffic),
             TransformSpec::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } =>
                 InputTransform::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under },
             TransformSpec::Unnest { prefix, infix, meta, guard, record_infix_as } => InputTransform::UnnestTags {
@@ -639,14 +639,14 @@ impl<'de> Deserialize<'de> for PipelineStepSpec {
 }
 
 impl PipelineStepSpec {
-    fn into_transform_step(self) -> TransformStep {
+    fn into_transform_step(self, left_hand_traffic: bool) -> TransformStep {
         match self {
-            PipelineStepSpec::Transform(t) => TransformStep::Transform(t.into_input_transform()),
+            PipelineStepSpec::Transform(t) => TransformStep::Transform(t.into_input_transform(left_hand_traffic)),
             PipelineStepSpec::Clone { when, annotate, id_suffix, steps } => TransformStep::Clone(CloneStep {
                 when,
                 annotate: annotate.into_iter().collect(),
                 id_suffix,
-                steps: steps.into_iter().map(TransformSpec::into_input_transform).collect(),
+                steps: steps.into_iter().map(|t| t.into_input_transform(left_hand_traffic)).collect(),
             }),
         }
     }
@@ -690,7 +690,7 @@ mod transforms_spec_tests {
         let spec: TransformsSpec = serde_json::from_str(json).expect("parse transforms.json");
         assert_eq!(spec.way.0.len(), 1);
 
-        let pipeline = spec.way.into_pipeline();
+        let pipeline = spec.way.into_pipeline(false);
         assert_eq!(pipeline.len(), 1);
 
         let mut way_tags = tags(&[("highway", "primary"), ("cycleway:left", "lane")]);

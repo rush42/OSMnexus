@@ -21,7 +21,6 @@ use anyhow::{Context, Result};
 use osmnexus::lang::extract::Extract;
 use osmnexus::lang::producer::Producer;
 use osmnexus::lang::sanitize::Sanitizer;
-use osmnexus::topic::Topic;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -39,7 +38,9 @@ fn main() -> Result<()> {
     // tree — neither is ever read here (this binary only plots producer/sanitizer trees from their
     // raw `rules`/chain data, never `CategoriesFile::tree`; see `tree.rs`'s `Producer::Match` arm,
     // which explicitly ignores its compiled `tree` field), so there's nothing to lose skipping it.
-    let runner = Topic::load(&topic_name, 0)
+    // Config root: `TILDA_CONFIG_DIR` or the default (see `paths::config_root`).
+    let config = osmnexus::config_dir::Config::default_root()?;
+    let runner = config.load(&topic_name, 0)
         .with_context(|| format!("loading topic '{topic_name}'"))?;
 
     // field -> repr(producer) -> (one instance, labels of who produces it this way)

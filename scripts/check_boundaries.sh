@@ -19,33 +19,28 @@ core=(
     src/topic/load.rs
     src/topic/model.rs
     src/topic/schema.rs
+    src/topic/sources.rs
     src/value_sets.rs
     src/units.rs
-    src/traffic.rs
 )
 
 # Shell modules the core must not import, plus I/O and global-state markers.
-forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|main|topic::(runner|pipeline|inherit)|paths)\b|std::fs\b|fs::read|read_dir|OnceLock|static [A-Z_]+: (Atomic|OnceLock|Mutex|RwLock)'
+forbidden='crate::(osm::reader|geom|output|db|processing|csv_source|config|config_dir|main|topic::(pipeline|inherit)|paths)\b|std::fs\b|fs::read|\bread_dir\(|OnceLock|static [A-Z_]+: (Atomic|OnceLock|Mutex|RwLock)'
 
-# Known leaks, as "file:pattern" (grep -E on the matching line). Each names the step that removes it.
+# Known exceptions, as "file:pattern" (grep -E on the matching line), each with its reason.
 ALLOWED=(
-    # step 6: config root + file reads move to the shell (ConfigSources / CompileEnv)
-    'src/topic/load.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/topic/model.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/categorize/linter.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/categorize/transform.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/decision_tree/optimal.rs:std::fs|fs::read|read_dir|crate::paths'
-    'src/value_sets.rs:OnceLock|std::fs|fs::read|crate::paths'
-    'src/units.rs:OnceLock|std::fs|fs::read|crate::paths'
-    'src/traffic.rs:static LEFT_HAND_TRAFFIC'
     # the empty-tags probe runs the real pipeline at compile time; revisit when the pipeline crate
     # exists (move the probe there, or move build_topic_rows into the core)
     'src/topic/model.rs:crate::topic::pipeline'
     'src/topic/model.rs:crate::osm::types'
     # an immutable empty map constant, not config state (no input flows into it)
     'src/lang/producer.rs:OnceLock'
-    # `#[cfg(test)]` helpers that load real configs
+    # `#[cfg(test)]` code: tests read the default config through the shell
     'src/decision_tree/tests.rs:.'
+    'src/decision_tree/optimal.rs:.'
+    'src/topic/model.rs:crate::config_dir::Config::default_root'
+    'src/categorize/linter.rs:crate::config_dir::Config::default_root'
+    'src/categorize/transform.rs:crate::config_dir::Config::default_root'
 )
 
 violations=0

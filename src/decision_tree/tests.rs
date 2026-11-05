@@ -42,18 +42,20 @@ fn collect_pairs(e: &Expr, out: &mut BTreeMap<String, BTreeSet<String>>) {
 /// object we can construct — the tree only drops provably-false nodes.
 #[test]
 fn tree_matches_linear() {
-    for (topic, dir) in topic_category_dirs() {
-      let config_root = dir.parent().unwrap();
-      let shared_macros = load_shared_macros(config_root).expect("shared macros");
-      let sanitizers = load_topic_sanitizers(&dir, config_root).expect("load sanitizers");
-      let topic_macros = load_topic_macros(&dir).expect("topic macros");
+    let cfg = crate::config_dir::Config::default_root().expect("reading config");
+    let src = &cfg.sources;
+    crate::lang::env::with_env(&cfg.env, || {
+    for topic in topic_category_dirs(src) {
+      let shared_macros = load_shared_macros(src).expect("shared macros");
+      let sanitizers = load_topic_sanitizers(src, &topic).expect("load sanitizers");
+      let topic_macros = load_topic_macros(src, &topic).expect("topic macros");
       let raw_macros = merge(&shared_macros, &topic_macros);
       let resolved_macros = resolve_macros(&raw_macros).expect("resolve macros");
       let macros: HashMap<String, Filter> = resolved_macros.iter()
           .map(|(k, v)| Ok((k.clone(), serde_json::from_value(crate::topic::load::inline_sanitize_refs(v.clone(), &sanitizers)?)?)))
           .collect::<anyhow::Result<_>>()
           .expect("parse resolved macros");
-      for (kind, mut cats) in load_topic_categories(&dir, &resolved_macros, &macros, &sanitizers).expect("load categories") {
+      for (kind, mut cats) in load_topic_categories(src, &topic, &resolved_macros, &macros, &sanitizers).expect("load categories") {
         let topic = format!("{topic}/{}", kind.subdir());
         cats.build_order(crate::decision_tree::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
 
@@ -117,4 +119,5 @@ fn tree_matches_linear() {
         assert!(checked > 0, "[{topic}] no test cases generated");
       }
     }
+    });
 }

@@ -180,8 +180,13 @@ fn load_road_rule_conditions(path: &str) -> Vec<Filter> {
 fn load_match_rule_conditions(path: &str, field: &str) -> Vec<Filter> {
     let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {path}: {e}"));
-    let producer: crate::lang::producer::Producer =
-        serde_json::from_value(json[field].clone()).unwrap_or_else(|e| panic!("{path}:{field}: {e}"));
+    // The file's own config root supplies the compile environment (value sets, unit tables).
+    let root = std::path::Path::new(path).parent().unwrap();
+    let root = if root.join("value_sets.json").exists() { root } else { root.parent().unwrap() };
+    let cfg = crate::config_dir::Config::read(root, false).unwrap_or_else(|e| panic!("reading {}: {e}", root.display()));
+    let producer: crate::lang::producer::Producer = crate::lang::env::with_env(&cfg.env, || {
+        serde_json::from_value(json[field].clone()).unwrap_or_else(|e| panic!("{path}:{field}: {e}"))
+    });
     match producer {
         crate::lang::producer::Producer::Match { rules, .. } => rules.into_iter().map(|r| r.when).collect(),
         other => panic!("{path}:{field}: expected a Match producer, got {other:?}"),

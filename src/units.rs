@@ -1,5 +1,6 @@
-//! Generic access to the named unit-conversion tables in `<config_root>/units.json`, plus the
-//! one general algorithm that reads them: `parse_compound_unit`.
+//! The one general algorithm over the named unit-conversion tables of `<config_root>/units.json`
+//! (loaded per compile into `lang::env::CompileEnv`, bound into the `parse_length` builtin at load
+//! time): `parse_compound_unit`.
 //!
 //! This module holds no domain knowledge — which units exist and their factors relative to the
 //! table's base unit (e.g. metres for `"length"`) live entirely in the JSON. What's generic here
@@ -7,30 +8,10 @@
 //! each to the base unit, and sum — which handles both a plain single-unit value ("2.5 m",
 //! "250 cm") and a compound one ("8'6\"" = 8 ft + 6 in) with the same algorithm.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
-
-fn all_units() -> &'static HashMap<String, Vec<(String, f32)>> {
-    static UNITS: OnceLock<HashMap<String, Vec<(String, f32)>>> = OnceLock::new();
-    UNITS.get_or_init(|| {
-        let path = crate::paths::config_root().join("units.json");
-        let raw = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()))
-    })
-}
-
-/// The named unit table (`[(suffix, factor), ...]`), panicking if the JSON doesn't define it.
-/// Order matters: matching is first-suffix-wins against the string immediately following each
-/// number, so a suffix that's a prefix of another (e.g. `"m"` vs `"mm"`) must be declared *after*
-/// the longer one, or it'll shadow it.
-pub fn unit_table(name: &str) -> &'static [(String, f32)] {
-    all_units()
-        .get(name)
-        .unwrap_or_else(|| panic!("units.json: no unit table named '{name}'"))
-        .as_slice()
-}
-
+/// Order matters in `units`: matching is first-suffix-wins against the string immediately following
+/// each number, so a suffix that's a prefix of another (e.g. `"m"` vs `"mm"`) must be declared
+/// *after* the longer one, or it'll shadow it.
+///
 /// Parse a string made of one or more `<number><unit>` runs (optionally whitespace-separated,
 /// e.g. `"8'6\""`, `"250 cm"`, `"2.5"`), converting each run to `units`' base unit via its factor
 /// and summing. A run with no matching unit suffix is treated as already being in the base unit

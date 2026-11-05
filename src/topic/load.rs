@@ -1,8 +1,9 @@
 //! Loading a topic's data from its `topics/<name>/` directory: categories, macros, and
 //! sanitizers. Encodes the topic-directory-layout convention (`{node,way,relation}/`,
 //! `macros.json`, `sanitizers.json`, plus the config-root-level shared `macros.json`/
-//! `sanitizers.json`) — nothing generic-engine lives here, only the disk-I/O side of getting a
-//! topic's raw data into the shape `lang`/`categorize` types expect.
+//! `sanitizers.json`) — nothing generic-engine lives here, only getting a topic's raw data into
+//! the shape `lang`/`categorize` types expect. Reads only from `ConfigSources` (the config
+//! directory as data); the filesystem is the shell's business (`config_dir`).
 //!
 //! Layout: a topic organizes its categories into per-kind subfolders directly under the topic dir
 //! — `topics/<t>/{node,way,relation}/*.json` (one category per file, id = file stem). Topic-wide
@@ -28,6 +29,7 @@ use crate::categorize::categories::CategoriesFile;
 use crate::lang::filter::Filter;
 use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer};
 use crate::lang::json::parse_sanitize_chain;
+use crate::topic::sources::{join, ConfigSources};
 use crate::lang::tags::ElementKind;
 use crate::topic::spec::TransformsSpec;
 
@@ -128,25 +130,23 @@ pub fn resolve_refs(value: Value, macros: &Map<String, Value>, sanitizers: &Hash
 
 /// Read a macros JSON file (`{ name: <Filter JSON> }`) if it exists, else an empty map. Raw —
 /// macro bodies may still reference other macros (folded in by `inline_macro_refs`).
-fn read_macros(path: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
-    if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(path)?)
-            .with_context(|| format!("parsing {}", path.display()))
-    } else {
-        Ok(Map::new())
+fn read_macros(src: &ConfigSources, rel: &str) -> anyhow::Result<Map<String, Value>> {
+    match src.read(rel) {
+        Some(raw) => serde_json::from_str(raw).with_context(|| format!("parsing {}", src.path(rel).display())),
+        None => Ok(Map::new()),
     }
 }
 
 /// Read a topic's own `macros.json`, raw. Distinct from `load_shared_macros` (cross-topic,
 /// `<config_root>/macros.json`) — this is one file, holding every topic-local macro.
-pub fn load_topic_macros(topic_dir: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
-    read_macros(&topic_dir.join("macros.json"))
+pub fn load_topic_macros(src: &ConfigSources, topic: &str) -> anyhow::Result<Map<String, Value>> {
+    read_macros(src, &join(topic, "macros.json"))
 }
 
 /// Read shared, cross-topic macros from `<config_root>/macros.json`, raw. Referenced by name from
 /// any topic's conditions, e.g. `{ "macro": "standard_exclude" }`.
-pub fn load_shared_macros(config_root: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
-    read_macros(&config_root.join("macros.json"))
+pub fn load_shared_macros(src: &ConfigSources) -> anyhow::Result<Map<String, Value>> {
+    read_macros(src, "macros.json")
 }
 
 /// Recursively macro-inline every entry in `raw_macros` against itself, so a macro body
@@ -172,16 +172,17 @@ pub fn resolve_macros(raw_macros: &Map<String, Value>) -> anyhow::Result<Map<Str
 /// pipeline from those in that case. Topic-local only, no shared config-root variant (unlike
 /// `macros.json`/`sanitizers.json`) — nothing shares a transform pipeline across topics today.
 pub fn load_topic_transforms(
-    topic_dir: &std::path::Path,
+    src: &ConfigSources,
+    topic: &str,
     resolved_macros: &Map<String, Value>,
     sanitizers: &HashMap<String, Vec<Sanitizer>>,
 ) -> anyhow::Result<Option<TransformsSpec>> {
-    let path = topic_dir.join("transforms.json");
-    if !path.exists() {
+    let rel = join(topic, "transforms.json");
+    let path = src.path(&rel);
+    let Some(raw) = src.read(&rel) else {
         return Ok(None);
-    }
-    let raw: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    };
+    let raw: Value = serde_json::from_str(raw).with_context(|| format!("parsing {}", path.display()))?;
     let resolved = resolve_refs(raw, resolved_macros, sanitizers)
         .with_context(|| format!("resolving {}", path.display()))?;
     Ok(Some(serde_json::from_value(resolved).with_context(|| format!("parsing {}", path.display()))?))
@@ -196,17 +197,18 @@ pub fn load_topic_transforms(
 /// through a condition, so it's never touched by `inline_macro_refs`). Only present kinds appear
 /// in the returned map — a topic with just a `way/` folder yields a single entry.
 pub fn load_topic_categories(
-    topic_dir: &std::path::Path,
+    src: &ConfigSources,
+    topic: &str,
     resolved_macros: &Map<String, Value>,
     macros_filter: &HashMap<String, Filter>,
     sanitizers: &HashMap<String, Vec<Sanitizer>>,
 ) -> anyhow::Result<HashMap<ElementKind, CategoriesFile>> {
     let mut out = HashMap::new();
     for kind in ElementKind::ALL {
-        let dir = topic_dir.join(kind.subdir());
-        if dir.is_dir() {
-            let cats = load_categories_dir(&dir, resolved_macros, macros_filter, sanitizers)
-                .with_context(|| format!("loading {}", dir.display()))?;
+        let dir = join(topic, kind.subdir());
+        if src.is_dir(&dir) {
+            let cats = load_categories_dir(src, &dir, resolved_macros, macros_filter, sanitizers)
+                .with_context(|| format!("loading {}", src.path(&dir).display()))?;
             out.insert(kind, cats);
         }
     }
@@ -218,29 +220,24 @@ pub fn load_topic_categories(
 /// carrying shared `condition`/`excludes`/`defaults`/`producers` plus a `categories` array of
 /// variants, each expanded into its own category by `expand_family` (id = `<stem>_<name>`).
 pub fn load_categories_dir(
-    dir: &std::path::Path,
+    src: &ConfigSources,
+    dir: &str,
     resolved_macros: &Map<String, Value>,
     macros_filter: &HashMap<String, Filter>,
     sanitizers: &HashMap<String, Vec<Sanitizer>>,
 ) -> anyhow::Result<CategoriesFile> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-
+    // `json_files` is sorted by file name, matching the previous `read_dir` + sort.
     let mut categories: Vec<Value> = Vec::new();
-    for entry in entries {
-        let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
-        let obj: Value = serde_json::from_str(&std::fs::read_to_string(entry.path())?)
-            .with_context(|| format!("parsing {}", entry.path().display()))?;
-        categories.extend(expand_family(&stem, obj)
-            .with_context(|| format!("expanding {}", entry.path().display()))?);
+    for (file_name, raw) in src.json_files(dir) {
+        let path = src.path(&join(dir, file_name));
+        let stem = file_name.strip_suffix(".json").unwrap_or(file_name);
+        let obj: Value = serde_json::from_str(raw).with_context(|| format!("parsing {}", path.display()))?;
+        categories.extend(expand_family(stem, obj).with_context(|| format!("expanding {}", path.display()))?);
     }
 
     let combined = Value::Object(Map::from_iter([("categories".to_owned(), Value::Array(categories))]));
     let resolved = resolve_refs(combined, resolved_macros, sanitizers)
-        .with_context(|| format!("resolving {}", dir.display()))?;
+        .with_context(|| format!("resolving {}", src.path(dir).display()))?;
     CategoriesFile::from_categories_json(resolved, macros_filter.clone())
 }
 
@@ -335,14 +332,15 @@ fn expand_family(stem: &str, mut obj: Value) -> anyhow::Result<Vec<Value>> {
 /// `HashMap<String, Vec<Sanitizer>>`'s own `Deserialize` can't apply that sugar itself (`Vec`'s
 /// default `Deserialize` only accepts an array), so entries are read as raw `Value`s first.
 pub fn load_topic_sanitizers(
-    topic_dir: &std::path::Path,
-    config_root: &std::path::Path,
+    src: &ConfigSources,
+    topic: &str,
 ) -> anyhow::Result<HashMap<String, Vec<Sanitizer>>> {
-    let read = |path: &std::path::Path| -> anyhow::Result<HashMap<String, Vec<Sanitizer>>> {
-        if !path.exists() {
+    let read = |rel: &str| -> anyhow::Result<HashMap<String, Vec<Sanitizer>>> {
+        let path = src.path(rel);
+        let Some(raw) = src.read(rel) else {
             return Ok(HashMap::new());
-        }
-        let raw: HashMap<String, Value> = serde_json::from_str(&std::fs::read_to_string(path)?)
+        };
+        let raw: HashMap<String, Value> = serde_json::from_str(raw)
             .with_context(|| format!("parsing {}", path.display()))?;
         raw.into_iter()
             .map(|(name, v)| {
@@ -351,8 +349,8 @@ pub fn load_topic_sanitizers(
             })
             .collect()
     };
-    let shared = read(&config_root.join("sanitizers.json"))?;
-    let local = read(&topic_dir.join("sanitizers.json"))?;
+    let shared = read("sanitizers.json")?;
+    let local = read(&join(topic, "sanitizers.json"))?;
     Ok(merge(&shared, &local))
 }
 
@@ -396,13 +394,10 @@ fn check_mapping_bijection(name: &str, v: &Value) -> anyhow::Result<()> {
 /// (`{ name: <producer JSON> }`, e.g. the `road` classifier) as raw JSON — kept raw (not
 /// deserialized into `Producer`) since `inline_shared_producers` substitutes them into a topic's
 /// own raw JSON before anything is deserialized.
-pub fn load_shared_producers(config_root: &std::path::Path) -> anyhow::Result<Map<String, Value>> {
-    let path = config_root.join("producers.json");
-    if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&path)?)
-            .with_context(|| format!("parsing {}", path.display()))
-    } else {
-        Ok(Map::new())
+pub fn load_shared_producers(src: &ConfigSources) -> anyhow::Result<Map<String, Value>> {
+    match src.read("producers.json") {
+        Some(raw) => serde_json::from_str(raw).with_context(|| format!("parsing {}", src.path("producers.json").display())),
+        None => Ok(Map::new()),
     }
 }
 

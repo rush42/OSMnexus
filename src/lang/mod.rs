@@ -27,6 +27,7 @@
 //!   against; `osm::types` re-exports them for the reader side.
 //! - `json`: crate-private JSON sugar for the types above (formerly `parser.rs`).
 
+pub mod env;
 pub mod expr;
 pub mod extract;
 pub mod filter;

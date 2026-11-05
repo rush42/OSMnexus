@@ -290,7 +290,9 @@ impl<'de> Deserialize<'de> for Sanitizer {
             },
             StepJson::Replace { replace } => Sanitizer::Replace { replace },
             StepJson::Builtin(name) => Sanitizer::Builtin(
-                Builtin::from_name(&name).ok_or_else(|| serde::de::Error::custom(format!("unknown built-in sanitizer: {name}")))?,
+                Builtin::from_name(&name)
+                    .map_err(serde::de::Error::custom)?
+                    .ok_or_else(|| serde::de::Error::custom(format!("unknown built-in sanitizer: {name}")))?,
             ),
         })
     }
