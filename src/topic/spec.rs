@@ -580,7 +580,7 @@ impl TransformSpec {
         match self {
             TransformSpec::TagRule { output, source } => InputTransform::TagRule { output, source },
             TransformSpec::DirectedExtract { output, key, from, sanitize } =>
-                InputTransform::DirectedExtract { output, key, from, sanitize },
+                InputTransform::directed_extract(output, key, from, sanitize, crate::traffic::is_left_hand_traffic()),
             TransformSpec::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } =>
                 InputTransform::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under },
             TransformSpec::Unnest { prefix, infix, meta, guard, record_infix_as } => InputTransform::UnnestTags {

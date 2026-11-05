@@ -60,8 +60,8 @@ pub enum InputTransform {
         stamp_nested_under: Vec<String>,
     },
     /// Direction-sensitive read of `key`, written onto `output` — resolves `key`'s
-    /// `:forward`/`:backward` variant from `annotations["_side"]` + the global
-    /// left/right-hand-traffic setting (`traffic::is_left_hand_traffic`), producing nothing for a
+    /// `:forward`/`:backward` variant from `annotations["_side"]` + the
+    /// traffic side (fixed at load time, see `directed_extract`), producing nothing for a
     /// `self` object (no direction to resolve). Every real use is exactly this shape: a step
     /// placed right after the unnest steps that built this (already-split) object, so `apply`'s
     /// own `parent_tags` is all the dual-tagset access it needs — no separate `ExtractCtx`-per-read
@@ -71,6 +71,11 @@ pub enum InputTransform {
         key: String,
         from: DirectedFrom,
         sanitize: Vec<Sanitizer>,
+        /// `key` + the `:forward`/`:backward` suffix for a `left` / `right` side object, fixed at
+        /// load time from the traffic side (see [`InputTransform::directed_extract`]), so the hot
+        /// path neither reads the traffic global nor `format!`s a key per element.
+        left_key: String,
+        right_key: String,
     },
     /// Remove this object from the active set when `when` holds — `apply`'s only variant that
     /// returns `false`. Every other variant is a pure tag mutation and always keeps the object;
@@ -96,6 +101,24 @@ pub enum DirectedFrom {
     #[default]
     Obj,
     Parent,
+}
+
+impl InputTransform {
+    /// Build a `DirectedExtract`, resolving which directed key each side reads for the given
+    /// traffic side. Left side → `:backward` under right-hand traffic, `:forward` under
+    /// left-hand traffic; right side the other way round.
+    pub fn directed_extract(
+        output: String,
+        key: String,
+        from: DirectedFrom,
+        sanitize: Vec<Sanitizer>,
+        left_hand_traffic: bool,
+    ) -> Self {
+        let (left, right) = if left_hand_traffic { (":forward", ":backward") } else { (":backward", ":forward") };
+        let left_key = format!("{key}{left}");
+        let right_key = format!("{key}{right}");
+        InputTransform::DirectedExtract { output, key, from, sanitize, left_key, right_key }
+    }
 }
 
 impl InputTransform {
@@ -154,8 +177,8 @@ impl InputTransform {
                 }
                 true
             }
-            InputTransform::DirectedExtract { output, key, from, sanitize } => {
-                if let Some(raw) = read_directed(tags, parent_tags, annotations, key, *from) {
+            InputTransform::DirectedExtract { output, key, from, sanitize, left_key, right_key } => {
+                if let Some(raw) = read_directed(tags, parent_tags, annotations, key, left_key, right_key, *from) {
                     match eval_sanitize(sanitize, raw) {
                         None | Some(Value::Null) => {}
                         Some(Value::String(s)) => { tags.insert(output.clone().into(), s.into()); }
@@ -269,24 +292,24 @@ fn read_directed<'a>(
     parent_tags: Option<&'a RawTags<'a>>,
     annotations: &Map<String, Value>,
     key: &str,
+    left_key: &str,
+    right_key: &str,
     from: DirectedFrom,
 ) -> Option<&'a str> {
     if tags.contains_key(key) {
         return None; // already set (e.g. by an earlier unnest) — don't override it
     }
-    let obj_side = annotations.get("_side").and_then(Value::as_str).unwrap_or("self");
-    let suffix = match (obj_side, crate::traffic::is_left_hand_traffic()) {
-        ("left", false) | ("right", true) => ":backward",
-        ("right", false) | ("left", true) => ":forward",
+    let directed_key = match annotations.get("_side").and_then(Value::as_str).unwrap_or("self") {
+        "left" => left_key,
+        "right" => right_key,
         _ => return None, // "self": no direction to resolve
     };
-    let directed_key = format!("{key}{suffix}");
     match from {
         DirectedFrom::Parent => {
             let parent = parent_tags?;
-            first_present(parent, [key, directed_key.as_str()])
+            first_present(parent, [key, directed_key])
         }
-        DirectedFrom::Obj => first_present(tags, [directed_key.as_str()]),
+        DirectedFrom::Obj => first_present(tags, [directed_key]),
     }
 }
 
@@ -467,7 +490,7 @@ mod unnest_tags_tests {
             prefix: "cycleway", infix: "", meta_prefixes: &[],
             guard: Some(Filter::InSet {
                 extract: crate::lang::extract::Extract::Value { key: "highway".to_owned(), sanitize: vec![] },
-                in_set: "sidepath_highway".to_owned(),
+                in_set: crate::value_sets::ValueSetRef::resolve("sidepath_highway").unwrap(),
             }),
             record_infix_as: None,
         };
@@ -519,7 +542,7 @@ mod directed_extract_tests {
     }
 
     fn step(key: &str, from: DirectedFrom) -> InputTransform {
-        InputTransform::DirectedExtract { output: key.to_owned(), key: key.to_owned(), from, sanitize: Vec::new() }
+        InputTransform::directed_extract(key.to_owned(), key.to_owned(), from, Vec::new(), false)
     }
 
     #[test]

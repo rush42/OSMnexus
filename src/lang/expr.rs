@@ -114,14 +114,14 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         },
         Filter::InSet { extract, in_set, .. } => match extract {
             Extract::Value { .. } => {
-                let exprs: Vec<_> = crate::value_sets::value_set(in_set)
+                let exprs: Vec<_> = in_set.set
                     .iter()
                     .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone()))))
                     .collect();
                 Expr::Or(exprs)
             }
             Extract::Candidates { .. } => {
-                let mut vals: Vec<String> = crate::value_sets::value_set(in_set).iter().cloned().collect();
+                let mut vals: Vec<String> = in_set.set.iter().cloned().collect();
                 vals.sort();
                 Expr::Lit(Literal::Pos(Predicate::FirstTagIn(extract.clone(), vals)))
             }

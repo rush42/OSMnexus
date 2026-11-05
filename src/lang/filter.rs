@@ -18,7 +18,6 @@ use serde_json::Value;
 use crate::lang::extract::Extract;
 use crate::lang::producer::ExtractCtx;
 use crate::lang::tags::RawTags;
-use crate::value_sets::value_set;
 
 /// Filter expression. On-disk shapes are enumerated by `parser::FilterJson` (untagged, tried in
 /// declaration order, more-specific/required-field shapes before catch-alls) rather than derived
@@ -39,7 +38,7 @@ pub enum Filter {
     // Tag predicates — secondary field disambiguates (Eq is the catch-all). Each flattens an
     // `Extract` (`tag`/`first_tag`, `Extract`'s JSON aliases for `key`/`keys` — see its own doc),
     // whose own `sanitize` field (if set) normalizes the raw tag value before comparison.
-    InSet     { extract: Extract, in_set:      String      },
+    InSet     { extract: Extract, in_set:      crate::value_sets::ValueSetRef },
     In        { extract: Extract, r#in:        Vec<String> },
     Contains  { extract: Extract, contains: String, case_insensitive: bool },
     StartsWith{ extract: Extract, starts_with: String      },
@@ -100,7 +99,7 @@ impl Filter {
             Filter::And { and } => and.iter().map(Filter::describe).collect::<Vec<_>>().join("\nand\n"),
             Filter::Or { or } => format!("({})", or.iter().map(Filter::describe).collect::<Vec<_>>().join("\nor\n")),
             Filter::Not { not } => format!("not ({})", not.describe()),
-            Filter::InSet { extract, in_set } => format!("{} in {in_set}", maybe_sanitized(extract)),
+            Filter::InSet { extract, in_set } => format!("{} in {}", maybe_sanitized(extract), in_set.name),
             Filter::In { extract, r#in } => format!("{} in [{}]", maybe_sanitized(extract), r#in.join(", ")),
             Filter::Contains { extract, contains, case_insensitive } => format!(
                 "{} contains {contains:?}{}",
@@ -148,7 +147,7 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::Eq { extract, eq } =>
             extract.read_str(ctx).is_some_and(|v| v.as_ref() == eq.as_str()),
         Filter::InSet { extract, in_set } =>
-            extract.read_str(ctx).is_some_and(|v| value_set(in_set).contains(v.as_ref())),
+            extract.read_str(ctx).is_some_and(|v| in_set.set.contains(v.as_ref())),
         Filter::In { extract, r#in } =>
             extract.read_str(ctx).is_some_and(|v| r#in.iter().any(|s| s.as_str() == v.as_ref())),
         Filter::Contains { extract, contains, case_insensitive } =>
