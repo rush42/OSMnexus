@@ -7,7 +7,7 @@
           "when": {
             "and": [
               { "tag": "highway", "exists": true },
-              { "tag": "construction", "in_set": "allowed_highway" }
+              { "tag": "construction", "in": "allowed_highway" }
             ]
           },
           "value": { "tag": "construction" }
@@ -21,7 +21,7 @@
           "when": {
             "and": [
               { "tag": "highway", "exists": true },
-              { "tag": "construction", "in_set": "allowed_highway" }
+              { "tag": "construction", "in": "allowed_highway" }
             ]
           },
           "value": "construction"
@@ -162,7 +162,7 @@
     {
       "unnest": "cycleway",
       "meta": ["source:", "note:"],
-      "guard": { "tag": "highway", "in_set": "sidepath_highway" }
+      "guard": { "tag": "highway", "in": "sidepath_highway" }
     },
     {
       "output": "traffic_sign",
@@ -170,7 +170,7 @@
         {
           "when": {
             "and": [
-              { "tag": "highway", "in_set": "sidepath_highway" },
+              { "tag": "highway", "in": "sidepath_highway" },
               { "tag": "traffic_sign", "exists": false },
               { "tag": "oneway", "eq": "yes" },
               { "not": { "tag": "oneway:bicycle", "eq": "no" } }

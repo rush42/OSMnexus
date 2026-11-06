@@ -187,7 +187,7 @@ fn merge_default_fields(mut fields: Vec<Field>, defaults: &Map<String, Value>) -
 
 impl Topic {
     /// Discover and load every topic in `src`. Only directories are considered (the shared
-    /// `macros.json`/`sanitizers.json`/`producers.json`/`value_sets.json`/`units.json` files at the
+    /// `macros.json`/`sanitizers.json`/`producers.json`/`lists.json`/`units.json` files at the
     /// config root are skipped automatically), and any `_`-prefixed directory is skipped too, as a
     /// general hidden-directory convention. Returned in sorted name order for deterministic output.
     pub fn load_all(src: &ConfigSources, env: &Arc<CompileEnv>, tree_max_depth: usize) -> anyhow::Result<Vec<Self>> {

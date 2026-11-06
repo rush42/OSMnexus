@@ -260,7 +260,7 @@ Each topic lives under `<config-dir>/<name>/` and is pure data — no Rust chang
 - `producers.json`, `sanitizers.json`, `macros.json` — output-field rule tables, reusable value
   transforms, reusable condition fragments.
 
-Shared macros/sanitizers/producers/value-sets across topics live in `<config-dir>/_shared/`. Copy
+Shared macros/sanitizers/producers/named lists across topics live in `<config-dir>/_shared/`. Copy
 `configs/osmnx` as a minimal starting skeleton, or `configs/tilda` for a config with real depth.
 
 ## Dev tools (`src/bin/`)

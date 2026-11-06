@@ -36,7 +36,7 @@ pub enum InputTransform {
     /// scratch, `tags` is that (initially empty) object, scanned against its own pre-populated
     /// content each call).
     /// `guard`, when set, only applies the unnest when it holds — this is what used to be the
-    /// dedicated `SidepathSelf` variant (`guard: Some(TagInSet{tag: "highway", in_set:
+    /// dedicated `SidepathSelf` variant (`guard: Some({tag: "highway", in:
     /// "sidepath_highway"})`); a plain in-place unnest with no such condition just leaves it
     /// `None`. Evaluated against the same context `Drop`'s own condition sees (`tags` as they
     /// stand before this call, `parent_tags`, `annotations`).
@@ -488,16 +488,16 @@ mod unnest_tags_tests {
         let mut annotations = Map::new();
         let step = InputTransform::UnnestTags {
             prefix: "cycleway", infix: "", meta_prefixes: &[],
-            guard: Some(Filter::InSet {
+            guard: Some(Filter::In {
                 extract: crate::lang::extract::Extract::Value { key: "highway".to_owned(), sanitize: vec![] },
-                in_set: {
+                r#in: {
                     let cfg = crate::test_support::Config::default_root().unwrap();
-                    crate::lang::env::with_env(&cfg.env, || crate::value_sets::ValueSetRef::resolve("sidepath_highway")).unwrap()
+                    crate::lang::env::with_env(&cfg.env, || crate::lang::list::ValueList::resolve("sidepath_highway")).unwrap()
                 },
             }),
             record_infix_as: None,
         };
-        // "primary" is never a sidepath_highway value in any topic's value_sets.json.
+        // "primary" is never a sidepath_highway value in any topic's lists.json.
         step.apply(&mut obj, &mut annotations, None);
         assert!(!obj.contains_key("width"));
     }

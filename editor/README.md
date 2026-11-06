@@ -75,7 +75,7 @@ earlier version that also shipped geometry (hex-encoded EWKB) turned out to be t
 - **Each topic is run as if it were its own config.** Picking a topic (`POST /api/topic-select`,
   `switchTopic` in `lib/liveEditor.ts`) copies *only* that topic's subdirectory plus the config's
   shared root-level files (`macros.json`, `sanitizers.json`, `producers.json`, `units.json`,
-  `value_sets.json` — whichever exist) into a fresh scratch dir, and every pipeline/`tree_json`
+  `lists.json` — whichever exist) into a fresh scratch dir, and every pipeline/`tree_json`
   invocation for that topic points `--config-dir` at it. Editing `bikelanes` in a config that also
   has `roads` no longer pays for classifying `roads` on every single edit — confirmed against
   `TopicRunner::load_all`/`src/paths.rs`, which never assumed a config-dir holds more than one
