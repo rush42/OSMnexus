@@ -61,7 +61,8 @@ pub enum BinaryField {
     /// is jsonb's binary-format wire requirement, not part of the JSON itself.
     Jsonb(String),
     /// `geometry` (PostGIS) — raw (E)WKB bytes, which is exactly PostGIS's binary wire format for
-    /// the type (its typsend/typrecv are literally WKB/EWKB), so `geom_ewkb` needs no reencoding.
+    /// the type (its typsend/typrecv are literally WKB/EWKB), so `Geom::to_ewkb_3857`'s output needs
+    /// no reencoding.
     Bytea(Vec<u8>),
 }
 

@@ -16,7 +16,7 @@
 //! Postgres's encoding now lives only in `copy_writer`, where it belongs. This format is ours:
 //!
 //! ```text
-//! magic    "OSMNXST1"                       (8 bytes)
+//! magic    "OSMNXST2"                       (8 bytes)
 //! frame    u32 row_count | u32 payload_len | payload   (repeated)
 //! trailer  u32 0         | u32 0
 //! ```
@@ -40,7 +40,7 @@ use anyhow::Context;
 
 /// File signature. Bump the trailing digit on any incompatible layout change — staging files never
 /// outlive the run that wrote them, so there is no migration to do, only a mismatch to report.
-const MAGIC: &[u8; 8] = b"OSMNXST1";
+const MAGIC: &[u8; 8] = b"OSMNXST2";
 
 /// Start a new frame once the pending payload reaches this size. Same 512 KiB the sinks already
 /// flushed at, so frame count tracks what write buffering was doing anyway; it also caps a reader's
@@ -157,6 +157,19 @@ impl<'a> StageCursor<'a> {
             return Ok(None);
         }
         Ok(Some(std::str::from_utf8(self.take(len as usize)?)?))
+    }
+
+    /// Decode a geometry written by `geom::coord::stage_encode`/`stage_encode_run` in place, out of
+    /// the frame buffer — the coordinate runs are copied straight out of it, with no intermediate
+    /// length-prefixed blob.
+    pub fn with_geom<T>(
+        &mut self,
+        f: impl FnOnce(&mut crate::geom::coord::GeomDecoder<'a>) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let mut d = crate::geom::coord::GeomDecoder { buf: self.buf, pos: self.pos };
+        let out = f(&mut d)?;
+        self.pos = d.pos;
+        Ok(out)
     }
 
     pub fn bytes(&mut self) -> anyhow::Result<&'a [u8]> {

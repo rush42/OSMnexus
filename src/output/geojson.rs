@@ -27,13 +27,13 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-use serde::ser::SerializeMap;
 use serde_json::value::RawValue;
 
 use crate::config::CoordPrecision;
+use crate::geom::coord::{Coord, Geom};
+use crate::output::coord_fmt::CoordFmt;
 use crate::output::cursor::{
-    group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, GeomValue,
-    OrderedGeomCursor,
+    group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, OrderedGeomCursor,
 };
 use crate::output::rows::TopicRow;
 use crate::output::stage::StageReader;
@@ -41,52 +41,43 @@ use crate::output::stage::StageReader;
 /// One feature's geometry, as one of the three shapes this module emits: a joined geometry row, a
 /// single graph-edge segment, or a bare point (a cut/endpoint marker).
 enum FeatureGeometry<'a> {
-    Geom(&'a GeomValue),
-    Segment(&'a [[f64; 2]]),
-    Point([f64; 2]),
+    Geom(&'a Geom),
+    Segment(&'a [Coord]),
+    Point(Coord),
 }
 
-impl serde::Serialize for FeatureGeometry<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            FeatureGeometry::Geom(g) => g.serialize(serializer),
-            FeatureGeometry::Segment(coords) => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("coordinates", coords)?;
-                map.serialize_entry("type", "LineString")?;
-                map.end()
-            }
-            FeatureGeometry::Point(p) => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("coordinates", p)?;
-                map.serialize_entry("type", "Point")?;
-                map.end()
-            }
-        }
-    }
-}
-
-/// One GeoJSON `Feature`, borrowing its geometry and properties rather than owning a
-/// `serde_json::Value` tree — see `GeomValue`'s `Serialize` impl for why that tree was the dominant
-/// cost of this backend. Key order is alphabetical (`geometry`, `properties`, `type`) to match what
-/// `json!` emitted through `serde_json::Map`'s `BTreeMap`.
 pub struct Feature<'a> {
     geometry: FeatureGeometry<'a>,
     properties: &'a Properties<'a>,
 }
 
-impl serde::Serialize for Feature<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(3))?;
-        map.serialize_entry("geometry", &self.geometry)?;
-        map.serialize_entry("properties", self.properties)?;
-        map.serialize_entry("type", "Feature")?;
-        map.end()
+impl Feature<'_> {
+    /// `{"geometry":…,"properties":…,"type":"Feature"}` into `buf` — keys sorted and compact,
+    /// byte-for-byte what serializing it through `serde_json` produced before geometry was written
+    /// by hand. The geometry is written straight from integer coordinates (`output::coord_fmt`);
+    /// only `properties` still goes through `serde_json`.
+    fn write(&self, buf: &mut Vec<u8>, fmt: &CoordFmt) -> anyhow::Result<()> {
+        buf.extend_from_slice(br#"{"geometry":"#);
+        match &self.geometry {
+            FeatureGeometry::Geom(g) => fmt.write_json_geometry(buf, g),
+            FeatureGeometry::Segment(coords) => {
+                buf.extend_from_slice(br#"{"coordinates":"#);
+                fmt.write_json_run(buf, coords);
+                buf.extend_from_slice(br#","type":"LineString"}"#);
+            }
+            FeatureGeometry::Point(c) => {
+                buf.extend_from_slice(br#"{"coordinates":"#);
+                fmt.write_json_coord(buf, *c);
+                buf.extend_from_slice(br#","type":"Point"}"#);
+            }
+        }
+        buf.extend_from_slice(br#","properties":"#);
+        serde_json::to_writer(&mut *buf, self.properties)?;
+        buf.extend_from_slice(br#","type":"Feature"}"#);
+        Ok(())
     }
 }
 
-/// A cut/endpoint marker's properties — the only features whose properties aren't
-/// `base_properties`.
 fn marker_properties(osm_id: i64, kind: &'static str) -> Properties<'static> {
     let mut properties = Properties::new();
     properties.insert("kind".to_owned(), PropValue::Str(kind));
@@ -197,24 +188,24 @@ where
 /// fat representation of a coordinate list, so a topic's features cost far more resident than the
 /// `.geojsonseq` bytes they serialize to. Streaming makes both framings bounded by one feature.
 ///
-/// `emit` takes a borrowed [`Feature`], not a `Value`: the features are serialized straight from the
-/// cursors' native types, so no `Value` tree is built even transiently — see `GeomValue`'s
-/// `Serialize` impl for why that tree dominated this backend's cost.
+/// `emit` takes a borrowed [`Feature`], not a `Value`: features are written straight from the
+/// cursors' native types — geometry from the staged integer coordinates (`Feature::write`) — so no
+/// `Value` tree is built even transiently; such a tree turned every coordinate pair into its own
+/// heap-allocated `Vec<Value>`, ~10^8 short-lived allocations on a country-sized run.
 fn for_each_feature<F>(
     out_dir: &Path,
     table: &str,
     edges: &[(i64, EdgeGeom)],
     edges_by_way: &HashMap<i64, Vec<&EdgeGeom>>,
     relation_members: &HashMap<i64, Vec<i64>>,
-    precision: CoordPrecision,
     mut emit: F,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&Feature<'_>) -> anyhow::Result<()>,
 {
-    let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")), precision)?;
-    let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")), precision)?;
-    let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")), precision)?;
+    let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")))?;
+    let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")))?;
+    let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")))?;
     let mut edge_cursor = EdgeCursor::new(edges);
 
     let mut tags = StageReader::<TopicRow>::open(&out_dir.join(format!("{table}.bin")))?;
@@ -246,7 +237,7 @@ where
                 };
                 // Still filtered to `Point`: a node's geometry table can only hold points, and a
                 // non-point row here would be a bug rather than something to render.
-                let Some(geom @ GeomValue::Point(_)) = geom else { continue };
+                let Some(geom @ Geom::Point(_)) = geom else { continue };
                 let properties = base_properties(&row);
                 emit(&Feature { geometry: FeatureGeometry::Geom(geom), properties: &properties })?;
             }
@@ -303,15 +294,19 @@ where
 /// Reads each of `tables`' staged output (see `for_each_feature`) and writes `{table}.geojsonseq`
 /// alongside them: one GeoJSON `Feature` object per line (RFC 8142).
 pub fn write_geojsonseq(out_dir: &Path, tables: &[String], precision: CoordPrecision) -> anyhow::Result<()> {
-    let edges = read_edges(&out_dir.join("edges.bin"), precision)?;
+    let edges = read_edges(&out_dir.join("edges.bin"))?;
+    let fmt = CoordFmt::new(precision);
+    let mut buf = Vec::with_capacity(4096);
     let edges_by_way = group_edges_by_way(&edges);
     let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 
     for table in tables {
         let mut writer = std::io::BufWriter::new(std::fs::File::create(out_dir.join(format!("{table}.geojsonseq")))?);
-        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, precision, |feature| {
-            serde_json::to_writer(&mut writer, feature)?;
-            writer.write_all(b"\n")?;
+        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, |feature| {
+            buf.clear();
+            feature.write(&mut buf, &fmt)?;
+            buf.push(b'\n');
+            writer.write_all(&buf)?;
             Ok(())
         })?;
         writer.flush()?;
@@ -323,7 +318,9 @@ pub fn write_geojsonseq(out_dir: &Path, tables: &[String], precision: CoordPreci
 /// alongside them: a single `{"type": "FeatureCollection", "features": [...]}` object — simpler to
 /// consume whole than `geojsonseq`, and streamed into just the same (see the framing note below).
 pub fn write_geojson(out_dir: &Path, tables: &[String], precision: CoordPrecision) -> anyhow::Result<()> {
-    let edges = read_edges(&out_dir.join("edges.bin"), precision)?;
+    let edges = read_edges(&out_dir.join("edges.bin"))?;
+    let fmt = CoordFmt::new(precision);
+    let mut buf = Vec::with_capacity(4096);
     let edges_by_way = group_edges_by_way(&edges);
     let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 
@@ -336,12 +333,14 @@ pub fn write_geojson(out_dir: &Path, tables: &[String], precision: CoordPrecisio
         // serialized its keys sorted, i.e. `features` before `type`.
         writer.write_all(br#"{"features":["#)?;
         let mut first = true;
-        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, precision, |feature| {
+        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, |feature| {
+            buf.clear();
             if !first {
-                writer.write_all(b",")?;
+                buf.push(b',');
             }
             first = false;
-            serde_json::to_writer(&mut writer, feature)?;
+            feature.write(&mut buf, &fmt)?;
+            writer.write_all(&buf)?;
             Ok(())
         })?;
         writer.write_all(br#"],"type":"FeatureCollection"}"#)?;
@@ -358,8 +357,16 @@ mod tests {
     // path and the bremen byte-identity gate every other output change is verified against says
     // nothing about it. These tests are that path's only coverage.
 
-    fn seg(seg_idx: usize, x: f64) -> EdgeGeom {
-        EdgeGeom { seg_idx, coordinates: vec![[x, 0.0], [x + 1.0, 1.0]] }
+    /// `x` in whole degrees.
+    fn seg(seg_idx: usize, x: i32) -> EdgeGeom {
+        let d = 10_000_000;
+        EdgeGeom { seg_idx, coordinates: vec![[x * d, 0], [(x + 1) * d, d]] }
+    }
+
+    fn feature_string(feature: &Feature<'_>) -> String {
+        let mut buf = Vec::new();
+        feature.write(&mut buf, &CoordFmt::new(CoordPrecision(21))).unwrap();
+        String::from_utf8(buf).unwrap()
     }
 
     fn base_props() -> Properties<'static> {
@@ -373,7 +380,7 @@ mod tests {
         let mut out = Vec::new();
         emit_graph_fallback_features(
             &mut |feature: &Feature<'_>| {
-                out.push(serde_json::to_string(feature)?);
+                out.push(feature_string(feature));
                 Ok(())
             },
             segments,
@@ -385,7 +392,7 @@ mod tests {
 
     #[test]
     fn each_segment_gets_its_own_seg_idx_and_its_own_coordinates() {
-        let (a, b, c) = (seg(0, 0.0), seg(1, 10.0), seg(2, 20.0));
+        let (a, b, c) = (seg(0, 0), seg(1, 10), seg(2, 20));
         let out = emitted(&[&a, &b, &c], &base_props());
         assert_eq!(out.len(), 3);
         for (i, feature) in out.iter().enumerate() {
@@ -401,7 +408,7 @@ mod tests {
     /// must not let one segment's `seg_idx` survive into the next feature.
     #[test]
     fn seg_idx_does_not_leak_between_segments() {
-        let (a, b) = (seg(0, 0.0), seg(5, 1.0));
+        let (a, b) = (seg(0, 0), seg(5, 1));
         let out = emitted(&[&a, &b], &base_props());
         assert_eq!(out[0].matches(r#""seg_idx""#).count(), 1);
         assert!(out[0].contains(r#""seg_idx":0"#));
@@ -414,7 +421,7 @@ mod tests {
     fn a_seg_idx_already_in_the_base_properties_is_overwritten_not_duplicated() {
         let mut properties = base_props();
         properties.insert("seg_idx".to_owned(), PropValue::Int(99));
-        let a = seg(3, 0.0);
+        let a = seg(3, 0);
         let out = emitted(&[&a], &properties);
         assert_eq!(out[0].matches(r#""seg_idx""#).count(), 1);
         assert!(out[0].contains(r#""seg_idx":3"#));
@@ -432,11 +439,10 @@ mod tests {
     #[test]
     fn marker_properties_serialize_kind_before_osm_id() {
         let properties = marker_properties(42, "cut");
-        let json = serde_json::to_string(&Feature {
-            geometry: FeatureGeometry::Point([1.0, 2.0]),
+        let json = feature_string(&Feature {
+            geometry: FeatureGeometry::Point([10_000_000, 20_000_000]),
             properties: &properties,
-        })
-        .unwrap();
+        });
         assert_eq!(
             json,
             r#"{"geometry":{"coordinates":[1.0,2.0],"type":"Point"},"properties":{"kind":"cut","osm_id":42},"type":"Feature"}"#

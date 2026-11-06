@@ -412,6 +412,22 @@ See §5.
 in Phase 1.1. Nothing downstream joins a Parquet file positionally (rows carry `osm_id`), so this is
 an output change, not a correctness one. Confirm the live editor is unaffected.
 
+#### 4d — Integer geometry IR *(done)*
+
+Geometry used to be projected to 3857 in materialize and staged as EWKB, so every file output's
+join decoded it, inverted the projection per point (`exp`/`atan`), rounded the noise off and (for
+Parquet) re-encoded WKB. It is now carried as the PBF's decimicrodegree integers end to end
+(`geom::coord`) and converted once by the sink: Postgres/CSV project to EWKB at write time, Parquet
+writes lon/lat WKB, GeoJSON writes decimal text straight from the integers (`output::coord_fmt`).
+Centroids are the one derived shape and are staged as float lon/lat.
+
+Measured on Berlin (tilda, `--threads 2`, 2 reps): geometry staging 47.4 → 22.9 MB, materialize
+~0.65 → 0.5 s, join 0.55 → 0.50 s (Parquet) and 0.96 → 0.78 s (GeoJSONSeq). **The join gain is
+small**, which answers the question this was partly meant to settle: geometry conversion was not
+where the join's time goes. What remains is the tag side — reading `{table}.bin`, `merge_properties`
+parsing the spliced property JSON into a `BTreeMap` per feature, and Arrow/Parquet encoding — so a
+pipelined/parallel join (4c or chunked) has to parallelize that work, not geometry, to pay off.
+
 #### Not doing: sort/merge + unordered-always
 
 `output_plan.md`'s proposal exists to survive *unordered* routing, which destroys tag/geometry

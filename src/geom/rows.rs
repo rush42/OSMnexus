@@ -3,10 +3,9 @@
 //! traits both modules' row types implement and the doc explaining why each sink encodes the struct
 //! itself rather than sharing one canonical encoding.
 
+use crate::geom::coord::{self, Coord, Geom};
 use crate::output::rows::{BinaryField, BinaryRow, CsvRow};
-use crate::output::stage::{
-    put_bytes, put_f64, put_i64, put_opt_f64, put_str, put_u32, StageCursor, StageDecode, StageRow,
-};
+use crate::output::stage::{put_f64, put_i64, put_opt_f64, put_u32, StageCursor, StageDecode, StageRow};
 
 /// Column lists shared by the COPY statement and the CSV header line (no spaces → valid as both).
 /// The field order here **must** match each row type's `binary_fields`/`csv_fields` implementations
@@ -27,7 +26,8 @@ pub struct EdgeRow {
     pub seg_idx: usize,
     pub start_id: i64,
     pub end_id: i64,
-    pub geom_ewkb: Vec<u8>,
+    /// The segment's points, unprojected (see `geom::coord`).
+    pub geom: Vec<Coord>,
     pub length_m: f64,
     pub total_length_m: f64,
     pub cost: f64,
@@ -43,7 +43,7 @@ impl BinaryRow for EdgeRow {
             BinaryField::Int4(self.seg_idx as i32),
             BinaryField::Int8(self.start_id),
             BinaryField::Int8(self.end_id),
-            BinaryField::Bytea(self.geom_ewkb),
+            BinaryField::Bytea(coord::line_ewkb_3857(&self.geom)),
             BinaryField::Float8(self.length_m),
             BinaryField::Float8(self.total_length_m),
             BinaryField::Float8(self.cost),
@@ -58,7 +58,7 @@ impl CsvRow for EdgeRow {
         out.push(self.seg_idx.to_string());
         out.push(self.start_id.to_string());
         out.push(self.end_id.to_string());
-        out.push(hex::encode(&self.geom_ewkb));
+        out.push(hex::encode(coord::line_ewkb_3857(&self.geom)));
         out.push(self.length_m.to_string());
         out.push(self.total_length_m.to_string());
         out.push(self.cost.to_string());
@@ -72,7 +72,7 @@ impl StageRow for EdgeRow {
         put_u32(buf, self.seg_idx as u32);
         put_i64(buf, self.start_id);
         put_i64(buf, self.end_id);
-        put_bytes(buf, &self.geom_ewkb);
+        coord::stage_encode_run(buf, &self.geom);
         put_f64(buf, self.length_m);
         put_f64(buf, self.total_length_m);
         put_f64(buf, self.cost);
@@ -89,7 +89,7 @@ impl StageDecode for EdgeRow {
             seg_idx: cur.u32()? as usize,
             start_id: cur.i64()?,
             end_id: cur.i64()?,
-            geom_ewkb: cur.bytes()?.to_vec(),
+            geom: cur.with_geom(|d| d.run())?,
             length_m: cur.f64()?,
             total_length_m: cur.f64()?,
             cost: cur.f64()?,
@@ -110,25 +110,15 @@ impl StageDecode for EdgeRow {
 /// disconnected runs, carried as one row rather than splitting into several). `length_m` is `None`
 /// for `Point`/`Polygon` — only a line has a length. `Clone` since the same row can fan out to
 /// however many topics want it.
+///
+/// `geom` is the unconverted IR (see `geom::coord`); each sink encodes it — EWKB 3857 for
+/// Postgres/CSV here, the file outputs' own encodings in `output::coord_fmt` — and `geom_type` is
+/// read off it rather than stored beside it.
 #[derive(Clone)]
 pub struct GeomRow {
     pub osm_id: i64,
-    pub geom_type: &'static str,
-    pub geom_ewkb: Vec<u8>,
+    pub geom: Geom,
     pub length_m: Option<f64>,
-}
-
-/// `geom_type`'s only four possible values are the `&'static str` literals `geom::builders` hands
-/// out — decoding maps a staged string back onto one of those instead of leaking an owned `String`
-/// into a field declared `&'static str` (same reasoning as `output::rows`'s `osm_type_from_str`).
-fn geom_type_from_str(s: &str) -> anyhow::Result<&'static str> {
-    match s {
-        "Point" => Ok("Point"),
-        "LineString" => Ok("LineString"),
-        "MultiLineString" => Ok("MultiLineString"),
-        "Polygon" => Ok("Polygon"),
-        other => anyhow::bail!("unknown geom_type {other:?}"),
-    }
 }
 
 impl BinaryRow for GeomRow {
@@ -136,8 +126,8 @@ impl BinaryRow for GeomRow {
     fn binary_fields(self) -> anyhow::Result<Vec<BinaryField>> {
         Ok(vec![
             BinaryField::Int8(self.osm_id),
-            BinaryField::Text(self.geom_type.to_owned()),
-            BinaryField::Bytea(self.geom_ewkb),
+            BinaryField::Text(self.geom.geom_type().to_owned()),
+            BinaryField::Bytea(self.geom.to_ewkb_3857()),
             self.length_m.map_or(BinaryField::Null, BinaryField::Float8),
         ])
     }
@@ -146,8 +136,8 @@ impl BinaryRow for GeomRow {
 impl CsvRow for GeomRow {
     fn csv_fields(&self, out: &mut Vec<String>) {
         out.push(self.osm_id.to_string());
-        out.push(self.geom_type.to_owned());
-        out.push(hex::encode(&self.geom_ewkb));
+        out.push(self.geom.geom_type().to_owned());
+        out.push(hex::encode(self.geom.to_ewkb_3857()));
         out.push(self.length_m.map(|v| v.to_string()).unwrap_or_default());
     }
 }
@@ -155,8 +145,7 @@ impl CsvRow for GeomRow {
 impl StageRow for GeomRow {
     fn stage_encode(&self, buf: &mut Vec<u8>) {
         put_i64(buf, self.osm_id);
-        put_str(buf, self.geom_type);
-        put_bytes(buf, &self.geom_ewkb);
+        coord::stage_encode(buf, &self.geom);
         put_opt_f64(buf, self.length_m);
     }
 }
@@ -166,8 +155,8 @@ impl StageDecode for GeomRow {
 
     fn stage_decode(cur: &mut StageCursor<'_>, _: &mut ()) -> anyhow::Result<Self> {
         let osm_id = cur.i64()?;
-        let geom_type = geom_type_from_str(cur.str()?)?;
-        Ok(GeomRow { osm_id, geom_type, geom_ewkb: cur.bytes()?.to_vec(), length_m: cur.opt_f64()? })
+        let geom = cur.with_geom(|d| d.geom())?;
+        Ok(GeomRow { osm_id, geom, length_m: cur.opt_f64()? })
     }
 }
 
@@ -180,7 +169,7 @@ impl StageDecode for GeomRow {
 pub struct NodeRow {
     pub id: i64,
     pub osm_id: i64,
-    pub geom_ewkb: Vec<u8>,
+    pub geom: Coord,
 }
 
 impl BinaryRow for NodeRow {
@@ -189,7 +178,7 @@ impl BinaryRow for NodeRow {
         Ok(vec![
             BinaryField::Int8(self.id),
             BinaryField::Int8(self.osm_id),
-            BinaryField::Bytea(self.geom_ewkb),
+            BinaryField::Bytea(Geom::Point(self.geom).to_ewkb_3857()),
         ])
     }
 }
@@ -198,7 +187,7 @@ impl CsvRow for NodeRow {
     fn csv_fields(&self, out: &mut Vec<String>) {
         out.push(self.id.to_string());
         out.push(self.osm_id.to_string());
-        out.push(hex::encode(&self.geom_ewkb));
+        out.push(hex::encode(Geom::Point(self.geom).to_ewkb_3857()));
     }
 }
 
@@ -206,7 +195,7 @@ impl StageRow for NodeRow {
     fn stage_encode(&self, buf: &mut Vec<u8>) {
         put_i64(buf, self.id);
         put_i64(buf, self.osm_id);
-        put_bytes(buf, &self.geom_ewkb);
+        coord::stage_encode(buf, &Geom::Point(self.geom));
     }
 }
 
@@ -236,7 +225,7 @@ mod tests {
             seg_idx: 2,
             start_id: 10,
             end_id: 20,
-            geom_ewkb: vec![1, 2, 3, 4],
+            geom: vec![[1, 2], [3, 4]],
             length_m: 12.5,
             total_length_m: 30.0,
             cost: 12.5,
@@ -251,7 +240,7 @@ mod tests {
         assert_eq!(decoded.seg_idx, 2);
         assert_eq!(decoded.start_id, 10);
         assert_eq!(decoded.end_id, 20);
-        assert_eq!(decoded.geom_ewkb, vec![1, 2, 3, 4]);
+        assert_eq!(decoded.geom, vec![[1, 2], [3, 4]]);
         assert_eq!(decoded.length_m, 12.5);
         assert_eq!(decoded.total_length_m, 30.0);
         assert_eq!(decoded.cost, 12.5);
@@ -260,27 +249,28 @@ mod tests {
 
     #[test]
     fn geom_row_stage_round_trips_with_and_without_length() {
-        let row = GeomRow { osm_id: 5, geom_type: "LineString", geom_ewkb: vec![9, 8, 7], length_m: Some(4.0) };
+        let row = GeomRow { osm_id: 5, geom: Geom::Line(vec![[9, 8], [7, 6]]), length_m: Some(4.0) };
         let decoded = stage_round_trip(&row);
         assert_eq!(decoded.osm_id, 5);
-        assert_eq!(decoded.geom_type, "LineString");
-        assert_eq!(decoded.geom_ewkb, vec![9, 8, 7]);
+        assert_eq!(decoded.geom.geom_type(), "LineString");
+        assert_eq!(decoded.geom, Geom::Line(vec![[9, 8], [7, 6]]));
         assert_eq!(decoded.length_m, Some(4.0));
 
-        let row = GeomRow { osm_id: 6, geom_type: "Point", geom_ewkb: vec![1], length_m: None };
+        let row = GeomRow { osm_id: 6, geom: Geom::Centroid([1.5, 2.5]), length_m: None };
         assert_eq!(stage_round_trip(&row).length_m, None);
     }
 
     #[test]
     fn csv_fields_match_the_column_lists() {
         assert_eq!(csv_of(&edge_row()).len(), EDGE_COLUMNS.split(',').count());
+        let point = Geom::Point([10, 20]);
         assert_eq!(
-            csv_of(&GeomRow { osm_id: 5, geom_type: "Point", geom_ewkb: vec![0xab], length_m: None }),
-            vec!["5".to_owned(), "Point".to_owned(), "ab".to_owned(), String::new()],
+            csv_of(&GeomRow { osm_id: 5, geom: point.clone(), length_m: None }),
+            vec!["5".to_owned(), "Point".to_owned(), hex::encode(point.to_ewkb_3857()), String::new()],
         );
         assert_eq!(
-            csv_of(&NodeRow { id: 3, osm_id: 77, geom_ewkb: vec![0x01, 0xff] }),
-            vec!["3".to_owned(), "77".to_owned(), "01ff".to_owned()],
+            csv_of(&NodeRow { id: 3, osm_id: 77, geom: [10, 20] }),
+            vec!["3".to_owned(), "77".to_owned(), hex::encode(point.to_ewkb_3857())],
         );
     }
 }

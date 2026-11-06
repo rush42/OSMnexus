@@ -6,51 +6,19 @@
 //! graph-fallback edges, which need random access by arbitrary member way id, still do).
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::Path;
 
-use crate::config::CoordPrecision;
-use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, multilinestring_from_ewkb, point_from_ewkb};
+use crate::geom::coord::{Coord, Geom};
 use crate::geom::rows::{EdgeRow, GeomRow};
 use crate::output::rows::MemberRow;
 use crate::output::stage::StageReader;
 
+/// One graph-edge segment, as staged: integer coordinates, converted only by the writer (see
+/// `output::coord_fmt`) — so a way shared by many relations is decoded once here and formatted per
+/// feature, with no per-relation re-parse or re-projection.
 pub struct EdgeGeom {
     pub seg_idx: usize,
-    // Decoded once in `read_edges`, not per feature — a way shared by many relations (e.g. a
-    // trunk road several bus routes run down) would otherwise get its WKB re-parsed and
-    // re-projected once per relation that references it.
-    pub coordinates: Vec<[f64; 2]>,
-}
-
-fn lonlat_coordinates(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<Vec<[f64; 2]>> {
-    Ok(linestring_from_ewkb(geom)?
-        .into_iter()
-        .map(|(x, y)| {
-            let (lon, lat) = mercator_to_wgs84(x, y);
-            [precision.round(lon), precision.round(lat)]
-        })
-        .collect())
-}
-
-fn lonlat_multi_coordinates(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<Vec<Vec<[f64; 2]>>> {
-    Ok(multilinestring_from_ewkb(geom)?
-        .into_iter()
-        .map(|run| {
-            run.into_iter()
-                .map(|(x, y)| {
-                    let (lon, lat) = mercator_to_wgs84(x, y);
-                    [precision.round(lon), precision.round(lat)]
-                })
-                .collect()
-        })
-        .collect())
-}
-
-fn lonlat_point(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<[f64; 2]> {
-    let (x, y) = point_from_ewkb(geom)?;
-    let (lon, lat) = mercator_to_wgs84(x, y);
-    Ok([precision.round(lon), precision.round(lat)])
+    pub coordinates: Vec<Coord>,
 }
 
 /// Reads `relation_members.bin` (`relation_osm_id,way_osm_id`), keyed by `relation_osm_id`. Empty
@@ -71,18 +39,17 @@ pub fn read_relation_members(path: &Path) -> anyhow::Result<HashMap<i64, Vec<i64
 /// `output::geojson`'s own doc), i.e. every way's own segments are contiguous and `seg_idx`-ascending
 /// already, with no re-sort needed. Empty if the file doesn't exist — no topic declared `"graph": {
 /// "way": true }`.
-pub fn read_edges(path: &Path, precision: CoordPrecision) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
+pub fn read_edges(path: &Path) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let mut reader = StageReader::<EdgeRow>::open(path)?;
     let mut out = Vec::new();
     while let Some(row) = reader.next_row()? {
-        if row.geom_ewkb.is_empty() {
-            continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
+        if row.geom.is_empty() {
+            continue; // a segment with no points — never built, but not worth emitting if it were
         }
-        let coordinates = lonlat_coordinates(&row.geom_ewkb, precision)?;
-        out.push((row.osm_id, EdgeGeom { seg_idx: row.seg_idx, coordinates }));
+        out.push((row.osm_id, EdgeGeom { seg_idx: row.seg_idx, coordinates: row.geom }));
     }
     Ok(out)
 }
@@ -137,123 +104,6 @@ impl<'a> EdgeCursor<'a> {
     }
 }
 
-/// One decoded row of a `{table}_node_geom`/`{table}_way_geom`/`{table}_relation_geom` file —
-/// `geom_type` says which shape `coordinates` decodes to (`Point` → `[f64; 2]`, `LineString`/
-/// `Polygon` → `Vec<[f64; 2]>`, `MultiLineString` → `Vec<Vec<[f64; 2]>>`, hence the enum rather than
-/// one fixed shape). Its two consumers need two encodings: the [`serde::Serialize`] impl below
-/// writes GeoJSON's geometry object, and `to_wkb` writes plain (SRID-less; the CRS is declared once
-/// in Parquet file metadata instead — see `output::parquet::geoparquet_crs84`) little-endian WKB for
-/// GeoParquet's `geometry` column.
-pub enum GeomValue {
-    Point([f64; 2]),
-    Line(Vec<[f64; 2]>),
-    MultiLine(Vec<Vec<[f64; 2]>>),
-    Polygon(Vec<[f64; 2]>),
-}
-
-impl GeomValue {
-    fn decode(geom_type: &str, geom_ewkb: &[u8], precision: CoordPrecision) -> anyhow::Result<Self> {
-        Ok(match geom_type {
-            "Point" => GeomValue::Point(lonlat_point(geom_ewkb, precision)?),
-            "LineString" => GeomValue::Line(lonlat_coordinates(geom_ewkb, precision)?),
-            "MultiLineString" => GeomValue::MultiLine(lonlat_multi_coordinates(geom_ewkb, precision)?),
-            "Polygon" => GeomValue::Polygon(lonlat_coordinates(geom_ewkb, precision)?),
-            other => anyhow::bail!("unknown geom_type {other:?} in geometry table"),
-        })
-    }
-
-    pub fn geom_type(&self) -> &'static str {
-        match self {
-            GeomValue::Point(_) => "Point",
-            GeomValue::Line(_) => "LineString",
-            GeomValue::MultiLine(_) => "MultiLineString",
-            GeomValue::Polygon(_) => "Polygon",
-        }
-    }
-
-
-    /// Plain little-endian WKB — GeoParquet's `geometry` column encoding.
-    pub fn to_wkb(&self) -> Vec<u8> {
-        match self {
-            GeomValue::Point(p) => wkb_point(p[0], p[1]),
-            GeomValue::Line(l) => wkb_linestring(l),
-            GeomValue::MultiLine(m) => wkb_multilinestring(m),
-            GeomValue::Polygon(p) => wkb_polygon(std::slice::from_ref(p)),
-        }
-    }
-}
-
-/// GeoJSON's geometry object: `{"coordinates": .., "type": ..}`. Serialized straight from the
-/// native coordinate vectors — building a `serde_json::Value` first turned every coordinate pair
-/// into its own heap-allocated `Vec<Value>` of two `Value::Number`s, which on a country-sized run is
-/// ~10^8 short-lived allocations for a tree that is serialized and dropped immediately. Key order is
-/// alphabetical to match what `serde_json::Map` (a `BTreeMap` here) emitted when this was built with
-/// `json!`.
-impl serde::Serialize for GeomValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(2))?;
-        match self {
-            GeomValue::Point(p) => map.serialize_entry("coordinates", p)?,
-            GeomValue::Line(l) => map.serialize_entry("coordinates", l)?,
-            GeomValue::MultiLine(m) => map.serialize_entry("coordinates", m)?,
-            // A Polygon's `coordinates` is a *list of rings*; this enum carries the single outer
-            // ring, so it nests one level on the way out.
-            GeomValue::Polygon(p) => map.serialize_entry("coordinates", &[p])?,
-        }
-        map.serialize_entry("type", self.geom_type())?;
-        map.end()
-    }
-}
-
-fn wkb_point(lon: f64, lat: f64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(1 + 4 + 16);
-    buf.write_all(&[1u8]).unwrap();
-    buf.write_all(&1u32.to_le_bytes()).unwrap();
-    buf.write_all(&lon.to_le_bytes()).unwrap();
-    buf.write_all(&lat.to_le_bytes()).unwrap();
-    buf
-}
-
-fn wkb_linestring(coords: &[[f64; 2]]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(1 + 4 + 4 + 16 * coords.len());
-    buf.write_all(&[1u8]).unwrap();
-    buf.write_all(&2u32.to_le_bytes()).unwrap();
-    buf.write_all(&(coords.len() as u32).to_le_bytes()).unwrap();
-    for [lon, lat] in coords {
-        buf.write_all(&lon.to_le_bytes()).unwrap();
-        buf.write_all(&lat.to_le_bytes()).unwrap();
-    }
-    buf
-}
-
-fn wkb_polygon(rings: &[Vec<[f64; 2]>]) -> Vec<u8> {
-    let total_points: usize = rings.iter().map(Vec::len).sum();
-    let mut buf = Vec::with_capacity(1 + 4 + 4 + rings.len() * 4 + total_points * 16);
-    buf.write_all(&[1u8]).unwrap();
-    buf.write_all(&3u32.to_le_bytes()).unwrap();
-    buf.write_all(&(rings.len() as u32).to_le_bytes()).unwrap();
-    for ring in rings {
-        buf.write_all(&(ring.len() as u32).to_le_bytes()).unwrap();
-        for [lon, lat] in ring {
-            buf.write_all(&lon.to_le_bytes()).unwrap();
-            buf.write_all(&lat.to_le_bytes()).unwrap();
-        }
-    }
-    buf
-}
-
-fn wkb_multilinestring(lines: &[Vec<[f64; 2]>]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.write_all(&[1u8]).unwrap();
-    buf.write_all(&5u32.to_le_bytes()).unwrap(); // MultiLineString
-    buf.write_all(&(lines.len() as u32).to_le_bytes()).unwrap();
-    for line in lines {
-        buf.extend_from_slice(&wkb_linestring(line));
-    }
-    buf
-}
-
 /// A `{table}_node_geom.bin`/`{table}_way_geom.bin`/`{table}_relation_geom.bin` reader consumed
 /// forward, in step with `{table}.bin`'s own rows of that element kind — see `output::geojson`'s own
 /// doc for why that's safe. One geometry table per kind (not per (kind, shape) pair — see
@@ -261,43 +111,36 @@ fn wkb_multilinestring(lines: &[Vec<[f64; 2]>]) -> Vec<u8> {
 /// shape a given row decodes to comes from its own `geom_type` column, not which file it's in.
 pub struct OrderedGeomCursor {
     reader: Option<StageReader<GeomRow>>,
-    precision: CoordPrecision,
     /// The next record read but not yet known to belong to the element being asked about — held
     /// across calls so a mismatch (this element has no entry) doesn't lose the record, which
     /// belongs to some later element.
-    pending: Option<(i64, GeomValue)>,
+    pending: Option<(i64, Geom)>,
     /// The most recently matched record, kept so a repeated `get` for the *same* `osm_id` (a
     /// side-split topic emits several tag rows per way, all sharing one geometry) reuses it instead
     /// of re-consuming the (already-advanced-past) cursor.
-    last: Option<(i64, GeomValue)>,
+    last: Option<(i64, Geom)>,
 }
 
 impl OrderedGeomCursor {
     /// `None` if `path` doesn't exist — this topic declared no geometry output for this kind.
-    pub fn open(path: &Path, precision: CoordPrecision) -> anyhow::Result<Option<Self>> {
+    pub fn open(path: &Path) -> anyhow::Result<Option<Self>> {
         Ok(StageReader::<GeomRow>::open_optional(path)?
-            .map(|reader| OrderedGeomCursor { reader: Some(reader), precision, pending: None, last: None }))
+            .map(|reader| OrderedGeomCursor { reader: Some(reader), pending: None, last: None }))
     }
 
-    fn read_one(&mut self) -> anyhow::Result<Option<(i64, GeomValue)>> {
-        loop {
-            let Some(reader) = self.reader.as_mut() else { return Ok(None) };
-            let Some(row) = reader.next_row()? else {
-                self.reader = None; // exhausted — stop trying to read further
-                return Ok(None);
-            };
-            if row.geom_ewkb.is_empty() {
-                continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
-            }
-            let value = GeomValue::decode(row.geom_type, &row.geom_ewkb, self.precision)?;
-            return Ok(Some((row.osm_id, value)));
-        }
+    fn read_one(&mut self) -> anyhow::Result<Option<(i64, Geom)>> {
+        let Some(reader) = self.reader.as_mut() else { return Ok(None) };
+        let Some(row) = reader.next_row()? else {
+            self.reader = None; // exhausted — stop trying to read further
+            return Ok(None);
+        };
+        Ok(Some((row.osm_id, row.geom)))
     }
 
     /// This element's geometry, if the file has one — `None` otherwise. Must be called with
     /// `osm_id` in the same relative order `{table}.bin`'s same-kind rows come in (repeats for the
     /// same element, from side-split duplicates, are fine).
-    pub fn get(&mut self, osm_id: i64) -> anyhow::Result<Option<&GeomValue>> {
+    pub fn get(&mut self, osm_id: i64) -> anyhow::Result<Option<&Geom>> {
         if let Some((id, _)) = &self.last {
             if *id == osm_id {
                 return Ok(self.last.as_ref().map(|(_, g)| g));
@@ -321,7 +164,7 @@ mod tests {
     use super::*;
 
     fn seg(seg_idx: usize) -> EdgeGeom {
-        EdgeGeom { seg_idx, coordinates: vec![[0.0, 0.0], [1.0, 1.0]] }
+        EdgeGeom { seg_idx, coordinates: vec![[0, 0], [1, 1]] }
     }
 
     #[test]
@@ -383,32 +226,5 @@ mod tests {
         assert_eq!(way1[1].seg_idx, 1);
         assert_eq!(grouped.get(&2).unwrap().len(), 1);
         assert!(grouped.get(&3).is_none());
-    }
-
-    #[test]
-    fn to_wkb_writes_plain_little_endian_wkb_with_no_srid_flag() {
-        // Plain WKB (no SRID flag, unlike `geom::primitives`' EWKB writers) — byte 0 is the
-        // endianness marker (1 = little-endian), bytes 1..5 the *unflagged* geometry type code.
-        let point = GeomValue::Point([13.4, 52.5]);
-        let wkb = point.to_wkb();
-        assert_eq!(wkb[0], 1);
-        assert_eq!(u32::from_le_bytes(wkb[1..5].try_into().unwrap()), 1); // Point
-        assert_eq!(f64::from_le_bytes(wkb[5..13].try_into().unwrap()), 13.4);
-        assert_eq!(f64::from_le_bytes(wkb[13..21].try_into().unwrap()), 52.5);
-
-        let line = GeomValue::Line(vec![[0.0, 0.0], [1.0, 1.0]]);
-        let wkb = line.to_wkb();
-        assert_eq!(u32::from_le_bytes(wkb[1..5].try_into().unwrap()), 2); // LineString
-        assert_eq!(u32::from_le_bytes(wkb[5..9].try_into().unwrap()), 2); // 2 points
-
-        let multi = GeomValue::MultiLine(vec![vec![[0.0, 0.0], [1.0, 1.0]], vec![[2.0, 2.0], [3.0, 3.0]]]);
-        let wkb = multi.to_wkb();
-        assert_eq!(u32::from_le_bytes(wkb[1..5].try_into().unwrap()), 5); // MultiLineString
-        assert_eq!(u32::from_le_bytes(wkb[5..9].try_into().unwrap()), 2); // 2 component lines
-
-        let polygon = GeomValue::Polygon(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]]);
-        let wkb = polygon.to_wkb();
-        assert_eq!(u32::from_le_bytes(wkb[1..5].try_into().unwrap()), 3); // Polygon
-        assert_eq!(u32::from_le_bytes(wkb[5..9].try_into().unwrap()), 1); // 1 ring
     }
 }
