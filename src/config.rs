@@ -13,7 +13,7 @@ pub struct Config {
     pub pbf_file: String,
 
     /// Config directory: a self-contained folder of topic dirs plus a shared config-root library
-    /// (macros, sanitizers, value_sets.json, classifiers/). Selects which set of topics to run,
+    /// (macros, sanitizers, lists.json, classifiers/). Selects which set of topics to run,
     /// e.g. `configs/tilda`, `configs/example`, `configs/public_transport`.
     #[arg(long, default_value = "configs/tilda")]
     pub config_dir: PathBuf,

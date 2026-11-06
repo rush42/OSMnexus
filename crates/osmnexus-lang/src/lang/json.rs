@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 
 use crate::lang::extract::Extract;
 use crate::lang::filter::Filter;
+use crate::lang::list::ValueList;
 use crate::lang::producer::{Producer, Rule};
 use crate::lang::sanitize::{AtomicJson, Builtin, ReplaceRule, Sanitizer, StrOrVec};
 
@@ -311,8 +312,7 @@ enum FilterJson {
     And { and: Vec<Filter> },
     Or { or: Vec<Filter> },
     Not { not: Box<Filter> },
-    InSet { #[serde(flatten)] extract: Extract, in_set: String },
-    In { #[serde(flatten)] extract: Extract, r#in: Vec<String> },
+    In { #[serde(flatten)] extract: Extract, r#in: InJson },
     Contains { #[serde(flatten)] extract: Extract, contains: String, #[serde(default)] case_insensitive: bool },
     StartsWith { #[serde(flatten)] extract: Extract, starts_with: String },
     EndsWith { #[serde(flatten)] extract: Extract, ends_with: String },
@@ -329,6 +329,14 @@ enum FilterJson {
     Eq { #[serde(flatten)] extract: Extract, eq: String },
 }
 
+/// `in`'s value: an inline array, or the name of a list in `lists.json`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum InJson {
+    Values(Vec<String>),
+    Named(String),
+}
+
 impl<'de> Deserialize<'de> for Filter {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -339,11 +347,13 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::And { and } => Filter::And { and },
             FilterJson::Or { or } => Filter::Or { or },
             FilterJson::Not { not } => Filter::Not { not },
-            FilterJson::InSet { extract, in_set } => Filter::InSet {
+            FilterJson::In { extract, r#in } => Filter::In {
                 extract,
-                in_set: crate::value_sets::ValueSetRef::resolve(in_set).map_err(serde::de::Error::custom)?,
+                r#in: match r#in {
+                    InJson::Values(values) => ValueList::new(values),
+                    InJson::Named(name) => ValueList::resolve(&name).map_err(serde::de::Error::custom)?,
+                },
             },
-            FilterJson::In { extract, r#in } => Filter::In { extract, r#in },
             FilterJson::Contains { extract, contains, case_insensitive } =>
                 Filter::Contains { extract, contains, case_insensitive },
             FilterJson::StartsWith { extract, starts_with } => Filter::StartsWith { extract, starts_with },

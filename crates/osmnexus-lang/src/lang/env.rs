@@ -1,10 +1,10 @@
 //! `CompileEnv`: every input to compilation that isn't a topic's own files — the shared
-//! value sets, unit tables and the traffic side. Built once by the shell and passed to
+//! named value lists, unit tables and the traffic side. Built once by the shell and passed to
 //! `Topic::load`; replaces the former process-globals (`value_sets`/`units` `OnceLock`s reading
 //! `<config_root>/…json`, `traffic::LEFT_HAND_TRAFFIC`), so two configs can be compiled in one
 //! process and a function's real inputs are visible (see `boundaries_plan.md`, step 6).
 //!
-//! Compilation resolves every reference into the IR (`Filter::InSet` holds its set, the
+//! Compilation resolves every reference into the IR (`Filter::In` holds its list's values, the
 //! `parse_length` builtin holds its unit table, `DirectedExtract` its keys), so evaluation never
 //! needs the env. It's only consulted while deserializing, which is why it's made available to the
 //! hand-written `Deserialize` impls through [`with_env`]: serde's derive can't thread a context
@@ -13,7 +13,7 @@
 //! workers (only tree building, after deserialization, does).
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -59,18 +59,19 @@ impl Ord for UnitTable {
 
 #[derive(Debug, Default)]
 pub struct CompileEnv {
-    value_sets: HashMap<String, Arc<HashSet<String>>>,
+    /// Named value lists (`lists.json`), each sorted and deduplicated.
+    lists: HashMap<String, Vec<String>>,
     units: HashMap<String, UnitTable>,
     pub left_hand_traffic: bool,
 }
 
 impl CompileEnv {
-    /// Read `value_sets.json` and `units.json` from the config root (each optional — a missing
-    /// file just means no sets / tables, and referencing one is then a load error).
+    /// Read `lists.json` and `units.json` from the config root (each optional — a missing
+    /// file just means no lists / tables, and referencing one is then a load error).
     pub fn from_sources(sources: &ConfigSources, left_hand_traffic: bool) -> anyhow::Result<Self> {
-        let value_sets: HashMap<String, HashSet<String>> = match sources.read("value_sets.json") {
+        let lists: HashMap<String, BTreeSet<String>> = match sources.read("lists.json") {
             Some(raw) => serde_json::from_str(raw)
-                .with_context(|| format!("parsing {}", sources.path("value_sets.json").display()))?,
+                .with_context(|| format!("parsing {}", sources.path("lists.json").display()))?,
             None => HashMap::new(),
         };
         let units: HashMap<String, Vec<(String, f32)>> = match sources.read("units.json") {
@@ -79,17 +80,18 @@ impl CompileEnv {
             None => HashMap::new(),
         };
         Ok(CompileEnv {
-            value_sets: value_sets.into_iter().map(|(k, v)| (k, Arc::new(v))).collect(),
+            lists: lists.into_iter().map(|(k, v)| (k, v.into_iter().collect())).collect(),
             units: units.into_iter().map(|(k, v)| (k, UnitTable(v.into()))).collect(),
             left_hand_traffic,
         })
     }
 
-    pub fn value_set(&self, name: &str) -> anyhow::Result<Arc<HashSet<String>>> {
-        self.value_sets
+    /// A named value list, sorted and deduplicated.
+    pub fn list(&self, name: &str) -> anyhow::Result<&[String]> {
+        self.lists
             .get(name)
-            .cloned()
-            .with_context(|| format!("value_sets.json: no set named '{name}'"))
+            .map(Vec::as_slice)
+            .with_context(|| format!("lists.json: no list named '{name}'"))
     }
 
     pub fn unit_table(&self, name: &str) -> anyhow::Result<UnitTable> {

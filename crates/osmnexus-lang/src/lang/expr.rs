@@ -107,26 +107,11 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::EndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract.clone(), ends_with.clone()))),
         Filter::In { extract, r#in, .. } => match extract {
             Extract::Value { .. } => {
-                let exprs: Vec<_> = r#in.iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone())))).collect();
+                let exprs: Vec<_> = r#in.values().iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone())))).collect();
                 Expr::Or(exprs)
             }
-            Extract::Candidates { .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(extract.clone(), r#in.clone()))),
+            Extract::Candidates { .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(extract.clone(), r#in.values().to_vec()))),
         },
-        Filter::InSet { extract, in_set, .. } => match extract {
-            Extract::Value { .. } => {
-                let exprs: Vec<_> = in_set.set
-                    .iter()
-                    .map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone()))))
-                    .collect();
-                Expr::Or(exprs)
-            }
-            Extract::Candidates { .. } => {
-                let mut vals: Vec<String> = in_set.set.iter().cloned().collect();
-                vals.sort();
-                Expr::Lit(Literal::Pos(Predicate::FirstTagIn(extract.clone(), vals)))
-            }
-        },
-
         Filter::Parent { parent } => prefix_expr_tags(filter_to_expr(parent)),
 
         Filter::AnnotationEq { key, eq } => match key.as_str() {

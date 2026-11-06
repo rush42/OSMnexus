@@ -4,6 +4,15 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
 
 ## Unreleased
 
+- **`in_set` merged into `in`; `value_sets.json` renamed to `lists.json` — config change.** A
+  membership filter is now always `in`: either an inline array (`"in": ["a", "b"]`, as before) or
+  the name of a list in `<config-dir>/lists.json` (`"in": "allowed_highway"`, formerly
+  `"in_set": "allowed_highway"` against `value_sets.json`). Named lists are resolved at load time,
+  so the language has one membership filter instead of two. Migrate by renaming the file and
+  replacing `"in_set": ` with `"in": `. Lookup strategy is chosen at load time: lists of up to 6
+  values are scanned linearly, longer ones also get an `FxHashSet` (crossover measured at 6–7
+  entries); named lists previously always used a SipHash `HashSet`.
+
 - **One geometry output per element kind, not per (kind, shape) — schema change.** `topic.json`'s
   `"geometry": { "way": ["line", ...] }` (a list, letting a kind declare multiple shapes) is now
   `"geometry_output": { "way": "line" }` (one shape, or omit the kind entirely) — every shipped

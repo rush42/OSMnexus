@@ -72,8 +72,8 @@ Filter =
   | { "or":  [Filter, ...] }
   | { "not": Filter }
   | { "macro": String }                            // expanded from macros.json before load
-  | { <Extract fields>, "in_set": String }
-  | { <Extract fields>, "in": [String, ...] }
+  | { <Extract fields>, "in": [String, ...] }     // inline list
+  | { <Extract fields>, "in": String }            // named list from lists.json
   | { <Extract fields>, "contains": String, "case_insensitive"?: Boolean }
   | { <Extract fields>, "starts_with": String }
   | { <Extract fields>, "ends_with": String }

@@ -3,7 +3,7 @@
 //! their old paths (`crate::lang`, `crate::categorize`, …) so existing call sites and downstream
 //! users keep working.
 
-pub use osmnexus_lang::{categorize, decision_tree, lang, units, value_sets};
+pub use osmnexus_lang::{categorize, decision_tree, lang, units};
 pub use osmnexus_codegen as codegen;
 pub use osmnexus_codegen::tree;
 

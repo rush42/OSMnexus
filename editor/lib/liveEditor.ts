@@ -503,7 +503,7 @@ export async function switchConfig(config: string): Promise<void> {
 
 // Builds a scratch dir containing ONLY `topic`'s subtree plus the current config's shared
 // root-level files (`macros.json`/`producers.json`/`sanitizers.json`/`units.json`/
-// `value_sets.json` — whichever actually exist; matched by "is a file, not a directory" rather
+// `lists.json` — whichever actually exist; matched by "is a file, not a directory" rather
 // than a hardcoded name list, since every topic is a directory and every shared file lives flat
 // at the config root, per `TopicRunner::load`'s own file layout). This is the "run this topic as
 // if it were its own config" piece: `--config-dir` ends up pointing at a dir containing exactly

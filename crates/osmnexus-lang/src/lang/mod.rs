@@ -32,6 +32,7 @@ pub mod expr;
 pub mod extract;
 pub mod filter;
 pub(crate) mod json;
+pub mod list;
 pub mod producer;
 pub mod sanitize;
 pub mod tags;

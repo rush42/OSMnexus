@@ -30,7 +30,7 @@ its real-world length.
 
 Classification (`Filter` in `src/classify/filter.rs`) can only express:
 
-- Tag equality/membership/prefix/suffix/contains (`eq`, `in`, `in_set`,
+- Tag equality/membership/prefix/suffix/contains (`eq`, `in` — an inline list or a named one from `lists.json`,
   `starts_with`, `ends_with`, `contains`, `exists`), optionally on the first
   present tag from a list (`first_tag`), or wrapped in `parent` to evaluate
   against the parent way's tags for left/right-split objects.
