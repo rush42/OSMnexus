@@ -3,9 +3,9 @@
 //! owns every sender, round-robin counter, and writer-task handle for every table kind (tag, edges,
 //! members, node geometry, way geometry, nodes); `main.rs` just calls `spawn`, routes through the
 //! `route_*` methods from inside its select/materialize closures, and calls `finish_select`/
-//! `finish_materialize` to drain + collect counts. No policy here — same sharded-COPY/CSV writer
-//! tasks (`output::writers::{copy_writer, csv_writer}`) and round-robin fan-out as before, just
-//! owned by one value instead of a dozen loose `main.rs` locals.
+//! `finish_materialize` to drain + collect counts. No policy here — the channels carry the
+//! pipeline's row structs and each writer task (`output::writers`) encodes them for its own
+//! backend; this module only decides which task to spawn and which shard a batch goes to.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,8 +22,8 @@ use crate::db::schema::{self, EDGE_TABLE, MEMBER_TABLE, NODE_TABLE};
 use crate::geom::plan::GeometryPlan;
 use crate::geom::materialize::WayGeometry;
 use crate::geom::rows::{EdgeRow, GeomRow, NodeRow, EDGE_COLUMNS, GEOM_COLUMNS, NODE_COLUMNS};
-use crate::output::rows::{tag_columns, BinaryRow, MemberRow, TopicRow, MEMBER_COLUMNS};
-use crate::output::writers::{binary_file_writer, copy_writer, csv_writer};
+use crate::output::rows::{tag_columns, MemberRow, OutputRow, TopicRow, MEMBER_COLUMNS};
+use crate::output::writers::{copy_writer, csv_writer, stage_writer};
 use crate::topic::spec::GeometryShape;
 
 /// Per-writer channel capacity (rows/batches buffered before the producer blocks).
@@ -47,7 +47,7 @@ struct Shard<T> {
     bufs: Vec<Mutex<Vec<T>>>,
 }
 
-impl<T: BinaryRow + Send + Sync + 'static> Shard<T> {
+impl<T: OutputRow> Shard<T> {
     fn spawn(output: Output, pool: &Option<Pool>, out_dir: &Path, table: &str, columns: &'static str, w: usize) -> Self {
         let (mut senders, mut handles) = (Vec::with_capacity(w), Vec::with_capacity(w));
         let mut bufs = Vec::with_capacity(w);
@@ -56,12 +56,11 @@ impl<T: BinaryRow + Send + Sync + 'static> Shard<T> {
             let h = match output {
                 Output::Pg => tokio::spawn(copy_writer::<T>(pool.clone().unwrap(), table.to_owned(), columns, rx)),
                 Output::Csv => tokio::spawn(csv_writer::<T>(out_dir.join(format!("{table}.csv")), columns, rx)),
-                // Staged for `output::geojson`/`output::parquet`'s post-run cursor join — the same
-                // binary wire format `Output::Pg` streams live, written to a file instead (see
-                // `writers::binary_file_writer`'s own doc). No header line/SQL, so `columns` (used
-                // by the other two arms) doesn't apply here.
+                // Staged in the pipeline's own format for `output::geojson`/`output::parquet`'s
+                // post-run cursor join (see `writers::stage_writer`). Staged rows are
+                // self-describing, so `columns` (used by the other two arms) doesn't apply here.
                 Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => {
-                    tokio::spawn(binary_file_writer::<T>(out_dir.join(format!("{table}.bin")), rx))
+                    tokio::spawn(stage_writer::<T>(out_dir.join(format!("{table}.bin")), rx))
                 }
             };
             handles.push(h);
@@ -341,7 +340,7 @@ impl TableWriters {
 /// geometry, which is resolved entirely in memory *after* the main streaming pass (see
 /// `geom::relation`), so it has no ongoing channel to shard across `w` writers like the streaming
 /// tables above; one connection/file is plenty for what's typically a small dataset.
-pub async fn write_rows_once<R: BinaryRow + Send + Sync + 'static>(
+pub async fn write_rows_once<R: OutputRow>(
     output: Output,
     pool: &Option<Pool>,
     out_dir: &Path,
@@ -354,7 +353,7 @@ pub async fn write_rows_once<R: BinaryRow + Send + Sync + 'static>(
         Output::Pg => tokio::spawn(copy_writer::<R>(pool.clone().unwrap(), table.to_owned(), columns, rx)),
         Output::Csv => tokio::spawn(csv_writer::<R>(out_dir.join(format!("{table}.csv")), columns, rx)),
         Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => {
-            tokio::spawn(binary_file_writer::<R>(out_dir.join(format!("{table}.bin")), rx))
+            tokio::spawn(stage_writer::<R>(out_dir.join(format!("{table}.bin")), rx))
         }
     };
     tx.send(rows).await.ok();

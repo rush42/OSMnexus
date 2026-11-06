@@ -2,7 +2,7 @@
   "is_protected_bikelane_separation": {
     "or": [
       { "and": [
-        { "first_tag": ["separation:left", "separation:both", "separation"], "sanitize": "separation", "in_set": "physical_separation" },
+        { "first_tag": ["separation:left", "separation:both", "separation"], "sanitize": "separation", "in": "physical_separation" },
         { "not": { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["motor_vehicle"] } },
         { "tag": "segregated", "exists": false }
       ] },
@@ -12,7 +12,7 @@
       ] },
       { "and": [
         { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["motor_vehicle"] },
-        { "first_tag": ["separation:right", "separation:both"], "sanitize": "separation", "in_set": "physical_separation" }
+        { "first_tag": ["separation:right", "separation:both"], "sanitize": "separation", "in": "physical_separation" }
       ] }
     ]
   },
@@ -20,7 +20,7 @@
     "and": [
       { "tag": "highway", "eq": "cycleway" },
       { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["foot"] },
-      { "not": { "first_tag": ["separation:right", "separation:both"], "sanitize": "separation", "in_set": "blocking_separation" } }
+      { "not": { "first_tag": ["separation:right", "separation:both"], "sanitize": "separation", "in": "blocking_separation" } }
     ]
   },
   "is_advisory_or_exclusive": {

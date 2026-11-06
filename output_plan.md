@@ -197,39 +197,74 @@ coexist (in-memory mode wouldn't need either the `ordered` fold *or* sort/merge,
 indexed in memory sidesteps the whole "how do these two files line up" problem) — but doing
 in-memory staging well doesn't require solving the file-based join problem first, and vice versa.
 
-## Proposed, not yet built: retire the relation→edge graph-fallback join via `as_member`
+## Proposed, not yet built: `inherit_to_member`
 
-Reconsidering the relation graph-fallback case (see the earlier "where does the zip join not work"
-discussion) rather than just working around it. The underlying issue: edges *are* ways (one way
-decomposed into several intersection-cut segments) — the current design instead treats a relation
-wanting graph-shaped output as the primary output row, reaching out at output-build time to *borrow*
-geometry from its member ways' edges (`push_graph_fallback_features` in `output/geojson.rs`/
-`output/parquet.rs`: the relation's own tags, paired with each member way's edge segments). That's
-what forces `group_edges_by_way`'s hashmap — a relation's member way ids are an arbitrary, unordered
-set scattered across a completely different pass's output (`edges.bin`, ordered by `kept_way_order`,
-not `kept_relation_order`), so no forward cursor can serve the lookup (see the fuller explanation
-above).
+Supersedes the earlier `as_member` sketch under that name. **The original sketch is gone** — this
+file pointed at `feedback_as_member_relation_annotations` "in project memory", and that memory store
+is now empty; `as_member` has zero hits in `src/` and `configs/`. Everything below was re-derived,
+and is written here rather than in a memory so it survives.
 
-**Proposed fix**: flip which element owns the output row. Instead of a relation borrowing edge
-geometry at output time, an edge/way should carry whatever relation-derived context it needs *as part
-of its own tag row*, computed during the way's own classification (Pass A) — the same `as_member`
-mechanism already sketched for pulling parent-relation tags into a way/node as a small derived
-annotation set (see `feedback_as_member_relation_annotations` in project memory: a reverse index
-way/node → relation ids, paired with a compact per-relation annotation store, *not* full tag maps
-kept resident). Under this model, an edge already knows everything about itself — including which
-relations reference it — by the time it's classified, before geometry or output enters the picture at
-all. This removes the relation-fallback branch, `group_edges_by_way`, and the one hashmap-requiring
-join entirely; every remaining geometry join becomes the clean "this element's own geometry" case (see
-the `ordered`-tax discussion above — this doesn't eliminate that tax, since way/node/relation-*own*
-geometry still needs order-matching, but it does remove the one case that couldn't be solved by fixing
-`ordered` alone).
+**The idea.** A way that is a member of a relation inherits fields from that relation as part of its
+*own* tag row, computed during the way's own classification (Pass A). Relations are classified in the
+relations pass, which runs *before* Pass A (`osm::reader::sorted`'s module doc), so the parent data
+already exists at the moment a member way is classified. Declared on the parent:
 
-**Until `as_member` ships for this**: `--config public_transport` is the one shipped config that
-actually exercises the relation-fallback path today (per `BACKLOG.md`'s cursor-join history) — its
-route relations currently produce Features by borrowing member-way edge geometry. Removing the
-fallback without replacing it is an accepted, flagged regression for that config specifically: its
-route relations would produce no graph-fallback output at all until `as_member`-derived edge
-annotations land. Not yet removed from the codebase — this is the plan for when it is.
+```json
+"inherit_to_member": { "from": "produced", "fields": ["ref", "name", "colour", "route"] }
+```
+
+`from` selects `produced` or `annotations` as the source. **`annotations` is the wrong default:**
+measured on `configs/public_transport` over bremen, 0 of 665 relations have anything in
+`annotations` at all — it only ever receives engine bookkeeping (`_side`/`_prefix` from side-split
+`Clone` steps, `<output>_source`/`_confidence` from producer `annotate`). Every useful field
+(`ref`/`name`/`colour`/`route`/`network`/`operator`) lives in `produced`.
+
+**A member way has several parents, not one.** Measured on the same run: 184,918 (relation, way)
+pairs over 59,502 distinct member ways — mean **3.11** parents per way, max **85** (way 360845076).
+Two modes, selected by a flag on the transform:
+
+- **fan out** — emit the member once per parent, distinguished by the parent's osm id. This is
+  structurally *identical to side-split*: `TransformStep::Clone` already fans one element into N
+  contiguous tag rows, each with its own `annotate` values and a distinct `id` via `id_suffix`
+  (`way/3999478/cycleway/right`). The only new part is that the fan-out count and values come from
+  the parent list at runtime instead of from static config.
+- **merge** — one row per member, later parent overwriting earlier on key collision. Stable row
+  count, but a way on 85 routes reports one route's `ref`.
+
+**Fan-out needs no join changes.** `OrderedGeomCursor::last` and `EdgeCursor::last` already cache
+their match for a repeated `osm_id`, explicitly because a side-split topic asks for the same way's
+geometry once per side. Contiguous repeats are a supported, exercised shape.
+
+**The cost is output size, not memory.** All 665 relations' `produced` totals **163 KB** (mean 245
+bytes) — `produced` is the topic's configured producer outputs, already curated by config, not the
+raw tag map, so retaining it per relation is trivially cheap. What is *not* cheap is stamping it onto
+members: 184,918 pairs x ~245 bytes is ~45 MB of duplicated output on an extract that currently
+writes a 0-byte file. A four-field list cuts that to ~11 MB. That is what `fields` is for; the
+memory argument for restricting it does not hold.
+
+### Corrections to what this file previously claimed
+
+- **"`--config public_transport` is the one shipped config that exercises the relation-fallback
+  path"** — it does not, and neither does any other. The fallback needs `edges.bin`, which needs a
+  topic declaring `"graph": { "way": true }`; `GraphSpec` defaults both fields to false and `"graph"`
+  appears in no config in the repo. `group_edges_by_way` builds an empty map on every shipped config
+  (`BACKLOG.md` records the same for the way case).
+- **"an accepted, flagged regression ... its route relations would produce no graph-fallback output
+  at all until `as_member` lands"** — that regression has already happened. Verified: bremen through
+  `--config public_transport --output geojsonseq` stages 696 KB of tag rows and 2.9 MB of relation
+  members, and writes a **0-byte** `public_transport.geojsonseq`. Its relations have no
+  `geometry_output` and no edges to borrow. The config is silently broken on file backends today;
+  that, not the hashmap, is the reason to build this.
+
+### Open
+
+- Exact config schema, and whether the mode flag sits on the parent's declaration or the member
+  topic's transform.
+- The reverse index (way -> relation ids) has to be built in the relations pass. Sized on bremen at
+  184,918 pairs; germany is unmeasured and should be before committing to holding it resident.
+- **The engine feature alone will not make `public_transport` emit anything**: that config has no
+  `way/` topic at all (only `node/` and `relation/`). Making it useful is a config authoring task on
+  top of this.
 
 ## Open decisions before implementing
 

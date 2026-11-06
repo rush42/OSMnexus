@@ -1,22 +1,19 @@
-//! Shared forward-cursor join machinery for output backends that re-read the binary-staged tag/
-//! geometry/edges tables after the main run finishes (`output::geojson`'s `.geojson`/`.geojsonseq`,
-//! `output::parquet`'s `.parquet`) — see `output::rows`' own doc for why the staging format is the
-//! same wire bytes `--output pg` streams to Postgres, and `output::geojson`'s own (fuller) doc for
-//! why walking these files forward, in lockstep, needs no hashmap for node/way/relation geometry or
-//! a way's own graph-fallback edges (only a relation's graph-fallback edges, which need random
-//! access by arbitrary member way id, still do).
+//! Shared forward-cursor join machinery for output backends that re-read the staged tag/geometry/
+//! edges tables after the main run finishes (`output::geojson`'s `.geojson`/`.geojsonseq`,
+//! `output::parquet`'s `.parquet`) — see `output::stage` for the file format these read, and
+//! `output::geojson`'s own (fuller) doc for why walking these files forward, in lockstep, needs no
+//! hashmap for node/way/relation geometry or a way's own graph-fallback edges (only a relation's
+//! graph-fallback edges, which need random access by arbitrary member way id, still do).
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::Path;
 
+use crate::config::CoordPrecision;
 use crate::geom::primitives::{linestring_from_ewkb, mercator_to_wgs84, multilinestring_from_ewkb, point_from_ewkb};
-use crate::geom::rows::{edge_binary_schema, geom_binary_schema, EdgeRow, GeomRow};
-use crate::output::rows::{
-    member_binary_schema, read_binary_header, read_binary_row, tag_binary_schema, BinaryFieldType,
-    FromBinaryRow, MemberRow,
-};
+use crate::geom::rows::{EdgeRow, GeomRow};
+use crate::output::rows::MemberRow;
+use crate::output::stage::StageReader;
 
 pub struct EdgeGeom {
     pub seg_idx: usize,
@@ -26,34 +23,34 @@ pub struct EdgeGeom {
     pub coordinates: Vec<[f64; 2]>,
 }
 
-fn lonlat_coordinates(geom: &[u8]) -> anyhow::Result<Vec<[f64; 2]>> {
+fn lonlat_coordinates(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<Vec<[f64; 2]>> {
     Ok(linestring_from_ewkb(geom)?
         .into_iter()
         .map(|(x, y)| {
             let (lon, lat) = mercator_to_wgs84(x, y);
-            [lon, lat]
+            [precision.round(lon), precision.round(lat)]
         })
         .collect())
 }
 
-fn lonlat_multi_coordinates(geom: &[u8]) -> anyhow::Result<Vec<Vec<[f64; 2]>>> {
+fn lonlat_multi_coordinates(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<Vec<Vec<[f64; 2]>>> {
     Ok(multilinestring_from_ewkb(geom)?
         .into_iter()
         .map(|run| {
             run.into_iter()
                 .map(|(x, y)| {
                     let (lon, lat) = mercator_to_wgs84(x, y);
-                    [lon, lat]
+                    [precision.round(lon), precision.round(lat)]
                 })
                 .collect()
         })
         .collect())
 }
 
-fn lonlat_point(geom: &[u8]) -> anyhow::Result<[f64; 2]> {
+fn lonlat_point(geom: &[u8], precision: CoordPrecision) -> anyhow::Result<[f64; 2]> {
     let (x, y) = point_from_ewkb(geom)?;
     let (lon, lat) = mercator_to_wgs84(x, y);
-    Ok([lon, lat])
+    Ok([precision.round(lon), precision.round(lat)])
 }
 
 /// Reads `relation_members.bin` (`relation_osm_id,way_osm_id`), keyed by `relation_osm_id`. Empty
@@ -62,12 +59,9 @@ pub fn read_relation_members(path: &Path) -> anyhow::Result<HashMap<i64, Vec<i64
     if !path.exists() {
         return Ok(HashMap::new());
     }
-    let mut reader = BufReader::new(File::open(path)?);
-    read_binary_header(&mut reader)?;
-    let schema = member_binary_schema();
+    let mut reader = StageReader::<MemberRow>::open(path)?;
     let mut by_relation_id: HashMap<i64, Vec<i64>> = HashMap::new();
-    while let Some(fields) = read_binary_row(&mut reader, &schema)? {
-        let row = MemberRow::from_binary_fields(fields)?;
+    while let Some(row) = reader.next_row()? {
         by_relation_id.entry(row.relation_osm_id).or_default().push(row.way_osm_id);
     }
     Ok(by_relation_id)
@@ -77,20 +71,17 @@ pub fn read_relation_members(path: &Path) -> anyhow::Result<HashMap<i64, Vec<i64
 /// `output::geojson`'s own doc), i.e. every way's own segments are contiguous and `seg_idx`-ascending
 /// already, with no re-sort needed. Empty if the file doesn't exist — no topic declared `"graph": {
 /// "way": true }`.
-pub fn read_edges(path: &Path) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
+pub fn read_edges(path: &Path, precision: CoordPrecision) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let mut reader = BufReader::new(File::open(path)?);
-    read_binary_header(&mut reader)?;
-    let schema = edge_binary_schema();
+    let mut reader = StageReader::<EdgeRow>::open(path)?;
     let mut out = Vec::new();
-    while let Some(fields) = read_binary_row(&mut reader, &schema)? {
-        let row = EdgeRow::from_binary_fields(fields)?;
+    while let Some(row) = reader.next_row()? {
         if row.geom_ewkb.is_empty() {
             continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
         }
-        let coordinates = lonlat_coordinates(&row.geom_ewkb)?;
+        let coordinates = lonlat_coordinates(&row.geom_ewkb, precision)?;
         out.push((row.osm_id, EdgeGeom { seg_idx: row.seg_idx, coordinates }));
     }
     Ok(out)
@@ -149,10 +140,10 @@ impl<'a> EdgeCursor<'a> {
 /// One decoded row of a `{table}_node_geom`/`{table}_way_geom`/`{table}_relation_geom` file —
 /// `geom_type` says which shape `coordinates` decodes to (`Point` → `[f64; 2]`, `LineString`/
 /// `Polygon` → `Vec<[f64; 2]>`, `MultiLineString` → `Vec<Vec<[f64; 2]>>`, hence the enum rather than
-/// one fixed shape). `to_geojson`/`to_wkb` are the two encodings its two consumers need — GeoJSON's
-/// native JSON geometry object, and plain (SRID-less; the CRS is declared once in Parquet file
-/// metadata instead — see `output::parquet::geoparquet_crs84`) little-endian WKB for GeoParquet's
-/// `geometry` column.
+/// one fixed shape). Its two consumers need two encodings: the [`serde::Serialize`] impl below
+/// writes GeoJSON's geometry object, and `to_wkb` writes plain (SRID-less; the CRS is declared once
+/// in Parquet file metadata instead — see `output::parquet::geoparquet_crs84`) little-endian WKB for
+/// GeoParquet's `geometry` column.
 pub enum GeomValue {
     Point([f64; 2]),
     Line(Vec<[f64; 2]>),
@@ -161,12 +152,12 @@ pub enum GeomValue {
 }
 
 impl GeomValue {
-    fn decode(geom_type: &str, geom_ewkb: &[u8]) -> anyhow::Result<Self> {
+    fn decode(geom_type: &str, geom_ewkb: &[u8], precision: CoordPrecision) -> anyhow::Result<Self> {
         Ok(match geom_type {
-            "Point" => GeomValue::Point(lonlat_point(geom_ewkb)?),
-            "LineString" => GeomValue::Line(lonlat_coordinates(geom_ewkb)?),
-            "MultiLineString" => GeomValue::MultiLine(lonlat_multi_coordinates(geom_ewkb)?),
-            "Polygon" => GeomValue::Polygon(lonlat_coordinates(geom_ewkb)?),
+            "Point" => GeomValue::Point(lonlat_point(geom_ewkb, precision)?),
+            "LineString" => GeomValue::Line(lonlat_coordinates(geom_ewkb, precision)?),
+            "MultiLineString" => GeomValue::MultiLine(lonlat_multi_coordinates(geom_ewkb, precision)?),
+            "Polygon" => GeomValue::Polygon(lonlat_coordinates(geom_ewkb, precision)?),
             other => anyhow::bail!("unknown geom_type {other:?} in geometry table"),
         })
     }
@@ -180,15 +171,6 @@ impl GeomValue {
         }
     }
 
-    pub fn to_geojson(&self) -> serde_json::Value {
-        use serde_json::json;
-        match self {
-            GeomValue::Point(p) => json!({ "type": "Point", "coordinates": p }),
-            GeomValue::Line(l) => json!({ "type": "LineString", "coordinates": l }),
-            GeomValue::MultiLine(m) => json!({ "type": "MultiLineString", "coordinates": m }),
-            GeomValue::Polygon(p) => json!({ "type": "Polygon", "coordinates": [p] }),
-        }
-    }
 
     /// Plain little-endian WKB — GeoParquet's `geometry` column encoding.
     pub fn to_wkb(&self) -> Vec<u8> {
@@ -198,6 +180,29 @@ impl GeomValue {
             GeomValue::MultiLine(m) => wkb_multilinestring(m),
             GeomValue::Polygon(p) => wkb_polygon(std::slice::from_ref(p)),
         }
+    }
+}
+
+/// GeoJSON's geometry object: `{"coordinates": .., "type": ..}`. Serialized straight from the
+/// native coordinate vectors — building a `serde_json::Value` first turned every coordinate pair
+/// into its own heap-allocated `Vec<Value>` of two `Value::Number`s, which on a country-sized run is
+/// ~10^8 short-lived allocations for a tree that is serialized and dropped immediately. Key order is
+/// alphabetical to match what `serde_json::Map` (a `BTreeMap` here) emitted when this was built with
+/// `json!`.
+impl serde::Serialize for GeomValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        match self {
+            GeomValue::Point(p) => map.serialize_entry("coordinates", p)?,
+            GeomValue::Line(l) => map.serialize_entry("coordinates", l)?,
+            GeomValue::MultiLine(m) => map.serialize_entry("coordinates", m)?,
+            // A Polygon's `coordinates` is a *list of rings*; this enum carries the single outer
+            // ring, so it nests one level on the way out.
+            GeomValue::Polygon(p) => map.serialize_entry("coordinates", &[p])?,
+        }
+        map.serialize_entry("type", self.geom_type())?;
+        map.end()
     }
 }
 
@@ -255,8 +260,8 @@ fn wkb_multilinestring(lines: &[Vec<[f64; 2]>]) -> Vec<u8> {
 /// `GeomRow`'s own doc), so this single cursor type covers node/way/relation geometry alike; the
 /// shape a given row decodes to comes from its own `geom_type` column, not which file it's in.
 pub struct OrderedGeomCursor {
-    reader: Option<BufReader<File>>,
-    schema: Vec<BinaryFieldType>,
+    reader: Option<StageReader<GeomRow>>,
+    precision: CoordPrecision,
     /// The next record read but not yet known to belong to the element being asked about — held
     /// across calls so a mismatch (this element has no entry) doesn't lose the record, which
     /// belongs to some later element.
@@ -269,27 +274,22 @@ pub struct OrderedGeomCursor {
 
 impl OrderedGeomCursor {
     /// `None` if `path` doesn't exist — this topic declared no geometry output for this kind.
-    pub fn open(path: &Path) -> anyhow::Result<Option<Self>> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let mut reader = BufReader::new(File::open(path)?);
-        read_binary_header(&mut reader)?;
-        Ok(Some(OrderedGeomCursor { reader: Some(reader), schema: geom_binary_schema(), pending: None, last: None }))
+    pub fn open(path: &Path, precision: CoordPrecision) -> anyhow::Result<Option<Self>> {
+        Ok(StageReader::<GeomRow>::open_optional(path)?
+            .map(|reader| OrderedGeomCursor { reader: Some(reader), precision, pending: None, last: None }))
     }
 
     fn read_one(&mut self) -> anyhow::Result<Option<(i64, GeomValue)>> {
         loop {
             let Some(reader) = self.reader.as_mut() else { return Ok(None) };
-            let Some(fields) = read_binary_row(reader, &self.schema)? else {
+            let Some(row) = reader.next_row()? else {
                 self.reader = None; // exhausted — stop trying to read further
                 return Ok(None);
             };
-            let row = GeomRow::from_binary_fields(fields)?;
             if row.geom_ewkb.is_empty() {
                 continue; // a way whose shape degenerated to nothing (see `WayGeometry`'s own doc)
             }
-            let value = GeomValue::decode(row.geom_type, &row.geom_ewkb)?;
+            let value = GeomValue::decode(row.geom_type, &row.geom_ewkb, self.precision)?;
             return Ok(Some((row.osm_id, value)));
         }
     }
@@ -314,26 +314,6 @@ impl OrderedGeomCursor {
             _ => Ok(None),
         }
     }
-}
-
-/// Peek the next binary row's field count without consuming it — lets a tag-row reader infer
-/// whether this table emits the `id` column (6 vs 7 fields, matching `tag_columns`' `emits_id`
-/// conditional) straight from the data instead of needing that boolean threaded in from the caller
-/// (there's no header line to read it from, unlike the old CSV path's header-driven column lookup).
-pub fn peek_tag_field_count(reader: &mut BufReader<File>) -> anyhow::Result<i16> {
-    let buf = reader.fill_buf()?;
-    anyhow::ensure!(buf.len() >= 2, "empty or truncated tag binary file");
-    Ok(i16::from_be_bytes([buf[0], buf[1]]))
-}
-
-/// Open `{table}.bin`, skip its header, and return a reader plus the schema its rows decode with
-/// (`tag_binary_schema`, resolved from `peek_tag_field_count`) — the common setup both
-/// `output::geojson` and `output::parquet` need before streaming its rows.
-pub fn open_tag_reader(out_dir: &Path, table: &str) -> anyhow::Result<(BufReader<File>, Vec<BinaryFieldType>)> {
-    let mut reader = BufReader::new(File::open(out_dir.join(format!("{table}.bin")))?);
-    read_binary_header(&mut reader)?;
-    let emits_id = peek_tag_field_count(&mut reader)? == 7;
-    Ok((reader, tag_binary_schema(emits_id)))
 }
 
 #[cfg(test)]

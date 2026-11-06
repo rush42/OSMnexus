@@ -27,7 +27,7 @@ pub(super) fn stream_osm_fallback<CR, CW, CN, RT, RM, RP>(
 ) -> anyhow::Result<SelectionContext>
 where
     CR: for<'a> Fn(&RelData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) + Sync + Send,
-    CW: for<'a> Fn(&WayData<'a>) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync + Send,
+    CW: for<'a> Fn(&WayData<'a>, &[i64]) -> (Option<u32>, Vec<Vec<TopicRow>>) + Sync + Send,
     CN: for<'a> Fn(&NodeData<'a>) -> (bool, Vec<Vec<TopicRow>>, Option<(u32, GeomRow)>) + Sync + Send,
     RT: Fn(Vec<Vec<TopicRow>>) + Sync + Send,
     RM: Fn(Vec<MemberRow>) + Sync + Send,
@@ -61,6 +61,7 @@ where
     // No ordering guarantee to preserve here (see this function's own doc) — just the full
     // kept-relation id set, in whatever order `rel_members`' hashmap iterates.
     let kept_relation_order: Vec<i64> = rel_members.keys().copied().collect();
+    let way_parents = super::build_way_parents(&rel_members, cb.inherit_to_member);
     // Only relations whose mask wants some geometry pull their member ways' coords in — see
     // `sorted`'s own path for why (mirrored here for the fallback scan).
     let extra_way_ids: FxHashSet<i64> = rel_members
@@ -86,7 +87,8 @@ where
                 let mut way_refs: FxHashMap<i64, (EncodedRefs, u32)> = FxHashMap::default();
                 if let Element::Way(way) = element {
                     let wd = way_data(&way);
-                    let (kept_mask, topic_rows) = (cb.classify_way)(&wd);
+                    let parents = way_parents.get(&wd.id).map_or::<&[i64], _>(&[], Vec::as_slice);
+                    let (kept_mask, topic_rows) = (cb.classify_way)(&wd, parents);
                     (cb.route_tag)(topic_rows);
                     let is_extra = !extra_way_ids.is_empty() && extra_way_ids.contains(&wd.id);
                     if kept_mask.is_some() || is_extra {

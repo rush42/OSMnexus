@@ -1,4 +1,4 @@
-//! `GeometryPlan`: precomputed, once at startup from `&[TopicRunner]`, every geometry decision
+//! `GeometryPlan`: precomputed, once at startup from `&[Topic]`, every geometry decision
 //! that used to be a handful of separately-named `Vec<usize>`/`Vec<bool>` locals in `main.rs`. One
 //! struct, built once, consumed by both `main.rs` (table/writer setup) and `geom::materialize`
 //! (which shape to build) — so the "what does topic i want" question is answered in exactly one
@@ -14,7 +14,7 @@
 //! table sharing to track here either.
 
 use crate::osm::types::ElementKind;
-use crate::topic::runner::TopicRunner;
+use crate::topic::Topic;
 use crate::topic::spec::GeometryShape;
 
 pub struct GeometryPlan {
@@ -46,7 +46,7 @@ pub struct GeometryPlan {
 }
 
 impl GeometryPlan {
-    pub fn build(runners: &[TopicRunner]) -> Self {
+    pub fn build(runners: &[Topic]) -> Self {
         let geom_topics_and_shapes = |kind: ElementKind| -> (Vec<usize>, Vec<GeometryShape>) {
             (0..runners.len())
                 .filter_map(|i| runners[i].geometry_output(kind).map(|shape| (i, shape)))

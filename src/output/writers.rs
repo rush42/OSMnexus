@@ -1,13 +1,16 @@
-//! Output sinks: one buffered writer per (table, shard). All start from the same
-//! `BinaryRow::binary_fields` encoding (see `output::rows`' own doc for why there's only one), then
-//! diverge on *where* the encoded row goes: `copy_writer` streams it straight into a live Postgres
-//! `COPY ... (FORMAT BINARY)` connection (`--output pg`); `binary_file_writer` writes the same wire
-//! bytes to a plain file instead (`--output geojson`/`geojson-seq` staging, read back later by
-//! `output::geojson`'s cursor join); `csv_writer` stringifies the fields
-//! (`binary_fields_to_csv_row`) and writes text (`--output csv`, plus `geojson`/`geojson-seq`'s own
-//! `.csv`-shaped deliverables where they still apply); `memory_sink` skips encoding entirely and
-//! hands the typed rows straight to an in-process consumer — for embedding the pipeline as a
-//! library with no disk round trip at all.
+//! Output sinks: one buffered writer per (table, shard). Every sink starts from the same input —
+//! the pipeline's **row structs** (`TopicRow`/`MemberRow`/`EdgeRow`/`GeomRow`/`NodeRow`) arriving in
+//! batches over a channel — and each owns its encoding of them (see `output::rows`' own doc):
+//! `copy_writer` encodes to Postgres `COPY ... (FORMAT BINARY)` and streams it into a live
+//! connection (`--output pg`); `csv_writer` writes CSV text (`--output csv`); `stage_writer` writes
+//! the run's own staging format (`--output geojson`/`geojson-seq`/`parquet`, read back afterwards by
+//! `output::cursor`'s join — see `output::stage`); `memory_sink` skips encoding entirely and hands
+//! the typed rows straight to an in-process consumer, for embedding the pipeline as a library with
+//! no serialization or disk round trip at all.
+//!
+//! `stage_writer` used to be `binary_file_writer`, dumping Postgres's wire bytes to a file so the
+//! file backends could re-read them through a Postgres decoder. `output::stage`'s doc records why
+//! that is gone.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -20,9 +23,9 @@ use futures::SinkExt;
 use tokio::sync::mpsc;
 
 use crate::output::rows::{
-    binary_fields_to_csv_row, write_binary_header, write_binary_row, write_binary_trailer,
-    write_csv_row, BinaryRow,
+    write_binary_header, write_binary_row, write_binary_trailer, write_csv_row, BinaryRow, CsvRow,
 };
+use crate::output::stage::{StageRow, StageWriter};
 
 /// Flush the byte buffer to the sink once it reaches this size.
 const FLUSH_BYTES: usize = 512 * 1024;
@@ -62,41 +65,28 @@ pub async fn copy_writer<R: BinaryRow>(
     Ok(count)
 }
 
-/// One binary-format file writer: the same wire bytes `copy_writer` streams to Postgres, written to
-/// a plain file instead — used to stage `geojson`/`geojson-seq`'s tag/geometry/edges/relation-member
-/// tables, later decoded back by `output::geojson`'s cursor join (`read_binary_row`/
-/// `FromBinaryRow`). No `columns`/table name needed — no SQL involved, just the header/rows/trailer
-/// framing `write_binary_header`/`write_binary_row`/`write_binary_trailer` already define.
-pub async fn binary_file_writer<R: BinaryRow>(
+/// One staging-file writer: encodes each row with `StageRow` into `path`, framed by
+/// `output::stage`'s `StageWriter`, for `output::cursor`'s post-run join to read back. No table
+/// name or `columns` list needed — a staged row is self-describing, so unlike the `pg`/`csv` sinks
+/// there is no column set to agree on.
+pub async fn stage_writer<R: StageRow>(
     path: PathBuf,
     mut rx: mpsc::Receiver<Vec<R>>,
 ) -> anyhow::Result<usize> {
-    let mut f = BufWriter::new(
-        File::create(&path).with_context(|| format!("creating {}", path.display()))?,
-    );
-    let mut buf = Vec::with_capacity(FLUSH_BYTES);
-    write_binary_header(&mut buf);
-    let mut count = 0;
+    let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+    let mut writer = StageWriter::new(BufWriter::new(file))?;
     while let Some(rows) = rx.recv().await {
         for row in rows {
-            write_binary_row(&mut buf, &row.binary_fields()?);
-            count += 1;
-            if buf.len() >= FLUSH_BYTES {
-                f.write_all(&buf)?;
-                buf.clear();
-            }
+            writer.write_row(&row)?;
         }
     }
-    write_binary_trailer(&mut buf);
-    f.write_all(&buf)?;
-    f.flush()?;
-    Ok(count)
+    Ok(writer.finish()?)
 }
 
-/// One CSV file writer: writes the `header` line, then each row's CSV record (via the shared
-/// `binary_fields()` → `binary_fields_to_csv_row` path — see this module's own doc) to a buffered
-/// file. Returns the row count.
-pub async fn csv_writer<R: BinaryRow>(
+/// One CSV file writer: writes the `header` line, then each row's CSV record (`CsvRow`) to a
+/// buffered file. Returns the row count. `fields` is hoisted out of the loop and cleared per row so
+/// the whole table costs one `Vec<String>`, not one per row.
+pub async fn csv_writer<R: CsvRow>(
     path: PathBuf,
     header: &'static str,
     mut rx: mpsc::Receiver<Vec<R>>,
@@ -106,10 +96,13 @@ pub async fn csv_writer<R: BinaryRow>(
     );
     writeln!(f, "{header}")?;
     let mut buf = Vec::with_capacity(FLUSH_BYTES);
+    let mut fields: Vec<String> = Vec::new();
     let mut count = 0;
     while let Some(rows) = rx.recv().await {
         for row in rows {
-            write_csv_row(&mut buf, &binary_fields_to_csv_row(row.binary_fields()?));
+            fields.clear();
+            row.csv_fields(&mut fields);
+            write_csv_row(&mut buf, &fields);
             count += 1;
         }
         if buf.len() >= FLUSH_BYTES {

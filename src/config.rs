@@ -2,15 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// Default max branch depth of the `categorize` discrimination net (`decision_tree`).
-/// The single source of truth for this default — also read by `decision_tree` as the fallback for
-/// callers (e.g. tests) that build a tree without going through CLI parsing.
-/// Tried raising this to 10 for `bikelanes/way`'s benefit (smaller worst-case/avg leaf size: 14→12,
-/// 5.07→3.59) but measured ~30% *slower* end-to-end on a real Brandenburg run (Pass A 18.0s→24.8s,
-/// total 26.8s→35.0s, cache-warm-controlled) — building the larger tree (554→970 nodes) apparently
-/// costs more than the smaller leaves save at this data volume. Reverted; leaf-size metrics don't
-/// predict real throughput here, so don't raise this without benchmarking end-to-end again.
-pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
+pub use crate::decision_tree::DEFAULT_TREE_MAX_DEPTH;
 
 #[derive(Parser, Debug)]
 #[command(about = "Data-driven OSM PBF topic processing pipeline → PostgreSQL")]
@@ -21,7 +13,7 @@ pub struct Config {
     pub pbf_file: String,
 
     /// Config directory: a self-contained folder of topic dirs plus a shared config-root library
-    /// (macros, sanitizers, value_sets.json, classifiers/). Selects which set of topics to run,
+    /// (macros, sanitizers, lists.json, classifiers/). Selects which set of topics to run,
     /// e.g. `configs/tilda`, `configs/example`, `configs/public_transport`.
     #[arg(long, default_value = "configs/tilda")]
     pub config_dir: PathBuf,
@@ -72,8 +64,8 @@ pub struct Config {
 
     /// Output backend: `pg` (COPY into PostGIS), `csv` (one text file per tag/geometry table), or
     /// `geojson`/`geojsonseq`/`parquet`, which stage their tag/geometry tables as `.bin` files (the
-    /// same Postgres `COPY BINARY` wire format `pg` streams live — see `output::rows`' own doc)
-    /// instead of text CSV, then join them into one `<table>.geojson` `FeatureCollection` per topic /
+    /// pipeline's own row-struct staging format — see `output::stage`'s own doc) instead of text
+    /// CSV, then join them into one `<table>.geojson` `FeatureCollection` per topic /
     /// one `<table>.geojsonseq` newline-delimited GeoJSON Feature stream per topic (RFC 8142) / one
     /// `<table>.parquet` GeoParquet file per topic, forward-joining tag rows to geometry rows on
     /// `osm_id` without a hashmap (see `output::cursor`'s own doc) — for local tooling like the live
@@ -86,6 +78,26 @@ pub struct Config {
     #[arg(long, default_value = "out")]
     pub out_dir: String,
 
+    /// Decimal places to round output coordinates to.
+    ///
+    /// The PBF stores coordinates as fixed-point *decimicrodegrees* (1e-7 degrees), so **7 is the
+    /// source data's exact resolution** — nothing in the input is more precise than that. The
+    /// pipeline projects to Web Mercator internally and unprojects on the way out, and the inverse
+    /// projection's `atan`/`exp` leaves latitudes carrying round-trip noise far past that: a stored
+    /// `53.1016340` comes back out as `53.101634000000004`. (Longitude survives — its transform is
+    /// linear.) So `--coordinate-precision 7` *recovers* the stored value rather than discarding
+    /// information, and drops roughly a third of the coordinate bytes in GeoJSON output, which is
+    /// dominated by them.
+    ///
+    /// The default is deliberately above anything an `f64` can express (its shortest round-trip
+    /// form is at most 17 significant digits), so by default this rounds nothing at all and output
+    /// stays byte-identical to previous releases. Rounding is opt-in.
+    ///
+    /// Applies to every backend that writes coordinates, not just GeoJSON — a run emits one
+    /// coordinate precision, so `.parquet` WKB and `.geojson` agree.
+    #[arg(long, default_value_t = 21)]
+    pub coordinate_precision: u32,
+
     /// Max branch depth of the `categorize` discrimination net (see `decision_tree`).
     /// Deeper trees prune more aggressively at the cost of build time; shallower trees fall back to
     /// larger leaves sooner. `0` skips compiling a tree at all and classifies by walking
@@ -97,7 +109,7 @@ pub struct Config {
 
     /// Shape of the per-topic `{table}_edge` pgRouting table, for topics that declare
     /// `"geometry": { "way": ["graph"] }` in their `topic.json` (see
-    /// `TopicRunner::wants_way_graph`) — built as a post-processing SQL step after the shared edge
+    /// `Topic::wants_way_graph`) — built as a post-processing SQL step after the shared edge
     /// table is loaded (and indexed, if `--create-index` is set). `pgrouting` emits only the
     /// routing columns; `all` additionally joins in the topic's own tag columns
     /// (`produced`/`annotations`/`meta`). Postgres output only; ignored by topics that don't
@@ -139,4 +151,54 @@ pub enum TopicEdgeMode {
     Pgrouting,
     /// The above, plus the topic's own tag columns (`produced`/`annotations`/`meta`) joined in.
     All,
+}
+
+/// How many decimal places output coordinates are rounded to — see `Config::coordinate_precision`
+/// for why 7 is the meaningful value and why the default rounds nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct CoordPrecision(pub u32);
+
+impl CoordPrecision {
+    /// At or above this, rounding is skipped entirely. Not just an optimization: an `f64`'s
+    /// shortest round-trip form is at most 17 significant digits, so a larger precision cannot
+    /// change any value — but computing it anyway would, since `v * 1e21` overflows past the range
+    /// where `round()` means anything and dividing back does not recover `v`. The guard is what
+    /// makes a large default a true no-op rather than silent corruption.
+    const PASSTHROUGH: u32 = 17;
+
+    pub fn round(self, v: f64) -> f64 {
+        if self.0 >= Self::PASSTHROUGH {
+            return v;
+        }
+        let factor = 10f64.powi(self.0 as i32);
+        (v * factor).round() / factor
+    }
+}
+
+#[cfg(test)]
+mod coord_precision_tests {
+    use super::CoordPrecision;
+
+    #[test]
+    fn rounds_away_the_unprojection_noise_to_the_stored_value() {
+        // What `mercator_to_wgs84` hands back for a PBF-stored 53.1016340.
+        assert_eq!(CoordPrecision(7).round(53.101634000000004), 53.101634);
+        assert_eq!(CoordPrecision(7).round(53.10165960000001), 53.1016596);
+        // Longitude is already clean; rounding must leave it alone.
+        assert_eq!(CoordPrecision(7).round(8.8805731), 8.8805731);
+    }
+
+    #[test]
+    fn the_default_precision_changes_nothing() {
+        // The guard, not the arithmetic, is what makes this hold: `v * 1e21` would not survive the
+        // round trip.
+        for v in [53.101634000000004, 8.8805731, -0.0001, 179.9999999999, 0.0] {
+            assert_eq!(CoordPrecision(21).round(v), v, "default precision altered {v}");
+        }
+    }
+
+    #[test]
+    fn negative_coordinates_round_symmetrically() {
+        assert_eq!(CoordPrecision(7).round(-53.101634000000004), -53.101634);
+    }
 }

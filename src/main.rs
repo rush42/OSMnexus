@@ -37,10 +37,10 @@ use clap::Parser;
 use deadpool_postgres::Pool;
 use tracing::info;
 
-use config::{Config, Output};
+use config::{Config, CoordPrecision, Output};
 use db::schema;
 use geom::rows::{GeomRow, GEOM_COLUMNS};
-use topic::TopicRunner;
+use topic::Topic;
 use osm::types::{ElementKind, NodeData, RelData, WayData};
 use output::rows::{MemberRow, TopicRow};
 use output::sinks::{write_rows_once, TableWriters};
@@ -67,7 +67,6 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    osmnexus::traffic::set_left_hand_traffic(cfg.left_hand_traffic);
     if cfg.left_hand_traffic {
         info!("Left-hand traffic: forward/backward directed tags read from the opposite side");
     }
@@ -84,9 +83,9 @@ async fn main() -> anyhow::Result<()> {
     // Select the config directory (a self-contained set of topics + a shared config-root library) and
     // discover its topics (skipping `_`-prefixed dirs). Drop a new `<config>/<name>/` dir in and
     // it's picked up — no code changes needed.
-    osmnexus::paths::set_config_root(cfg.config_dir.clone());
     info!("Config directory: {}", cfg.config_dir.display());
-    let runners: Vec<TopicRunner> = TopicRunner::load_all(cfg.tree_max_depth)?;
+    let config = osmnexus::config_dir::Config::read(&cfg.config_dir, cfg.left_hand_traffic)?;
+    let runners: Vec<Topic> = config.load_all(cfg.tree_max_depth)?;
 
     let tables: Vec<String> = runners.iter().map(|r| r.table().to_owned()).collect();
     let table_refs: Vec<&str> = tables.iter().map(String::as_str).collect();
@@ -122,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
     let has_nodes = runners.iter().any(|r| r.has_kind(ElementKind::Node));
     // Only safe when *every* topic rejects an untagged node — one `accept_all` (or one filter
     // satisfied by a tag's absence) and the whole optimization is off. See
-    // `TopicRunner::skips_untagged` for why this is decided by probing the real pipeline.
+    // `Topic::skips_untagged` for why this is decided by probing the real pipeline.
     let skip_untagged_nodes = runners.iter().all(|r| r.skips_untagged(ElementKind::Node));
 
     // Every geometry decision (which topic wants which shape, for which kind) computed once —
@@ -186,14 +185,24 @@ async fn main() -> anyhow::Result<()> {
     info!("Reading + processing PBF (streaming): {}", cfg.pbf_file);
     let t0 = std::time::Instant::now();
 
-    // CSV/GeoJSON/GeoJSONSeq join tag and geometry rows by output-file *position* (a forward-cursor
-    // join, avoiding a hashmap — see `WayRefsStore::par_route_ordered`'s own doc), so they need
-    // blob-order-deterministic routing. `pg` correlates by the `osm_id` column instead, so row order
-    // is free to relax — see `osm::reader::Callbacks::ordered`'s own doc for what that buys.
+    // GeoJSON/GeoJSONSeq/Parquet join tag and geometry rows by staged-file *position* (a
+    // forward-cursor join, avoiding a hashmap — see `WayRefsStore::par_route_ordered`'s own doc), so
+    // they need blob-order-deterministic routing. `pg` correlates by the `osm_id` column instead, so
+    // row order is free to relax — see `osm::reader::Callbacks::ordered`'s own doc for what that buys.
+    //
+    // `csv` is on the *cheap* path too, despite once being grouped with the cursor-join backends
+    // here: it performs no cross-file join at all (there is no `output::csv` module, and `main.rs`
+    // runs a post-run join step only for the three backends above), and every table it writes leads
+    // with `osm_id` (`TAG_COLUMNS`/`GEOM_COLUMNS`), so a consumer correlates by id exactly like `pg`.
+    // The one caller that reads these files back — the live editor — keys geometry by
+    // `"<osm_type>:<osm_id>"`, never by row position (`editor/lib/liveEditor.ts`), and its
+    // `--source csv` mode returns before Pass A runs at all. See `output_master_plan.md` §1/§3.
+    //
     // `OSMNEXUS_FORCE_ORDERED=1` forces the ordered path even for `pg` — debugging/benchmarking only
     // (confirmed a real ~57% wall-clock cost on germany-latest.osm.pbf this way; see `output_plan.md`),
     // never needed for correctness since `pg` doesn't read its own output back.
-    let ordered = cfg.output != Output::Pg || std::env::var_os("OSMNEXUS_FORCE_ORDERED").is_some();
+    let ordered = !matches!(cfg.output, Output::Pg | Output::Csv)
+        || std::env::var_os("OSMNEXUS_FORCE_ORDERED").is_some();
 
     // Spawn `w` writers per tag table + `w` for each shared table. For Postgres these are sharded
     // COPY connections (rows round-robined for k-way parallel serialization + ingest); for CSV, w=1,
@@ -242,10 +251,16 @@ async fn main() -> anyhow::Result<()> {
         // Pure — no writer side effects. The ordered fast path routes tag rows from its blob-order
         // sequential fold instead of from here (see `osm::reader::Callbacks`' own doc); the fallback
         // scan routes right next to calling this, same as before.
+        // Shared by the relations pass (writes each kept relation's exported fields) and Pass A
+        // (reads them for a member way). Safe in that order because the relations pass completes
+        // before Pass A starts — see `topic::inherit`'s own doc.
+        let inherit = Arc::new(topic::inherit::InheritStore::new(&runners));
+        let inherit_enabled = inherit.any();
+
         let classify_way_cb = {
-            let runners = runners.clone();
-            move |wd: &WayData| -> (Option<u32>, Vec<Vec<TopicRow>>) {
-                let out = classify_way(&runners, wd);
+            let (runners, inherit) = (runners.clone(), inherit.clone());
+            move |wd: &WayData, parents: &[i64]| -> (Option<u32>, Vec<Vec<TopicRow>>) {
+                let out = classify_way(&runners, wd, &inherit, parents);
                 let kept = out.mask != 0;
                 (kept.then_some(out.mask), out.topic_rows)
             }
@@ -257,13 +272,24 @@ async fn main() -> anyhow::Result<()> {
         // wants relation *geometry*; that decision is `geom::materialize`'s, using `plan`, not made
         // here).
         let classify_rel_cb = {
-            let runners = runners.clone();
+            let (runners, inherit) = (runners.clone(), inherit.clone());
             move |rd: &RelData| -> (Option<u32>, Vec<Vec<TopicRow>>, Vec<MemberRow>) {
                 let rows = classify_relation(&runners, rd);
                 let mut mask = 0u32;
                 for (i, r) in rows.iter().enumerate() {
                     if !r.is_empty() {
                         mask |= 1 << i;
+                    }
+                }
+                // Retain whatever this relation exports to its member ways, before the rows are
+                // routed away to a writer. Reaching Pass A is the whole point of `inherit_to_member`
+                // — a member way carries this in its own tag row instead of a relation borrowing the
+                // way's geometry back at output time.
+                if inherit_enabled {
+                    for (i, r) in rows.iter().enumerate() {
+                        if let Some(first) = r.first() {
+                            inherit.capture(&runners, i, rd.id, &first.produced);
+                        }
                     }
                 }
                 let kept = mask != 0;
@@ -329,6 +355,7 @@ async fn main() -> anyhow::Result<()> {
                 classify_rel: classify_rel_cb,
                 relation_geom_mask: plan.relation_geom_mask,
                 classify_way: classify_way_cb,
+                inherit_to_member: inherit_enabled,
                 has_nodes,
                 classify_node: classify_node_cb,
                 skip_untagged_nodes,
@@ -397,7 +424,7 @@ async fn main() -> anyhow::Result<()> {
 
     if cfg.output == Output::GeoJson {
         info!("Building GeoJSON from staged output...");
-        output::geojson::write_geojson(&out_dir, &tables)?;
+        output::geojson::write_geojson(&out_dir, &tables, CoordPrecision(cfg.coordinate_precision))?;
         for table in &tables {
             info!("Wrote {}/{table}.geojson", cfg.out_dir);
         }
@@ -405,7 +432,7 @@ async fn main() -> anyhow::Result<()> {
 
     if cfg.output == Output::GeoJsonSeq {
         info!("Building GeoJSONSeq from staged output...");
-        output::geojson::write_geojsonseq(&out_dir, &tables)?;
+        output::geojson::write_geojsonseq(&out_dir, &tables, CoordPrecision(cfg.coordinate_precision))?;
         for table in &tables {
             info!("Wrote {}/{table}.geojsonseq", cfg.out_dir);
         }
@@ -415,7 +442,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "parquet")]
         {
             info!("Building Parquet from staged output...");
-            output::parquet::write_parquet(&out_dir, &tables)?;
+            output::parquet::write_parquet(&out_dir, &tables, CoordPrecision(cfg.coordinate_precision))?;
             for table in &tables {
                 info!("Wrote {}/{table}.parquet", cfg.out_dir);
             }

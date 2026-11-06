@@ -1,17 +1,19 @@
-pub mod categorize;
+//! `osmnexus`: the imperative shell around `osmnexus-lang` — OSM reading, geometry, the
+//! per-element pipeline, outputs and the CLI. The language crate's modules are re-exported under
+//! their old paths (`crate::lang`, `crate::categorize`, …) so existing call sites and downstream
+//! users keep working.
+
+pub use osmnexus_lang::{categorize, decision_tree, lang, units};
+pub use osmnexus_codegen as codegen;
+pub use osmnexus_codegen::tree;
+
 pub mod config;
 pub mod db;
-pub mod decision_tree;
 pub mod geom;
-pub mod lang;
 pub mod csv_source;
 pub mod osm;
 pub mod output;
-mod parser;
+pub mod config_dir;
 pub mod paths;
 pub mod processing;
 pub mod topic;
-pub mod traffic;
-pub mod tree;
-pub mod units;
-pub mod value_sets;
