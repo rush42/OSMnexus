@@ -438,3 +438,98 @@ mod skip_untagged_tests {
         }
     }
 }
+
+/// `inherit_to_member` end to end over the real pipeline: a relation's row is captured into an
+/// `InheritStore`, and its member way reads the exported value with the ordinary `{"parent": ..}`
+/// producer syntax. Built from a scratch config on disk so the topic goes through the same loader
+/// (`config_dir::Config`) every real run uses.
+#[cfg(test)]
+mod inherit_tests {
+    use crate::osm::types::{ElementKind, RawTags, WayMeta};
+    use crate::output::rows::TopicRow;
+    use crate::topic::inherit::InheritStore;
+    use crate::topic::Topic;
+
+    fn meta() -> WayMeta {
+        WayMeta { timestamp: None, user: None, changeset: None }
+    }
+
+    fn tags(pairs: &[(&'static str, &'static str)]) -> RawTags<'static> {
+        pairs.iter().map(|&(k, v)| (k.into(), v.into())).collect()
+    }
+
+    fn produced(row: &TopicRow) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_str(&row.produced).expect("produced is a JSON object")
+    }
+
+    /// One topic over relations and ways. The relation passes its `ref` through and exports it; the
+    /// way reads it back as `route_ref` from its parent, and keeps its own `ref` (distinct value) to
+    /// prove the two reads don't get crossed.
+    fn routes_topic(mode: &str) -> (tempfile::TempDir, Vec<Topic>) {
+        let dir = tempfile::tempdir().unwrap();
+        let topic_dir = dir.path().join("routes");
+        std::fs::create_dir_all(&topic_dir).unwrap();
+        let topic = serde_json::json!({
+            "table": "routes",
+            "accept_all": { "way": true, "relation": true },
+            "passthrough_tags": ["ref"],
+            // A topic-level producer is a *string* reference into `producers.json`. `true` would not
+            // be: it means "pass the tag of this name through", i.e. read a `route_ref` tag.
+            "producers": { "route_ref": "route_ref" },
+            "inherit_to_member": { "fields": ["ref"], "mode": mode },
+            "meta": false
+        });
+        std::fs::write(topic_dir.join("topic.json"), serde_json::to_vec_pretty(&topic).unwrap()).unwrap();
+        let producers = serde_json::json!({ "route_ref": { "parent": { "tag": "ref" } } });
+        // The topic's own `producers.json` — the config-root one is only the `{"shared": ..}` table.
+        std::fs::write(topic_dir.join("producers.json"), serde_json::to_vec_pretty(&producers).unwrap()).unwrap();
+        let topics = crate::config_dir::Config::read(dir.path(), false).and_then(|c| c.load_all(6)).expect("loading scratch topic");
+        (dir, topics)
+    }
+
+    /// Classify relations `rels` (`(osm_id, ref)`) and capture them, then classify one member way.
+    fn member_way_rows(topics: &[Topic], rels: &[(i64, &'static str)]) -> Vec<TopicRow> {
+        let store = InheritStore::new(topics);
+        assert!(store.any());
+        for &(id, r) in rels {
+            let rows = super::build_topic_rows(&topics[0], ElementKind::Relation, id, &tags(&[("type", "route"), ("ref", r)]), &meta(), &[]);
+            assert_eq!(rows.len(), 1, "the relation itself is kept");
+            store.capture(topics, 0, id, &rows[0].produced);
+        }
+        let ids: Vec<i64> = rels.iter().map(|&(id, _)| id).collect();
+        let parents = store.parents_for(0, &ids);
+        assert_eq!(parents.len(), rels.len(), "every parent exported its ref");
+        super::build_topic_rows(&topics[0], ElementKind::Way, 100, &tags(&[("highway", "service"), ("ref", "W")]), &meta(), &parents)
+    }
+
+    #[test]
+    fn member_way_reads_parent_value_fan_out() {
+        let (_dir, topics) = routes_topic("fan_out");
+        let rows = member_way_rows(&topics, &[(7, "S1"), (9, "S2")]);
+        assert_eq!(rows.len(), 2, "one row per parent");
+        for (row, (rel, r)) in rows.iter().zip([(7, "S1"), (9, "S2")]) {
+            let p = produced(row);
+            assert_eq!(p.get("route_ref").and_then(|v| v.as_str()), Some(r), "{:?}", row.produced);
+            assert_eq!(p.get("ref").and_then(|v| v.as_str()), Some("W"), "own tag stays the way's own");
+            assert!(row.id.as_deref().unwrap().ends_with(&format!("/relation/{rel}")), "{:?}", row.id);
+        }
+    }
+
+    #[test]
+    fn member_way_reads_parent_value_merge() {
+        let (_dir, topics) = routes_topic("merge");
+        let rows = member_way_rows(&topics, &[(7, "S1"), (9, "S2")]);
+        assert_eq!(rows.len(), 1, "one row, parents merged");
+        // Later parent wins on collision (parents are in sorted-id order).
+        assert_eq!(produced(&rows[0]).get("route_ref").and_then(|v| v.as_str()), Some("S2"), "{:?}", rows[0].produced);
+    }
+
+    /// Without a parent, `{"parent": ..}` produces nothing, and the way is emitted once as usual.
+    #[test]
+    fn non_member_way_has_no_parent_value() {
+        let (_dir, topics) = routes_topic("fan_out");
+        let rows = super::build_topic_rows(&topics[0], ElementKind::Way, 100, &tags(&[("highway", "service")]), &meta(), &[]);
+        assert_eq!(rows.len(), 1);
+        assert!(produced(&rows[0]).get("route_ref").is_none(), "{:?}", rows[0].produced);
+    }
+}
