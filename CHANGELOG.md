@@ -20,6 +20,11 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
     `osmpbf`'s `lon()`/`lat()` instead of the integers every way already used, and centroids
     (`"way": "point"`, `"relation": "point"`), which are still computed in Web Mercator but staged as
     float lon/lat and reprojected.
+  - **Relation centroids (`"relation": "point"`) no longer count the gaps between member ways.**
+    Members were concatenated into one line, so each jump from one member's end to the next
+    member's start was weighted like real geometry — with members out of order, enough to pull the
+    point far off the relation. The centroid is now taken over the members chained into connected
+    runs (as for `"relation": "line"`), with nothing joining one run to the next.
   - Polygons now work in file outputs (their staged EWKB was decoded as a `LineString` and
     rejected) and include their holes.
   - Staging files (`*.bin`, now `OSMNXST2`) store 8 instead of 16 bytes per point.

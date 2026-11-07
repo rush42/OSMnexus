@@ -174,22 +174,39 @@ pub fn write_wkb(
     }
 }
 
-/// Centroid of a coordinate sequence's vertices read as a line (`geo::Centroid` on a
-/// `LineString`: length-weighted segment midpoints), lon/lat degrees. Computed in Web Mercator,
-/// as it always was: a planar centroid in raw lon/lat would underweight east-west segments by
-/// `cos(lat)`. `None` for an empty sequence.
-pub fn centroid(coords: &[Coord]) -> Option<[f64; 2]> {
-    let line: geo::LineString<f64> = coords
+fn projected_line(coords: &[Coord]) -> geo::LineString<f64> {
+    coords
         .iter()
         .map(|&c| {
-            let (lon, lat) = to_deg(c);
-            let (x, y) = wgs84_to_3857(lon, lat);
+            let [x, y] = project(c);
             geo::coord! { x: x, y: y }
         })
-        .collect();
-    let p = line.centroid()?;
+        .collect()
+}
+
+fn unproject_point(p: geo::Point<f64>) -> [f64; 2] {
     let (lon, lat) = mercator_to_wgs84(p.x(), p.y());
-    Some([lon, lat])
+    [lon, lat]
+}
+
+/// Centroid of a coordinate sequence read as a line (`geo::Centroid` on a `LineString`:
+/// length-weighted segment midpoints), lon/lat degrees. Computed in Web Mercator, as it always
+/// was: a planar centroid in raw lon/lat would underweight east-west segments by `cos(lat)`, while
+/// Mercator is locally true to scale — and is what a web map draws, so the result is the visual
+/// centre there. `None` for an empty sequence.
+pub fn centroid(coords: &[Coord]) -> Option<[f64; 2]> {
+    projected_line(coords).centroid().map(unproject_point)
+}
+
+/// Centroid of several disjoint lines taken together (`geo::Centroid` on a `MultiLineString`:
+/// every run's segments length-weighted, no segment joining one run to the next), lon/lat degrees,
+/// computed in Web Mercator like [`centroid`]. For a relation, whose member ways are not one line:
+/// concatenating them would add a phantom segment from each member's end to the next member's
+/// start, and with members listed out of geographic order those chords can outweigh the real
+/// geometry. `None` if there are no points at all.
+pub fn centroid_of_runs(runs: &[Vec<Coord>]) -> Option<[f64; 2]> {
+    let multi = geo::MultiLineString::new(runs.iter().map(|r| projected_line(r)).collect());
+    multi.centroid().map(unproject_point)
 }
 
 /// Close a ring in place (repeat the first point at the end if it isn't already there).
@@ -304,6 +321,28 @@ impl<'a> GeomDecoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two member ways far apart, in either member order: the centroid is the same, and it is the
+    /// length-weighted mean of the two members alone — the chord a concatenation would draw between
+    /// them carries no weight.
+    #[test]
+    fn centroid_of_runs_ignores_gaps_between_runs() {
+        let d = 10_000; // 0.001° — small enough that Mercator is near-linear here
+        let a = vec![[0, 0], [d, 0]];
+        let b = vec![[100 * d, 100 * d], [100 * d, 101 * d]];
+        let ab = centroid_of_runs(&[a.clone(), b.clone()]).unwrap();
+        let ba = centroid_of_runs(&[b.clone(), a.clone()]).unwrap();
+        assert!((ab[0] - ba[0]).abs() < 1e-12 && (ab[1] - ba[1]).abs() < 1e-12);
+
+        // Equal-length members: the midpoint of the two members' midpoints (0.0005, 0) and
+        // (0.1, 0.1005) — not pulled towards the 0.14°-long chord between them.
+        assert!((ab[0] - 0.05025).abs() < 1e-6, "{ab:?}");
+        assert!((ab[1] - 0.05025).abs() < 1e-6, "{ab:?}");
+
+        let concatenated: Vec<Coord> = a.iter().chain(&b).copied().collect();
+        let pooled = centroid(&concatenated).unwrap();
+        assert!((pooled[0] - ab[0]).abs() > 1e-4, "the concatenation's chord should have shifted it");
+    }
 
     fn round_trip(g: &Geom) -> Geom {
         let mut buf = Vec::new();

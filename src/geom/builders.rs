@@ -7,7 +7,7 @@
 //! `geom::coord`): lines and rings are selections of the input points, so they stay exact. Only
 //! centroids — the one shape that is computed rather than selected — are floats.
 
-use crate::geom::coord::{centroid, close_ring, Coord, Geom};
+use crate::geom::coord::{centroid, centroid_of_runs, close_ring, Coord, Geom};
 use crate::geom::primitives::haversine_length_m;
 use crate::geom::relation::assemble_rings;
 use crate::geom::rows::{EdgeRow, GeomRow, NodeRow};
@@ -145,14 +145,14 @@ pub fn build_relation_polygon_row(rel_id: i64, outer_rings: &[Vec<Coord>], inner
     Some(GeomRow { osm_id: rel_id, geom: Geom::Polygon(rings), length_m: None })
 }
 
-/// Build a relation's centroid point row from its member ways' coordinates (all points pooled
-/// together, not weighted per-way-length) — see `build_relation_line_row`'s own doc for the same
-/// member-coordinate source. `None` if no member way resolved to any points.
+/// Build a relation's centroid point row from its member ways' coordinates (see
+/// `build_relation_line_row`'s own doc for the same member-coordinate source). The members are
+/// chained into connected runs exactly as for the line row, and the centroid is taken over those
+/// runs together (`centroid_of_runs`) — never over the members concatenated into one line, which
+/// would weight the gap between consecutive members as if it were geometry. `None` if no member
+/// way resolved to any points.
 pub fn build_relation_point_row(rel_id: i64, member_coords: &[Vec<Coord>]) -> Option<GeomRow> {
-    let coords: Vec<Coord> = member_coords.iter().flatten().copied().collect();
-    if coords.is_empty() {
-        return None;
-    }
-    let c = centroid(&coords)?;
+    let runs: Vec<Vec<Coord>> = assemble_rings(member_coords.to_vec()).into_iter().filter(|r| !r.is_empty()).collect();
+    let c = centroid_of_runs(&runs)?;
     Some(GeomRow { osm_id: rel_id, geom: Geom::Centroid(c), length_m: None })
 }
