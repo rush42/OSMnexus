@@ -197,7 +197,14 @@ coexist (in-memory mode wouldn't need either the `ordered` fold *or* sort/merge,
 indexed in memory sidesteps the whole "how do these two files line up" problem) — but doing
 in-memory staging well doesn't require solving the file-based join problem first, and vice versa.
 
-## Proposed, not yet built: `inherit_to_member`
+## `inherit_to_member` *(built — engine side)*
+
+**Status:** implemented (`topic::inherit`, fan-out in `topic::pipeline::build_topic_rows`, reading the
+parent through the existing `{"parent": ..}` producer syntax) and covered end to end by
+`topic::pipeline::inherit_tests`. Not yet used by any shipped config, and the relation
+graph-fallback it was meant to retire is still in the join. The design notes below are the record it
+was built from.
+
 
 Supersedes the earlier `as_member` sketch under that name. **The original sketch is gone** — this
 file pointed at `feedback_as_member_relation_annotations` "in project memory", and that memory store
@@ -278,5 +285,6 @@ memory argument for restricting it does not hold.
    case regardless.
 4. `--output csv`'s own `ordered = true` setting — confirm it doesn't need to be true (no join happens
    for plain CSV output) and fix if so; unrelated to the bigger redesign but low-cost to check.
-5. `as_member`-for-edges design/implementation itself isn't scoped yet — this file only records the
-   decision to go that direction and the accepted `public_transport` regression until it's built.
+5. ~~`as_member`-for-edges design/implementation~~ — built as `inherit_to_member` (see above). What
+   remains is config work (`public_transport` has no way topic) and removing the relation
+   graph-fallback once a config uses the member-way route.
