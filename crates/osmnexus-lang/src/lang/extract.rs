@@ -43,6 +43,10 @@ use crate::lang::tags::RawTags;
 ///   gives none of them any meaning.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 #[serde(try_from = "ExtractJson")]
+// An explicit one-byte tag instead of a niche in a `String`'s capacity: with four variants the
+// niche-encoded discriminant takes ~8 instructions to decode on every read, which made a plain tag
+// lookup measurably slower than when `Extract` had two variants. A byte compare doesn't.
+#[repr(u8)]
 pub enum Extract {
     /// First-present fallback over an ordered candidate list.
     Candidates { keys: Vec<String>, sanitize: Vec<Sanitizer> },
@@ -200,66 +204,66 @@ impl Extract {
     }
 
     /// Resolve the raw string — a first-present fallback over the candidate list, a single key, or
-    /// a virtual tag. Not yet run through `sanitize`. Borrowed for every tag read; only `@id` formats
-    /// a new string, and only when it is actually read.
+    /// a fact/annotation. Not yet run through `sanitize`. Borrowed for every tag read; only `@id`/
+    /// `@timestamp` format a new string, and only when actually read.
     ///
-    /// A parent-scoped `Virtual`/`Note` read here (not via `decision_tree`'s parent redirect) reads the
-    /// parent: a `Filter`/`Producer` `Parent` wrapper has already swapped `ctx` to
+    /// A parent-scoped `Virtual`/`Note` read here (not via `decision_tree`'s parent redirect) reads
+    /// the parent: a `Filter`/`Producer` `Parent` wrapper has already swapped `ctx` to
     /// `ExtractCtx::parent_scope`, and the flag only exists for the decision tree's flattened form.
-    ///
-    /// Split into an inlined tag fast path and an out-of-line fact/annotation path: this is the
-    /// innermost read of every filter and producer, and keeping the rare variants out of it keeps it
-    /// small enough to inline at its call sites (measured: ~8% of Pass A instructions otherwise).
     #[inline]
     pub fn read_raw<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
         match self {
             Extract::Value { key, .. } => ctx.obj_tags.get(key.as_str()).map(|v| Cow::Borrowed(v.as_ref())),
-            Extract::Candidates { keys, .. } => first_present(ctx.obj_tags, keys.iter().map(String::as_str)).map(Cow::Borrowed),
-            _ => self.read_context(ctx),
+            _ => self.read_raw_slow(ctx),
         }
     }
 
     #[inline(never)]
-    fn read_context<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
+    fn read_raw_slow<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
         match self {
+            Extract::Value { key, .. } => ctx.obj_tags.get(key.as_str()).map(|v| Cow::Borrowed(v.as_ref())),
+            Extract::Candidates { keys, .. } => first_present(ctx.obj_tags, keys.iter().map(String::as_str)).map(Cow::Borrowed),
             Extract::Virtual { field, .. } => field.read(ctx),
             Extract::Note { key, .. } => note_text(ctx, key),
-            Extract::Value { .. } | Extract::Candidates { .. } => unreachable!("handled by read_raw"),
         }
     }
 
     /// Read and run through `sanitize` (identity if unset) — what `Producer::Extract` produces.
+    ///
+    /// Hot path: a single plain tag, the overwhelmingly common case, is a hash lookup inlined into
+    /// the caller. Every other shape — candidate lists, facts, annotations — goes out of line, so
+    /// supporting them costs a plain tag read nothing (they used to make this function too big for
+    /// the lookup to be inlined into it, which measurably slowed every plain read).
     #[inline]
     pub fn read(&self, ctx: &ExtractCtx) -> Option<Value> {
         match self {
             Extract::Value { key, sanitize } => eval_sanitize(sanitize, ctx.obj_tags.get(key.as_str())?.as_ref()),
-            Extract::Candidates { keys, sanitize } => {
-                eval_sanitize(sanitize, first_present(ctx.obj_tags, keys.iter().map(String::as_str))?)
-            }
-            _ => eval_sanitize(self.sanitize(), &self.read_context(ctx)?),
+            _ => self.read_slow(ctx),
         }
+    }
+
+    #[inline(never)]
+    fn read_slow(&self, ctx: &ExtractCtx) -> Option<Value> {
+        eval_sanitize(self.sanitize(), &self.read_raw_slow(ctx)?)
     }
 
     /// Like `read`, coerced to a string — what every `Filter` `Tag*` comparison reads. A dropped
     /// sanitize output (or one that isn't string-shaped) compares as absent, not equal to "".
+    /// Same hot path as `read`: an unsanitized single tag borrows straight out of `obj_tags`.
     #[inline]
     pub fn read_str<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
-        // Tags borrow straight out of `obj_tags`; only a fact or annotation takes the general path.
-        let (raw, chain): (&'a str, &[Sanitizer]) = match self {
-            Extract::Value { key, sanitize } => (ctx.obj_tags.get(key.as_str())?.as_ref(), sanitize),
-            Extract::Candidates { keys, sanitize } => (first_present(ctx.obj_tags, keys.iter().map(String::as_str))?, sanitize),
-            _ => {
-                let raw = self.read_context(ctx)?;
-                return Self::sanitized_str(self.sanitize(), raw);
+        match self {
+            Extract::Value { key, sanitize } if sanitize.is_empty() => {
+                ctx.obj_tags.get(key.as_str()).map(|v| Cow::Borrowed(v.as_ref()))
             }
-        };
-        if chain.is_empty() {
-            return Some(Cow::Borrowed(raw));
+            _ => self.read_str_slow(ctx),
         }
-        Self::sanitized_str(chain, Cow::Borrowed(raw))
     }
 
-    fn sanitized_str<'a>(chain: &[Sanitizer], raw: Cow<'a, str>) -> Option<Cow<'a, str>> {
+    #[inline(never)]
+    fn read_str_slow<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
+        let raw = self.read_raw_slow(ctx)?;
+        let chain = self.sanitize();
         if chain.is_empty() {
             return Some(raw);
         }
