@@ -54,7 +54,7 @@
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
         ] },
         "value": { "keys": ["traffic_mode:left", "traffic_mode:both", "traffic_mode"], "sanitize": "traffic_mode" } },
-      { "when": { "tag": "@side", "eq": "left" },
+      { "when": { "tag": "_side", "eq": "left" },
         "value": { "parent_or_obj": { "keys": ["parking:left", "parking:both"], "sanitize": "parking" } } }
     ]
   },
@@ -65,7 +65,7 @@
           { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "exists": true }
         ] },
         "value": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode" } },
-      { "when": { "tag": "@side", "eq": "right" },
+      { "when": { "tag": "_side", "eq": "right" },
         "value": { "parent_or_obj": { "keys": ["parking:right", "parking:both"], "sanitize": "parking" } } }
     ]
   },

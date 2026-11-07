@@ -34,9 +34,6 @@ pub enum Predicate {
     Num(Extract, NumOp, u64),
     HasKeyPrefix(String),
     HasParent,
-    Prefix(String),
-    Infix(String),
-    Side(String),
     /// `Filter::TagsEmpty` — whether the object's own tags are (non-)empty. Practically never
     /// appears in a real category condition (it's `InputTransform::Drop`'s own mechanism), but
     /// `Filter` is one type shared by both, so `filter_to_expr` needs a total mapping regardless.
@@ -58,9 +55,6 @@ impl Predicate {
             Predicate::Num(e, _, _) => e.tag_names(),
             Predicate::HasKeyPrefix(p) => vec![format!("prefix({})", p)],
             Predicate::HasParent => vec!["[parent]".to_string()],
-            Predicate::Prefix(_) => vec!["[prefix]".to_string()],
-            Predicate::Infix(_) => vec!["[infix]".to_string()],
-            Predicate::Side(_) => vec!["[side]".to_string()],
             Predicate::TagsEmpty => vec!["[tags_empty]".to_string()],
         }
     }
@@ -99,15 +93,15 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::Or { or } => Expr::Or(or.iter().map(filter_to_expr).collect()),
         Filter::Not { not } => Expr::Not(Box::new(filter_to_expr(not))),
 
-        Filter::Eq { extract, eq, .. } => Expr::Lit(Literal::Pos(eq_predicate(extract, eq))),
+        Filter::Eq { extract, eq, .. } => Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), eq.clone()))),
         Filter::Exists { extract, exists: true, .. } => Expr::Lit(Literal::Pos(Predicate::Exists(extract.clone()))),
         Filter::Exists { extract, exists: false, .. } => Expr::Lit(Literal::Neg(Predicate::Exists(extract.clone()))),
         Filter::Contains { extract, contains, .. } => Expr::Lit(Literal::Pos(Predicate::Contains(extract.clone(), contains.clone()))),
         Filter::StartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract.clone(), starts_with.clone()))),
         Filter::EndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract.clone(), ends_with.clone()))),
         Filter::In { extract, r#in, .. } => match extract {
-            Extract::Value { .. } | Extract::Virtual { .. } => {
-                let exprs: Vec<_> = r#in.values().iter().map(|v| Expr::Lit(Literal::Pos(eq_predicate(extract, v)))).collect();
+            Extract::Value { .. } | Extract::Virtual { .. } | Extract::Note { .. } => {
+                let exprs: Vec<_> = r#in.values().iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone())))).collect();
                 Expr::Or(exprs)
             }
             Extract::Candidates { .. } => Expr::Lit(Literal::Pos(Predicate::FirstTagIn(extract.clone(), r#in.values().to_vec()))),
@@ -140,53 +134,20 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
     }
 }
 
-/// `extract == v` as a predicate. An unsanitized `@side`/`@prefix`/`@infix` comparison becomes the
-/// dedicated `Side`/`Prefix`/`Infix` predicate rather than a generic `Eq` on a virtual key: the
-/// decision tree branches on those through its own side keys (`SIDE_KEY` etc.), so trees come out
-/// exactly as they did when this was spelled `{"annotation": "_side", ..}`.
-fn eq_predicate(extract: &Extract, v: &str) -> Predicate {
-    use crate::lang::extract::VirtualKey;
-    match extract {
-        Extract::Virtual { field, parent: false, sanitize } if sanitize.is_empty() => match field {
-            VirtualKey::Side => Predicate::Side(v.to_owned()),
-            VirtualKey::Prefix => Predicate::Prefix(v.to_owned()),
-            VirtualKey::Infix => Predicate::Infix(v.to_owned()),
-            VirtualKey::Id | VirtualKey::Type => Predicate::Eq(extract.clone(), v.to_owned()),
-        },
-        _ => Predicate::Eq(extract.clone(), v.to_owned()),
-    }
-}
-
 /// Prefix every tag-carrying predicate's key with `"parent_"`, for `Filter::Parent` — mirrors
-/// what the old `ParentTag*` variants encoded directly. `Side`/`Prefix`/`Infix` become constants
-/// (a parent is never a side object); `HasParent`/`HasKeyPrefix`/`TagsEmpty` pass through.
+/// what the old `ParentTag*` variants encoded directly — facts and annotations included (their
+/// `Extract` carries a parent flag instead of a renamed key). `HasParent`/`HasKeyPrefix`/`TagsEmpty`
+/// pass through.
 fn prefix_expr_tags(e: Expr) -> Expr {
     match e {
         Expr::True => Expr::True,
         Expr::False => Expr::False,
-        // A parent is never a side object: its side is `self` and it has no prefix/infix (see
-        // `ExtractCtx::parent_scope`), so these predicates are constants in parent scope — the same
-        // answer `Filter::Parent`'s direct evaluation gives.
-        Expr::Lit(Literal::Pos(p)) if parent_constant(&p).is_some() => bool_expr(parent_constant(&p).unwrap()),
-        Expr::Lit(Literal::Neg(p)) if parent_constant(&p).is_some() => bool_expr(!parent_constant(&p).unwrap()),
         Expr::Lit(Literal::Pos(p)) => Expr::Lit(Literal::Pos(prefix_predicate(p))),
         Expr::Lit(Literal::Neg(p)) => Expr::Lit(Literal::Neg(prefix_predicate(p))),
         Expr::Not(x) => Expr::Not(Box::new(prefix_expr_tags(*x))),
         Expr::And(xs) => Expr::And(xs.into_iter().map(prefix_expr_tags).collect()),
         Expr::Or(xs) => Expr::Or(xs.into_iter().map(prefix_expr_tags).collect()),
     }
-}
-
-fn parent_constant(p: &Predicate) -> Option<bool> {
-    match p {
-        Predicate::Side(v) => Some(v == "self"),
-        Predicate::Prefix(_) | Predicate::Infix(_) => Some(false),
-        _ => None,
-    }
-}
-
-fn bool_expr(b: bool) -> Expr {
-    if b { Expr::True } else { Expr::False }
 }
 
 fn prefix_predicate(p: Predicate) -> Predicate {
@@ -198,12 +159,7 @@ fn prefix_predicate(p: Predicate) -> Predicate {
         Predicate::Exists(e) => Predicate::Exists(e.prefixed("parent_")),
         Predicate::FirstTagIn(e, vs) => Predicate::FirstTagIn(e.prefixed("parent_"), vs),
         Predicate::Num(e, op, bits) => Predicate::Num(e.prefixed("parent_"), op, bits),
-        p @ (Predicate::HasKeyPrefix(_)
-        | Predicate::HasParent
-        | Predicate::Prefix(_)
-        | Predicate::Infix(_)
-        | Predicate::Side(_)
-        | Predicate::TagsEmpty) => p,
+        p @ (Predicate::HasKeyPrefix(_) | Predicate::HasParent | Predicate::TagsEmpty) => p,
     }
 }
 

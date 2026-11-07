@@ -121,7 +121,7 @@ fn render_producer(g: &mut TreeGraph, p: &Producer) -> String {
             let (label, kind) = match extract {
                 Extract::Value { key, .. } => (format!("Extract\nkey: {key}"), "extract"),
                 Extract::Candidates { keys, .. } => (format!("Extract\nkeys: {keys:?}"), "extract"),
-                Extract::Virtual { .. } => (format!("Extract\nkey: {}", extract.tag_names()[0]), "extract"),
+                Extract::Virtual { .. } | Extract::Note { .. } => (format!("Extract\nkey: {}", extract.tag_names()[0]), "extract"),
             };
             let node = g.node(label, kind);
             annotate_node(g, &node, annotate);

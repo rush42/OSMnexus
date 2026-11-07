@@ -4,15 +4,24 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
 
 ## Unreleased
 
-- **Virtual tags: `@id`, `@type`, `@side`, `@prefix`, `@infix`.** A key starting with `@` reads a
-  fact about the element instead of an OSM tag, everywhere a key is allowed (filters, producers,
-  `in`, `parent`). Under `parent` they describe the parent: a member way reads its relation's id as
-  `{"parent": {"tag": "@id"}}`. Resolved at load time; an unknown `@` key is a load error. See
-  `GRAMMAR.md`.
-- **Breaking (config): `{"annotation": "_side", "eq": ..}` is removed** — write
-  `{"tag": "@side", "eq": ..}` (likewise `@prefix`/`@infix`). The old spelling fails at load with
-  that hint. It could only ever express `eq` on these three keys (any other key crashed the
-  decision-tree build). `configs/tilda` is migrated; its decision trees and outputs are unchanged.
+- **Facts: `@id`, `@type`, `@role`, `@timestamp`.** A key starting with `@` reads a fact about the
+  element instead of an OSM tag, everywhere a key is allowed (filters, producers, `in`, `parent`).
+  Under `parent` they describe the parent: a member way reads its relation's id as
+  `{"parent": {"tag": "@id"}}` and its own role in that relation as `@role`. Resolved at load time;
+  an unknown `@` key is a load error. See `GRAMMAR.md`.
+- **Annotations read as `_` keys: `{"tag": "_side", "eq": "left"}`**, with every operator. Their
+  names and values are entirely the config's: the code no longer gives `_side`, `_prefix` or
+  `_infix` any meaning.
+- **Breaking (config):**
+  - `{"annotation": "_side", "eq": ..}` is removed; write `{"tag": "_side", "eq": ..}`. The old
+    spelling fails at load with that hint. (It could only express `eq` on three keys, and any
+    other key crashed the decision-tree build.)
+  - Base objects no longer get `_side: "self"` automatically. A topic that wants it adds an
+    `{ "annotate": { "_side": "self" } }` step (new; also usable inside a clone).
+  - `directed` steps need `"side": "left" | "right"`; the side is no longer read from `_side`.
+  - `id_type: "none"` is rejected for any topic that clones objects (before: only if a clone wrote
+    `_side`).
+  - `configs/tilda` is migrated; its outputs are byte-identical.
 - **`inherit_to_member`: every kept relation is a parent**, including one that exports none of the
   declared `fields` (which are now optional) — its id is information on its own. A way topic gets
   one row per parent relation in `fan_out` mode even if that parent has no `ref`.

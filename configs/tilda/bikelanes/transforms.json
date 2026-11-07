@@ -1,5 +1,6 @@
 {
   "way": [
+    { "annotate": { "_side": "self" } },
     {
       "output": "highway",
       "match": [
@@ -193,16 +194,16 @@
           {
             "drop": {
               "and": [
-                { "tag": "@infix", "eq": "" },
+                { "tag": "_infix", "eq": "" },
                 { "parent": { "tag": "oneway", "eq": "yes" } },
                 { "not": { "parent": { "tag": "oneway:bicycle", "eq": "no" } } }
               ]
             }
           },
           { "output": "highway", "match": [], "default": "cycleway" },
-          { "output": "cycleway:lanes", "directed": { "key": "cycleway:lanes", "from": "parent" } },
-          { "output": "bicycle:lanes", "directed": { "key": "bicycle:lanes", "from": "parent" } },
-          { "output": "traffic_sign", "directed": { "key": "traffic_sign", "from": "obj" } }
+          { "output": "cycleway:lanes", "directed": { "side": "left", "key": "cycleway:lanes", "from": "parent" } },
+          { "output": "bicycle:lanes", "directed": { "side": "left", "key": "bicycle:lanes", "from": "parent" } },
+          { "output": "traffic_sign", "directed": { "side": "left", "key": "traffic_sign", "from": "obj" } }
         ]
       }
     },
@@ -217,9 +218,9 @@
           { "unnest": "cycleway", "infix": "right", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "drop": { "tags_empty": true } },
           { "output": "highway", "match": [], "default": "cycleway" },
-          { "output": "cycleway:lanes", "directed": { "key": "cycleway:lanes", "from": "parent" } },
-          { "output": "bicycle:lanes", "directed": { "key": "bicycle:lanes", "from": "parent" } },
-          { "output": "traffic_sign", "directed": { "key": "traffic_sign", "from": "obj" } }
+          { "output": "cycleway:lanes", "directed": { "side": "right", "key": "cycleway:lanes", "from": "parent" } },
+          { "output": "bicycle:lanes", "directed": { "side": "right", "key": "bicycle:lanes", "from": "parent" } },
+          { "output": "traffic_sign", "directed": { "side": "right", "key": "traffic_sign", "from": "obj" } }
         ]
       }
     },
@@ -234,7 +235,7 @@
           { "unnest": "sidewalk", "infix": "left", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "drop": { "tags_empty": true } },
           { "output": "highway", "match": [], "default": "footway" },
-          { "output": "traffic_sign", "directed": { "key": "traffic_sign", "from": "obj" } }
+          { "output": "traffic_sign", "directed": { "side": "left", "key": "traffic_sign", "from": "obj" } }
         ]
       }
     },
@@ -249,7 +250,7 @@
           { "unnest": "sidewalk", "infix": "right", "meta": ["source:", "note:"], "record_infix_as": "_infix" },
           { "drop": { "tags_empty": true } },
           { "output": "highway", "match": [], "default": "footway" },
-          { "output": "traffic_sign", "directed": { "key": "traffic_sign", "from": "obj" } }
+          { "output": "traffic_sign", "directed": { "side": "right", "key": "traffic_sign", "from": "obj" } }
         ]
       }
     }

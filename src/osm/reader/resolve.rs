@@ -128,12 +128,14 @@ pub(super) fn way_data<'a>(way: &Way<'a>) -> WayData<'a> {
 /// role is needed for `Polygon` assembly, see `geom::relation`).
 pub(super) fn rel_data<'a>(rel: &Relation<'a>) -> RelData<'a> {
     let tags: RawTags<'a> = rel.tags().map(|(k, v)| (Cow::Borrowed(k), Cow::Borrowed(v))).collect();
-    let member_ways: Vec<(i64, MemberRole)> = rel
-        .members()
-        .filter(|m| m.member_type == RelMemberType::Way)
-        .map(|m| (m.member_id, MemberRole::from_str(m.role().unwrap_or(""))))
-        .collect();
-    RelData { id: rel.id(), tags, member_ways, meta: extract_meta(rel.info()) }
+    let mut member_ways: Vec<(i64, MemberRole)> = Vec::new();
+    let mut member_role_names: Vec<&'a str> = Vec::new();
+    for m in rel.members().filter(|m| m.member_type == RelMemberType::Way) {
+        let role = m.role().unwrap_or("");
+        member_ways.push((m.member_id, MemberRole::from_str(role)));
+        member_role_names.push(role);
+    }
+    RelData { id: rel.id(), tags, member_ways, member_role_names, meta: extract_meta(rel.info()) }
 }
 
 /// Extract a [`NodeData`] from an osmpbf dense node. Dense nodes carry `DenseNodeInfo` (distinct

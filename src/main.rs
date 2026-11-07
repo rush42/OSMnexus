@@ -288,7 +288,7 @@ async fn main() -> anyhow::Result<()> {
                 if inherit_enabled {
                     for (i, r) in rows.iter().enumerate() {
                         if let Some(first) = r.first() {
-                            inherit.capture(&runners, i, rd.id, &first.produced);
+                            inherit.capture(&runners, i, rd, &first.produced);
                         }
                     }
                 }

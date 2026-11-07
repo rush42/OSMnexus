@@ -57,7 +57,7 @@ fn tree_matches_linear() {
           .expect("parse resolved macros");
       for (kind, mut cats) in load_topic_categories(src, &topic, &resolved_macros, &macros, &sanitizers).expect("load categories") {
         let topic = format!("{topic}/{}", kind.subdir());
-        cats.build_order(crate::decision_tree::DEFAULT_TREE_MAX_DEPTH).expect("build order + tree");
+        cats.build_order(crate::decision_tree::DEFAULT_TREE_MAX_DEPTH, &Default::default()).expect("build order + tree");
 
         let refs = referenced_eq(&cats);
         let hw_vals: Vec<Option<String>> = {
@@ -107,6 +107,7 @@ fn tree_matches_linear() {
                         annotations: &annotations,
                         elem: None,
                         parent_elem: None,
+                        role: None,
                     };
                     let a = categorize(&ctx, &cats).map(|c| c.id.clone());
                     let b = categorize_linear(&ctx, &cats).map(|c| c.id.clone());

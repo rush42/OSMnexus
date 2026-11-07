@@ -61,7 +61,7 @@ pub fn classify_way(
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let parents = inherit.parents_for(i, parents);
+            let parents = inherit.parents_for(i, wd.id, parents);
             let rows = crate::topic::pipeline::process(r, ElementKind::Way, wd.id, &wd.tags, &wd.meta, &parents);
             if !rows.is_empty() {
                 mask |= 1 << i;

@@ -3,7 +3,7 @@
 //! This is what lets `build::build_rec` prove a candidate provably dead (or provably resolved)
 //! along one branch path without needing a concrete object.
 
-use super::{num_matches, BranchKey, HAS_PARENT_KEY, INFIX_KEY, PREFIX_KEY, SIDE_KEY};
+use super::{num_matches, BranchKey, HAS_PARENT_KEY};
 use crate::lang::expr::{Expr, Literal, Predicate};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -107,10 +107,7 @@ pub(crate) fn simplify(e: &Expr, decide: &impl Fn(&Predicate) -> K) -> Expr {
 pub(crate) fn decide_value(p: &Predicate, key: &BranchKey, v: &str) -> K {
     let b = |cond: bool| if cond { K::T } else { K::F };
     let extract = match key {
-        BranchKey::Sentinel(SIDE_KEY) => return match p { Predicate::Side(s) => b(s == v), _ => K::U },
         BranchKey::Sentinel(HAS_PARENT_KEY) => return match p { Predicate::HasParent => b(v == "true"), _ => K::U },
-        BranchKey::Sentinel(PREFIX_KEY) => return match p { Predicate::Prefix(s) => b(s == v), _ => K::U },
-        BranchKey::Sentinel(INFIX_KEY) => return match p { Predicate::Infix(s) => b(s == v), _ => K::U },
         BranchKey::Sentinel(other) => unreachable!("unknown branch-key sentinel {other:?}"),
         BranchKey::Tag(extract) => extract,
     };
@@ -132,7 +129,7 @@ pub(crate) fn decide_value(p: &Predicate, key: &BranchKey, v: &str) -> K {
 /// Decide a predicate under "`key`'s read value is absent, or present but not among `values`
 /// (`build::eligible_values`'s result for this same branch)". Only a target value that's actually
 /// in `values` can be folded to `False` here — `values` is collected from *positive*
-/// Eq/FirstTagIn/Prefix/Infix occurrences only (`walkers::collect_eq_values`), so a negative-only
+/// Eq/FirstTagIn occurrences only (`walkers::collect_eq_values`), so a negative-only
 /// literal naming some other value was never enumerated as a child, and the wildcard object could
 /// still carry exactly that value; folding it to `False` regardless (as if every nameable value
 /// were enumerated) is unsound — it doesn't just miss a prune, it can make the leaf's residual
@@ -142,10 +139,7 @@ pub(crate) fn decide_value(p: &Predicate, key: &BranchKey, v: &str) -> K {
 pub(crate) fn decide_wildcard(p: &Predicate, key: &BranchKey, values: &[String]) -> K {
     let enumerated = |v: &str| if values.iter().any(|x| x == v) { K::F } else { K::U };
     let extract = match key {
-        BranchKey::Sentinel(SIDE_KEY) => return match p { Predicate::Side(_) => K::F, _ => K::U },
         BranchKey::Sentinel(HAS_PARENT_KEY) => return match p { Predicate::HasParent => K::F, _ => K::U },
-        BranchKey::Sentinel(PREFIX_KEY) => return match p { Predicate::Prefix(v) => enumerated(v), _ => K::U },
-        BranchKey::Sentinel(INFIX_KEY) => return match p { Predicate::Infix(v) => enumerated(v), _ => K::U },
         BranchKey::Sentinel(other) => unreachable!("unknown branch-key sentinel {other:?}"),
         BranchKey::Tag(extract) => extract,
     };

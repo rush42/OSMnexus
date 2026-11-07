@@ -366,10 +366,9 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::Eq { extract, eq } => Filter::Eq { extract, eq },
             FilterJson::Parent { parent } => Filter::Parent { parent },
             FilterJson::Annotation { annotation, eq } => {
-                let key = annotation.strip_prefix('_').unwrap_or(&annotation);
                 return Err(serde::de::Error::custom(format!(
                     "{{\"annotation\": {annotation:?}, \"eq\": {eq:?}}} is no longer supported; \
-                     write {{\"tag\": \"@{key}\", \"eq\": {eq:?}}}"
+                     write {{\"tag\": {annotation:?}, \"eq\": {eq:?}}}"
                 )));
             }
             FilterJson::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix },

@@ -70,19 +70,11 @@ pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
 pub use build::build;
 pub(crate) use runtime::resolve_first;
 
-/// Sentinel branch key for `Predicate::Side`. Domain is exactly `{"self","left","right"}` — always
-/// fully known for a given object, so this branch never needs a wildcard fallback in practice.
-pub(crate) const SIDE_KEY: &str = "\0side";
 /// Sentinel branch key for `Predicate::HasParent`. Domain is exactly `{"true","false"}`.
 pub(crate) const HAS_PARENT_KEY: &str = "\0has_parent";
-/// Sentinel branch key for `Predicate::Prefix`. Like a tag: enumerated literal values + wildcard
-/// for "absent or some other prefix".
-pub(crate) const PREFIX_KEY: &str = "\0prefix";
-/// Sentinel branch key for `Predicate::Infix`. Same shape as `PREFIX_KEY`.
-pub(crate) const INFIX_KEY: &str = "\0infix";
 
-/// What a `DecisionTree::Branch` reads to decide which child to descend into: one of the four
-/// fixed-domain `ExtractCtx` sentinels, or a real tag read (`Extract::read_str`, `sanitize` and
+/// What a `DecisionTree::Branch` reads to decide which child to descend into: the fixed-domain
+/// `has_parent` sentinel, or a key read — an OSM tag, a fact or an annotation (`Extract::read_str`, `sanitize` and
 /// all — see this module's own doc).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BranchKey {
@@ -104,7 +96,7 @@ impl std::fmt::Display for BranchKey {
                 if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
                 Ok(())
             }
-            BranchKey::Tag(e @ Extract::Virtual { sanitize, .. }) => {
+            BranchKey::Tag(e @ (Extract::Virtual { sanitize, .. } | Extract::Note { sanitize, .. })) => {
                 write!(f, "{}", e.tag_names()[0])?;
                 if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
                 Ok(())

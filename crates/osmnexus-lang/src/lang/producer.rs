@@ -91,11 +91,10 @@ pub struct Produced {
 /// Which tags (`obj_tags`, `parent_tags`), `id` — the row id for this object, defaulted to the
 /// element's own id and overwritten for a side object (e.g.
 /// `"way/123/cycleway/left"`) — and `annotations`, a read-only view of whatever engine bookkeeping
-/// (see `output::rows::TopicRow::annotations`) has been attached to this object so far, so a
-/// `Filter` (`Side`/`Prefix`/`Infix`/`TagsEmpty`/…) can branch on it just like it can on
-/// `obj_tags`. There is no dedicated side-split-context field: `_side`/`_prefix`/`_infix` are
-/// ordinary `annotations` entries, stamped by whatever built this context (see `categorize::transform::run_transform_steps`) — `Filter::AnnotationEq`
-/// reads `annotations["_side"]` the same way `Filter::Eq` reads a tag. `Copy` so a producer can
+/// (see `output::rows::TopicRow::annotations`) has been attached to this object so far, readable
+/// as `_`-prefixed keys (`Extract::Note`) just like tags. Nothing in the code gives any annotation
+/// a meaning: `_side`/`_prefix`/`_infix` are whatever the topic's own transforms wrote (see
+/// `categorize::transform::run_transform_steps`). `Copy` so a producer can
 /// cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself against
 /// a different tagset — `annotations` stays a shared reference for that reason, never `&mut`;
 /// whatever step is actively writing to it (see `InputTransform::apply`) holds its own `&mut`
@@ -112,19 +111,24 @@ pub struct ExtractCtx<'a> {
     pub annotations: &'a Map<String, Value>,
     pub elem: Option<Elem>,
     pub parent_elem: Option<Elem>,
+    /// This element's role in its parent relation (`@role`) — set only for a member way read
+    /// against a parent relation (`inherit_to_member`).
+    pub role: Option<&'a str>,
 }
 
-/// An OSM element's identity: its kind and id.
+/// An OSM element's identity: what the `@id`/`@type`/`@timestamp` facts read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Elem {
     pub kind: crate::lang::tags::ElementKind,
     pub osm_id: i64,
+    /// Unix seconds of the element's last edit, when the file carries metadata.
+    pub timestamp: Option<i64>,
 }
 
 impl<'a> ExtractCtx<'a> {
     /// The context a parent-scoped read (`{"parent": ..}`) evaluates in: the parent's tags and
-    /// identity, and *no* annotations — `_side`/`_prefix`/`_infix` describe the side object being
-    /// classified, not its parent, so a parent read of `@side` is `self`. `None` without a parent.
+    /// identity, and *no* annotations or role — those were written for, or describe, the element
+    /// being classified, not its parent. `None` without a parent.
     pub fn parent_scope(&self) -> Option<ExtractCtx<'a>> {
         let parent_tags = self.parent_tags?;
         Some(ExtractCtx {
@@ -134,19 +138,11 @@ impl<'a> ExtractCtx<'a> {
             annotations: empty_annotations(),
             elem: self.parent_elem,
             parent_elem: None,
+            role: None,
         })
     }
 }
 
-/// The object's side: `_side` when a `split_sides` `Clone` stamped one, `"self"` otherwise.
-///
-/// The base object deliberately carries *no* `_side` annotation — it used to be stamped
-/// unconditionally, which meant every emitted row stored (and cloned) a constant
-/// `{"_side": "self"}` saying nothing. Absence is now the encoding for "self", so every reader has
-/// to apply that default rather than compare the raw lookup.
-pub fn side_of<'a>(ctx: &ExtractCtx<'a>) -> &'a str {
-    ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self")
-}
 
 /// A shared, empty annotations map — for a context that has none to offer (a neutral
 /// `eval_filter` check, or a test helper) but still needs a `&Map` to satisfy `ExtractCtx`.
@@ -304,7 +300,7 @@ mod classify_bool_tests {
     use crate::lang::json::TagSet;
 
     fn ctx<'a>(obj: &'a RawTags<'a>, parent: Option<&'a RawTags<'a>>) -> ExtractCtx<'a> {
-        ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations(), elem: None, parent_elem: None }
+        ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations(), elem: None, parent_elem: None, role: None }
     }
 
     /// A `Match` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.

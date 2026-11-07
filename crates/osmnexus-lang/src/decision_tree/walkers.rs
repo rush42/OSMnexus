@@ -1,7 +1,7 @@
 //! Small `Expr`-tree scans that `build` uses to find branch-key/atom candidates. Pure syntactic
 //! walks — no build-time folding (that's `kleene`) and no per-object evaluation (that's `runtime`).
 
-use super::{BranchKey, HAS_PARENT_KEY, INFIX_KEY, PREFIX_KEY, SIDE_KEY};
+use super::{BranchKey, HAS_PARENT_KEY};
 use crate::lang::expr::{Expr, Literal, Predicate};
 use crate::lang::extract::Extract;
 
@@ -16,20 +16,17 @@ fn walk_literals(e: &Expr, f: &mut impl FnMut(&Literal)) {
     }
 }
 
-/// Invoke `f` on the `Extract` of every positive `Eq`/`FirstTagIn` atom, and on the relevant
-/// sentinel key for every `Side`/`HasParent`/`Prefix`/`Infix` atom (either polarity — their fixed,
-/// small domain makes them decidable regardless of sign, unlike an arbitrary-string tag `Eq`/`Neq`).
+/// Invoke `f` on the `Extract` of every positive `Eq`/`FirstTagIn` atom, and on the sentinel key
+/// for every `HasParent` atom (either polarity — its fixed `true`/`false` domain makes it decidable
+/// regardless of sign, unlike an arbitrary-string `Eq`/`Neq`).
 pub(crate) fn collect_branch_keys(e: &Expr, f: &mut impl FnMut(BranchKey)) {
     walk_literals(e, &mut |lit| match lit {
         Literal::Pos(Predicate::Eq(extract, _) | Predicate::FirstTagIn(extract, _)) => {
             f(BranchKey::Tag(extract.clone()))
         }
-        Literal::Pos(Predicate::Side(_)) | Literal::Neg(Predicate::Side(_)) => f(BranchKey::Sentinel(SIDE_KEY)),
         Literal::Pos(Predicate::HasParent) | Literal::Neg(Predicate::HasParent) => {
             f(BranchKey::Sentinel(HAS_PARENT_KEY))
         }
-        Literal::Pos(Predicate::Prefix(_)) | Literal::Neg(Predicate::Prefix(_)) => f(BranchKey::Sentinel(PREFIX_KEY)),
-        Literal::Pos(Predicate::Infix(_)) | Literal::Neg(Predicate::Infix(_)) => f(BranchKey::Sentinel(INFIX_KEY)),
         _ => {}
     })
 }
@@ -56,15 +53,12 @@ pub(crate) fn collect_atom_candidates(e: &Expr, f: &mut impl FnMut(&Predicate)) 
     })
 }
 
-/// Invoke `f` on the value(s) of every positive `Eq`/`FirstTagIn` atom on `key`'s `Extract` (or, for
-/// `PREFIX_KEY`/`INFIX_KEY`, every positive `Prefix`/`Infix` atom's literal value).
+/// Invoke `f` on the value(s) of every positive `Eq`/`FirstTagIn` atom on `key`'s `Extract`.
 pub(crate) fn collect_eq_values(e: &Expr, key: &BranchKey, f: &mut impl FnMut(&str)) {
     let matches_extract = |e: &Extract| matches!(key, BranchKey::Tag(k) if k == e);
     walk_literals(e, &mut |lit| match lit {
         Literal::Pos(Predicate::Eq(extract, v)) if matches_extract(extract) => f(v),
         Literal::Pos(Predicate::FirstTagIn(extract, vs)) if matches_extract(extract) => vs.iter().for_each(|v| f(v)),
-        Literal::Pos(Predicate::Prefix(v)) if matches!(key, BranchKey::Sentinel(PREFIX_KEY)) => f(v),
-        Literal::Pos(Predicate::Infix(v)) if matches!(key, BranchKey::Sentinel(INFIX_KEY)) => f(v),
         _ => {}
     })
 }

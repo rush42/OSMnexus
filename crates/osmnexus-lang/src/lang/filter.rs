@@ -81,7 +81,7 @@ impl Filter {
             match extract {
                 Extract::Value { key, .. } => key.clone(),
                 Extract::Candidates { keys, .. } => format!("[{}]", keys.join("|")),
-                Extract::Virtual { .. } => extract.tag_names().remove(0),
+                Extract::Virtual { .. } | Extract::Note { .. } => extract.tag_names().remove(0),
             }
         }
         // A predicate whose comparison already reads as a keyword (`in`, `contains`, ...) doesn't
@@ -201,6 +201,33 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
     }
 }
 
+/// Rewrite `not (_k == v)` into `_k in (domain(_k) \ {v})` for every annotation key whose complete
+/// value set `domains` knows (see `categorize::transform::annotation_domains`). Equivalent for every
+/// object the config can produce — the key is always present with one of those values — and it
+/// turns a negation the decision tree can't branch on into positive comparisons it can. Only the
+/// tree's input is rewritten; evaluation semantics don't change. Parent-scoped reads are left alone
+/// (a parent has no annotations).
+pub fn close_annotation_negations(f: &Filter, domains: &std::collections::BTreeMap<String, Vec<String>>) -> Filter {
+    let rec = |f: &Filter| close_annotation_negations(f, domains);
+    match f {
+        Filter::And { and } => Filter::And { and: and.iter().map(rec).collect() },
+        Filter::Or { or } => Filter::Or { or: or.iter().map(rec).collect() },
+        Filter::Not { not } => match not.as_ref() {
+            Filter::Eq { extract: extract @ Extract::Note { key, parent: false, sanitize }, eq } if sanitize.is_empty() => {
+                match domains.get(key) {
+                    Some(domain) => {
+                        let rest: Vec<String> = domain.iter().filter(|v| *v != eq).cloned().collect();
+                        Filter::In { extract: extract.clone(), r#in: crate::lang::list::ValueList::new(rest) }
+                    }
+                    None => f.clone(),
+                }
+            }
+            inner => Filter::Not { not: Box::new(rec(inner)) },
+        },
+        other => other.clone(),
+    }
+}
+
 /// Evaluate a Filter against raw tags with a neutral context (side=self, no parent).
 /// Used by the topic engine for way-level exclude_condition checks.
 pub fn eval_filter(filter: &Filter, tags: &RawTags<'_>) -> bool {
@@ -211,6 +238,7 @@ pub fn eval_filter(filter: &Filter, tags: &RawTags<'_>) -> bool {
         annotations: crate::lang::producer::empty_annotations(),
         elem: None,
         parent_elem: None,
+        role: None,
     };
     eval(filter, &ctx)
 }

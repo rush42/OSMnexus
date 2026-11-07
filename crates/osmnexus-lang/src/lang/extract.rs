@@ -33,10 +33,14 @@ use crate::lang::tags::RawTags;
 /// its embedding struct, so `sanitize` living here rather than as a sibling field changes nothing
 /// about the on-disk JSON shape.
 ///
-/// A key starting with `@` is a **virtual tag** ([`VirtualKey`]): a fact about the element rather
-/// than one of its OSM tags, readable everywhere a tag is (filters, producers, `parent`, `in`).
-/// It is resolved to [`Extract::Virtual`] when the config loads, so no element ever pays a string
-/// check for it, and an unknown `@` key is a load error rather than a silently absent value.
+/// Two prefixes leave the OSM tags, readable everywhere a tag is (filters, producers, `parent`,
+/// `in`), and are resolved when the config loads so no element pays a string check for them:
+///
+/// - `@` — a **fact** about the element ([`VirtualKey`]: `@id`, `@type`, `@role`, `@timestamp`),
+///   from the data itself. An unknown `@` key is a load error.
+/// - `_` — an **annotation** ([`Extract::Note`]): whatever the topic's own transforms wrote with
+///   `annotate`/`record_infix_as` (e.g. `_side`). Their names and values are the config's; the code
+///   gives none of them any meaning.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 #[serde(try_from = "ExtractJson")]
 pub enum Extract {
@@ -44,9 +48,11 @@ pub enum Extract {
     Candidates { keys: Vec<String>, sanitize: Vec<Sanitizer> },
     /// A single, specific key.
     Value { key: String, sanitize: Vec<Sanitizer> },
-    /// A virtual tag (`@id`, `@side`, …). `parent` marks the parent-scoped form — the virtual-tag
-    /// counterpart of a `parent_<key>` name (see `prefixed`).
+    /// A fact (`@id`, …). `parent` marks the parent-scoped form — the counterpart of a
+    /// `parent_<key>` name (see `prefixed`).
     Virtual { field: VirtualKey, parent: bool, sanitize: Vec<Sanitizer> },
+    /// An annotation (`_side`, …), read from `ExtractCtx::annotations`. `parent` as for `Virtual`.
+    Note { key: String, parent: bool, sanitize: Vec<Sanitizer> },
 }
 
 /// The on-disk shapes, before `@` keys are resolved. `key`/`keys` accept `Producer`'s historical
@@ -84,58 +90,64 @@ impl Extract {
     /// `Extract` from a config-supplied key goes through this or [`Extract::keys`], so `@` keys mean
     /// the same thing in every JSON shorthand.
     pub fn key(key: String, sanitize: Vec<Sanitizer>) -> Result<Extract, String> {
-        match key.strip_prefix('@') {
-            Some(name) => Ok(Extract::Virtual { field: VirtualKey::parse(name)?, parent: false, sanitize }),
-            None => Ok(Extract::Value { key, sanitize }),
+        if let Some(name) = key.strip_prefix('@') {
+            return Ok(Extract::Virtual { field: VirtualKey::parse(name)?, parent: false, sanitize });
         }
+        if key.starts_with('_') {
+            return Ok(Extract::Note { key, parent: false, sanitize });
+        }
+        Ok(Extract::Value { key, sanitize })
     }
 
-    /// A first-present read over candidate keys. A virtual tag can't be one of several candidates
-    /// (it's not a tag the element might or might not carry), except as the only one.
+    /// A first-present read over candidate keys. A fact or an annotation can't be one of several
+    /// candidates (candidates are OSM tags the element might or might not carry), except as the
+    /// only one.
     pub fn keys(mut keys: Vec<String>, sanitize: Vec<Sanitizer>) -> Result<Extract, String> {
-        if keys.len() == 1 && keys[0].starts_with('@') {
+        let special = |k: &String| k.starts_with('@') || k.starts_with('_');
+        if keys.len() == 1 && special(&keys[0]) {
             return Extract::key(keys.remove(0), sanitize);
         }
-        if let Some(k) = keys.iter().find(|k| k.starts_with('@')) {
-            return Err(format!("virtual tag {k:?} can't be one of several candidate keys; read it on its own"));
+        if let Some(k) = keys.iter().find(|k| special(k)) {
+            return Err(format!("{k:?} isn't an OSM tag, so it can't be one of several candidate keys; read it on its own"));
         }
         Ok(Extract::Candidates { keys, sanitize })
     }
 }
 
-/// The virtual tags: facts about the element being classified, spelled as `@`-prefixed keys
+/// The facts: what the data says about the element being classified, spelled as `@`-prefixed keys
 /// (the convention osmium uses for the same purpose) so they read with the ordinary tag syntax.
 /// They are not tags: `has_key_prefix`, `tags_empty` and tag passthrough never see them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum VirtualKey {
-    /// `@id` — the element's OSM id. Read through `parent`, a member way's parent relation's id.
+    /// `@id` — the element's OSM id. Read through `parent`, the parent's id (a member way's
+    /// relation, a side object's base way).
     Id,
     /// `@type` — `node` / `way` / `relation`.
     Type,
-    /// `@side` — a side-split object's side; `self` for every base object (and for a parent).
-    Side,
-    /// `@prefix` / `@infix` — the side-split transform's recorded prefix/infix; absent otherwise.
-    Prefix,
-    Infix,
+    /// `@role` — a member way's role in its parent relation (`forward`, `platform`, …; `""` for an
+    /// empty role). Absent without a parent relation.
+    Role,
+    /// `@timestamp` — the element's last edit, `YYYY-MM-DDTHH:MM:SSZ`. Absent when the file
+    /// carries no metadata.
+    Timestamp,
 }
 
 impl VirtualKey {
-    pub const ALL: [VirtualKey; 5] = [VirtualKey::Id, VirtualKey::Type, VirtualKey::Side, VirtualKey::Prefix, VirtualKey::Infix];
+    pub const ALL: [VirtualKey; 4] = [VirtualKey::Id, VirtualKey::Type, VirtualKey::Role, VirtualKey::Timestamp];
 
     pub fn name(self) -> &'static str {
         match self {
             VirtualKey::Id => "@id",
             VirtualKey::Type => "@type",
-            VirtualKey::Side => "@side",
-            VirtualKey::Prefix => "@prefix",
-            VirtualKey::Infix => "@infix",
+            VirtualKey::Role => "@role",
+            VirtualKey::Timestamp => "@timestamp",
         }
     }
 
     fn parse(name: &str) -> Result<Self, String> {
         Self::ALL.into_iter().find(|v| &v.name()[1..] == name).ok_or_else(|| {
             let known: Vec<&str> = Self::ALL.iter().map(|v| v.name()).collect();
-            format!("unknown virtual tag \"@{name}\" (known: {})", known.join(", "))
+            format!("unknown fact \"@{name}\" (known: {})", known.join(", "))
         })
     }
 
@@ -143,18 +155,47 @@ impl VirtualKey {
         match self {
             VirtualKey::Id => ctx.elem.map(|e| Cow::Owned(e.osm_id.to_string())),
             VirtualKey::Type => ctx.elem.map(|e| Cow::Borrowed(e.kind.id_prefix())),
-            VirtualKey::Side => Some(Cow::Borrowed(crate::lang::producer::side_of(ctx))),
-            VirtualKey::Prefix => ctx.annotations.get("_prefix").and_then(Value::as_str).map(Cow::Borrowed),
-            VirtualKey::Infix => ctx.annotations.get("_infix").and_then(Value::as_str).map(Cow::Borrowed),
+            VirtualKey::Role => ctx.role.map(Cow::Borrowed),
+            VirtualKey::Timestamp => ctx.elem.and_then(|e| e.timestamp).map(|t| Cow::Owned(iso8601_utc(t))),
         }
     }
+}
+
+/// An annotation's value as text: a string as-is, anything else (a number or bool a transform
+/// recorded) in its JSON spelling.
+fn note_text<'a>(ctx: &ExtractCtx<'a>, key: &str) -> Option<Cow<'a, str>> {
+    match ctx.annotations.get(key)? {
+        Value::String(s) => Some(Cow::Borrowed(s.as_str())),
+        Value::Null => None,
+        other => Some(Cow::Owned(other.to_string())),
+    }
+}
+
+/// Unix seconds as `YYYY-MM-DDTHH:MM:SSZ` — the format the `meta` column's `updated_at` uses.
+/// Howard Hinnant's `civil_from_days`, so the core needs no date library.
+pub fn iso8601_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let sod = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", sod / 3600, sod % 3600 / 60, sod % 60)
 }
 
 impl Extract {
     /// This variant's own `sanitize` chain — empty if unset.
     pub fn sanitize(&self) -> &[Sanitizer] {
         match self {
-            Extract::Value { sanitize, .. } | Extract::Candidates { sanitize, .. } | Extract::Virtual { sanitize, .. } => sanitize,
+            Extract::Value { sanitize, .. }
+            | Extract::Candidates { sanitize, .. }
+            | Extract::Virtual { sanitize, .. }
+            | Extract::Note { sanitize, .. } => sanitize,
         }
     }
 
@@ -162,27 +203,63 @@ impl Extract {
     /// a virtual tag. Not yet run through `sanitize`. Borrowed for every tag read; only `@id` formats
     /// a new string, and only when it is actually read.
     ///
-    /// A parent-scoped `Virtual` read here (not via `decision_tree`'s parent redirect) reads the
+    /// A parent-scoped `Virtual`/`Note` read here (not via `decision_tree`'s parent redirect) reads the
     /// parent: a `Filter`/`Producer` `Parent` wrapper has already swapped `ctx` to
     /// `ExtractCtx::parent_scope`, and the flag only exists for the decision tree's flattened form.
+    ///
+    /// Split into an inlined tag fast path and an out-of-line fact/annotation path: this is the
+    /// innermost read of every filter and producer, and keeping the rare variants out of it keeps it
+    /// small enough to inline at its call sites (measured: ~8% of Pass A instructions otherwise).
+    #[inline]
     pub fn read_raw<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
         match self {
-            Extract::Value { key, .. } => first_present(ctx.obj_tags, std::iter::once(key.as_str())).map(Cow::Borrowed),
+            Extract::Value { key, .. } => ctx.obj_tags.get(key.as_str()).map(|v| Cow::Borrowed(v.as_ref())),
             Extract::Candidates { keys, .. } => first_present(ctx.obj_tags, keys.iter().map(String::as_str)).map(Cow::Borrowed),
+            _ => self.read_context(ctx),
+        }
+    }
+
+    #[inline(never)]
+    fn read_context<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
+        match self {
             Extract::Virtual { field, .. } => field.read(ctx),
+            Extract::Note { key, .. } => note_text(ctx, key),
+            Extract::Value { .. } | Extract::Candidates { .. } => unreachable!("handled by read_raw"),
         }
     }
 
     /// Read and run through `sanitize` (identity if unset) — what `Producer::Extract` produces.
+    #[inline]
     pub fn read(&self, ctx: &ExtractCtx) -> Option<Value> {
-        eval_sanitize(self.sanitize(), &self.read_raw(ctx)?)
+        match self {
+            Extract::Value { key, sanitize } => eval_sanitize(sanitize, ctx.obj_tags.get(key.as_str())?.as_ref()),
+            Extract::Candidates { keys, sanitize } => {
+                eval_sanitize(sanitize, first_present(ctx.obj_tags, keys.iter().map(String::as_str))?)
+            }
+            _ => eval_sanitize(self.sanitize(), &self.read_context(ctx)?),
+        }
     }
 
     /// Like `read`, coerced to a string — what every `Filter` `Tag*` comparison reads. A dropped
     /// sanitize output (or one that isn't string-shaped) compares as absent, not equal to "".
+    #[inline]
     pub fn read_str<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
-        let raw = self.read_raw(ctx)?;
-        let chain = self.sanitize();
+        // Tags borrow straight out of `obj_tags`; only a fact or annotation takes the general path.
+        let (raw, chain): (&'a str, &[Sanitizer]) = match self {
+            Extract::Value { key, sanitize } => (ctx.obj_tags.get(key.as_str())?.as_ref(), sanitize),
+            Extract::Candidates { keys, sanitize } => (first_present(ctx.obj_tags, keys.iter().map(String::as_str))?, sanitize),
+            _ => {
+                let raw = self.read_context(ctx)?;
+                return Self::sanitized_str(self.sanitize(), raw);
+            }
+        };
+        if chain.is_empty() {
+            return Some(Cow::Borrowed(raw));
+        }
+        Self::sanitized_str(chain, Cow::Borrowed(raw))
+    }
+
+    fn sanitized_str<'a>(chain: &[Sanitizer], raw: Cow<'a, str>) -> Option<Cow<'a, str>> {
         if chain.is_empty() {
             return Some(raw);
         }
@@ -205,6 +282,7 @@ impl Extract {
             Extract::Virtual { field, parent, .. } => {
                 vec![if *parent { format!("parent_{}", field.name()) } else { field.name().to_owned() }]
             }
+            Extract::Note { key, parent, .. } => vec![if *parent { format!("parent_{key}") } else { key.clone() }],
         }
     }
 
@@ -221,8 +299,12 @@ impl Extract {
                 sanitize: sanitize.clone(),
             },
             Extract::Virtual { field, sanitize, .. } => {
-                debug_assert_eq!(prefix, "parent_", "the parent scope is the only one a virtual tag has");
+                debug_assert_eq!(prefix, "parent_", "the parent scope is the only one a fact has");
                 Extract::Virtual { field: *field, parent: true, sanitize: sanitize.clone() }
+            }
+            Extract::Note { key, sanitize, .. } => {
+                debug_assert_eq!(prefix, "parent_", "the parent scope is the only one an annotation has");
+                Extract::Note { key: key.clone(), parent: true, sanitize: sanitize.clone() }
             }
         }
     }
@@ -240,6 +322,7 @@ impl Extract {
             Extract::Virtual { field, sanitize, .. } => {
                 Extract::Virtual { field: *field, parent: false, sanitize: sanitize.clone() }
             }
+            Extract::Note { key, sanitize, .. } => Extract::Note { key: key.clone(), parent: false, sanitize: sanitize.clone() },
         }
     }
 }
@@ -259,7 +342,7 @@ pub(crate) fn first_present<'a, K: AsRef<str>>(
 mod virtual_tag_tests {
     use serde_json::{json, Map, Value};
 
-    use super::{Extract, VirtualKey};
+    use super::{iso8601_utc, Extract, VirtualKey};
     use crate::lang::filter::{eval, Filter};
     use crate::lang::producer::{Elem, ExtractCtx};
     use crate::lang::tags::{ElementKind, RawTags};
@@ -269,69 +352,68 @@ mod virtual_tag_tests {
     }
 
     #[test]
-    fn at_keys_resolve_at_load_time() {
-        assert!(matches!(extract(json!({"tag": "@side"})), Ok(Extract::Virtual { field: VirtualKey::Side, parent: false, .. })));
-        assert!(matches!(extract(json!({"key": "@id"})), Ok(Extract::Virtual { field: VirtualKey::Id, .. })));
+    fn prefixed_keys_resolve_at_load_time() {
+        assert!(matches!(extract(json!({"tag": "@id"})), Ok(Extract::Virtual { field: VirtualKey::Id, parent: false, .. })));
+        assert!(matches!(extract(json!({"key": "@role"})), Ok(Extract::Virtual { field: VirtualKey::Role, .. })));
+        assert!(matches!(extract(json!({"tag": "_side"})), Ok(Extract::Note { parent: false, .. })));
         assert!(matches!(extract(json!({"tag": "highway"})), Ok(Extract::Value { .. })));
     }
 
     #[test]
-    fn unknown_or_mixed_at_keys_are_load_errors() {
-        let err = extract(json!({"tag": "@sied"})).unwrap_err();
-        assert!(err.contains("unknown virtual tag \"@sied\""), "{err}");
+    fn unknown_facts_and_mixed_candidates_are_load_errors() {
+        let err = extract(json!({"tag": "@side"})).unwrap_err();
+        assert!(err.contains("unknown fact \"@side\""), "{err}");
         assert!(extract(json!({"keys": ["@id", "ref"]})).is_err());
+        assert!(extract(json!({"keys": ["_side", "ref"]})).is_err());
     }
 
-    /// Every virtual tag reads from the context, not the tags — and a tag literally named `@id`
-    /// in `obj_tags` (impossible in practice) would not be what `@id` reads.
+    #[test]
+    fn timestamps_format_like_the_meta_column() {
+        assert_eq!(iso8601_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso8601_utc(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(iso8601_utc(1_762_540_245), "2025-11-07T18:30:45Z");
+        assert_eq!(iso8601_utc(-1), "1969-12-31T23:59:59Z");
+    }
+
+    /// Facts read from the element's identity, annotations from whatever the config wrote — and a
+    /// tag literally named `@id` (impossible in practice) is not what `@id` reads.
     #[test]
     fn values_come_from_the_context() {
         let tags: RawTags = [("@id".into(), "tag-value".into())].into_iter().collect();
         let mut ann = Map::new();
         ann.insert("_side".into(), json!("left"));
-        ann.insert("_prefix".into(), json!("cycleway"));
+        ann.insert("_lanes".into(), json!(2));
         let ctx = ExtractCtx {
             obj_tags: &tags,
             parent_tags: Some(&tags),
-            id: "way/5/cycleway/left",
+            id: "way/5/relation/9",
             annotations: &ann,
-            elem: Some(Elem { kind: ElementKind::Way, osm_id: 5 }),
-            parent_elem: Some(Elem { kind: ElementKind::Relation, osm_id: 9 }),
+            elem: Some(Elem { kind: ElementKind::Way, osm_id: 5, timestamp: Some(0) }),
+            parent_elem: Some(Elem { kind: ElementKind::Relation, osm_id: 9, timestamp: None }),
+            role: Some("forward"),
         };
         let read = |k: &str| extract(json!({"tag": k})).unwrap().read_str(&ctx).map(|c| c.into_owned());
         assert_eq!(read("@id").as_deref(), Some("5"));
         assert_eq!(read("@type").as_deref(), Some("way"));
-        assert_eq!(read("@side").as_deref(), Some("left"));
-        assert_eq!(read("@prefix").as_deref(), Some("cycleway"));
-        assert_eq!(read("@infix"), None);
+        assert_eq!(read("@role").as_deref(), Some("forward"));
+        assert_eq!(read("@timestamp").as_deref(), Some("1970-01-01T00:00:00Z"));
+        assert_eq!(read("_side").as_deref(), Some("left"));
+        assert_eq!(read("_lanes").as_deref(), Some("2"));
+        assert_eq!(read("_prefix"), None);
 
-        // Parent scope: the parent's identity, and no side annotations of the child.
+        // Parent scope: the parent's identity, none of the child's annotations, no role of its own.
         let parent = |f: Value| -> bool { eval(&serde_json::from_value::<Filter>(json!({"parent": f})).unwrap(), &ctx) };
         assert!(parent(json!({"tag": "@id", "eq": "9"})));
         assert!(parent(json!({"tag": "@type", "eq": "relation"})));
-        assert!(parent(json!({"tag": "@side", "eq": "self"})));
-        assert!(!parent(json!({"tag": "@prefix", "exists": true})));
+        assert!(!parent(json!({"tag": "@timestamp", "exists": true})));
+        assert!(!parent(json!({"tag": "_side", "exists": true})));
+        assert!(!parent(json!({"tag": "@role", "exists": true})));
     }
 
     /// The retired `{"annotation": "_side"}` spelling fails with a hint naming its replacement.
     #[test]
     fn annotation_spelling_is_a_load_error_with_a_hint() {
         let err = serde_json::from_value::<Filter>(json!({"annotation": "_side", "eq": "left"})).unwrap_err().to_string();
-        assert!(err.contains(r#"{"tag": "@side", "eq": "left"}"#), "{err}");
-    }
-
-    /// An unsanitized `@side`/`@prefix`/`@infix` comparison compiles to the dedicated predicates
-    /// the decision tree branches on — so trees are what the `annotation` spelling produced.
-    #[test]
-    fn side_comparisons_compile_to_the_side_predicates() {
-        use crate::lang::expr::{filter_to_expr, Expr, Literal, Predicate};
-        let expr = |v: Value| filter_to_expr(&serde_json::from_value::<Filter>(v).unwrap());
-        assert!(matches!(expr(json!({"tag": "@side", "eq": "left"})), Expr::Lit(Literal::Pos(Predicate::Side(s))) if s == "left"));
-        assert!(matches!(expr(json!({"tag": "@infix", "eq": ""})), Expr::Lit(Literal::Pos(Predicate::Infix(_)))));
-        // In parent scope they are constants: a parent is never a side object.
-        assert!(matches!(expr(json!({"parent": {"tag": "@side", "eq": "self"}})), Expr::True));
-        assert!(matches!(expr(json!({"parent": {"tag": "@prefix", "eq": "cycleway"}})), Expr::False));
-        // `@id` stays an ordinary comparison.
-        assert!(matches!(expr(json!({"tag": "@id", "eq": "5"})), Expr::Lit(Literal::Pos(Predicate::Eq(..)))));
+        assert!(err.contains(r#"{"tag": "_side", "eq": "left"}"#), "{err}");
     }
 }

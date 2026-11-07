@@ -28,26 +28,33 @@ there is no inline-chain form, and every sanitizer has exactly one
 definition. A `sanitize:` field that isn't a bare string is a load-time
 error.
 
-### Virtual tags (`@` keys)
+### Facts (`@` keys) and annotations (`_` keys)
 
-A key starting with `@` reads a fact about the element instead of one of its
-OSM tags. It works everywhere a key does — filters, producers (`{"tag": ..}`,
-`"key"`), `in`, `parent`, `sanitize`:
+Two key prefixes read something other than an OSM tag. Both work everywhere a
+key does — filters, producers (`{"tag": ..}`, `"key"`), `in`, `parent`,
+`sanitize`:
 
 ```
-"@id"      // the element's OSM id. Under "parent": the parent's id (a member
-           // way's relation, or a side object's base way)
-"@type"    // "node" | "way" | "relation"
-"@side"    // a side-split object's side; "self" otherwise (and under "parent")
-"@prefix"  // the side-split transform's recorded prefix; absent otherwise
-"@infix"   // likewise for the infix
+"@id"         // the element's OSM id. Under "parent": the parent's id (a member
+              // way's relation, or a side object's base way)
+"@type"       // "node" | "way" | "relation"
+"@role"       // a member way's role in its parent relation (inherit_to_member);
+              // "" for an empty role, absent without a parent relation
+"@timestamp"  // the element's last edit, "YYYY-MM-DDTHH:MM:SSZ"; under
+              // "parent", the parent's. Absent without file metadata
+
+"_<name>"     // an annotation the topic's own transforms wrote ("annotate",
+              // a clone's "annotate", "record_infix_as") — e.g. "_side".
+              // Absent if nothing wrote it; under "parent", always absent
 ```
 
-Resolved when the config loads: an unknown `@` key is a load error, and an
-`@` key can't be one of several candidate `keys`. Virtual tags are not tags —
-`has_key_prefix`, `tags_empty` and tag passthrough never see them.
-`{"tag": "@side", "eq": "left"}` replaces the retired
-`{"annotation": "_side", "eq": "left"}` (now a load error with that hint).
+`@` keys are **facts** from the data; an unknown one is a load error. `_` keys
+are **annotations**: their names and values are whatever the config writes —
+nothing in the code gives `_side`, `_prefix` or `_infix` a meaning. Neither can
+be one of several candidate `keys`, and neither is a tag: `has_key_prefix`,
+`tags_empty` and tag passthrough never see them. The retired
+`{"annotation": "_side", "eq": ..}` spelling is a load error naming
+`{"tag": "_side", "eq": ..}`.
 
 ## sanitizers.json
 
@@ -239,7 +246,11 @@ Clone = {
 }
 
 TransformStep =
-  { "prefix": String, "stamp_key": String, "stamp_value": String, "stamp_nested_under"?: [String,...] }
+  { "annotate": {String: String, ...} }
+      // Annotate: write literal annotations onto the current object (e.g.
+      // { "_side": "self" } on the base object, next to its clones' left/right)
+
+  | { "prefix": String, "stamp_key": String, "stamp_value": String, "stamp_nested_under"?: [String,...] }
       // StripPrefix: strip a tag prefix, stamping stamp_key=stamp_value on
       // the resulting object (and optionally on nested-prefix children too)
 
@@ -249,8 +260,11 @@ TransformStep =
   | { "drop": Filter }
       // Drop: discard the current object when Filter matches
 
-  | { "output": String, "directed": { "key": String, "from"?: "obj" | "parent", "sanitize"?: String } }
-      // DirectedExtract: side-aware tag read (used with left/right split ways).
+  | { "output": String, "directed": { "key": String, "side": "left" | "right", "from"?: "obj" | "parent", "sanitize"?: String } }
+      // DirectedExtract: read `key` as seen from one side of the way —
+      // `key:backward` for the left side, `key:forward` for the right under
+      // right-hand traffic (swapped for left-hand). "side" is declared on the
+      // step (it sits inside that side's clone), never read from an annotation.
       // "from" is the narrower Obj/Parent vocabulary, not the general TagSet —
       // identified by its required "directed" field, checked before TagRule
 
@@ -258,7 +272,8 @@ TransformStep =
       // TagRule (catch-all): compute "output" via the embedded Producer
 ```
 
-Disambiguation is by which distinguishing key is present: `stamp_key` →
+Disambiguation is by which distinguishing key is present: a lone `annotate` →
+Annotate, `stamp_key` →
 StripPrefix, `unnest` → Unnest, `drop` → Drop, `directed` → DirectedExtract
 (checked before the generic catch-all), else (requires `output`) → TagRule.
 `PipelineStep` is `clone` vs. everything else (delegated to `TransformStep`).

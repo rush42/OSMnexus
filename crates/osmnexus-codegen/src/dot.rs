@@ -83,7 +83,7 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             let mut label = match extract {
                 Extract::Value { key, .. } => format!("extract\nkey: {key}"),
                 Extract::Candidates { keys, .. } => format!("extract\nkeys: {keys:?}"),
-                Extract::Virtual { .. } => format!("extract\nkey: {}", extract.tag_names()[0]),
+                Extract::Virtual { .. } | Extract::Note { .. } => format!("extract\nkey: {}", extract.tag_names()[0]),
             };
             if !annotate.is_empty() {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
