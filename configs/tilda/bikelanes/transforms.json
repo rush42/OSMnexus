@@ -193,7 +193,7 @@
           {
             "drop": {
               "and": [
-                { "annotation": "_infix", "eq": "" },
+                { "tag": "@infix", "eq": "" },
                 { "parent": { "tag": "oneway", "eq": "yes" } },
                 { "not": { "parent": { "tag": "oneway:bicycle", "eq": "no" } } }
               ]

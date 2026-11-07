@@ -13,7 +13,6 @@
 
 use std::ops::{Bound, RangeBounds};
 
-use serde_json::Value;
 
 use crate::lang::extract::Extract;
 use crate::lang::producer::ExtractCtx;
@@ -52,10 +51,6 @@ pub enum Filter {
     Parent { parent: Box<Filter> },
 
     // Context predicates
-    /// A plain `annotations[key] == eq` read, spelled directly in JSON as `{"annotation": key,
-    /// "eq": value}` (`parser`) — `key` is typically one of `_side`/`_prefix`/`_infix`, whatever
-    /// `topic::pipeline::build_topic_rules`/`CloneStep` stamps.
-    AnnotationEq { key: String, eq: String },
     /// True iff some `obj_tags` key starts with `has_key_prefix` — a dynamic, unknown-suffix scan
     /// over the object's own raw tags, not an annotation read, so it can't fold into
     /// `AnnotationEq`.
@@ -118,7 +113,6 @@ impl Filter {
             }
             Filter::Eq { extract, eq } => format!("{} == {eq:?}", maybe_sanitized(extract)),
             Filter::Parent { parent } => format!("parent({})", parent.describe()),
-            Filter::AnnotationEq { key, eq } => format!("{key} == {eq:?}"),
             Filter::HasKeyPrefix { has_key_prefix } => format!("has_key_prefix({has_key_prefix:?})"),
             Filter::HasParent { has_parent } => if *has_parent { "has_parent".to_owned() } else { "!has_parent".to_owned() },
             Filter::TagsEmpty { tags_empty } => if *tags_empty { "tags_empty".to_owned() } else { "!tags_empty".to_owned() },
@@ -172,14 +166,6 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
             Some(parent_ctx) => eval(parent, &parent_ctx),
         },
 
-        // `_side` is absent on a base object and means "self" there (see
-        // `lang::producer::side_of`), so it needs that default applied before comparing.
-        // `_prefix`/`_infix` have no such default — they only ever exist on a side-split object, and
-        // absent genuinely means "no prefix/infix", so an absent key compares unequal.
-        Filter::AnnotationEq { key, eq } if key == "_side" =>
-            crate::lang::producer::side_of(ctx) == eq.as_str(),
-        Filter::AnnotationEq { key, eq } =>
-            ctx.annotations.get(key).and_then(Value::as_str) == Some(eq.as_str()),
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —

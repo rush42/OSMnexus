@@ -313,22 +313,25 @@ mod virtual_tag_tests {
         assert!(!parent(json!({"tag": "@prefix", "exists": true})));
     }
 
-    /// `@side` in a filter means the same as the older `{"annotation": "_side"}` spelling,
-    /// including the `self` default on a base object.
+    /// The retired `{"annotation": "_side"}` spelling fails with a hint naming its replacement.
     #[test]
-    fn side_matches_the_annotation_spelling() {
-        let tags = RawTags::default();
-        for side in [None, Some("left"), Some("right")] {
-            let mut ann = Map::new();
-            if let Some(s) = side {
-                ann.insert("_side".into(), json!(s));
-            }
-            let ctx = ExtractCtx { obj_tags: &tags, parent_tags: None, id: "", annotations: &ann, elem: None, parent_elem: None };
-            for v in ["self", "left", "right"] {
-                let new: Filter = serde_json::from_value(json!({"tag": "@side", "eq": v})).unwrap();
-                let old: Filter = serde_json::from_value(json!({"annotation": "_side", "eq": v})).unwrap();
-                assert_eq!(eval(&new, &ctx), eval(&old, &ctx), "side={side:?} eq={v}");
-            }
-        }
+    fn annotation_spelling_is_a_load_error_with_a_hint() {
+        let err = serde_json::from_value::<Filter>(json!({"annotation": "_side", "eq": "left"})).unwrap_err().to_string();
+        assert!(err.contains(r#"{"tag": "@side", "eq": "left"}"#), "{err}");
+    }
+
+    /// An unsanitized `@side`/`@prefix`/`@infix` comparison compiles to the dedicated predicates
+    /// the decision tree branches on — so trees are what the `annotation` spelling produced.
+    #[test]
+    fn side_comparisons_compile_to_the_side_predicates() {
+        use crate::lang::expr::{filter_to_expr, Expr, Literal, Predicate};
+        let expr = |v: Value| filter_to_expr(&serde_json::from_value::<Filter>(v).unwrap());
+        assert!(matches!(expr(json!({"tag": "@side", "eq": "left"})), Expr::Lit(Literal::Pos(Predicate::Side(s))) if s == "left"));
+        assert!(matches!(expr(json!({"tag": "@infix", "eq": ""})), Expr::Lit(Literal::Pos(Predicate::Infix(_)))));
+        // In parent scope they are constants: a parent is never a side object.
+        assert!(matches!(expr(json!({"parent": {"tag": "@side", "eq": "self"}})), Expr::True));
+        assert!(matches!(expr(json!({"parent": {"tag": "@prefix", "eq": "cycleway"}})), Expr::False));
+        // `@id` stays an ordinary comparison.
+        assert!(matches!(expr(json!({"tag": "@id", "eq": "5"})), Expr::Lit(Literal::Pos(Predicate::Eq(..)))));
     }
 }

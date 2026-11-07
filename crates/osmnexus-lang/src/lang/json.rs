@@ -305,9 +305,7 @@ impl<'de> Deserialize<'de> for Sanitizer {
 
 // ── Filter ───────────────────────────────────────────────────────────────────
 
-/// The JSON shapes `Filter` accepts: every real variant verbatim, including `Filter::AnnotationEq`
-/// spelled directly as `{"annotation": <key>, "eq": <value>}` — see `Filter::AnnotationEq`'s own
-/// doc. Untagged, tried in this order (more-specific/required-field shapes before `Eq`, whose
+/// The JSON shapes `Filter` accepts: every real variant verbatim. Untagged, tried in this order (more-specific/required-field shapes before `Eq`, whose
 /// `#[serde(flatten)] extract` field is optional-shaped enough to otherwise match too broadly).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -322,6 +320,8 @@ enum FilterJson {
     EndsWith { #[serde(flatten)] extract: Extract, ends_with: String },
     Exists { #[serde(flatten)] extract: Extract, exists: bool },
     Parent { parent: Box<Filter> },
+    /// The retired `{"annotation": "_side", "eq": ..}` spelling — accepted only to fail with a
+    /// migration hint instead of an opaque "no variant matched".
     Annotation { annotation: String, eq: String },
     HasKeyPrefix { has_key_prefix: String },
     HasParent { has_parent: bool },
@@ -365,7 +365,13 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::Exists { extract, exists } => Filter::Exists { extract, exists },
             FilterJson::Eq { extract, eq } => Filter::Eq { extract, eq },
             FilterJson::Parent { parent } => Filter::Parent { parent },
-            FilterJson::Annotation { annotation, eq } => Filter::AnnotationEq { key: annotation, eq },
+            FilterJson::Annotation { annotation, eq } => {
+                let key = annotation.strip_prefix('_').unwrap_or(&annotation);
+                return Err(serde::de::Error::custom(format!(
+                    "{{\"annotation\": {annotation:?}, \"eq\": {eq:?}}} is no longer supported; \
+                     write {{\"tag\": \"@{key}\", \"eq\": {eq:?}}}"
+                )));
+            }
             FilterJson::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix },
             FilterJson::HasParent { has_parent } => Filter::HasParent { has_parent },
             FilterJson::TagsEmpty { tags_empty } => Filter::TagsEmpty { tags_empty },
