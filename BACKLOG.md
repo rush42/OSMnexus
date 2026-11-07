@@ -438,12 +438,14 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
   the exported `ref` with `{"parent": {"tag": "ref"}}` — per parent in `fan_out` (ids suffixed
   `/relation/<id>`), later parent winning in `merge`, nothing without a parent — while its own `ref`
   stays its own.
-  - **Why the scratch config produced nothing:** two authoring traps, both reproduced while writing
-    the test. (1) A topic-level `"producers": {"x": true}` is a *passthrough of the tag `x`*, not a
-    reference to a named producer — the reference form is a string, `{"x": "x"}`. (2) Named
+  - **Why the scratch config produced nothing:** it misused two parts of the config syntax, both
+    reproduced while writing the test. (1) It wrote `"producers": {"x": true}` meaning "use the named
+    producer `x`"; `true` is the leaf form — read tag `x` as-is, as in `passthrough_tags` and the
+    `{ sanitizer }` shorthand — and the reference form is the string `{"x": "x"}`. (2) Named
     producers live in the topic's own `topics/<name>/producers.json`; the config-root
-    `producers.json` is only the `{"shared": ..}` table. A `true` entry whose name *is* defined in the
-    topic's `producers.json` is almost certainly the trap — **worth a load-time warning or error.**
+    `producers.json` is only the `{"shared": ..}` table. Neither is a syntax problem. What would have
+    caught both is a **load-time warning for a named producer that nothing references** — in (1)
+    the producer sits in `producers.json` unused, in (2) the topic's reference fails loudly already.
   - **Still open:** no shipped config uses `inherit_to_member` (`public_transport` has no `way/`
     topic), and the relation graph-fallback (`output::cursor::group_edges_by_way`) it was meant to
     make unnecessary is still in the join.
