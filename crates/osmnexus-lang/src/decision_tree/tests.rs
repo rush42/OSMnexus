@@ -105,6 +105,8 @@ fn tree_matches_linear() {
                         parent_tags: side_parent_tags,
                         id: "",
                         annotations: &annotations,
+                        elem: None,
+                        parent_elem: None,
                     };
                     let a = categorize(&ctx, &cats).map(|c| c.id.clone());
                     let b = categorize_linear(&ctx, &cats).map(|c| c.id.clone());

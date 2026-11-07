@@ -2,7 +2,7 @@
   "condition": {
     "and": [
       {
-        "annotation": "_side",
+        "tag": "@side",
         "eq": "self"
       },
       {

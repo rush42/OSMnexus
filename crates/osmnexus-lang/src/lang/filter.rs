@@ -13,7 +13,6 @@
 
 use std::ops::{Bound, RangeBounds};
 
-use serde_json::Value;
 
 use crate::lang::extract::Extract;
 use crate::lang::producer::ExtractCtx;
@@ -52,10 +51,6 @@ pub enum Filter {
     Parent { parent: Box<Filter> },
 
     // Context predicates
-    /// A plain `annotations[key] == eq` read, spelled directly in JSON as `{"annotation": key,
-    /// "eq": value}` (`parser`) — `key` is typically one of `_side`/`_prefix`/`_infix`, whatever
-    /// `topic::pipeline::build_topic_rules`/`CloneStep` stamps.
-    AnnotationEq { key: String, eq: String },
     /// True iff some `obj_tags` key starts with `has_key_prefix` — a dynamic, unknown-suffix scan
     /// over the object's own raw tags, not an annotation read, so it can't fold into
     /// `AnnotationEq`.
@@ -86,6 +81,7 @@ impl Filter {
             match extract {
                 Extract::Value { key, .. } => key.clone(),
                 Extract::Candidates { keys, .. } => format!("[{}]", keys.join("|")),
+                Extract::Virtual { .. } => extract.tag_names().remove(0),
             }
         }
         // A predicate whose comparison already reads as a keyword (`in`, `contains`, ...) doesn't
@@ -117,7 +113,6 @@ impl Filter {
             }
             Filter::Eq { extract, eq } => format!("{} == {eq:?}", maybe_sanitized(extract)),
             Filter::Parent { parent } => format!("parent({})", parent.describe()),
-            Filter::AnnotationEq { key, eq } => format!("{key} == {eq:?}"),
             Filter::HasKeyPrefix { has_key_prefix } => format!("has_key_prefix({has_key_prefix:?})"),
             Filter::HasParent { has_parent } => if *has_parent { "has_parent".to_owned() } else { "!has_parent".to_owned() },
             Filter::TagsEmpty { tags_empty } => if *tags_empty { "tags_empty".to_owned() } else { "!tags_empty".to_owned() },
@@ -166,19 +161,11 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::Exists { extract, exists } =>
             extract.read_str(ctx).is_some() == *exists,
 
-        Filter::Parent { parent } => match ctx.parent_tags {
+        Filter::Parent { parent } => match ctx.parent_scope() {
             None => false,
-            Some(parent_tags) => eval(parent, &ExtractCtx { obj_tags: parent_tags, ..*ctx }),
+            Some(parent_ctx) => eval(parent, &parent_ctx),
         },
 
-        // `_side` is absent on a base object and means "self" there (see
-        // `lang::producer::side_of`), so it needs that default applied before comparing.
-        // `_prefix`/`_infix` have no such default — they only ever exist on a side-split object, and
-        // absent genuinely means "no prefix/infix", so an absent key compares unequal.
-        Filter::AnnotationEq { key, eq } if key == "_side" =>
-            crate::lang::producer::side_of(ctx) == eq.as_str(),
-        Filter::AnnotationEq { key, eq } =>
-            ctx.annotations.get(key).and_then(Value::as_str) == Some(eq.as_str()),
         Filter::HasKeyPrefix { has_key_prefix } =>
             ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
@@ -222,6 +209,8 @@ pub fn eval_filter(filter: &Filter, tags: &RawTags<'_>) -> bool {
         parent_tags: None,
         id: "",
         annotations: crate::lang::producer::empty_annotations(),
+        elem: None,
+        parent_elem: None,
     };
     eval(filter, &ctx)
 }

@@ -189,7 +189,13 @@ impl TableWriters {
         } else {
             Shard::empty()
         };
-        let members = Shard::spawn(output, pool, out_dir, MEMBER_TABLE, MEMBER_COLUMNS, w);
+        // `relation_members` is a link table for Postgres/CSV consumers to join on. The file
+        // backends' post-run join has no use for it (relations carry their own geometry, and member
+        // ways their parent's context — see `output::geojson`'s module doc), so it isn't staged.
+        let members = match output {
+            Output::Pg | Output::Csv => Shard::spawn(output, pool, out_dir, MEMBER_TABLE, MEMBER_COLUMNS, w),
+            Output::GeoJson | Output::GeoJsonSeq | Output::Parquet => Shard::empty(),
+        };
 
         let node_geom_tables: Vec<String> =
             plan.node_geom_topics.iter().map(|&i| schema::node_geom_table(table_refs[i])).collect();

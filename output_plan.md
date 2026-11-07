@@ -202,8 +202,8 @@ in-memory staging well doesn't require solving the file-based join problem first
 **Status:** implemented (`topic::inherit`, fan-out in `topic::pipeline::build_topic_rows`, reading the
 parent through the existing `{"parent": ..}` producer syntax) and covered end to end by
 `topic::pipeline::inherit_tests`. Not yet used by any shipped config, and the relation
-graph-fallback it was meant to retire is still in the join. The design notes below are the record it
-was built from.
+graph-fallback it was meant to retire has since been removed (a member way reads its relation's id as
+`{"parent": {"tag": "@id"}}`). The design notes below are the record it was built from.
 
 
 Supersedes the earlier `as_member` sketch under that name. **The original sketch is gone** — this
@@ -286,5 +286,5 @@ memory argument for restricting it does not hold.
 4. `--output csv`'s own `ordered = true` setting — confirm it doesn't need to be true (no join happens
    for plain CSV output) and fix if so; unrelated to the bigger redesign but low-cost to check.
 5. ~~`as_member`-for-edges design/implementation~~ — built as `inherit_to_member` (see above). What
-   remains is config work (`public_transport` has no way topic) and removing the relation
-   graph-fallback once a config uses the member-way route.
+   remains is config work (`public_transport` has no way topic); the relation graph-fallback is
+   removed.

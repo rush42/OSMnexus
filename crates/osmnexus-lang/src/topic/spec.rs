@@ -239,7 +239,9 @@ impl GeometryOutputSpec {
 pub struct InheritToMember {
     /// Keys to copy out of the parent relation's `produced`. A key the parent didn't produce is
     /// simply absent from the member — not an error, since a relation's outputs are
-    /// category-dependent.
+    /// category-dependent. May be empty: the parent's identity (`{"parent": {"tag": "@id"}}`) is
+    /// available either way.
+    #[serde(default)]
     pub fields: Vec<String>,
     /// What to do when a way belongs to several relations — the common case, not the exception:
     /// measured mean 3.11 parents per member way, max 85.
@@ -372,11 +374,11 @@ pub fn resolve_producer_entry(
         let r: SanitizerRepr = serde_json::from_value(value)
             .with_context(|| format!("topic producers.{output}"))?;
         let extract = Producer::Extract {
-            extract: Extract::Candidates {
-                keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
-                sanitize: resolve_named_sanitizer(&r.sanitizer, sanitizers)
-                    .with_context(|| format!("topic producers.{output}"))?,
-            },
+            extract: Extract::keys(
+                r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
+                resolve_named_sanitizer(&r.sanitizer, sanitizers).with_context(|| format!("topic producers.{output}"))?,
+            )
+            .map_err(|e| anyhow::anyhow!("topic producers.{output}: {e}"))?,
             annotate: Map::new(),
         };
         match r.from {
@@ -387,7 +389,8 @@ pub fn resolve_producer_entry(
     } else {
         match value {
             Value::Bool(true) => Producer::Extract {
-                extract: Extract::Value { key: output.to_owned(), sanitize: Vec::new() },
+                extract: Extract::key(output.to_owned(), Vec::new())
+                    .map_err(|e| anyhow::anyhow!("topic producers.{output}: {e}"))?,
                 annotate: Map::new(),
             },
             Value::Bool(false) => anyhow::bail!("topic producers.{output}: `false` is not a valid entry"),
