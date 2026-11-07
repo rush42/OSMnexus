@@ -5,8 +5,8 @@ pub use crate::lang::tags::{ElementKind, RawTags};
 /// projected coordinates and graph cut-points.
 pub struct OsmWay {
     pub id: i64,
-    /// WGS84 coordinates in (lon, lat) order.
-    pub coords: Vec<(f64, f64)>,
+    /// WGS84 `[lon, lat]` in decimicrodegrees, as stored in the PBF (see `geom::coord`).
+    pub coords: Vec<crate::geom::coord::Coord>,
     /// Graph-vertex cut points as `(index into coords, node_id)`, ascending by index: the way's
     /// start and end nodes (always), plus every interior node shared with another way (occurrence
     /// count > 1). Segments = consecutive cut-point pairs; intermediate geometry nodes are not
@@ -84,13 +84,11 @@ pub struct RelData<'a> {
 
 /// A node's tags + metadata + coords, produced by the nodes pass for nodes that are members of a
 /// kept way. Classification is tag-only; a selected node becomes a forced graph-vertex cut point.
-/// `lon`/`lat` (WGS84) ride along so `--emit-node-geometries` can build a point row without a
-/// second lookup.
+/// `coord` (WGS84 decimicrodegrees) rides along so a node topic's point row needs no second lookup.
 pub struct NodeData<'a> {
     pub id: i64,
     pub tags: RawTags<'a>,
     pub meta: WayMeta,
-    pub lon: f64,
-    pub lat: f64,
+    pub coord: crate::geom::coord::Coord,
 }
 

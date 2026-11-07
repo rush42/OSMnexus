@@ -14,7 +14,7 @@ was something in neither plan: **fixed-size fork/join barriers** in the chunk co
 against the rayon pool took the best germany run from 147.6 s to 136.1 s and cut materialize by up to
 50%, with no memory cost (§2b).
 
-Two things remain worth doing, both output-side rather than pipeline-side:
+Two things remain worth doing, both output-side rather than pipeline-side (status in §7):
 
 - **the join** — ~26 s, flat at every thread count, ~19% of the run and larger than the whole ordered
   tax nearly everywhere (Phase 4a, then 4c);
@@ -351,7 +351,12 @@ idiomatic GeoParquet, but it changes the output contract, so it is rejected.
 
 Three sub-steps, each shippable on its own, in this order.
 
-#### 4a — Stream the writer (no sharding, no parallelism)
+#### 4a — Stream the writer (no sharding, no parallelism) *(done)*
+
+Shipped: `write_table_parquet` flushes every `FLUSH_ROWS` (65 536) rows and adds `geo` through
+`append_key_value_metadata`; `write_geojson` streams its `FeatureCollection` the same way. Kept below
+for the record.
+
 
 `write_table_parquet` accumulates every merged row into Arrow builders, calls `builders.finish()`
 to materialize one table-sized `RecordBatch`, then writes it in a single `ArrowWriter::write`.
@@ -411,6 +416,80 @@ See §5.
 **identical as a multiset of rows**, not byte-identical — the same standard used for the csv change
 in Phase 1.1. Nothing downstream joins a Parquet file positionally (rows carry `osm_id`), so this is
 an output change, not a correctness one. Confirm the live editor is unaffected.
+
+#### 4d — Integer geometry IR *(done)*
+
+Geometry used to be projected to 3857 in materialize and staged as EWKB, so every file output's
+join decoded it, inverted the projection per point (`exp`/`atan`), rounded the noise off and (for
+Parquet) re-encoded WKB. It is now carried as the PBF's decimicrodegree integers end to end
+(`geom::coord`) and converted once by the sink: Postgres/CSV project to EWKB at write time, Parquet
+writes lon/lat WKB, GeoJSON writes decimal text straight from the integers (`output::coord_fmt`).
+Centroids are the one derived shape and are staged as float lon/lat.
+
+Measured on Berlin (tilda, `--threads 2`, 2 reps): geometry staging 47.4 → 22.9 MB, materialize
+~0.65 → 0.5 s, join 0.55 → 0.50 s (Parquet) and 0.96 → 0.78 s (GeoJSONSeq). **The join gain is
+small**, which answers the question this was partly meant to settle: geometry conversion was not
+where the join's time goes. What remains is the tag side — reading `{table}.bin`, `merge_properties`
+parsing the spliced property JSON into a `BTreeMap` per feature, and Arrow/Parquet encoding — so a
+pipelined/parallel join (4c or chunked) has to parallelize that work, not geometry, to pay off.
+
+#### 4e — One join engine, three encoders; `--layout separate|joined|both`
+
+**Where the join's time actually goes** (callgrind, Berlin, tilda, instructions inside the join only,
+after 4d):
+
+| `geojsonseq` | share | `parquet` | share |
+|---|--:|---|--:|
+| `base_properties`/`merge_properties` (parse `produced`/`annotations` into a `BTreeMap<String, _>` per feature) | ~47% | Arrow/Parquet column encoding (of which byte-array dictionary interning ~14%) | ~35% |
+| `Feature::write` (coordinates ~15%, properties ~8%) | ~28% | staged `TopicRow` decode (of which UTF-8 re-validation ~11%) | ~28% |
+| staged `TopicRow` decode | ~8% | `MergedBuilders::append` (copies, builder regrowth) | ~19% |
+| | | geometry cursor | ~8% |
+
+**Design.** Split the join from what it writes. The cursor join (node/way/relation cursors, the
+graph-shape fallback with `seg_idx`, the relation fallback) yields neutral feature rows —
+`(&TopicRow, geometry, seg_idx)` — and a per-sink **encoder** turns them into bytes: GeoJSON text,
+Arrow batches, or Postgres `COPY` binary. One implementation of the join semantics, so every joined
+output provably has the same rows; the encoder seam is also exactly what a chunked/parallel join
+needs later.
+
+**Layouts**, one flag for every backend, each with its own default:
+
+| | `separate` (tag rows + geometry rows) | `joined` (one feature table/file) |
+|---|---|---|
+| `pg` | today, streamed live (default) | **new**: staged + cursor join + `COPY` into `{table}_features` |
+| `parquet` | **new**: `{table}.parquet` + `{table}_geom.parquet` written live, no staging, no join | today (default) |
+| `geojson`/`geojsonseq` | — | today (only layout) |
+
+`both` writes both. Postgres `joined` deliberately does **not** join in SQL (`CREATE TABLE … AS
+SELECT … JOIN`, as `--topic-edges` does): that would duplicate the fallback semantics in SQL, and
+write every row twice (separate tables, then the copy) plus WAL. Staging + our join + one `COPY`
+writes each row once. Load details: create the table in the `COPY`'s transaction (`COPY … FREEZE`,
+optionally `UNLOGGED`), feed it from the join over several connections (`--db-writers`) so ingest is
+not one server process, build the GiST index after loading.
+
+**Trade-off accepted:** Postgres `joined` inherits our join's speed, which is sequential today, where
+a SQL join would be parallel. In return every join speed-up below lands in all three backends at once.
+
+**Steps, in order:**
+
+1. **Engine + encoder interface.** Move GeoJSON and Parquet onto it. Pure refactor — output
+   byte-identical.
+2. **Postgres encoder, `--layout joined`.** Gate: the `{table}_features` rows equal the Parquet
+   `joined` rows as a multiset (same staged input).
+3. **Join speed-ups**, now benefiting all joined outputs:
+   - GeoJSON properties: stop re-parsing per feature. Either pre-merge `produced` + `annotations`
+     into one sorted object on the classify workers and insert the base keys (`osm_id`/`id`/
+     `category`/`seg_idx`) with an allocation-free key scan (byte-identical), or splice the objects'
+     contents verbatim (faster, but keys unsorted and no later-wins dedup — an output change).
+     **Open decision.**
+   - Parquet: disable dictionary encoding on the near-unique columns (`produced`, `annotations`,
+     `id`, `geometry`); measure file size.
+   - Zero-copy staged rows: borrow strings from the frame buffer instead of allocating `String`s,
+     validate UTF-8 once per frame (we wrote it); presize the Arrow builders.
+4. **Parquet `--layout separate`** — written live like `pg`, so no staging and no join at all for
+   that mode.
+5. Then 4b/4c-style parallelism (per-column encode, chunked pipeline) on whatever sequential work is
+   left.
 
 #### Not doing: sort/merge + unordered-always
 
@@ -504,13 +583,16 @@ Two extras that fall out:
 1. ~~Phase 0 harness, Phase 1.1, 1.2, 1.3 (unordered half), re-baseline, ordered/unordered A/B~~ —
    **done**. Results in §2b/§2c.
 2. ~~Phase 2~~ — **cancelled on measurement** (§2c). Worth ~3 s.
-3. **Phase 4a — streaming writer.** Now the top item: the join is ~26 s and flat at every thread
-   count, the largest single addressable cost left. Bounded-memory win on its own, byte-identical
-   testable.
-4. **New: make `par_route_ordered` traverse the arena sequentially.** §2c isolates +13.8 s at t=56
+3. ~~Phase 4a — streaming writer~~ — **done**.
+4. ~~Phase 4d — integer geometry IR~~ — **done** (join gain small; profile in 4e).
+5. **Phase 4e — join engine + encoders, then `--layout`** (steps 1–4 there). Decide the GeoJSON
+   property question (byte-identical pre-merge vs. verbatim splice) before step 3.
+6. **Make `par_route_ordered` traverse the arena sequentially.** §2c isolates +13.8 s at t=56
    from probing the MPHF arena in `kept_way_order` rather than scanning it in slot order — the only
-   ordered cost that grows with thread count. In neither original plan. Resolve in slot order,
-   buffer, emit in blob order.
-5. **Phase 4c** — hash-partition + parallel encode, with `geojson`/`geojsonseq` in lockstep (§5).
-6. **Phase 1.3, ordered half** — no longer blocked on Phase 2 (which is cancelled); needs its own
-   look at whether the `topic_rows` transient can be shrunk independently.
+   ordered cost that grows with thread count. Resolve in slot order, buffer, emit in blob order.
+7. **Phase 4b/4c** — parallel topics, then hash-partition + parallel encode, with all joined
+   outputs in lockstep (§5) — re-scoped by 4e: parallelize what the profile says is left.
+8. **Phase 1.3, ordered half** — needs its own look at whether the `topic_rows` transient can be
+   shrunk independently.
+9. **Phase 5** (in-memory staging opt-in) and **Phase 6** (`as_member`, retire the relation
+   graph-fallback) — independent tracks, unchanged.

@@ -17,9 +17,7 @@
 
 use boomphf::Mphf;
 
-/// Scale of the stored fixed-point coordinates: decimicrodegrees (10⁻⁷°), the PBF's own native
-/// integer representation (`osmpbf`'s `decimicro_lat`/`decimicro_lon`).
-pub const DECIMICRO: f64 = 1e-7;
+use crate::geom::coord::Coord;
 
 /// MPHF-indexed, resident array of node coordinate records.
 ///
@@ -157,9 +155,8 @@ impl NodeCoords {
         NodeCoords { mphf, data: records, shared }
     }
 
-    /// `(lon, lat)` in degrees plus the `shared` flag. Degrees are reconstructed from the stored
-    /// fixed-point form here so callers keep working in the units they always did.
-    pub fn get(&self, id: i64) -> Option<(f64, f64, bool)> {
+    /// `[lon, lat]` in decimicrodegrees (the stored form — see `geom::coord`) plus the `shared` flag.
+    pub fn get(&self, id: i64) -> Option<(Coord, bool)> {
         // `try_hash` (not `hash`) because `id` may never have been in the collected set — `hash`
         // panics in that case, since it assumes membership; `try_hash` returns `None` once it
         // exhausts all levels without a match. Even the `Some` case is only "arbitrary but in
@@ -169,7 +166,7 @@ impl NodeCoords {
         if rid != id {
             return None;
         }
-        Some((lon as f64 * DECIMICRO, lat as f64 * DECIMICRO, bit_is_set(&self.shared, idx)))
+        Some(([lon, lat], bit_is_set(&self.shared, idx)))
     }
 
     /// Resident heap bytes of the record array plus the `shared` bitset. Excludes the MPHF
@@ -179,10 +176,8 @@ impl NodeCoords {
             + self.shared.capacity() * std::mem::size_of::<u64>()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (i64, (f64, f64, bool))> + '_ {
-        self.data.iter().enumerate().map(|(slot, &(id, lon, lat))| {
-            (id, (lon as f64 * DECIMICRO, lat as f64 * DECIMICRO, bit_is_set(&self.shared, slot)))
-        })
+    pub fn iter(&self) -> impl Iterator<Item = (i64, (Coord, bool))> + '_ {
+        self.data.iter().enumerate().map(|(slot, &(id, lon, lat))| (id, ([lon, lat], bit_is_set(&self.shared, slot))))
     }
 }
 
@@ -228,11 +223,6 @@ impl NodeCoordsBuilder {
 mod tests {
     use super::*;
 
-    /// Degrees for a decimicrodegree literal, matching what `get`/`iter` reconstruct.
-    fn deg(dm: i32) -> f64 {
-        dm as f64 * DECIMICRO
-    }
-
     /// Build from `(id, lon, lat, shared)` tuples via the builder — the only supported way in, and
     /// what every caller actually uses.
     fn build(records: &[(i64, i32, i32, bool)]) -> NodeCoords {
@@ -253,12 +243,12 @@ mod tests {
         ];
         let store = build(&records);
 
-        assert_eq!(store.get(10), Some((deg(10_000_000), deg(20_000_000), false)));
-        assert_eq!(store.get(20), Some((deg(30_000_000), deg(40_000_000), true)));
-        assert_eq!(store.get(30), Some((deg(-50_000_000), deg(60_000_000), false)));
+        assert_eq!(store.get(10), Some(([10_000_000, 20_000_000], false)));
+        assert_eq!(store.get(20), Some(([30_000_000, 40_000_000], true)));
+        assert_eq!(store.get(30), Some(([-50_000_000, 60_000_000], false)));
         assert_eq!(
             store.get(7_000_000_000),
-            Some((deg(1_800_000_000), deg(-900_000_000), true))
+            Some(([1_800_000_000, -900_000_000], true))
         );
 
         assert_eq!(store.get(11), None);
@@ -270,10 +260,10 @@ mod tests {
         assert_eq!(
             collected,
             vec![
-                (10, (deg(10_000_000), deg(20_000_000), false)),
-                (20, (deg(30_000_000), deg(40_000_000), true)),
-                (30, (deg(-50_000_000), deg(60_000_000), false)),
-                (7_000_000_000, (deg(1_800_000_000), deg(-900_000_000), true)),
+                (10, ([10_000_000, 20_000_000], false)),
+                (20, ([30_000_000, 40_000_000], true)),
+                (30, ([-50_000_000, 60_000_000], false)),
+                (7_000_000_000, ([1_800_000_000, -900_000_000], true)),
             ]
         );
     }
@@ -286,7 +276,7 @@ mod tests {
             (0..500i64).map(|i| (i * 3 + 1, i as i32, -(i as i32), i % 2 == 0)).collect();
         let store = build(&records);
         for &(id, lon, lat, shared) in &records {
-            assert_eq!(store.get(id), Some((deg(lon), deg(lat), shared)), "id {id}");
+            assert_eq!(store.get(id), Some(([lon, lat], shared)), "id {id}");
         }
     }
 
@@ -300,7 +290,7 @@ mod tests {
     #[test]
     fn single_record() {
         let store = build(&[(42i64, 15_000_000i32, 25_000_000i32, true)]);
-        assert_eq!(store.get(42), Some((deg(15_000_000), deg(25_000_000), true)));
+        assert_eq!(store.get(42), Some(([15_000_000, 25_000_000], true)));
         assert_eq!(store.get(43), None);
     }
 
@@ -317,7 +307,7 @@ mod tests {
         for &(id, lon, lat, shared) in &records {
             assert_eq!(
                 store.get(id),
-                Some((deg(lon), deg(lat), shared)),
+                Some(([lon, lat], shared)),
                 "id {id} lost or corrupted"
             );
         }

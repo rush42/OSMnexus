@@ -4,6 +4,31 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
 
 ## Unreleased
 
+- **Geometry stays in the PBF's integer coordinates until the writer — file output change.** The
+  pipeline used to project every coordinate to Web Mercator while building geometry and stage it as
+  EWKB, so `--output geojson`/`geojsonseq`/`parquet` had to decode it, invert the projection point by
+  point and round the inversion's noise back off. Geometry is now carried as the PBF's own
+  decimicrodegree integers (`geom::coord`) and each sink converts once: Postgres/CSV project to
+  3857 EWKB at write time, Parquet writes lon/lat WKB, GeoJSON writes decimal text straight from
+  the integers.
+  - **Default output changes:** coordinates are written as their stored value, without the
+    projection round trip's noise (`53.101634`, not `53.101634000000004`). Output at
+    `--coordinate-precision 7` is unchanged. `--coordinate-precision` ≥ 7 no longer changes raw
+    coordinates; below 7 it rounds the integers half away from zero.
+  - Postgres/CSV geometry is byte-identical for lines, polygons and edges. Two cases differ in the
+    last bits of the EWKB doubles (sub-nanometre): node points, which were converted from
+    `osmpbf`'s `lon()`/`lat()` instead of the integers every way already used, and centroids
+    (`"way": "point"`, `"relation": "point"`), which are still computed in Web Mercator but staged as
+    float lon/lat and reprojected.
+  - **Relation centroids (`"relation": "point"`) no longer count the gaps between member ways.**
+    Members were concatenated into one line, so each jump from one member's end to the next
+    member's start was weighted like real geometry — with members out of order, enough to pull the
+    point far off the relation. The centroid is now taken over the members chained into connected
+    runs (as for `"relation": "line"`), with nothing joining one run to the next.
+  - Polygons now work in file outputs (their staged EWKB was decoded as a `LineString` and
+    rejected) and include their holes.
+  - Staging files (`*.bin`, now `OSMNXST2`) store 8 instead of 16 bytes per point.
+
 - **`in_set` merged into `in`; `value_sets.json` renamed to `lists.json` — config change.** A
   membership filter is now always `in`: either an inline array (`"in": ["a", "b"]`, as before) or
   the name of a list in `<config-dir>/lists.json` (`"in": "allowed_highway"`, formerly

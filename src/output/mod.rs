@@ -1,3 +1,4 @@
+pub(crate) mod coord_fmt;
 pub(crate) mod cursor;
 pub mod geojson;
 #[cfg(feature = "parquet")]

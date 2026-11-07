@@ -191,23 +191,23 @@ fn read_rss_anon_bytes() -> Option<usize> {
 /// node topic wanting graph output (`selected`). Plain interior nodes of a single way never need an
 /// id since they're never referenced by more than the one edge they're already embedded in.
 ///
-/// Returns the `osm_id -> internal id` lookup and the `nodes` table rows (`internal id, osm_id, lon,
-/// lat`). Called from `geom::materialize` (only when some topic wants the graph), not from here —
+/// Returns the `osm_id -> internal id` lookup and the `nodes` table rows (`internal id, osm_id,
+/// coord`). Called from `geom::materialize` (only when some topic wants the graph), not from here —
 /// node-id assignment is a materialize-phase concern, not part of "select."
 pub fn assign_node_ids(
     coords: &NodeCoords,
     endpoints: &FxHashSet<i64>,
     selected: &FxHashSet<i64>,
-) -> (FxHashMap<i64, i64>, Vec<(i64, i64, f64, f64)>) {
+) -> (FxHashMap<i64, i64>, Vec<(i64, i64, crate::geom::coord::Coord)>) {
     let mut ids: FxHashMap<i64, i64> = FxHashMap::default();
-    let mut nodes: Vec<(i64, i64, f64, f64)> = Vec::new();
+    let mut nodes: Vec<(i64, i64, crate::geom::coord::Coord)> = Vec::new();
     let mut next_id: i64 = 1;
-    for (osm_id, (lon, lat, shared)) in coords.iter() {
+    for (osm_id, (coord, shared)) in coords.iter() {
         if shared || endpoints.contains(&osm_id) || selected.contains(&osm_id) {
             let id = next_id;
             next_id += 1;
             ids.insert(osm_id, id);
-            nodes.push((id, osm_id, lon, lat));
+            nodes.push((id, osm_id, coord));
         }
     }
     (ids, nodes)

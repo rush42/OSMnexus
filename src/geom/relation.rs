@@ -5,12 +5,15 @@
 //! second PBF scan. What's left here is purely the geometric assembly from the resolved
 //! coordinates: chaining member ways into rings for `Polygon`.
 
+
+use crate::geom::coord::Coord;
+
 /// Chain a set of way coordinate sequences end-to-end into one or more closed rings — the
 /// multipolygon convention's `outer`/`inner` member ways are frequently split across several ways
 /// (e.g. a building outline shared with neighbors), so `Polygon` assembly needs to reconnect them
 /// by matching endpoints before a ring exists at all. Endpoint matching is exact-coordinate
-/// equality: a shared OSM node id always resolves to the identical `(f64,f64)` (same map lookup in
-/// `osm::reader::resolve_extra_way_coords`), so no epsilon tolerance is needed.
+/// equality, on the PBF's own integers: a shared OSM node id always resolves to the identical
+/// `Coord` (same `NodeCoords` lookup), so no epsilon tolerance is needed.
 ///
 /// Greedy: starts a ring from an arbitrary remaining segment, repeatedly extends it by any
 /// remaining segment whose start or end matches the ring's current end (reversing the segment if
@@ -19,7 +22,7 @@
 /// single-way polygon) and a new ring starts from whatever remains. Doesn't attempt to spatially
 /// assign which hole belongs to which outer shape when there are multiple disjoint outer rings —
 /// see `geom::builders::build_relation_polygon_row`'s own doc for that simplification.
-pub fn assemble_rings(mut segments: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
+pub fn assemble_rings(mut segments: Vec<Vec<Coord>>) -> Vec<Vec<Coord>> {
     let mut rings = Vec::new();
     while let Some(mut ring) = segments.pop() {
         loop {

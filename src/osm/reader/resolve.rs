@@ -7,6 +7,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use osmpbf::{DenseNode, Node, Relation, RelMemberType, Way};
 use tracing::info;
 
+use crate::geom::coord::Coord;
 use crate::osm::types::{MemberRole, NodeData, OsmWay, RawTags, RelData, WayData, WayMeta};
 
 pub use super::memory_coords::{NodeCoords, NodeCoordsBuilder};
@@ -147,13 +148,13 @@ pub(super) fn dense_node_data<'a>(n: &DenseNode<'a>) -> NodeData<'a> {
         },
         None => WayMeta { timestamp: None, user: None, changeset: None },
     };
-    NodeData { id: n.id(), tags, meta, lon: n.lon(), lat: n.lat() }
+    NodeData { id: n.id(), tags, meta, coord: [n.decimicro_lon(), n.decimicro_lat()] }
 }
 
 /// Extract a [`NodeData`] from an osmpbf (non-dense) node.
 pub(super) fn node_data<'a>(n: &Node<'a>) -> NodeData<'a> {
     let tags: RawTags<'a> = n.tags().map(|(k, v)| (Cow::Borrowed(k), Cow::Borrowed(v))).collect();
-    NodeData { id: n.id(), tags, meta: extract_meta(n.info()), lon: n.lon(), lat: n.lat() }
+    NodeData { id: n.id(), tags, meta: extract_meta(n.info()), coord: [n.decimicro_lon(), n.decimicro_lat()] }
 }
 
 /// Resolve a way's node ids into an `OsmWay` geometry by looking up node coordinates. Tag/meta are
@@ -171,11 +172,11 @@ pub fn resolve_geometry(
 ) -> Option<OsmWay> {
     // One pass: keep only nodes that have coords, tracking their id + shared flag so cut points stay
     // aligned to `pts` indices (a dropped missing-coord node must not shift the indices).
-    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(node_refs.len());
+    let mut pts: Vec<Coord> = Vec::with_capacity(node_refs.len());
     let mut kept: Vec<(i64, bool)> = Vec::with_capacity(node_refs.len());
     for &nid in node_refs {
-        if let Some((lon, lat, shared)) = coords.get(nid) {
-            pts.push((lon, lat));
+        if let Some((c, shared)) = coords.get(nid) {
+            pts.push(c);
             kept.push((nid, shared));
         }
     }

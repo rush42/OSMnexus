@@ -323,7 +323,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 let kept = mask != 0;
                 let point = kept
-                    .then(|| geom::materialize::node_point(nd.id, nd.lon, nd.lat, &plan))
+                    .then(|| geom::materialize::node_point(nd.id, nd.coord, &plan))
                     .flatten()
                     .map(|row| (mask, row));
                 let forced_cut = kept && (mask & plan.node_graph_mask != 0);

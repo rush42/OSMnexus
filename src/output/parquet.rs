@@ -6,9 +6,9 @@
 //! (tag row × geometry row) pair — a topic backed by graph edges duplicates a tag row per split edge
 //! segment, same as `output::geojson`, so each Parquet row still carries exactly one geometry
 //! payload. `geometry` is plain little-endian WKB (no SRID — the CRS is declared once, in the file's
-//! `geo` key-value metadata, per the GeoParquet spec) in WGS84 lon/lat, reprojected from the
-//! pipeline's internal Web Mercator by the same `output::cursor::GeomValue` decode step
-//! `output::geojson` uses.
+//! `geo` key-value metadata, per the GeoParquet spec) in WGS84 lon/lat, written straight from the
+//! staged integer coordinates at the run's precision (`output::coord_fmt`) — no projection, no
+//! decode/re-encode round trip.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
@@ -26,7 +26,9 @@ use parquet::format::KeyValue;
 use serde_json::json;
 
 use crate::config::CoordPrecision;
-use crate::output::cursor::{group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, GeomValue, OrderedGeomCursor};
+use crate::geom::coord::{Coord, Geom};
+use crate::output::coord_fmt::CoordFmt;
+use crate::output::cursor::{group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, OrderedGeomCursor};
 use crate::output::rows::TopicRow;
 use crate::output::stage::StageReader;
 
@@ -99,6 +101,23 @@ fn merged_schema() -> Arc<Schema> {
 /// resident while producing it.
 const FLUSH_ROWS: usize = 65_536;
 
+/// A merged row's geometry: a staged shape, or one graph-edge segment (held by the cursors as a
+/// bare run, so it needs no `Geom` built — and no point copy — just to be encoded).
+#[derive(Clone, Copy)]
+enum RowGeom<'a> {
+    Geom(&'a Geom),
+    Segment(&'a [Coord]),
+}
+
+impl RowGeom<'_> {
+    fn geom_type(&self) -> &'static str {
+        match self {
+            RowGeom::Geom(g) => g.geom_type(),
+            RowGeom::Segment(_) => "LineString",
+        }
+    }
+}
+
 /// Column builders for `merged_schema`, flushed to the writer every `FLUSH_ROWS` rows rather than
 /// accumulated across the whole topic (which is what the previous single-`RecordBatch` version did,
 /// and what its own doc flagged to revisit if output ever showed up as memory-bound — it did).
@@ -116,11 +135,16 @@ struct MergedBuilders {
     geom_type: StringBuilder,
     geometry: BinaryBuilder,
     seg_idx: Int64Builder,
+    fmt: CoordFmt,
+    /// Reused WKB scratch buffer — one allocation for the whole table, not one per row.
+    wkb: Vec<u8>,
 }
 
 impl MergedBuilders {
-    fn new() -> Self {
+    fn new(fmt: CoordFmt) -> Self {
         MergedBuilders {
+            fmt,
+            wkb: Vec::new(),
             len: 0,
             osm_id: Int64Builder::new(),
             osm_type: StringBuilder::new(),
@@ -138,7 +162,7 @@ impl MergedBuilders {
     /// Append one merged row: `row`'s tag fields plus, if `geom`/`seg_idx` are given, this row's
     /// geometry payload (`None` for a tag row with no matching geometry at all — every column but
     /// the tag fields is `null`).
-    fn append(&mut self, row: &TopicRow, geom: Option<&GeomValue>, seg_idx: Option<usize>) {
+    fn append(&mut self, row: &TopicRow, geom: Option<RowGeom<'_>>, seg_idx: Option<usize>) {
         self.len += 1;
         self.osm_id.append_value(row.osm_id);
         self.osm_type.append_value(row.osm_type);
@@ -156,7 +180,12 @@ impl MergedBuilders {
         match geom {
             Some(g) => {
                 self.geom_type.append_value(g.geom_type());
-                self.geometry.append_value(g.to_wkb());
+                self.wkb.clear();
+                match g {
+                    RowGeom::Geom(g) => self.fmt.write_wkb(&mut self.wkb, g),
+                    RowGeom::Segment(run) => self.fmt.write_wkb_line(&mut self.wkb, run),
+                }
+                self.geometry.append_value(&self.wkb);
             }
             None => {
                 self.geom_type.append_null();
@@ -204,14 +233,14 @@ fn write_table_parquet(
     relation_members: &HashMap<i64, Vec<i64>>,
     precision: CoordPrecision,
 ) -> anyhow::Result<()> {
-    let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")), precision)?;
-    let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")), precision)?;
-    let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")), precision)?;
+    let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")))?;
+    let mut way_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_way_geom.bin")))?;
+    let mut relation_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_relation_geom.bin")))?;
     let mut edge_cursor = EdgeCursor::new(edges);
 
     let mut tags = StageReader::<TopicRow>::open(&out_dir.join(format!("{table}.bin")))?;
     let mut geometry_types = BTreeSet::new();
-    let mut builders = MergedBuilders::new();
+    let mut builders = MergedBuilders::new(CoordFmt::new(precision));
 
     // Writer opened before the row loop so batches can stream into it; the `geo` metadata it still
     // needs is appended after the loop, once `geometry_types` is complete.
@@ -231,7 +260,7 @@ fn write_table_parquet(
                 };
                 if let Some(geom) = geom {
                     geometry_types.insert(geom.geom_type());
-                    builders.append(&row, Some(geom), None);
+                    builders.append(&row, Some(RowGeom::Geom(geom)), None);
                 } else if let Some(way_ids) = relation_members.get(&osm_id) {
                     let segments: Vec<&EdgeGeom> =
                         way_ids.iter().filter_map(|way_id| edges_by_way.get(way_id)).flatten().copied().collect();
@@ -239,9 +268,9 @@ fn write_table_parquet(
                         builders.append(&row, None, None);
                     }
                     for segment in segments {
-                        let g = GeomValue::Line(segment.coordinates.clone());
+                        let g = RowGeom::Segment(&segment.coordinates);
                         geometry_types.insert(g.geom_type());
-                        builders.append(&row, Some(&g), Some(segment.seg_idx));
+                        builders.append(&row, Some(g), Some(segment.seg_idx));
                     }
                 } else {
                     builders.append(&row, None, None);
@@ -255,7 +284,7 @@ fn write_table_parquet(
                 if let Some(geom) = geom {
                     geometry_types.insert(geom.geom_type());
                 }
-                builders.append(&row, geom, None);
+                builders.append(&row, geom.map(RowGeom::Geom), None);
             }
             _ => {
                 let geom = match way_geom.as_mut() {
@@ -264,16 +293,16 @@ fn write_table_parquet(
                 };
                 if let Some(geom) = geom {
                     geometry_types.insert(geom.geom_type());
-                    builders.append(&row, Some(geom), None);
+                    builders.append(&row, Some(RowGeom::Geom(geom)), None);
                 } else {
                     let segments = edge_cursor.get_all(osm_id);
                     if segments.is_empty() {
                         builders.append(&row, None, None);
                     }
                     for segment in segments {
-                        let g = GeomValue::Line(segment.coordinates.clone());
+                        let g = RowGeom::Segment(&segment.coordinates);
                         geometry_types.insert(g.geom_type());
-                        builders.append(&row, Some(&g), Some(segment.seg_idx));
+                        builders.append(&row, Some(g), Some(segment.seg_idx));
                     }
                 }
             }
@@ -301,7 +330,7 @@ fn write_table_parquet(
 /// Reads each of `tables`' staged output (see `output::cursor`'s own doc) and writes one
 /// `{table}.parquet` file beside them.
 pub fn write_parquet(out_dir: &Path, tables: &[String], precision: CoordPrecision) -> anyhow::Result<()> {
-    let edges = read_edges(&out_dir.join("edges.bin"), precision)?;
+    let edges = read_edges(&out_dir.join("edges.bin"))?;
     let edges_by_way = group_edges_by_way(&edges);
     let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 

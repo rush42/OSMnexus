@@ -80,21 +80,18 @@ pub struct Config {
 
     /// Decimal places to round output coordinates to.
     ///
-    /// The PBF stores coordinates as fixed-point *decimicrodegrees* (1e-7 degrees), so **7 is the
-    /// source data's exact resolution** — nothing in the input is more precise than that. The
-    /// pipeline projects to Web Mercator internally and unprojects on the way out, and the inverse
-    /// projection's `atan`/`exp` leaves latitudes carrying round-trip noise far past that: a stored
-    /// `53.1016340` comes back out as `53.101634000000004`. (Longitude survives — its transform is
-    /// linear.) So `--coordinate-precision 7` *recovers* the stored value rather than discarding
-    /// information, and drops roughly a third of the coordinate bytes in GeoJSON output, which is
-    /// dominated by them.
+    /// The PBF stores coordinates as fixed-point *decimicrodegrees* (1e-7 degrees), and the pipeline
+    /// carries them as those integers all the way to the writer (see `geom::coord`), so **7 is the
+    /// source data's exact resolution**: at 7 or above, every raw coordinate is written as its stored
+    /// value (`53.101634`), and a larger value changes nothing. Below 7, coordinates are rounded half
+    /// away from zero — fewer decimals, smaller files, coarser positions.
     ///
-    /// The default is deliberately above anything an `f64` can express (its shortest round-trip
-    /// form is at most 17 significant digits), so by default this rounds nothing at all and output
-    /// stays byte-identical to previous releases. Rounding is opt-in.
+    /// Derived points (way/relation centroids) are computed in floating point and are the one case
+    /// where values above 7 still mean something; they round like any float.
     ///
-    /// Applies to every backend that writes coordinates, not just GeoJSON — a run emits one
-    /// coordinate precision, so `.parquet` WKB and `.geojson` agree.
+    /// Applies to every file backend that writes coordinates — a run emits one coordinate
+    /// precision, so `.parquet` WKB and `.geojson` agree. Postgres/CSV write Web Mercator EWKB and
+    /// ignore it.
     #[arg(long, default_value_t = 21)]
     pub coordinate_precision: u32,
 
@@ -154,7 +151,8 @@ pub enum TopicEdgeMode {
 }
 
 /// How many decimal places output coordinates are rounded to — see `Config::coordinate_precision`
-/// for why 7 is the meaningful value and why the default rounds nothing.
+/// for why 7 is the meaningful value for raw coordinates. `round` is the float path, for derived
+/// points; raw integer coordinates are rounded in `output::coord_fmt`.
 #[derive(Clone, Copy, Debug)]
 pub struct CoordPrecision(pub u32);
 
@@ -180,8 +178,8 @@ mod coord_precision_tests {
     use super::CoordPrecision;
 
     #[test]
-    fn rounds_away_the_unprojection_noise_to_the_stored_value() {
-        // What `mercator_to_wgs84` hands back for a PBF-stored 53.1016340.
+    fn rounds_float_noise_to_seven_decimals() {
+        // Float noise of the kind a computed (centroid) coordinate can carry.
         assert_eq!(CoordPrecision(7).round(53.101634000000004), 53.101634);
         assert_eq!(CoordPrecision(7).round(53.10165960000001), 53.1016596);
         // Longitude is already clean; rounding must leave it alone.
