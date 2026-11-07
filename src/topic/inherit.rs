@@ -3,10 +3,10 @@
 //! The point of doing this here rather than at output-build time is ordering. A relation wanting
 //! graph-shaped output used to be the primary row, reaching out at output time to *borrow* geometry
 //! from its member ways' edges — and a relation's member way ids are an arbitrary set scattered
-//! across a different pass's output, so that lookup needed the one random-access hashmap left in the
-//! join (`output::cursor::group_edges_by_way`). Flipping it round removes the need: a member way
-//! carries its relation-derived context in its *own* tag row, and every remaining geometry join is
-//! the clean "this element's own geometry" case.
+//! across a different pass's output, so that lookup needed a random-access hashmap in the join.
+//! Flipping it round removed the need (and that fallback is gone): a member way carries its
+//! relation-derived context in its *own* tag row — including the relation's id, read as
+//! `{"parent": {"tag": "@id"}}` — and every geometry join is the element's own geometry.
 //!
 //! The timing works because the relations pass runs *before* Pass A (`osm::reader::sorted`'s module
 //! doc). Relations are classified, their exported fields captured here, and only then are ways
@@ -59,24 +59,26 @@ impl InheritStore {
         self.per_topic.iter().any(Option::is_some)
     }
 
-    /// Extract topic `idx`'s declared fields from a just-classified relation's `produced` and retain
-    /// them for its member ways. `produced` is the relation's own pre-serialized JSON; a declared
-    /// field the relation didn't produce is simply absent (its outputs are category-dependent).
+    /// Record a just-classified relation of topic `idx` as a parent for its member ways, with its
+    /// declared fields extracted from its `produced` (its own pre-serialized JSON). A declared field
+    /// the relation didn't produce is simply absent (its outputs are category-dependent).
+    ///
+    /// Every kept relation is recorded, even one that exports no field at all: the parent's identity
+    /// is information in its own right — a member way reads it as `{"parent": {"tag": "@id"}}` — so
+    /// "member of relation 7" must not collapse into "not a member" just because relation 7 had no
+    /// `ref`. `fields` may be empty for a topic that only wants membership.
     pub fn capture(&self, runners: &[Topic], idx: usize, rel_osm_id: i64, produced: &str) {
         let Some(slot) = self.per_topic.get(idx).and_then(Option::as_ref) else { return };
         let Some(spec) = runners[idx].spec.inherit_to_member.as_ref() else { return };
-        if produced.is_empty() {
-            return;
-        }
-        let Ok(Value::Object(map)) = serde_json::from_str::<Value>(produced) else { return };
         let mut exported = RawTags::default();
-        for field in &spec.fields {
-            if let Some(v) = map.get(field) {
-                exported.insert(field.clone().into(), value_to_tag(v).into());
+        if !spec.fields.is_empty() && !produced.is_empty() {
+            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(produced) {
+                for field in &spec.fields {
+                    if let Some(v) = map.get(field) {
+                        exported.insert(field.clone().into(), value_to_tag(v).into());
+                    }
+                }
             }
-        }
-        if exported.is_empty() {
-            return;
         }
         slot.write().unwrap().insert(rel_osm_id, Arc::new(exported));
     }
@@ -86,11 +88,10 @@ impl InheritStore {
     }
 
     /// This topic's parent tagsets for a member way, in `parents` order (sorted ids — see
-    /// `osm::reader::build_way_parents`), skipping parents that exported nothing.
+    /// `osm::reader::build_way_parents`), for every parent this topic kept.
     ///
-    /// Empty when the topic declares no inheritance or the way has no exporting parent, which is
-    /// what `build_topic_rows` treats as "emit exactly one row with no parent" — so a member way
-    /// whose parents all exported nothing behaves exactly like a non-member way.
+    /// Empty when the topic declares no inheritance or none of the way's parents was kept by it,
+    /// which is what `build_topic_rows` treats as "emit exactly one row with no parent".
     pub fn parents_for(&self, idx: usize, parents: &[i64]) -> Vec<(i64, ExportedFields)> {
         if parents.is_empty() || self.per_topic.get(idx).map_or(true, Option::is_none) {
             return Vec::new();

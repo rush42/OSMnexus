@@ -132,7 +132,7 @@ impl InputTransform {
     ) -> bool {
         match self {
             InputTransform::TagRule { output, source } => {
-                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations, elem: None, parent_elem: None };
                 if let Some(p) = source.eval(&ctx) {
                     match p.value {
                         Value::Null => { tags.remove(output.as_str()); }
@@ -146,7 +146,7 @@ impl InputTransform {
             }
             InputTransform::UnnestTags { prefix, infix, meta_prefixes, guard, record_infix_as } => {
                 if let Some(guard) = guard {
-                    let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                    let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations, elem: None, parent_elem: None };
                     if !eval(guard, &ctx) {
                         return true;
                     }
@@ -194,7 +194,7 @@ impl InputTransform {
                 true
             }
             InputTransform::Drop { when } => {
-                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations, elem: None, parent_elem: None };
                 !eval(when, &ctx)
             }
         }
@@ -257,7 +257,7 @@ pub fn run_transform_steps<'a>(
             }
             TransformStep::Clone(spec) => {
                 if let Some(when) = &spec.when {
-                    let ctx = ExtractCtx { obj_tags: tags, parent_tags: None, id: "", annotations };
+                    let ctx = ExtractCtx { obj_tags: tags, parent_tags: None, id: "", annotations, elem: None, parent_elem: None };
                     if !eval(when, &ctx) {
                         continue;
                     }

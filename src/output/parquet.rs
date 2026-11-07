@@ -10,7 +10,7 @@
 //! staged integer coordinates at the run's precision (`output::coord_fmt`) — no projection, no
 //! decode/re-encode round trip.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use serde_json::json;
 use crate::config::CoordPrecision;
 use crate::geom::coord::{Coord, Geom};
 use crate::output::coord_fmt::CoordFmt;
-use crate::output::cursor::{group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, OrderedGeomCursor};
+use crate::output::cursor::{read_edges, EdgeCursor, EdgeGeom, OrderedGeomCursor};
 use crate::output::rows::TopicRow;
 use crate::output::stage::StageReader;
 
@@ -229,8 +229,6 @@ fn write_table_parquet(
     out_dir: &Path,
     table: &str,
     edges: &[(i64, EdgeGeom)],
-    edges_by_way: &HashMap<i64, Vec<&EdgeGeom>>,
-    relation_members: &HashMap<i64, Vec<i64>>,
     precision: CoordPrecision,
 ) -> anyhow::Result<()> {
     let mut node_geom = OrderedGeomCursor::open(&out_dir.join(format!("{table}_node_geom.bin")))?;
@@ -258,23 +256,13 @@ fn write_table_parquet(
                     Some(cursor) => cursor.get(osm_id)?,
                     None => None,
                 };
+                // A relation without geometry of its own keeps its row, with null geometry — the
+                // same as a node without a point (see `output::geojson`'s module doc for why it no
+                // longer borrows its member ways' segments).
                 if let Some(geom) = geom {
                     geometry_types.insert(geom.geom_type());
-                    builders.append(&row, Some(RowGeom::Geom(geom)), None);
-                } else if let Some(way_ids) = relation_members.get(&osm_id) {
-                    let segments: Vec<&EdgeGeom> =
-                        way_ids.iter().filter_map(|way_id| edges_by_way.get(way_id)).flatten().copied().collect();
-                    if segments.is_empty() {
-                        builders.append(&row, None, None);
-                    }
-                    for segment in segments {
-                        let g = RowGeom::Segment(&segment.coordinates);
-                        geometry_types.insert(g.geom_type());
-                        builders.append(&row, Some(g), Some(segment.seg_idx));
-                    }
-                } else {
-                    builders.append(&row, None, None);
                 }
+                builders.append(&row, geom.map(RowGeom::Geom), None);
             }
             "N" => {
                 let geom = match node_geom.as_mut() {
@@ -331,11 +319,9 @@ fn write_table_parquet(
 /// `{table}.parquet` file beside them.
 pub fn write_parquet(out_dir: &Path, tables: &[String], precision: CoordPrecision) -> anyhow::Result<()> {
     let edges = read_edges(&out_dir.join("edges.bin"))?;
-    let edges_by_way = group_edges_by_way(&edges);
-    let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 
     for table in tables {
-        write_table_parquet(out_dir, table, &edges, &edges_by_way, &relation_members, precision)?;
+        write_table_parquet(out_dir, table, &edges, precision)?;
     }
     Ok(())
 }

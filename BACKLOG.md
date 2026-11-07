@@ -381,8 +381,9 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
     `main.rs:400`). That is the *exact reverse*, so every pairing (N+W, W+R, N+R) is out of order
     against the tag stream and no forward cursor can serve it. The three-way split from `68c77604f`
     is forced, not incidental — its own commit message only had evidence for the N/W case.
-  - **Note.** `edges` is dual-use: `EdgeCursor` walks it in lockstep (shards fine, keyed by
-    `osm_id`), but `group_edges_by_way` needs a map across *all* shards for the relation fallback.
+  - **Note.** `edges` used to be dual-use (`group_edges_by_way` needed a map across *all* shards for
+    the relation fallback); with that fallback removed, only `EdgeCursor`'s lockstep walk remains,
+    which shards fine.
     File count also grows to 4 per shard per topic — S=32 with 2 topics is ~256 staging files.
 
 - **In-memory staging, auto-selected — NOT BUILT.** `sinks::memory_sink` exists, is documented, and
@@ -404,10 +405,9 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
 
 - **Stream the join during materialize — NOT BUILT.** Tag rows all exist before materialize starts,
   so as each way geometry is produced in `kept_way_order` the tag cursor can advance and emit that
-  feature immediately; node features can stream during select. **Relations can't** — a relation's
-  graph-fallback geometry pools edges of arbitrary member ways (`group_edges_by_way`, keyed by
-  non-adjacent ids), so it needs every edge first, and relation geometry is resolved after
-  materialize anyway. Relations stay a post-pass.
+  feature immediately; node features can stream during select. Relations still need a post-pass,
+  because relation geometry is resolved after materialize — though no longer because of the
+  graph-fallback (removed), which pooled edges of arbitrary member ways.
   - **The prize is peak memory, not wall-clock.** You stop holding tag rows *and* geometry rows at
     once — on bremen's roads pair, geometry is 7.1 MB of 19.0 MB, so ~37% off. The floor you can't
     stream away is the tag rows themselves (63% of that pair), which are produced a phase earlier
@@ -447,8 +447,8 @@ Deferred ideas / nice-to-haves for the Rust pipeline. Not blocking anything.
     caught both is a **load-time warning for a named producer that nothing references** — in (1)
     the producer sits in `producers.json` unused, in (2) the topic's reference fails loudly already.
   - **Still open:** no shipped config uses `inherit_to_member` (`public_transport` has no `way/`
-    topic), and the relation graph-fallback (`output::cursor::group_edges_by_way`) it was meant to
-    make unnecessary is still in the join.
+    topic). The relation graph-fallback it replaced is removed; the parent's id is
+    `{"parent": {"tag": "@id"}}`.
 
 - **Node point coverage in `configs/public_transport` is 93 of 1,994 — unexplained.** Declaring
   `"geometry_output": { "node": "point" }` alongside the relation-line fix yields 93 Point features

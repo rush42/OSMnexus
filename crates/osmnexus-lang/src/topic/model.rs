@@ -602,6 +602,8 @@ mod producer_tree_tests {
                         parent_tags: parent_tags.as_ref(),
                         id: "",
                         annotations: &annotations,
+                        elem: None,
+                        parent_elem: None,
                     };
                     let a = field.source.eval(&ctx).map(|p| (p.value, p.annotate));
                     let b = linear.eval(&ctx).map(|p| (p.value, p.annotate));

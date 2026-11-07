@@ -31,6 +31,7 @@ fn parent_scoped(extract: &Extract) -> bool {
     match extract {
         Extract::Value { key, .. } => key.starts_with("parent_"),
         Extract::Candidates { keys, .. } => keys.iter().any(|k| k.starts_with("parent_")),
+        Extract::Virtual { parent, .. } => *parent,
     }
 }
 
@@ -41,8 +42,7 @@ fn parent_scoped(extract: &Extract) -> bool {
 /// `None => false, Some(parent_tags) => eval(parent, parent_tags)` semantics for a single predicate.
 fn read_extract<'a>(extract: &Extract, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
     if parent_scoped(extract) {
-        let parent_tags = ctx.parent_tags?;
-        let parent_ctx = ExtractCtx { obj_tags: parent_tags, parent_tags: ctx.parent_tags, id: ctx.id, annotations: ctx.annotations };
+        let parent_ctx = ctx.parent_scope()?;
         extract.strip_prefix("parent_").read_str(&parent_ctx)
     } else {
         extract.read_str(ctx)
@@ -52,8 +52,7 @@ fn read_extract<'a>(extract: &Extract, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, s
 /// `read_num`'s counterpart to `read_extract` — same parent-scope switch, for `Predicate::Num`.
 fn read_extract_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
     if parent_scoped(extract) {
-        let parent_tags = ctx.parent_tags?;
-        let parent_ctx = ExtractCtx { obj_tags: parent_tags, parent_tags: ctx.parent_tags, id: ctx.id, annotations: ctx.annotations };
+        let parent_ctx = ctx.parent_scope()?;
         read_num(&extract.strip_prefix("parent_"), &parent_ctx)
     } else {
         read_num(extract, ctx)

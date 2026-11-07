@@ -127,13 +127,17 @@ impl<'de> Deserialize<'de> for Producer {
         Ok(match ProducerJson::deserialize(deserializer)? {
             ProducerJson::Parent { parent } => Producer::Parent(parent),
             ProducerJson::ParentOrObj { parent_or_obj: inner } => parent_or_obj(*inner),
-            ProducerJson::Tag { tag, or: None } => {
-                Producer::Extract { extract: Extract::Value { key: tag, sanitize: Vec::new() }, annotate: Map::new() }
-            }
+            ProducerJson::Tag { tag, or: None } => Producer::Extract {
+                extract: Extract::key(tag, Vec::new()).map_err(serde::de::Error::custom)?,
+                annotate: Map::new(),
+            },
             ProducerJson::Tag { tag, or: Some(or) } => Producer::Match {
                 rules: vec![Rule {
                     when: Filter::Bool(true),
-                    value: Producer::Extract { extract: Extract::Value { key: tag, sanitize: Vec::new() }, annotate: Map::new() },
+                    value: Producer::Extract {
+                        extract: Extract::key(tag, Vec::new()).map_err(serde::de::Error::custom)?,
+                        annotate: Map::new(),
+                    },
                 }],
                 default: Some(or),
                 annotate: Map::new(),
@@ -144,8 +148,8 @@ impl<'de> Deserialize<'de> for Producer {
             }
             ProducerJson::Extract { key, keys, sanitize, annotate } => {
                 let extract = match (key, keys) {
-                    (Some(key), None) => Extract::Value { key, sanitize },
-                    (None, Some(keys)) => Extract::Candidates { keys, sanitize },
+                    (Some(key), None) => Extract::key(key, sanitize).map_err(serde::de::Error::custom)?,
+                    (None, Some(keys)) => Extract::keys(keys, sanitize).map_err(serde::de::Error::custom)?,
                     (None, None) => return Err(serde::de::Error::custom("Extract needs `key` or `keys`")),
                     (Some(_), Some(_)) => return Err(serde::de::Error::custom("Extract: set only one of `key`/`keys`, not both")),
                 };

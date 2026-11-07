@@ -106,7 +106,7 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::StartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract.clone(), starts_with.clone()))),
         Filter::EndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract.clone(), ends_with.clone()))),
         Filter::In { extract, r#in, .. } => match extract {
-            Extract::Value { .. } => {
+            Extract::Value { .. } | Extract::Virtual { .. } => {
                 let exprs: Vec<_> = r#in.values().iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone())))).collect();
                 Expr::Or(exprs)
             }

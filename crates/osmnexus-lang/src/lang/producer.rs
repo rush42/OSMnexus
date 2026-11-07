@@ -100,12 +100,42 @@ pub struct Produced {
 /// a different tagset — `annotations` stays a shared reference for that reason, never `&mut`;
 /// whatever step is actively writing to it (see `InputTransform::apply`) holds its own `&mut`
 /// separately and only ever hands `eval`/`Producer::eval` a reborrowed `&Map`.
+///
+/// `elem`/`parent_elem` say *which* element `obj_tags`/`parent_tags` belong to — what the `@id`/
+/// `@type` virtual tags read (see `lang::extract::VirtualKey`). `None` where a context has no element
+/// to name (a transform step's scratch context, a test helper).
 #[derive(Clone, Copy)]
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags<'a>,
     pub parent_tags: Option<&'a RawTags<'a>>,
     pub id: &'a str,
     pub annotations: &'a Map<String, Value>,
+    pub elem: Option<Elem>,
+    pub parent_elem: Option<Elem>,
+}
+
+/// An OSM element's identity: its kind and id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Elem {
+    pub kind: crate::lang::tags::ElementKind,
+    pub osm_id: i64,
+}
+
+impl<'a> ExtractCtx<'a> {
+    /// The context a parent-scoped read (`{"parent": ..}`) evaluates in: the parent's tags and
+    /// identity, and *no* annotations — `_side`/`_prefix`/`_infix` describe the side object being
+    /// classified, not its parent, so a parent read of `@side` is `self`. `None` without a parent.
+    pub fn parent_scope(&self) -> Option<ExtractCtx<'a>> {
+        let parent_tags = self.parent_tags?;
+        Some(ExtractCtx {
+            obj_tags: parent_tags,
+            parent_tags: self.parent_tags,
+            id: self.id,
+            annotations: empty_annotations(),
+            elem: self.parent_elem,
+            parent_elem: None,
+        })
+    }
 }
 
 /// The object's side: `_side` when a `split_sides` `Clone` stamped one, `"self"` otherwise.
@@ -120,7 +150,7 @@ pub fn side_of<'a>(ctx: &ExtractCtx<'a>) -> &'a str {
 
 /// A shared, empty annotations map — for a context that has none to offer (a neutral
 /// `eval_filter` check, or a test helper) but still needs a `&Map` to satisfy `ExtractCtx`.
-pub(crate) fn empty_annotations() -> &'static Map<String, Value> {
+pub fn empty_annotations() -> &'static Map<String, Value> {
     static EMPTY: OnceLock<Map<String, Value>> = OnceLock::new();
     EMPTY.get_or_init(Map::new)
 }
@@ -262,10 +292,7 @@ impl Producer {
 
             Producer::Const { value, annotate } => Some(Produced { value: value.clone(), annotate: annotate.clone() }),
 
-            Producer::Parent(inner) => match ctx.parent_tags {
-                None => None,
-                Some(parent_tags) => inner.eval(&ExtractCtx { obj_tags: parent_tags, ..*ctx }),
-            },
+            Producer::Parent(inner) => inner.eval(&ctx.parent_scope()?),
         }
     }
 }
@@ -277,7 +304,7 @@ mod classify_bool_tests {
     use crate::lang::json::TagSet;
 
     fn ctx<'a>(obj: &'a RawTags<'a>, parent: Option<&'a RawTags<'a>>) -> ExtractCtx<'a> {
-        ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations() }
+        ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations(), elem: None, parent_elem: None }
     }
 
     /// A `Match` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.

@@ -86,6 +86,7 @@ impl Filter {
             match extract {
                 Extract::Value { key, .. } => key.clone(),
                 Extract::Candidates { keys, .. } => format!("[{}]", keys.join("|")),
+                Extract::Virtual { .. } => extract.tag_names().remove(0),
             }
         }
         // A predicate whose comparison already reads as a keyword (`in`, `contains`, ...) doesn't
@@ -166,9 +167,9 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         Filter::Exists { extract, exists } =>
             extract.read_str(ctx).is_some() == *exists,
 
-        Filter::Parent { parent } => match ctx.parent_tags {
+        Filter::Parent { parent } => match ctx.parent_scope() {
             None => false,
-            Some(parent_tags) => eval(parent, &ExtractCtx { obj_tags: parent_tags, ..*ctx }),
+            Some(parent_ctx) => eval(parent, &parent_ctx),
         },
 
         // `_side` is absent on a base object and means "self" there (see
@@ -222,6 +223,8 @@ pub fn eval_filter(filter: &Filter, tags: &RawTags<'_>) -> bool {
         parent_tags: None,
         id: "",
         annotations: crate::lang::producer::empty_annotations(),
+        elem: None,
+        parent_elem: None,
     };
     eval(filter, &ctx)
 }

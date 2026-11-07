@@ -28,6 +28,27 @@ there is no inline-chain form, and every sanitizer has exactly one
 definition. A `sanitize:` field that isn't a bare string is a load-time
 error.
 
+### Virtual tags (`@` keys)
+
+A key starting with `@` reads a fact about the element instead of one of its
+OSM tags. It works everywhere a key does — filters, producers (`{"tag": ..}`,
+`"key"`), `in`, `parent`, `sanitize`:
+
+```
+"@id"      // the element's OSM id. Under "parent": the parent's id (a member
+           // way's relation, or a side object's base way)
+"@type"    // "node" | "way" | "relation"
+"@side"    // a side-split object's side; "self" otherwise (and under "parent")
+"@prefix"  // the side-split transform's recorded prefix; absent otherwise
+"@infix"   // likewise for the infix
+```
+
+Resolved when the config loads: an unknown `@` key is a load error, and an
+`@` key can't be one of several candidate `keys`. Virtual tags are not tags —
+`has_key_prefix`, `tags_empty` and tag passthrough never see them.
+`{"tag": "@side", "eq": "left"}` means the same as the older
+`{"annotation": "_side", "eq": "left"}`, which still works.
+
 ## sanitizers.json
 
 ```
@@ -80,7 +101,7 @@ Filter =
   | { <Extract fields>, "exists": Boolean }
   | { <Extract fields>, "eq": String }              // catch-all comparison
   | { "parent": Filter }                            // re-run filter against parent tags
-  | { "annotation": String, "eq": String }          // annotations[annotation] == eq (e.g. "_side"/"_prefix"/"_infix")
+  | { "annotation": String, "eq": String }          // annotations[annotation] == eq (e.g. "_side"/"_prefix"/"_infix"); prefer {"tag": "@side", ...}
   | { "has_key_prefix": String }
   | { "has_parent": Boolean }
   | { "tags_empty": Boolean }

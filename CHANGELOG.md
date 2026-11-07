@@ -4,6 +4,22 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
 
 ## Unreleased
 
+- **Virtual tags: `@id`, `@type`, `@side`, `@prefix`, `@infix`.** A key starting with `@` reads a
+  fact about the element instead of an OSM tag, everywhere a key is allowed (filters, producers,
+  `in`, `parent`). Under `parent` they describe the parent: a member way reads its relation's id as
+  `{"parent": {"tag": "@id"}}`. Resolved at load time; an unknown `@` key is a load error.
+  `{"annotation": "_side", ...}` keeps working. See `GRAMMAR.md`.
+- **`inherit_to_member`: every kept relation is a parent**, including one that exports none of the
+  declared `fields` (which are now optional) — its id is information on its own. A way topic gets
+  one row per parent relation in `fan_out` mode even if that parent has no `ref`.
+- **Removed the relation graph-fallback from the file outputs.** A relation without geometry of its
+  own used to borrow its member ways' graph segments; it now has no feature in GeoJSON and a
+  null-geometry row in Parquet, like a node without a point. Use
+  `"geometry_output": { "relation": "line" }` for the relation as one shape, or `inherit_to_member`
+  for its member ways carrying the relation's context. No shipped config reached this path (it
+  needed a `"graph"` topic); every shipped config's output is byte-identical.
+  `relation_members.bin` is no longer staged; Postgres and CSV still write `relation_members`.
+
 - **Geometry stays in the PBF's integer coordinates until the writer — file output change.** The
   pipeline used to project every coordinate to Web Mercator while building geometry and stage it as
   EWKB, so `--output geojson`/`geojsonseq`/`parquet` had to decode it, invert the projection point by

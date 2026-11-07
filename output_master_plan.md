@@ -223,7 +223,7 @@ Three things follow.
 | 2 | `--join-shards` default | **Deferred to Phase 4** — still needs tuning data, and Phase 4 may not happen. Do not pick a number now. |
 | 3 | Does in-memory staging supersede sort/merge? | **No — keep independent.** `geojsonseq` streams today and would lose that property; sort/merge is the only answer that serves all three backends. In-memory becomes an opt-in fast path (Phase 5), never the only path. |
 | 4 | Does `--output csv` need `ordered`? | **Resolved: it does not.** There is no `output/csv.rs`, and `main.rs:398-425` branches a post-run join only for `GeoJson`/`GeoJsonSeq`/`Parquet`. CSV writes independent per-table files with no cross-file correlation. One-line fix, Phase 1. |
-| 5 | `as_member`-for-edges | **Out of scope for this plan.** Separate track (Phase 6). Engine side since built as `inherit_to_member`; the config work and the fallback removal remain. |
+| 5 | `as_member`-for-edges | **Done** as `inherit_to_member` + the `@id` virtual tag; relation graph-fallback removed (Phase 6). |
 
 ---
 
@@ -446,7 +446,7 @@ after 4d):
 | | | geometry cursor | ~8% |
 
 **Design.** Split the join from what it writes. The cursor join (node/way/relation cursors, the
-graph-shape fallback with `seg_idx`, the relation fallback) yields neutral feature rows —
+graph-shape fallback with `seg_idx`) yields neutral feature rows —
 `(&TopicRow, geometry, seg_idx)` — and a per-sink **encoder** turns them into bytes: GeoJSON text,
 Arrow batches, or Postgres `COPY` binary. One implementation of the join semantics, so every joined
 output provably has the same rows; the encoder seam is also exactly what a chunked/parallel join
@@ -506,16 +506,18 @@ against a 64 GB budget, so the memory headroom is larger than the doc assumed. S
 
 Can be built before or after Phase 4; it depends on neither.
 
-### Phase 6 — `as_member` / retire the relation graph-fallback *(separate track)*
+### Phase 6 — `as_member` / retire the relation graph-fallback *(done)*
 
-**The engine half is done:** `as_member` was built as `inherit_to_member` — a relation hands its
-exported fields to its member ways as their parent, read with the existing `{"parent": ..}` producer
-syntax, fanned out per parent or merged (`topic::inherit`; tests in `topic::pipeline::inherit_tests`).
+`as_member` was built as `inherit_to_member`: a relation hands its exported fields to its member
+ways as their parent, read with the existing `{"parent": ..}` producer syntax, fanned out per parent
+or merged (`topic::inherit`; tests in `topic::pipeline::inherit_tests`). The parent's own id is a
+virtual tag, `{"parent": {"tag": "@id"}}` (`lang::extract::VirtualKey`), so nothing the fallback
+offered is lost. The relation graph-fallback, `group_edges_by_way` and `read_relation_members` are
+removed from both joins, and `relation_members.bin` is no longer staged; a relation is written with
+its own geometry or none.
 
-**Still open:** (1) a config that uses it — `public_transport` has no `way/` topic, so it still
-writes empty files on the file backends (the accepted regression); (2) then removing the relation
-graph-fallback and `group_edges_by_way`, the one genuinely random-access join — which would also
-let 4e's join engine drop that case. Blocks nothing above.
+**Still open:** `public_transport` has no `way/` topic, so it still writes empty files on the file
+backends (the accepted regression) — config work, not engine work.
 
 ---
 
@@ -599,5 +601,5 @@ Two extras that fall out:
    outputs in lockstep (§5) — re-scoped by 4e: parallelize what the profile says is left.
 8. **Phase 1.3, ordered half** — needs its own look at whether the `topic_rows` transient can be
    shrunk independently.
-9. **Phase 5** (in-memory staging opt-in) and **Phase 6** (`as_member`, retire the relation
-   graph-fallback) — independent tracks, unchanged.
+9. **Phase 5** (in-memory staging opt-in) — independent track, unchanged. **Phase 6** is done
+   except config work (a `public_transport` way topic using `inherit_to_member`).

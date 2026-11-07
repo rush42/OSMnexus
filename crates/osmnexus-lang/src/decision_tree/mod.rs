@@ -104,6 +104,11 @@ impl std::fmt::Display for BranchKey {
                 if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
                 Ok(())
             }
+            BranchKey::Tag(e @ Extract::Virtual { sanitize, .. }) => {
+                write!(f, "{}", e.tag_names()[0])?;
+                if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
+                Ok(())
+            }
         }
     }
 }
