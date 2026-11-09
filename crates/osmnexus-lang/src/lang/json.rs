@@ -106,7 +106,7 @@ enum ProducerJson {
     },
     Extract {
         #[serde(default)] key: Option<String>,
-        #[serde(default)] keys: Option<Vec<String>>,
+        #[serde(default)] keys: Option<Vec<crate::lang::extract::Alt>>,
         #[serde(default, deserialize_with = "deserialize_sanitize_chain")] sanitize: Vec<Sanitizer>,
         #[serde(default)] annotate: Map<String, Value>,
         /// A literal to produce instead when the key is absent (or its sanitized value dropped).
@@ -131,7 +131,7 @@ impl<'de> Deserialize<'de> for Producer {
             ProducerJson::Extract { key, keys, sanitize, annotate, or } => {
                 let extract = match (key, keys) {
                     (Some(key), None) => Extract::key(key, sanitize).map_err(serde::de::Error::custom)?,
-                    (None, Some(keys)) => Extract::keys(keys, sanitize).map_err(serde::de::Error::custom)?,
+                    (None, Some(keys)) => Extract::from_alts(keys, sanitize).map_err(serde::de::Error::custom)?,
                     (None, None) => return Err(serde::de::Error::custom("Extract needs `key` or `keys`")),
                     (Some(_), Some(_)) => return Err(serde::de::Error::custom("Extract: set only one of `key`/`keys`, not both")),
                 };

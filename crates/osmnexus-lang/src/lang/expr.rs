@@ -105,7 +105,7 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::StartsWith { extract, starts_with, .. } => Expr::Lit(Literal::Pos(Predicate::StartsWith(extract.clone(), starts_with.clone()))),
         Filter::EndsWith { extract, ends_with, .. } => Expr::Lit(Literal::Pos(Predicate::EndsWith(extract.clone(), ends_with.clone()))),
         Filter::In { extract, r#in, .. } => match extract {
-            Extract::Value { .. } | Extract::Virtual { .. } | Extract::Note { .. } => {
+            Extract::Value { .. } | Extract::Virtual { .. } | Extract::Note { .. } | Extract::Parent(_) => {
                 let exprs: Vec<_> = r#in.values().iter().map(|v| Expr::Lit(Literal::Pos(Predicate::Eq(extract.clone(), v.clone())))).collect();
                 Expr::Or(exprs)
             }
@@ -142,10 +142,10 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
     }
 }
 
-/// Prefix every tag-carrying predicate's key with `"parent_"`, for `Filter::Parent` — mirrors
-/// what the old `ParentTag*` variants encoded directly — facts and annotations included (their
-/// `Extract` carries a parent flag instead of a renamed key). `HasParent`/`HasKeyPrefix`/`TagsEmpty`
-/// pass through.
+/// Wrap every key-reading predicate's `Extract` in `Extract::Parent`, for `Filter::Parent` — tags,
+/// facts and annotations alike, so the flattened predicate reads the parent by itself (and is
+/// distinct from the same read on the object, as a decision-tree key). `HasParent`/`HasKeyPrefix`/
+/// `TagsEmpty` pass through.
 fn prefix_expr_tags(e: Expr) -> Expr {
     match e {
         Expr::True => Expr::True,
@@ -166,13 +166,13 @@ fn prefix_expr_tags(e: Expr) -> Expr {
 
 fn prefix_predicate(p: Predicate) -> Predicate {
     match p {
-        Predicate::Eq(e, v) => Predicate::Eq(e.prefixed("parent_"), v),
-        Predicate::Contains(e, v) => Predicate::Contains(e.prefixed("parent_"), v),
-        Predicate::StartsWith(e, v) => Predicate::StartsWith(e.prefixed("parent_"), v),
-        Predicate::EndsWith(e, v) => Predicate::EndsWith(e.prefixed("parent_"), v),
-        Predicate::Exists(e) => Predicate::Exists(e.prefixed("parent_")),
-        Predicate::FirstTagIn(e, vs) => Predicate::FirstTagIn(e.prefixed("parent_"), vs),
-        Predicate::Num(e, op, bits) => Predicate::Num(e.prefixed("parent_"), op, bits),
+        Predicate::Eq(e, v) => Predicate::Eq(e.in_parent(), v),
+        Predicate::Contains(e, v) => Predicate::Contains(e.in_parent(), v),
+        Predicate::StartsWith(e, v) => Predicate::StartsWith(e.in_parent(), v),
+        Predicate::EndsWith(e, v) => Predicate::EndsWith(e.in_parent(), v),
+        Predicate::Exists(e) => Predicate::Exists(e.in_parent()),
+        Predicate::FirstTagIn(e, vs) => Predicate::FirstTagIn(e.in_parent(), vs),
+        Predicate::Num(e, op, bits) => Predicate::Num(e.in_parent(), op, bits),
         p @ (Predicate::HasKeyPrefix(_)
         | Predicate::HasParent
         | Predicate::TagsEmpty

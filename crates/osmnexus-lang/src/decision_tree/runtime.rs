@@ -20,42 +20,18 @@ pub(crate) fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
     decide_concrete(atom, ctx)
 }
 
-/// `Extract` naming a synthetic `parent_<key>` tag (the name `prefix_expr_tags` stamps for a
-/// `Filter::Parent` condition) — `read_extract`/`read_extract_num` redirect these to
-/// `ctx.parent_tags` instead of `ctx.obj_tags`. Matches directly on `Extract` rather than going
-/// through `tag_names()` — this runs on every predicate decision in `eval_expr`'s per-object hot
-/// path, so it can't afford `tag_names()`'s `Vec<String>` allocation for what's almost always a
-/// `false` answer.
-fn parent_scoped(extract: &Extract) -> bool {
-    match extract {
-        Extract::Value { key, .. } => key.starts_with("parent_"),
-        Extract::Candidates { keys, .. } => keys.iter().any(|k| k.starts_with("parent_")),
-        Extract::Virtual { parent, .. } | Extract::Note { parent, .. } => *parent,
-    }
-}
-
-/// Read `extract` against `ctx`, transparently switching to `ctx.parent_tags` for a parent-scoped
-/// `Extract` (see `parent_scoped`). The leaf-time evaluator (`eval_expr`) works from the flattened
-/// `Expr` — no `Filter::Parent` wrapper survives into it, just every key renamed `parent_<key>` by
-/// `lang::expr::prefix_expr_tags` — so this is what replays `Filter::Parent`'s own
-/// `None => false, Some(parent_tags) => eval(parent, parent_tags)` semantics for a single predicate.
+/// Read `extract` against `ctx`. The leaf-time evaluator (`eval_expr`) works from the flattened
+/// `Expr` — no `Filter::Parent` wrapper survives into it; `lang::expr::prefix_expr_tags` has
+/// wrapped each read under one in `Extract::Parent` instead, which switches to the parent scope
+/// itself (and is absent without a parent) — replaying `Filter::Parent`'s own
+/// `None => false, Some(parent) => eval(..)` semantics for a single predicate.
 fn read_extract<'a>(extract: &Extract, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
-    if parent_scoped(extract) {
-        let parent_ctx = ctx.parent_scope()?;
-        extract.strip_prefix("parent_").read_str(&parent_ctx)
-    } else {
-        extract.read_str(ctx)
-    }
+    extract.read_str(ctx)
 }
 
-/// `read_num`'s counterpart to `read_extract` — same parent-scope switch, for `Predicate::Num`.
+/// `read_num`'s counterpart to `read_extract`, for `Predicate::Num`.
 fn read_extract_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
-    if parent_scoped(extract) {
-        let parent_ctx = ctx.parent_scope()?;
-        read_num(&extract.strip_prefix("parent_"), &parent_ctx)
-    } else {
-        read_num(extract, ctx)
-    }
+    read_num(extract, ctx)
 }
 
 /// Fully decide one predicate against a concrete object — unlike `kleene::decide_value`/

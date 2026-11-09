@@ -110,9 +110,8 @@ impl Filter {
     pub fn describe(&self) -> String {
         fn key(extract: &Extract) -> String {
             match extract {
-                Extract::Value { key, .. } => key.clone(),
-                Extract::Candidates { keys, .. } => format!("[{}]", keys.join("|")),
-                Extract::Virtual { .. } | Extract::Note { .. } => extract.tag_names().remove(0),
+                Extract::Candidates { .. } => format!("[{}]", extract.label()),
+                _ => extract.label(),
             }
         }
         // A predicate whose comparison already reads as a keyword (`in`, `contains`, ...) doesn't
@@ -220,6 +219,10 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
 /// comparison is false on missing/garbage input. No geometry-derived values (length, …) are
 /// available: classification is tag-only.
 pub(crate) fn read_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
+    if let Extract::Parent(inner) = extract {
+        // Through the inner read's own chain, which may produce a number `read_raw` can't carry.
+        return read_num(inner, &ctx.parent_scope()?);
+    }
     if extract.sanitize().is_empty() {
         extract.read_raw(ctx)?.trim().parse().ok()
     } else {
@@ -248,10 +251,8 @@ pub fn close_annotation_negations(f: &Filter, domains: &std::collections::BTreeM
         Filter::And { and } => Filter::And { and: and.iter().map(rec).collect() },
         Filter::Or { or } => Filter::Or { or: or.iter().map(rec).collect() },
         Filter::Not { not } => match not.as_ref() {
-            Filter::Eq { extract: extract @ Extract::Note { keys, parent: false, sanitize }, eq }
-                if sanitize.is_empty() && keys.len() == 1 =>
-            {
-                match domains.get(&keys[0]) {
+            Filter::Eq { extract: extract @ Extract::Note { key, sanitize }, eq } if sanitize.is_empty() => {
+                match domains.get(key) {
                     Some(domain) => {
                         let rest: Vec<String> = domain.iter().filter(|v| *v != eq).cloned().collect();
                         Filter::In { extract: extract.clone(), r#in: crate::lang::list::ValueList::new(rest) }

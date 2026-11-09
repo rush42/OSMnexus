@@ -86,19 +86,9 @@ impl std::fmt::Display for BranchKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BranchKey::Sentinel(s) => write!(f, "{s}"),
-            BranchKey::Tag(Extract::Value { key, sanitize }) => {
-                write!(f, "{key}")?;
-                if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
-                Ok(())
-            }
-            BranchKey::Tag(Extract::Candidates { keys, sanitize }) => {
-                write!(f, "{}", keys.join("/"))?;
-                if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
-                Ok(())
-            }
-            BranchKey::Tag(e @ (Extract::Virtual { sanitize, .. } | Extract::Note { sanitize, .. })) => {
-                write!(f, "{}", e.tag_names()[0])?;
-                if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
+            BranchKey::Tag(e) => {
+                write!(f, "{}", e.label().replace('|', "/"))?;
+                if !e.sanitize().is_empty() { write!(f, " (sanitized)")?; }
                 Ok(())
             }
         }

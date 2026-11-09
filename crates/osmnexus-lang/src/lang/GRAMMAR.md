@@ -19,8 +19,25 @@ one `Extract` 1:1, so it's never a separate sibling field.
 
 ```
 Extract =
-  { "keys": [String, ...], "sanitize"?: String }   // first key found wins
+  { "keys": [Alt, ...], "sanitize"?: String }   // first entry that yields a value wins
   | { "key": String, "sanitize"?: String }
+
+Alt = String          // a key: { "key": String }
+    | Extract         // any read, with its own sanitize — lists nest
+```
+
+A `keys` list is a list of reads. Each entry runs through its *own*
+`sanitize` first; an entry whose sanitizer drops the value counts as absent,
+and the next one is tried. The outer `sanitize` then runs on whichever entry
+won (on its text: a string as-is, a number in its JSON spelling). Without an
+outer `sanitize`, the winning entry's value is produced as is, numbers
+included.
+
+```
+{ "keys": [{ "key": "oneway", "sanitize": "yes_only" }, "oneway:bicycle"] }
+    // oneway=no is dropped by yes_only, so oneway:bicycle is read instead
+{ "keys": ["ref", "@id"] }               // a fact as the fallback
+{ "keys": [{ "keys": ["name", "ref"] }, "@id"], "sanitize": "trim" }
 ```
 
 `sanitize`, when present, is always a name looked up in `sanitizers.json` —
@@ -44,8 +61,9 @@ everywhere a key does — filters, producers, `in`, `parent`, `annotations`,
               // "parent", the parent's. Absent without file metadata
 ```
 
-An unknown `@` key is a load error, and a fact can't be one of several
-candidate `keys`. No other key name is special.
+An unknown `@` key is a load error (also inside a nested `keys` entry).
+Facts mix freely with tags in `keys`: either may be absent. No other key name
+is special.
 
 ### Annotations (`{"annotations": ..}`)
 
@@ -135,7 +153,7 @@ Filter =
 ```
 
 Note: `<Extract fields>` means either `"key": String`
-or `"keys": [String,...]` supplied inline in the same
+or `"keys": [Alt,...]` supplied inline in the same
 object.
 
 There is no `Cond`/`if-then-else` node. A conditional value is expressed as a

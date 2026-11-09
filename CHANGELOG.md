@@ -4,6 +4,16 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
 
 ## Unreleased
 
+- **`keys` is a list of reads, not of key names.** An entry is a key string or any read
+  (`{"key": .., "sanitize": ..}`, a nested `{"keys": [..]}`), with its own `sanitize`; an entry
+  whose sanitizer drops the value counts as absent, so the next one is tried. Facts can now be
+  candidates (`{"keys": ["ref", "@id"]}`). Existing configs mean the same; every shipped config's
+  pipeline output is byte-identical.
+- **Internal: parent scope is a node.** `Extract::Parent(inner)` replaces the `parent_` key-name
+  prefix (tags) and the `parent: bool` flag (facts, annotations) that the decision tree's flattened
+  form used. A parent read now switches scope itself, so a real tag named `parent_x` can no longer
+  be mistaken for a parent read. The bikelanes way decision tree comes out in a different (equally
+  valid) shape because branch-key ties now break differently; `tree_matches_linear` still holds.
 - **Facts: `@id`, `@type`, `@role`, `@timestamp`.** A key starting with `@` reads a fact about the
   element instead of an OSM tag, everywhere a key is allowed (filters, producers, `in`, `parent`).
   Under `parent` they describe the parent: a member way reads its relation's id as
