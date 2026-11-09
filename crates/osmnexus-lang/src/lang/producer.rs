@@ -233,6 +233,29 @@ pub enum Producer {
 const MATCH_TREE_MIN_RULES: usize = 6;
 
 impl Producer {
+    /// This producer scoped to the annotations (`{"annotations": ..}`) — the producer-side twin of
+    /// `Filter::into_annotations`: key reads (and `match` conditions) read annotations, literals
+    /// stay literals, a nested `parent` keeps scoping to the parent. Resolved at load.
+    pub fn into_annotations(self) -> Producer {
+        match self {
+            Producer::Extract { extract, annotate } => Producer::Extract { extract: extract.into_annotations(), annotate },
+            Producer::Match { rules, default, annotate, tree } => {
+                debug_assert!(tree.is_none(), "scoped at parse time, before trees are compiled");
+                Producer::Match {
+                    rules: rules
+                        .into_iter()
+                        .map(|r| Rule { when: r.when.into_annotations(), value: r.value.into_annotations() })
+                        .collect(),
+                    default,
+                    annotate,
+                    tree: None,
+                }
+            }
+            Producer::Parent(inner) => Producer::Parent(Box::new(inner.into_annotations())),
+            c @ Producer::Const { .. } => c,
+        }
+    }
+
     /// Post-load pass: for any `Match` whose `rules` are numerous enough to be worth it (see
     /// `MATCH_TREE_MIN_RULES`), compile a discrimination net over their `when` conditions (see
     /// `Match::tree`'s own doc) and stash it in `tree`. Recurses into every rule's `value` and into

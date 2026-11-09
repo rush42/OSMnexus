@@ -38,9 +38,11 @@ use crate::lang::tags::RawTags;
 ///
 /// - `@` — a **fact** about the element ([`VirtualKey`]: `@id`, `@type`, `@role`, `@timestamp`),
 ///   from the data itself. An unknown `@` key is a load error.
-/// - `_` — an **annotation** ([`Extract::Note`]): whatever the topic's own transforms wrote with
-///   `annotate`/`record_infix_as` (e.g. `_side`). Their names and values are the config's; the code
-///   gives none of them any meaning.
+///
+/// Annotations — whatever the topic's own transforms wrote with `annotate`/`record_infix_as` — are
+/// read by scoping an ordinary key read with `{"annotations": ..}` (like `parent`), which load-time
+/// rewrites into [`Extract::Note`] (`Extract::into_annotations`). No key name is special: `_side`
+/// is just the name tilda's config happens to write.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 #[serde(try_from = "ExtractJson")]
 // An explicit one-byte tag instead of a niche in a `String`'s capacity: with four variants the
@@ -55,8 +57,10 @@ pub enum Extract {
     /// A fact (`@id`, …). `parent` marks the parent-scoped form — the counterpart of a
     /// `parent_<key>` name (see `prefixed`).
     Virtual { field: VirtualKey, parent: bool, sanitize: Vec<Sanitizer> },
-    /// An annotation (`_side`, …), read from `ExtractCtx::annotations`. `parent` as for `Virtual`.
-    Note { key: String, parent: bool, sanitize: Vec<Sanitizer> },
+    /// An annotation read from `ExtractCtx::annotations` — first present of `keys`. Never written
+    /// directly: `{"annotations": ..}` turns a `Value`/`Candidates` into this. `parent` as for
+    /// `Virtual`.
+    Note { keys: Vec<String>, parent: bool, sanitize: Vec<Sanitizer> },
 }
 
 /// The on-disk shapes, before `@`/`_` keys are resolved: `key` for one key, `keys` for a
@@ -96,24 +100,29 @@ impl Extract {
         if let Some(name) = key.strip_prefix('@') {
             return Ok(Extract::Virtual { field: VirtualKey::parse(name)?, parent: false, sanitize });
         }
-        if key.starts_with('_') {
-            return Ok(Extract::Note { key, parent: false, sanitize });
-        }
         Ok(Extract::Value { key, sanitize })
     }
 
-    /// A first-present read over candidate keys. A fact or an annotation can't be one of several
-    /// candidates (candidates are OSM tags the element might or might not carry), except as the
-    /// only one.
+    /// A first-present read over candidate keys. A fact can't be one of several candidates
+    /// (candidates are keys the element might or might not carry), except as the only one.
     pub fn keys(mut keys: Vec<String>, sanitize: Vec<Sanitizer>) -> Result<Extract, String> {
-        let special = |k: &String| k.starts_with('@') || k.starts_with('_');
-        if keys.len() == 1 && special(&keys[0]) {
+        if keys.len() == 1 && keys[0].starts_with('@') {
             return Extract::key(keys.remove(0), sanitize);
         }
-        if let Some(k) = keys.iter().find(|k| special(k)) {
-            return Err(format!("{k:?} isn't an OSM tag, so it can't be one of several candidate keys; read it on its own"));
+        if let Some(k) = keys.iter().find(|k| k.starts_with('@')) {
+            return Err(format!("{k:?} is a fact, not a key the element may carry, so it can't be one of several candidate keys; read it on its own"));
         }
         Ok(Extract::Candidates { keys, sanitize })
+    }
+
+    /// This read, scoped to the annotations (`{"annotations": ..}`): the same key(s), read from
+    /// `ExtractCtx::annotations` instead of the tags. A fact stays a fact — it isn't a tag either.
+    pub fn into_annotations(self) -> Extract {
+        match self {
+            Extract::Value { key, sanitize } => Extract::Note { keys: vec![key], parent: false, sanitize },
+            Extract::Candidates { keys, sanitize } => Extract::Note { keys, parent: false, sanitize },
+            other @ (Extract::Virtual { .. } | Extract::Note { .. }) => other,
+        }
     }
 }
 
@@ -164,14 +173,14 @@ impl VirtualKey {
     }
 }
 
-/// An annotation's value as text: a string as-is, anything else (a number or bool a transform
-/// recorded) in its JSON spelling.
-fn note_text<'a>(ctx: &ExtractCtx<'a>, key: &str) -> Option<Cow<'a, str>> {
-    match ctx.annotations.get(key)? {
+/// The first present of `keys` among the annotations, as text: a string as-is, anything else (a
+/// number or bool a transform recorded) in its JSON spelling.
+fn note_text<'a>(ctx: &ExtractCtx<'a>, keys: &[String]) -> Option<Cow<'a, str>> {
+    keys.iter().find_map(|key| match ctx.annotations.get(key)? {
         Value::String(s) => Some(Cow::Borrowed(s.as_str())),
         Value::Null => None,
         other => Some(Cow::Owned(other.to_string())),
-    }
+    })
 }
 
 /// Unix seconds as `YYYY-MM-DDTHH:MM:SSZ` — the format the `meta` column's `updated_at` uses.
@@ -223,7 +232,7 @@ impl Extract {
             Extract::Value { key, .. } => ctx.obj_tags.get(key.as_str()).map(|v| Cow::Borrowed(v.as_ref())),
             Extract::Candidates { keys, .. } => first_present(ctx.obj_tags, keys.iter().map(String::as_str)).map(Cow::Borrowed),
             Extract::Virtual { field, .. } => field.read(ctx),
-            Extract::Note { key, .. } => note_text(ctx, key),
+            Extract::Note { keys, .. } => note_text(ctx, keys),
         }
     }
 
@@ -285,7 +294,9 @@ impl Extract {
             Extract::Virtual { field, parent, .. } => {
                 vec![if *parent { format!("parent_{}", field.name()) } else { field.name().to_owned() }]
             }
-            Extract::Note { key, parent, .. } => vec![if *parent { format!("parent_{key}") } else { key.clone() }],
+            Extract::Note { keys, parent, .. } => {
+                keys.iter().map(|k| if *parent { format!("parent_annotations.{k}") } else { format!("annotations.{k}") }).collect()
+            }
         }
     }
 
@@ -305,9 +316,9 @@ impl Extract {
                 debug_assert_eq!(prefix, "parent_", "the parent scope is the only one a fact has");
                 Extract::Virtual { field: *field, parent: true, sanitize: sanitize.clone() }
             }
-            Extract::Note { key, sanitize, .. } => {
+            Extract::Note { keys, sanitize, .. } => {
                 debug_assert_eq!(prefix, "parent_", "the parent scope is the only one an annotation has");
-                Extract::Note { key: key.clone(), parent: true, sanitize: sanitize.clone() }
+                Extract::Note { keys: keys.clone(), parent: true, sanitize: sanitize.clone() }
             }
         }
     }
@@ -325,7 +336,7 @@ impl Extract {
             Extract::Virtual { field, sanitize, .. } => {
                 Extract::Virtual { field: *field, parent: false, sanitize: sanitize.clone() }
             }
-            Extract::Note { key, sanitize, .. } => Extract::Note { key: key.clone(), parent: false, sanitize: sanitize.clone() },
+            Extract::Note { keys, sanitize, .. } => Extract::Note { keys: keys.clone(), parent: false, sanitize: sanitize.clone() },
         }
     }
 }
@@ -347,7 +358,7 @@ mod virtual_tag_tests {
 
     use super::{iso8601_utc, Extract, VirtualKey};
     use crate::lang::filter::{eval, Filter};
-    use crate::lang::producer::{Elem, ExtractCtx};
+    use crate::lang::producer::{Elem, ExtractCtx, Producer};
     use crate::lang::tags::{ElementKind, RawTags};
 
     fn extract(v: Value) -> Result<Extract, String> {
@@ -358,7 +369,8 @@ mod virtual_tag_tests {
     fn prefixed_keys_resolve_at_load_time() {
         assert!(matches!(extract(json!({"key": "@id"})), Ok(Extract::Virtual { field: VirtualKey::Id, parent: false, .. })));
         assert!(matches!(extract(json!({"key": "@role"})), Ok(Extract::Virtual { field: VirtualKey::Role, .. })));
-        assert!(matches!(extract(json!({"key": "_side"})), Ok(Extract::Note { parent: false, .. })));
+        // `_` means nothing: an ordinary tag read. Annotations are read via `{"annotations": ..}`.
+        assert!(matches!(extract(json!({"key": "_side"})), Ok(Extract::Value { .. })));
         assert!(matches!(extract(json!({"key": "highway"})), Ok(Extract::Value { .. })));
     }
 
@@ -367,7 +379,7 @@ mod virtual_tag_tests {
         let err = extract(json!({"key": "@side"})).unwrap_err();
         assert!(err.contains("unknown fact \"@side\""), "{err}");
         assert!(extract(json!({"keys": ["@id", "ref"]})).is_err());
-        assert!(extract(json!({"keys": ["_side", "ref"]})).is_err());
+        assert!(extract(json!({"keys": ["_side", "ref"]})).is_ok());
     }
 
     #[test]
@@ -382,7 +394,8 @@ mod virtual_tag_tests {
     /// tag literally named `@id` (impossible in practice) is not what `@id` reads.
     #[test]
     fn values_come_from_the_context() {
-        let tags: RawTags = [("@id".into(), "tag-value".into())].into_iter().collect();
+        let tags: RawTags =
+            [("@id".into(), "tag-value".into()), ("_side".into(), "tag".into())].into_iter().collect();
         let mut ann = Map::new();
         ann.insert("_side".into(), json!("left"));
         ann.insert("_lanes".into(), json!(2));
@@ -400,16 +413,43 @@ mod virtual_tag_tests {
         assert_eq!(read("@type").as_deref(), Some("way"));
         assert_eq!(read("@role").as_deref(), Some("forward"));
         assert_eq!(read("@timestamp").as_deref(), Some("1970-01-01T00:00:00Z"));
-        assert_eq!(read("_side").as_deref(), Some("left"));
-        assert_eq!(read("_lanes").as_deref(), Some("2"));
-        assert_eq!(read("_prefix"), None);
+        assert_eq!(read("_side").as_deref(), Some("tag"));
+
+        let filter = |f: Value| -> bool { eval(&serde_json::from_value::<Filter>(f).unwrap(), &ctx) };
+        let produce = |p: Value| serde_json::from_value::<Producer>(p).unwrap().eval(&ctx).map(|x| x.value);
+        // Inside `annotations`, everything reads the annotations — keys, candidates, the context
+        // predicates over them — and facts stay facts.
+        assert!(filter(json!({"annotations": {"key": "_side", "eq": "left"}})));
+        assert!(filter(json!({"annotations": {"key": "_lanes", "eq": "2"}})));
+        assert!(filter(json!({"annotations": {"key": "_prefix", "exists": false}})));
+        assert!(filter(json!({"annotations": {"keys": ["_prefix", "_side"], "in": ["left"]}})));
+        assert!(filter(json!({"annotations": {"has_key_prefix": "_la"}})));
+        assert!(!filter(json!({"annotations": {"has_key_prefix": "highway"}})));
+        assert!(filter(json!({"annotations": {"tags_empty": false}})));
+        assert!(filter(json!({"annotations": {"key": "@id", "eq": "5"}})));
+        assert!(filter(json!({"annotations": {"not": {"or": [{"key": "_side", "eq": "right"}, {"key": "@id", "eq": "1"}]}}})));
+        // ... and a nested `parent` looks at the parent's annotations: it has none.
+        assert!(!filter(json!({"annotations": {"parent": {"key": "_side", "exists": true}}})));
+        assert!(filter(json!({"annotations": {"parent": {"tags_empty": true}}})));
+        assert!(!filter(json!({"annotations": {"parent": {"has_key_prefix": "_"}}})));
+        assert!(filter(json!({"annotations": {"parent": {"key": "@id", "eq": "9"}}})));
+
+        assert_eq!(produce(json!({"annotations": {"key": "_side"}})), Some(json!("left")));
+        assert_eq!(produce(json!({"annotations": {"key": "_nope", "or": "fallback"}})), Some(json!("fallback")));
+        assert_eq!(
+            produce(json!({"annotations": {"match": [
+                {"when": {"key": "_side", "eq": "right"}, "value": "r"},
+                {"when": {"key": "_side", "eq": "left"}, "value": {"key": "_lanes"}}
+            ]}})),
+            Some(json!("2"))
+        );
 
         // Parent scope: the parent's identity, none of the child's annotations, no role of its own.
         let parent = |f: Value| -> bool { eval(&serde_json::from_value::<Filter>(json!({"parent": f})).unwrap(), &ctx) };
         assert!(parent(json!({"key": "@id", "eq": "9"})));
         assert!(parent(json!({"key": "@type", "eq": "relation"})));
         assert!(!parent(json!({"key": "@timestamp", "exists": true})));
-        assert!(!parent(json!({"key": "_side", "exists": true})));
+        assert!(parent(json!({"key": "_side", "eq": "tag"})));
         assert!(!parent(json!({"key": "@role", "exists": true})));
     }
 
@@ -417,6 +457,6 @@ mod virtual_tag_tests {
     #[test]
     fn annotation_spelling_is_a_load_error_with_a_hint() {
         let err = serde_json::from_value::<Filter>(json!({"annotation": "_side", "eq": "left"})).unwrap_err().to_string();
-        assert!(err.contains(r#"{"key": "_side", "eq": "left"}"#), "{err}");
+        assert!(err.contains(r#"{"annotations": {"key": "_side", "eq": "left"}}"#), "{err}");
     }
 }

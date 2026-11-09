@@ -121,7 +121,7 @@
   },
   "has_between_lanes_conditions": {
     "and": [
-      { "not": { "key": "_side", "eq": "self" } },
+      { "not": { "annotations": { "key": "_side", "eq": "self" } } },
       {
         "or": [
           { "key": "lanes", "contains": "|lane|" },

@@ -28,10 +28,10 @@ there is no inline-chain form, and every sanitizer has exactly one
 definition. A `sanitize:` field that isn't a bare string is a load-time
 error.
 
-### Facts (`@` keys) and annotations (`_` keys)
+### Facts (`@` keys)
 
-Two key prefixes read something other than an OSM tag. Both work everywhere a
-key does — filters, producers, `in`, `parent`,
+`@` keys read a fact about the element instead of an OSM tag. They work
+everywhere a key does — filters, producers, `in`, `parent`, `annotations`,
 `sanitize`:
 
 ```
@@ -42,19 +42,35 @@ key does — filters, producers, `in`, `parent`,
               // "" for an empty role, absent without a parent relation
 "@timestamp"  // the element's last edit, "YYYY-MM-DDTHH:MM:SSZ"; under
               // "parent", the parent's. Absent without file metadata
-
-"_<name>"     // an annotation the topic's own transforms wrote ("annotate",
-              // a clone's "annotate", "record_infix_as") — e.g. "_side".
-              // Absent if nothing wrote it; under "parent", always absent
 ```
 
-`@` keys are **facts** from the data; an unknown one is a load error. `_` keys
-are **annotations**: their names and values are whatever the config writes —
-nothing in the code gives `_side`, `_prefix` or `_infix` a meaning. Neither can
-be one of several candidate `keys`, and neither is a tag: `has_key_prefix`,
-`tags_empty` and tag passthrough never see them. The retired
+An unknown `@` key is a load error, and a fact can't be one of several
+candidate `keys`. No other key name is special.
+
+### Annotations (`{"annotations": ..}`)
+
+Annotations are what the topic's own transforms wrote onto an object
+(`annotate`, a clone's `annotate`, `record_infix_as`). Their names and values
+are the config's — tilda happens to write `_side` and `_infix`; nothing in the
+code gives any name a meaning.
+
+`{"annotations": X}` is a scope switch like `parent`: `X` is any filter (or
+producer) and reads the annotations instead of the tags. Inside it:
+
+- `key`/`keys` read annotation names (absent if nothing wrote them);
+- `has_key_prefix` / `tags_empty` range over the annotation names;
+- facts (`@id`, …) stay facts;
+- a nested `parent` looks at the parent's annotations — it has none.
+
+```
+{ "annotations": { "key": "_side", "eq": "left" } }
+{ "not": { "annotations": { "key": "_side", "eq": "self" } } }
+{ "annotations": { "key": "_infix" } }                     // as a producer
+```
+
+It is resolved at load, so it costs nothing at run time. The retired
 `{"annotation": "_side", "eq": ..}` spelling is a load error naming
-`{"key": "_side", "eq": ..}`.
+`{"annotations": {"key": "_side", "eq": ..}}`.
 
 ## sanitizers.json
 
@@ -108,6 +124,7 @@ Filter =
   | { <Extract fields>, "exists": Boolean }
   | { <Extract fields>, "eq": String }              // catch-all comparison
   | { "parent": Filter }                            // re-run filter against parent tags
+  | { "annotations": Filter }                       // read annotations instead of tags
   | { "has_key_prefix": String }
   | { "has_parent": Boolean }
   | { "tags_empty": Boolean }
@@ -142,6 +159,9 @@ Produces a JSON value from tags. Alternatives are tried in this order
 Producer =
   { "parent": Producer }
       // re-evaluate the nested producer against parent tags
+
+  | { "annotations": Producer }
+      // read annotations instead of tags (see "Annotations" above)
 
   | { "parent_or_obj": Producer }
       // sugar: try against obj tags; if no parent, fall back — desugars to a

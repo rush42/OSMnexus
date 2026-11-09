@@ -35,7 +35,7 @@ pub enum Filter {
     Not { not: Box<Filter> },
 
     // Tag predicates — secondary field disambiguates (Eq is the catch-all). Each flattens an
-    // `Extract` (`tag`/`first_tag`, `Extract`'s JSON aliases for `key`/`keys` — see its own doc),
+    // `Extract` (`key`/`keys` — see its own doc),
     // whose own `sanitize` field (if set) normalizes the raw tag value before comparison.
     /// Membership in a list of values — written inline (`"in": [...]`) or by name
     /// (`"in": "<list>"`, from `lists.json`). See `lang::list::ValueList` for the lookup.
@@ -52,14 +52,17 @@ pub enum Filter {
 
     // Context predicates
     /// True iff some `obj_tags` key starts with `has_key_prefix` — a dynamic, unknown-suffix scan
-    /// over the object's own raw tags, not an annotation read, so it can't fold into
-    /// `AnnotationEq`.
+    /// over the object's own raw tags.
     HasKeyPrefix { has_key_prefix: String },
     /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
     HasParent { has_parent: bool },
     /// True iff the object's own tags are (non-)empty — total, unlike `Exists`, which needs a
     /// specific key.
     TagsEmpty { tags_empty: bool },
+    /// `has_key_prefix` / `tags_empty` scoped to the annotations (`{"annotations": ..}`, see
+    /// `Filter::into_annotations`): over annotation names instead of tag keys.
+    AnnotationKeyPrefix { prefix: String },
+    AnnotationsEmpty { empty: bool },
 
     // Numeric comparison — same `Extract` shape the tag predicates use (its `sanitize` chain may
     // yield a JSON number, e.g. `parse_length`) before parsing to f64. On-disk `lt`/`lte`/`gt`/`gte`
@@ -72,6 +75,34 @@ pub enum Filter {
 }
 
 impl Filter {
+    /// This filter scoped to the annotations (`{"annotations": ..}`): every key read becomes an
+    /// annotation read, `has_key_prefix`/`tags_empty` range over annotation names, and everything
+    /// else keeps its meaning — `parent` included, whose inner reads then look at the parent's
+    /// annotations (it has none: `ExtractCtx::parent_scope`). Resolved here, at load, like
+    /// `parent`'s own scoping, so evaluation and the decision tree see ordinary variants.
+    pub fn into_annotations(self) -> Filter {
+        let ann = |e: Extract| e.into_annotations();
+        match self {
+            Filter::And { and } => Filter::And { and: and.into_iter().map(Filter::into_annotations).collect() },
+            Filter::Or { or } => Filter::Or { or: or.into_iter().map(Filter::into_annotations).collect() },
+            Filter::Not { not } => Filter::Not { not: Box::new(not.into_annotations()) },
+            Filter::Parent { parent } => Filter::Parent { parent: Box::new(parent.into_annotations()) },
+            Filter::In { extract, r#in } => Filter::In { extract: ann(extract), r#in },
+            Filter::Contains { extract, contains, case_insensitive } => Filter::Contains { extract: ann(extract), contains, case_insensitive },
+            Filter::StartsWith { extract, starts_with } => Filter::StartsWith { extract: ann(extract), starts_with },
+            Filter::EndsWith { extract, ends_with } => Filter::EndsWith { extract: ann(extract), ends_with },
+            Filter::Exists { extract, exists } => Filter::Exists { extract: ann(extract), exists },
+            Filter::Eq { extract, eq } => Filter::Eq { extract: ann(extract), eq },
+            Filter::NumRange { extract, min, max } => Filter::NumRange { extract: ann(extract), min, max },
+            Filter::HasKeyPrefix { has_key_prefix } => Filter::AnnotationKeyPrefix { prefix: has_key_prefix },
+            Filter::TagsEmpty { tags_empty } => Filter::AnnotationsEmpty { empty: tags_empty },
+            other @ (Filter::Bool(_)
+            | Filter::HasParent { .. }
+            | Filter::AnnotationKeyPrefix { .. }
+            | Filter::AnnotationsEmpty { .. }) => other,
+        }
+    }
+
     /// A short, human-readable rendering (`surface == sett`, `a and b`, `highway in [...]`) — not
     /// the `Debug` dump, which is precise but unreadable at a glance (e.g. in the live editor's
     /// deriver tree view, `tree::render_producer`). Not meant to round-trip back into JSON or `eval`
@@ -115,6 +146,8 @@ impl Filter {
             Filter::Parent { parent } => format!("parent({})", parent.describe()),
             Filter::HasKeyPrefix { has_key_prefix } => format!("has_key_prefix({has_key_prefix:?})"),
             Filter::HasParent { has_parent } => if *has_parent { "has_parent".to_owned() } else { "!has_parent".to_owned() },
+            Filter::AnnotationKeyPrefix { prefix } => format!("annotations.has_key_prefix({prefix:?})"),
+            Filter::AnnotationsEmpty { empty } => if *empty { "annotations_empty".to_owned() } else { "!annotations_empty".to_owned() },
             Filter::TagsEmpty { tags_empty } => if *tags_empty { "tags_empty".to_owned() } else { "!tags_empty".to_owned() },
             Filter::NumRange { extract, min, max } => {
                 let k = key(extract);
@@ -172,6 +205,8 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
         // `parent_tags` is only ever `Some` for those (see `categorize::transform::run_transform_steps`).
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
         Filter::TagsEmpty { tags_empty } => ctx.obj_tags.is_empty() == *tags_empty,
+        Filter::AnnotationKeyPrefix { prefix } => ctx.annotations.keys().any(|k| k.starts_with(prefix.as_str())),
+        Filter::AnnotationsEmpty { empty } => ctx.annotations.is_empty() == *empty,
 
         Filter::NumRange { extract, min, max } =>
             read_num(extract, ctx).is_some_and(|n| (*min, *max).contains(&n)),
@@ -213,8 +248,10 @@ pub fn close_annotation_negations(f: &Filter, domains: &std::collections::BTreeM
         Filter::And { and } => Filter::And { and: and.iter().map(rec).collect() },
         Filter::Or { or } => Filter::Or { or: or.iter().map(rec).collect() },
         Filter::Not { not } => match not.as_ref() {
-            Filter::Eq { extract: extract @ Extract::Note { key, parent: false, sanitize }, eq } if sanitize.is_empty() => {
-                match domains.get(key) {
+            Filter::Eq { extract: extract @ Extract::Note { keys, parent: false, sanitize }, eq }
+                if sanitize.is_empty() && keys.len() == 1 =>
+            {
+                match domains.get(&keys[0]) {
                     Some(domain) => {
                         let rest: Vec<String> = domain.iter().filter(|v| *v != eq).cloned().collect();
                         Filter::In { extract: extract.clone(), r#in: crate::lang::list::ValueList::new(rest) }

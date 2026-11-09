@@ -75,6 +75,8 @@ fn decide_concrete(p: &Predicate, ctx: &ExtractCtx) -> bool {
         Predicate::HasKeyPrefix(prefix) => ctx.obj_tags.keys().any(|k| k.starts_with(prefix.as_str())),
         Predicate::HasParent => ctx.parent_tags.is_some(),
         Predicate::TagsEmpty => ctx.obj_tags.is_empty(),
+        Predicate::AnnotationKeyPrefix(prefix) => ctx.annotations.keys().any(|k| k.starts_with(prefix.as_str())),
+        Predicate::AnnotationsEmpty => ctx.annotations.is_empty(),
     }
 }
 

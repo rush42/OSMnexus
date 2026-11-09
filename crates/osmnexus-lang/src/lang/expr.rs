@@ -34,6 +34,9 @@ pub enum Predicate {
     Num(Extract, NumOp, u64),
     HasKeyPrefix(String),
     HasParent,
+    /// `Filter::AnnotationKeyPrefix` / `Filter::AnnotationsEmpty`.
+    AnnotationKeyPrefix(String),
+    AnnotationsEmpty,
     /// `Filter::TagsEmpty` — whether the object's own tags are (non-)empty. Practically never
     /// appears in a real category condition (it's `InputTransform::Drop`'s own mechanism), but
     /// `Filter` is one type shared by both, so `filter_to_expr` needs a total mapping regardless.
@@ -56,6 +59,8 @@ impl Predicate {
             Predicate::HasKeyPrefix(p) => vec![format!("prefix({})", p)],
             Predicate::HasParent => vec!["[parent]".to_string()],
             Predicate::TagsEmpty => vec!["[tags_empty]".to_string()],
+            Predicate::AnnotationKeyPrefix(p) => vec![format!("annotations.prefix({p})")],
+            Predicate::AnnotationsEmpty => vec!["[annotations_empty]".to_string()],
         }
     }
 }
@@ -129,6 +134,9 @@ pub fn filter_to_expr(filter: &Filter) -> Expr {
         Filter::HasKeyPrefix { has_key_prefix } => Expr::Lit(Literal::Pos(Predicate::HasKeyPrefix(has_key_prefix.clone()))),
         Filter::HasParent { has_parent: true } => Expr::Lit(Literal::Pos(Predicate::HasParent)),
         Filter::HasParent { has_parent: false } => Expr::Lit(Literal::Neg(Predicate::HasParent)),
+        Filter::AnnotationKeyPrefix { prefix } => Expr::Lit(Literal::Pos(Predicate::AnnotationKeyPrefix(prefix.clone()))),
+        Filter::AnnotationsEmpty { empty: true } => Expr::Lit(Literal::Pos(Predicate::AnnotationsEmpty)),
+        Filter::AnnotationsEmpty { empty: false } => Expr::Lit(Literal::Neg(Predicate::AnnotationsEmpty)),
         Filter::TagsEmpty { tags_empty: true } => Expr::Lit(Literal::Pos(Predicate::TagsEmpty)),
         Filter::TagsEmpty { tags_empty: false } => Expr::Lit(Literal::Neg(Predicate::TagsEmpty)),
     }
@@ -142,6 +150,12 @@ fn prefix_expr_tags(e: Expr) -> Expr {
     match e {
         Expr::True => Expr::True,
         Expr::False => Expr::False,
+        // A parent has no annotations (`ExtractCtx::parent_scope`), so these are constants in
+        // parent scope — the answer `Filter::Parent`'s direct evaluation gives.
+        Expr::Lit(Literal::Pos(Predicate::AnnotationsEmpty)) => Expr::True,
+        Expr::Lit(Literal::Neg(Predicate::AnnotationsEmpty)) => Expr::False,
+        Expr::Lit(Literal::Pos(Predicate::AnnotationKeyPrefix(_))) => Expr::False,
+        Expr::Lit(Literal::Neg(Predicate::AnnotationKeyPrefix(_))) => Expr::True,
         Expr::Lit(Literal::Pos(p)) => Expr::Lit(Literal::Pos(prefix_predicate(p))),
         Expr::Lit(Literal::Neg(p)) => Expr::Lit(Literal::Neg(prefix_predicate(p))),
         Expr::Not(x) => Expr::Not(Box::new(prefix_expr_tags(*x))),
@@ -159,7 +173,11 @@ fn prefix_predicate(p: Predicate) -> Predicate {
         Predicate::Exists(e) => Predicate::Exists(e.prefixed("parent_")),
         Predicate::FirstTagIn(e, vs) => Predicate::FirstTagIn(e.prefixed("parent_"), vs),
         Predicate::Num(e, op, bits) => Predicate::Num(e.prefixed("parent_"), op, bits),
-        p @ (Predicate::HasKeyPrefix(_) | Predicate::HasParent | Predicate::TagsEmpty) => p,
+        p @ (Predicate::HasKeyPrefix(_)
+        | Predicate::HasParent
+        | Predicate::TagsEmpty
+        | Predicate::AnnotationKeyPrefix(_)
+        | Predicate::AnnotationsEmpty) => p,
     }
 }
 

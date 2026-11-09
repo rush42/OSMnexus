@@ -890,7 +890,7 @@ mod annotation_domain_tests {
         use crate::lang::filter::{close_annotation_negations, eval};
         let mut domains = std::collections::BTreeMap::new();
         domains.insert("_side".to_owned(), vec!["left".to_owned(), "right".to_owned(), "self".to_owned()]);
-        let f: Filter = serde_json::from_value(serde_json::json!({"not": {"key": "_side", "eq": "self"}})).unwrap();
+        let f: Filter = serde_json::from_value(serde_json::json!({"not": {"annotations": {"key": "_side", "eq": "self"}}})).unwrap();
         let closed = close_annotation_negations(&f, &domains);
         assert!(matches!(&closed, Filter::In { r#in, .. } if r#in.values() == ["left", "right"]));
         // Same answer for every object the config can produce.

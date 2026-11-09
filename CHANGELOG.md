@@ -7,13 +7,15 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
 - **Facts: `@id`, `@type`, `@role`, `@timestamp`.** A key starting with `@` reads a fact about the
   element instead of an OSM tag, everywhere a key is allowed (filters, producers, `in`, `parent`).
   Under `parent` they describe the parent: a member way reads its relation's id as
-  `{"parent": {"tag": "@id"}}` and its own role in that relation as `@role`. Resolved at load time;
+  `{"parent": {"key": "@id"}}` and its own role in that relation as `@role`. Resolved at load time;
   an unknown `@` key is a load error. See `GRAMMAR.md`.
-- **Annotations read as `_` keys: `{"tag": "_side", "eq": "left"}`**, with every operator. Their
-  names and values are entirely the config's: the code no longer gives `_side`, `_prefix` or
-  `_infix` any meaning.
+- **`{"annotations": ..}` reads annotations**, a scope switch like `parent`: everything inside —
+  any operator, `keys`, `has_key_prefix`, `tags_empty`, `match` producers — reads what the topic's
+  transforms wrote instead of the tags. Annotation names and values are entirely the config's: the
+  code no longer gives `_side`, `_prefix` or `_infix` any meaning, and no key prefix but `@` is
+  special.
 - **Breaking (config):**
-  - `{"annotation": "_side", "eq": ..}` is removed; write `{"tag": "_side", "eq": ..}`. The old
+  - `{"annotation": "_side", "eq": ..}` is removed; write `{"annotations": {"key": "_side", "eq": ..}}`. The old
     spelling fails at load with that hint. (It could only express `eq` on three keys, and any
     other key crashed the decision-tree build.)
   - Base objects no longer get `_side: "self"` automatically. A topic that wants it adds an

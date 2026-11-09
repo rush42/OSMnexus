@@ -194,7 +194,7 @@
           {
             "drop": {
               "and": [
-                { "key": "_infix", "eq": "" },
+                { "annotations": { "key": "_infix", "eq": "" } },
                 { "parent": { "key": "oneway", "eq": "yes" } },
                 { "not": { "parent": { "key": "oneway:bicycle", "eq": "no" } } }
               ]
