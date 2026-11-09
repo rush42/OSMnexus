@@ -135,8 +135,10 @@ fn render_producer(g: &mut TreeGraph, p: &Producer) -> String {
             annotate_node(g, &node, annotate);
             node
         }
-        Producer::Parent(inner) => {
-            let node = g.node("Parent".to_owned(), "parent");
+        // Both are context switches; they share the "parent" kind so the frontend styles them alike.
+        Producer::Parent(inner) | Producer::Annotations(inner) => {
+            let label = if matches!(p, Producer::Parent(_)) { "Parent" } else { "Annotations" };
+            let node = g.node(label.to_owned(), "parent");
             let child = render_producer(g, inner);
             g.edge(&node, &child, "");
             node

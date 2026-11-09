@@ -73,7 +73,9 @@ are the config's — tilda happens to write `_side` and `_infix`; nothing in the
 code gives any name a meaning.
 
 `{"annotations": X}` is a scope switch like `parent`: `X` is any filter (or
-producer) and reads the annotations instead of the tags. Inside it:
+producer) and reads the annotations instead of the tags. The two are
+independent: `parent` switches *which element* is read, `annotations` switches
+*which of its key→value maps*. Inside `annotations`:
 
 - `key`/`keys` read annotation names (absent if nothing wrote them);
 - `has_key_prefix` / `tags_empty` range over the annotation names;

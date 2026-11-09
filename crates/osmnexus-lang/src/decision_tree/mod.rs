@@ -44,7 +44,7 @@
 
 mod build;
 mod kleene;
-mod runtime;
+pub(crate) mod runtime;
 mod walkers;
 #[cfg(test)]
 mod tests;

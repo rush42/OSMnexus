@@ -104,8 +104,9 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             }
             g.node(&label, "box", "#d9e8fb")
         }
-        Producer::Parent(inner) => {
-            let node = g.node("parent", "diamond", "#fff2cc");
+        Producer::Parent(inner) | Producer::Annotations(inner) => {
+            let label = if matches!(p, Producer::Parent(_)) { "parent" } else { "annotations" };
+            let node = g.node(label, "diamond", "#fff2cc");
             let child = render_producer(g, inner);
             g.edge(&node, &child, "");
             node

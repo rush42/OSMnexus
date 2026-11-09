@@ -520,7 +520,7 @@ mod producer_tree_tests {
                     find_compiled_matches(&r.value, out);
                 }
             }
-            Producer::Parent(inner) => find_compiled_matches(inner, out),
+            Producer::Parent(inner) | Producer::Annotations(inner) => find_compiled_matches(inner, out),
             Producer::Extract { .. } | Producer::Const { .. } => {}
         }
     }
@@ -591,6 +591,7 @@ mod producer_tree_tests {
                         elem: None,
                         parent_elem: None,
                         role: None,
+                        layer: Default::default(),
                     };
                     let a = field.source.eval(&ctx).map(|p| (p.value, p.annotate));
                     let b = linear.eval(&ctx).map(|p| (p.value, p.annotate));

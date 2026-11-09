@@ -93,7 +93,7 @@ pub fn parent_or_obj(p: Producer) -> Producer {
 enum ProducerJson {
     /// Scope the wrapped producer to the parent way's tags — see `Producer::Parent`.
     Parent { parent: Box<Producer> },
-    /// Read the annotations instead of the tags — see `Producer::into_annotations`.
+    /// Read the annotations instead of the tags — see `Producer::Annotations`.
     Annotations { annotations: Box<Producer> },
     /// Scope to the parent's tags, falling back to the object's own when there's no parent — see
     /// `parent_or_obj` for the `Match`+`Parent` equivalence this desugars to.
@@ -123,7 +123,7 @@ impl<'de> Deserialize<'de> for Producer {
     {
         Ok(match ProducerJson::deserialize(deserializer)? {
             ProducerJson::Parent { parent } => Producer::Parent(parent),
-            ProducerJson::Annotations { annotations } => annotations.into_annotations(),
+            ProducerJson::Annotations { annotations } => Producer::Annotations(annotations),
             ProducerJson::ParentOrObj { parent_or_obj: inner } => parent_or_obj(*inner),
             ProducerJson::Match { rules, default, annotate } => {
                 Producer::Match { rules, default, annotate, tree: None }
@@ -314,7 +314,7 @@ enum FilterJson {
     EndsWith { #[serde(flatten)] extract: Extract, ends_with: String },
     Exists { #[serde(flatten)] extract: Extract, exists: bool },
     Parent { parent: Box<Filter> },
-    /// Read the annotations instead of the tags — see `Filter::into_annotations`.
+    /// Read the annotations instead of the tags — see `Filter::Annotations`.
     Annotations { annotations: Box<Filter> },
     /// The retired `{"annotation": "_side", "eq": ..}` spelling — accepted only to fail with a
     /// migration hint instead of an opaque "no variant matched".
@@ -361,7 +361,7 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::Exists { extract, exists } => Filter::Exists { extract, exists },
             FilterJson::Eq { extract, eq } => Filter::Eq { extract, eq },
             FilterJson::Parent { parent } => Filter::Parent { parent },
-            FilterJson::Annotations { annotations } => annotations.into_annotations(),
+            FilterJson::Annotations { annotations } => Filter::Annotations { annotations },
             FilterJson::Annotation { annotation, eq } => {
                 return Err(serde::de::Error::custom(format!(
                     "{{\"annotation\": {annotation:?}, \"eq\": {eq:?}}} is no longer supported; \
@@ -401,6 +401,7 @@ mod key_form_tests {
             elem: None,
             parent_elem: None,
             role: None,
+            layer: Default::default(),
         };
         p.eval(&ctx).map(|r| r.value)
     }

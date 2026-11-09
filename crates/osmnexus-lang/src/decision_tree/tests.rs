@@ -108,6 +108,7 @@ fn tree_matches_linear() {
                         elem: None,
                         parent_elem: None,
                         role: None,
+                        layer: Default::default(),
                     };
                     let a = categorize(&ctx, &cats).map(|c| c.id.clone());
                     let b = categorize_linear(&ctx, &cats).map(|c| c.id.clone());

@@ -9,11 +9,22 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
   whose sanitizer drops the value counts as absent, so the next one is tried. Facts can now be
   candidates (`{"keys": ["ref", "@id"]}`). Existing configs mean the same; every shipped config's
   pipeline output is byte-identical.
-- **Internal: parent scope is a node.** `Extract::Parent(inner)` replaces the `parent_` key-name
-  prefix (tags) and the `parent: bool` flag (facts, annotations) that the decision tree's flattened
-  form used. A parent read now switches scope itself, so a real tag named `parent_x` can no longer
-  be mistaken for a parent read. The bikelanes way decision tree comes out in a different (equally
-  valid) shape because branch-key ties now break differently; `tree_matches_linear` still holds.
+- **Internal: `parent` and `annotations` are the same kind of context switch.** The context has
+  two independent axes — which element (`parent` switches it) and which layer, tags or
+  annotations (`annotations` switches it) — and every key read, `has_key_prefix` and `tags_empty`
+  reads whatever the context points at. This replaces the load-time rewrite of annotation reads
+  into separate variants (`Extract::Note`, `Filter::AnnotationKeyPrefix`/`AnnotationsEmpty`, the
+  `Predicate` twins, `into_annotations` on `Filter`/`Producer`/`Extract`). `Extract` is now a key,
+  a fact or a candidate list, plus one internal `Scoped(Scope, ..)` node that only the decision
+  tree's flattened form uses — replacing the `parent_` key-name prefix and the `parent: bool`
+  flag. Editor labels read `annotations(_side == "left")` instead of `annotations._side == "left"`.
+- **Fixed: a negation under `parent` in the decision tree.** The flattened form the tree evaluates
+  answered `{"parent": {"not": ..}}` as `true` for an object without a parent; direct evaluation
+  (correctly) says `false`. It now adds a `has_parent` guard where the inner filter can be true
+  with all its reads absent. No shipped config hit this (the tree is unchanged by the guard); the
+  bikelanes way tree comes out in a different, equally valid shape (948 instead of 970 nodes)
+  because branch-key ties break differently. Pipeline output is byte-identical.
+
 - **Facts: `@id`, `@type`, `@role`, `@timestamp`.** A key starting with `@` reads a fact about the
   element instead of an OSM tag, everywhere a key is allowed (filters, producers, `in`, `parent`).
   Under `parent` they describe the parent: a member way reads its relation's id as

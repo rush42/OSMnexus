@@ -219,6 +219,7 @@ pub fn build_topic_rows<'a>(
             elem: Some(this_elem),
             parent_elem: parent.map(|(_, e)| e),
             role,
+            layer: Default::default(),
         };
 
         // `accept_all` kinds (`categories` is `None`) skip category matching entirely — every

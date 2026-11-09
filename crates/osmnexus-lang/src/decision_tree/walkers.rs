@@ -47,8 +47,7 @@ pub(crate) fn collect_atom_candidates(e: &Expr, f: &mut impl FnMut(&Predicate)) 
             | Predicate::EndsWith(..)
             | Predicate::Exists(..)
             | Predicate::Num(..)
-            | Predicate::HasKeyPrefix(..)
-            | Predicate::AnnotationKeyPrefix(..) => f(p),
+            | Predicate::HasKeyPrefix(..) => f(p),
             _ => {}
         }
     })

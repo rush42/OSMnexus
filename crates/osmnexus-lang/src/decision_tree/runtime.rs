@@ -21,10 +21,9 @@ pub(crate) fn eval_atom(atom: &Predicate, ctx: &ExtractCtx) -> bool {
 }
 
 /// Read `extract` against `ctx`. The leaf-time evaluator (`eval_expr`) works from the flattened
-/// `Expr` — no `Filter::Parent` wrapper survives into it; `lang::expr::prefix_expr_tags` has
-/// wrapped each read under one in `Extract::Parent` instead, which switches to the parent scope
-/// itself (and is absent without a parent) — replaying `Filter::Parent`'s own
-/// `None => false, Some(parent) => eval(..)` semantics for a single predicate.
+/// `Expr` — no `Filter::Parent`/`Filter::Annotations` wrapper survives into it;
+/// `lang::expr::scope_expr` has wrapped each read under one in `Extract::Scoped` instead, which
+/// switches the context itself (and is absent without a parent).
 fn read_extract<'a>(extract: &Extract, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
     extract.read_str(ctx)
 }
@@ -48,18 +47,16 @@ fn decide_concrete(p: &Predicate, ctx: &ExtractCtx) -> bool {
         Predicate::Exists(e) => read_extract(e, ctx).is_some(),
         Predicate::FirstTagIn(e, vals) => read_extract(e, ctx).is_some_and(|v| vals.iter().any(|x| x == v.as_ref())),
         Predicate::Num(e, op, bits) => read_extract_num(e, ctx).is_some_and(|n| num_matches(op, *bits, n)),
-        Predicate::HasKeyPrefix(prefix) => ctx.obj_tags.keys().any(|k| k.starts_with(prefix.as_str())),
+        Predicate::HasKeyPrefix(scopes, prefix) => ctx.scopes(scopes).is_some_and(|c| c.has_key_prefix(prefix)),
         Predicate::HasParent => ctx.parent_tags.is_some(),
-        Predicate::TagsEmpty => ctx.obj_tags.is_empty(),
-        Predicate::AnnotationKeyPrefix(prefix) => ctx.annotations.keys().any(|k| k.starts_with(prefix.as_str())),
-        Predicate::AnnotationsEmpty => ctx.annotations.is_empty(),
+        Predicate::TagsEmpty(scopes) => ctx.scopes(scopes).is_some_and(|c| c.is_empty()),
     }
 }
 
 /// Fully evaluate a leaf's residual `Expr` against a concrete object — the leaf-time counterpart to
 /// `kleene::kleene`/`simplify` (which only ever partially decide, under one just-branched fact).
 /// Every `Predicate` is decidable here, so this collapses straight to a `bool`, no `Unknown` case.
-fn eval_expr(e: &Expr, ctx: &ExtractCtx) -> bool {
+pub(crate) fn eval_expr(e: &Expr, ctx: &ExtractCtx) -> bool {
     match e {
         Expr::True => true,
         Expr::False => false,

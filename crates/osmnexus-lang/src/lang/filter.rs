@@ -15,7 +15,7 @@ use std::ops::{Bound, RangeBounds};
 
 
 use crate::lang::extract::Extract;
-use crate::lang::producer::ExtractCtx;
+use crate::lang::producer::{ExtractCtx, Scope};
 use crate::lang::tags::RawTags;
 
 /// Filter expression. On-disk shapes are enumerated by `parser::FilterJson` (untagged, tried in
@@ -49,20 +49,20 @@ pub enum Filter {
     /// Evaluate the inner filter's tag predicates against the parent way's tags instead of the
     /// object's own — `false` when there is no parent.
     Parent { parent: Box<Filter> },
+    /// Evaluate the inner filter against the element's annotations instead of its tags (its key
+    /// reads, `has_key_prefix`, `tags_empty`; facts stay facts). A context switch like `Parent`
+    /// (`ExtractCtx::scope`) that always exists.
+    Annotations { annotations: Box<Filter> },
 
     // Context predicates
-    /// True iff some `obj_tags` key starts with `has_key_prefix` — a dynamic, unknown-suffix scan
-    /// over the object's own raw tags.
+    /// True iff some key of the current layer (tags, or annotations under `Annotations`) starts
+    /// with `has_key_prefix` — a dynamic, unknown-suffix scan.
     HasKeyPrefix { has_key_prefix: String },
     /// True iff the object has a parent way (i.e. it is a left/right side-split of a highway).
     HasParent { has_parent: bool },
-    /// True iff the object's own tags are (non-)empty — total, unlike `Exists`, which needs a
-    /// specific key.
+    /// True iff the current layer (tags, or annotations under `Annotations`) is (non-)empty —
+    /// total, unlike `Exists`, which needs a specific key.
     TagsEmpty { tags_empty: bool },
-    /// `has_key_prefix` / `tags_empty` scoped to the annotations (`{"annotations": ..}`, see
-    /// `Filter::into_annotations`): over annotation names instead of tag keys.
-    AnnotationKeyPrefix { prefix: String },
-    AnnotationsEmpty { empty: bool },
 
     // Numeric comparison — same `Extract` shape the tag predicates use (its `sanitize` chain may
     // yield a JSON number, e.g. `parse_length`) before parsing to f64. On-disk `lt`/`lte`/`gt`/`gte`
@@ -75,34 +75,6 @@ pub enum Filter {
 }
 
 impl Filter {
-    /// This filter scoped to the annotations (`{"annotations": ..}`): every key read becomes an
-    /// annotation read, `has_key_prefix`/`tags_empty` range over annotation names, and everything
-    /// else keeps its meaning — `parent` included, whose inner reads then look at the parent's
-    /// annotations (it has none: `ExtractCtx::parent_scope`). Resolved here, at load, like
-    /// `parent`'s own scoping, so evaluation and the decision tree see ordinary variants.
-    pub fn into_annotations(self) -> Filter {
-        let ann = |e: Extract| e.into_annotations();
-        match self {
-            Filter::And { and } => Filter::And { and: and.into_iter().map(Filter::into_annotations).collect() },
-            Filter::Or { or } => Filter::Or { or: or.into_iter().map(Filter::into_annotations).collect() },
-            Filter::Not { not } => Filter::Not { not: Box::new(not.into_annotations()) },
-            Filter::Parent { parent } => Filter::Parent { parent: Box::new(parent.into_annotations()) },
-            Filter::In { extract, r#in } => Filter::In { extract: ann(extract), r#in },
-            Filter::Contains { extract, contains, case_insensitive } => Filter::Contains { extract: ann(extract), contains, case_insensitive },
-            Filter::StartsWith { extract, starts_with } => Filter::StartsWith { extract: ann(extract), starts_with },
-            Filter::EndsWith { extract, ends_with } => Filter::EndsWith { extract: ann(extract), ends_with },
-            Filter::Exists { extract, exists } => Filter::Exists { extract: ann(extract), exists },
-            Filter::Eq { extract, eq } => Filter::Eq { extract: ann(extract), eq },
-            Filter::NumRange { extract, min, max } => Filter::NumRange { extract: ann(extract), min, max },
-            Filter::HasKeyPrefix { has_key_prefix } => Filter::AnnotationKeyPrefix { prefix: has_key_prefix },
-            Filter::TagsEmpty { tags_empty } => Filter::AnnotationsEmpty { empty: tags_empty },
-            other @ (Filter::Bool(_)
-            | Filter::HasParent { .. }
-            | Filter::AnnotationKeyPrefix { .. }
-            | Filter::AnnotationsEmpty { .. }) => other,
-        }
-    }
-
     /// A short, human-readable rendering (`surface == sett`, `a and b`, `highway in [...]`) — not
     /// the `Debug` dump, which is precise but unreadable at a glance (e.g. in the live editor's
     /// deriver tree view, `tree::render_producer`). Not meant to round-trip back into JSON or `eval`
@@ -143,10 +115,9 @@ impl Filter {
             }
             Filter::Eq { extract, eq } => format!("{} == {eq:?}", maybe_sanitized(extract)),
             Filter::Parent { parent } => format!("parent({})", parent.describe()),
+            Filter::Annotations { annotations } => format!("annotations({})", annotations.describe()),
             Filter::HasKeyPrefix { has_key_prefix } => format!("has_key_prefix({has_key_prefix:?})"),
             Filter::HasParent { has_parent } => if *has_parent { "has_parent".to_owned() } else { "!has_parent".to_owned() },
-            Filter::AnnotationKeyPrefix { prefix } => format!("annotations.has_key_prefix({prefix:?})"),
-            Filter::AnnotationsEmpty { empty } => if *empty { "annotations_empty".to_owned() } else { "!annotations_empty".to_owned() },
             Filter::TagsEmpty { tags_empty } => if *tags_empty { "tags_empty".to_owned() } else { "!tags_empty".to_owned() },
             Filter::NumRange { extract, min, max } => {
                 let k = key(extract);
@@ -197,15 +168,13 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
             None => false,
             Some(parent_ctx) => eval(parent, &parent_ctx),
         },
+        Filter::Annotations { annotations } => ctx.scope(Scope::Annotations).is_some_and(|c| eval(annotations, &c)),
 
-        Filter::HasKeyPrefix { has_key_prefix } =>
-            ctx.obj_tags.keys().any(|k| k.starts_with(has_key_prefix.as_str())),
+        Filter::HasKeyPrefix { has_key_prefix } => ctx.has_key_prefix(has_key_prefix),
         // True iff there's a parent way (i.e. this is a left/right side-split object) —
         // `parent_tags` is only ever `Some` for those (see `categorize::transform::run_transform_steps`).
         Filter::HasParent { has_parent } => ctx.parent_tags.is_some() == *has_parent,
-        Filter::TagsEmpty { tags_empty } => ctx.obj_tags.is_empty() == *tags_empty,
-        Filter::AnnotationKeyPrefix { prefix } => ctx.annotations.keys().any(|k| k.starts_with(prefix.as_str())),
-        Filter::AnnotationsEmpty { empty } => ctx.annotations.is_empty() == *empty,
+        Filter::TagsEmpty { tags_empty } => ctx.is_empty() == *tags_empty,
 
         Filter::NumRange { extract, min, max } =>
             read_num(extract, ctx).is_some_and(|n| (*min, *max).contains(&n)),
@@ -219,9 +188,9 @@ pub(crate) fn eval(filter: &Filter, ctx: &ExtractCtx) -> bool {
 /// comparison is false on missing/garbage input. No geometry-derived values (length, …) are
 /// available: classification is tag-only.
 pub(crate) fn read_num(extract: &Extract, ctx: &ExtractCtx) -> Option<f64> {
-    if let Extract::Parent(inner) = extract {
+    if let Extract::Scoped(scope, inner) = extract {
         // Through the inner read's own chain, which may produce a number `read_raw` can't carry.
-        return read_num(inner, &ctx.parent_scope()?);
+        return read_num(inner, &ctx.scope(*scope)?);
     }
     if extract.sanitize().is_empty() {
         extract.read_raw(ctx)?.trim().parse().ok()
@@ -239,19 +208,31 @@ fn num_from_value(v: &serde_json::Value) -> Option<f64> {
     }
 }
 
-/// Rewrite `not (_k == v)` into `_k in (domain(_k) \ {v})` for every annotation key whose complete
-/// value set `domains` knows (see `categorize::transform::annotation_domains`). Equivalent for every
-/// object the config can produce — the key is always present with one of those values — and it
-/// turns a negation the decision tree can't branch on into positive comparisons it can. Only the
-/// tree's input is rewritten; evaluation semantics don't change. Parent-scoped reads are left alone
-/// (a parent has no annotations).
+/// Rewrite `not (k == v)` inside `{"annotations": ..}` into `k in (domain(k) \ {v})` for every
+/// annotation key whose complete value set `domains` knows (see
+/// `categorize::transform::annotation_domains`). Equivalent for every object the config can
+/// produce — the key is always present with one of those values — and it turns a negation the
+/// decision tree can't branch on into positive comparisons it can. Only the tree's input is
+/// rewritten; evaluation semantics don't change. `not` moves freely across an `annotations`
+/// wrapper (the annotations always exist, unlike a parent); a `parent` is left alone (a parent
+/// has no annotations).
 pub fn close_annotation_negations(f: &Filter, domains: &std::collections::BTreeMap<String, Vec<String>>) -> Filter {
-    let rec = |f: &Filter| close_annotation_negations(f, domains);
+    close(f, false, domains)
+}
+
+fn close(f: &Filter, in_annotations: bool, domains: &std::collections::BTreeMap<String, Vec<String>>) -> Filter {
+    let rec = |f: &Filter| close(f, in_annotations, domains);
     match f {
         Filter::And { and } => Filter::And { and: and.iter().map(rec).collect() },
         Filter::Or { or } => Filter::Or { or: or.iter().map(rec).collect() },
+        Filter::Annotations { annotations } => {
+            Filter::Annotations { annotations: Box::new(close(annotations, true, domains)) }
+        }
         Filter::Not { not } => match not.as_ref() {
-            Filter::Eq { extract: extract @ Extract::Note { key, sanitize }, eq } if sanitize.is_empty() => {
+            Filter::Annotations { annotations } => Filter::Annotations {
+                annotations: Box::new(close(&Filter::Not { not: annotations.clone() }, true, domains)),
+            },
+            Filter::Eq { extract: extract @ Extract::Value { key, sanitize }, eq } if in_annotations && sanitize.is_empty() => {
                 match domains.get(key) {
                     Some(domain) => {
                         let rest: Vec<String> = domain.iter().filter(|v| *v != eq).cloned().collect();
@@ -277,6 +258,7 @@ pub fn eval_filter(filter: &Filter, tags: &RawTags<'_>) -> bool {
         elem: None,
         parent_elem: None,
         role: None,
+        layer: Default::default(),
     };
     eval(filter, &ctx)
 }

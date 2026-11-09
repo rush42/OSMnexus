@@ -20,12 +20,13 @@ use std::borrow::Cow;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::lang::producer::ExtractCtx;
+use crate::lang::producer::{ExtractCtx, Scope};
 use crate::lang::sanitize::{eval_sanitize, Sanitizer};
 use crate::lang::tags::RawTags;
 
-/// A key read plus its `sanitize` chain — a small recursive expression: three leaves (an OSM tag,
-/// a fact, an annotation) and two combinators (first-present `Candidates`, `Parent` scope).
+/// A key read plus its `sanitize` chain — a small recursive expression: two leaves (a key, a fact)
+/// and one combinator (first-present `Candidates`), plus the internal `Scoped` node the decision
+/// tree's flattened form needs.
 /// `Extract` is always `#[serde(flatten)]`ed into its embedding struct, so `sanitize` living here
 /// rather than as a sibling field changes nothing about the on-disk JSON shape.
 ///
@@ -39,10 +40,10 @@ use crate::lang::tags::RawTags;
 /// - `@` — a **fact** about the element ([`VirtualKey`]: `@id`, `@type`, `@role`, `@timestamp`),
 ///   from the data itself. An unknown `@` key is a load error.
 ///
-/// Annotations — whatever the topic's own transforms wrote with `annotate`/`record_infix_as` — are
-/// read by scoping an ordinary key read with `{"annotations": ..}` (like `parent`), which load-time
-/// rewrites into [`Extract::Note`] (`Extract::into_annotations`). No key name is special: `_side`
-/// is just the name tilda's config happens to write.
+/// A key is read from the context's current layer (`ExtractCtx::layer`): the tags, or — inside
+/// `{"annotations": ..}`, a context switch like `parent` — whatever the topic's own transforms wrote
+/// with `annotate`/`record_infix_as`. No key name is special: `_side` is just the name tilda's
+/// config happens to write.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 #[serde(try_from = "ExtractJson")]
 // An explicit one-byte tag instead of a niche in a `String`'s capacity: with several variants the
@@ -54,18 +55,16 @@ pub enum Extract {
     /// `sanitize`, so an alternative whose sanitizer drops the value counts as absent and the next
     /// one is tried — then run through this node's `sanitize`.
     Candidates { alts: Vec<Extract>, sanitize: Vec<Sanitizer> },
-    /// A single OSM tag.
+    /// A single key of the current layer (`ExtractCtx::get`): a tag, or an annotation.
     Value { key: String, sanitize: Vec<Sanitizer> },
     /// A fact (`@id`, …).
     Virtual { field: VirtualKey, sanitize: Vec<Sanitizer> },
-    /// An annotation, read from `ExtractCtx::annotations`. Never written directly:
-    /// `{"annotations": ..}` turns every `Value` inside a read into this.
-    Note { key: String, sanitize: Vec<Sanitizer> },
-    /// The inner read, against the parent (`ExtractCtx::parent_scope`); absent without one. Never
-    /// written directly either: a `Filter`/`Producer` `parent` wrapper switches scope itself, and
-    /// `lang::expr::prefix_expr_tags` wraps each predicate's read in this when it flattens such a
-    /// wrapper away for the decision tree.
-    Parent(Box<Extract>),
+    /// The inner read in a switched context (`ExtractCtx::scope`) — absent without a parent, for
+    /// `Scope::Parent`. Never written in a config: `Filter`/`Producer` `parent`/`annotations`
+    /// wrappers switch the context themselves, and `lang::expr::scope_expr` wraps each predicate's
+    /// read in this when it flattens such a wrapper away for the decision tree, so the read stays
+    /// distinct from the same read in the outer context, as a branch key.
+    Scoped(Scope, Box<Extract>),
 }
 
 /// The on-disk shapes, before `@` keys are resolved: `key` for one key, `keys` for a first-present
@@ -146,23 +145,10 @@ impl Extract {
         Ok(Extract::Candidates { alts, sanitize })
     }
 
-    /// This read, scoped to the annotations (`{"annotations": ..}`): every tag read inside it reads
-    /// `ExtractCtx::annotations` instead. A fact stays a fact — it isn't a tag either.
-    pub fn into_annotations(self) -> Extract {
-        match self {
-            Extract::Value { key, sanitize } => Extract::Note { key, sanitize },
-            Extract::Candidates { alts, sanitize } => {
-                Extract::Candidates { alts: alts.into_iter().map(Extract::into_annotations).collect(), sanitize }
-            }
-            Extract::Parent(inner) => Extract::Parent(Box::new(inner.into_annotations())),
-            other @ (Extract::Virtual { .. } | Extract::Note { .. }) => other,
-        }
-    }
-
-    /// This read, against the parent — what `lang::expr::prefix_expr_tags` makes of a predicate
-    /// under a flattened `Filter::Parent`.
-    pub fn in_parent(self) -> Extract {
-        Extract::Parent(Box::new(self))
+    /// This read in a switched context — what `lang::expr::scope_expr` makes of a predicate under
+    /// a flattened `parent`/`annotations` wrapper.
+    pub fn scoped(self, scope: Scope) -> Extract {
+        Extract::Scoped(scope, Box::new(self))
     }
 }
 
@@ -213,16 +199,6 @@ impl VirtualKey {
     }
 }
 
-/// An annotation as text: a string as-is, anything else (a number or bool a transform recorded) in
-/// its JSON spelling.
-fn note_text<'a>(ctx: &ExtractCtx<'a>, key: &str) -> Option<Cow<'a, str>> {
-    match ctx.annotations.get(key)? {
-        Value::String(s) => Some(Cow::Borrowed(s.as_str())),
-        Value::Null => None,
-        other => Some(Cow::Owned(other.to_string())),
-    }
-}
-
 /// Unix seconds as `YYYY-MM-DDTHH:MM:SSZ` — the format the `meta` column's `updated_at` uses.
 /// Howard Hinnant's `civil_from_days`, so the core needs no date library.
 pub fn iso8601_utc(secs: i64) -> String {
@@ -241,27 +217,26 @@ pub fn iso8601_utc(secs: i64) -> String {
 }
 
 impl Extract {
-    /// This node's own `sanitize` chain — empty if unset, and always empty for `Parent` (its inner
+    /// This node's own `sanitize` chain — empty if unset, and always empty for `Scoped` (its inner
     /// read carries its own).
     pub fn sanitize(&self) -> &[Sanitizer] {
         match self {
             Extract::Value { sanitize, .. }
             | Extract::Candidates { sanitize, .. }
-            | Extract::Virtual { sanitize, .. }
-            | Extract::Note { sanitize, .. } => sanitize,
-            Extract::Parent(_) => &[],
+            | Extract::Virtual { sanitize, .. } => sanitize,
+            Extract::Scoped(..) => &[],
         }
     }
 
-    /// Resolve the value *before this node's own* `sanitize`: a tag, a fact or an annotation as
-    /// stored, the first alternative that yields one (each already through its own `sanitize`, as
-    /// a string), or the inner read against the parent (sanitized — `Parent` has no chain of its
-    /// own). Borrowed for every tag read; only `@id`/`@timestamp` and non-string annotations format
+    /// Resolve the value *before this node's own* `sanitize`: a key (tag or annotation) or a fact
+    /// as stored, the first alternative that yields one (each already through its own `sanitize`,
+    /// as text), or the inner read in its switched context (sanitized — `Scoped` has no chain of
+    /// its own). Borrowed for every tag read; only `@id`/`@timestamp` and non-string annotations format
     /// a new string, and only when actually read.
     #[inline]
     pub fn read_raw<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
         match self {
-            Extract::Value { key, .. } => ctx.obj_tags.get(key.as_str()).map(|v| Cow::Borrowed(v.as_ref())),
+            Extract::Value { key, .. } => ctx.get(key),
             _ => self.read_raw_slow(ctx),
         }
     }
@@ -269,11 +244,10 @@ impl Extract {
     #[inline(never)]
     fn read_raw_slow<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
         match self {
-            Extract::Value { key, .. } => ctx.obj_tags.get(key.as_str()).map(|v| Cow::Borrowed(v.as_ref())),
+            Extract::Value { key, .. } => ctx.get(key),
             Extract::Candidates { alts, .. } => alts.iter().find_map(|a| a.read_text(ctx)),
             Extract::Virtual { field, .. } => field.read(ctx),
-            Extract::Note { key, .. } => note_text(ctx, key),
-            Extract::Parent(inner) => inner.read_str(&ctx.parent_scope()?),
+            Extract::Scoped(scope, inner) => inner.read_str(&ctx.scope(*scope)?),
         }
     }
 
@@ -286,7 +260,7 @@ impl Extract {
     #[inline]
     pub fn read(&self, ctx: &ExtractCtx) -> Option<Value> {
         match self {
-            Extract::Value { key, sanitize } => eval_sanitize(sanitize, ctx.obj_tags.get(key.as_str())?.as_ref()),
+            Extract::Value { key, sanitize } => eval_sanitize(sanitize, &ctx.get(key)?),
             _ => self.read_slow(ctx),
         }
     }
@@ -295,7 +269,7 @@ impl Extract {
     fn read_slow(&self, ctx: &ExtractCtx) -> Option<Value> {
         match self {
             // The inner read's own value, not its string form: a sanitizer may produce a number.
-            Extract::Parent(inner) => inner.read(&ctx.parent_scope()?),
+            Extract::Scoped(scope, inner) => inner.read(&ctx.scope(*scope)?),
             // Likewise the winning alternative's own value, when there's no chain of ours to run.
             Extract::Candidates { alts, sanitize } if sanitize.is_empty() => {
                 alts.iter().find_map(|a| a.read(ctx).filter(|v| !v.is_null()))
@@ -305,11 +279,11 @@ impl Extract {
     }
 
     /// What a `Candidates` alternative contributes: its fully sanitized value as text — a string
-    /// as-is, any other value in its JSON spelling (as `note_text` does), so an alternative whose
+    /// as-is, any other value in its JSON spelling (as `ExtractCtx::get` spells annotations), so an alternative whose
     /// sanitizer yields a number still counts as present. Borrowed when there's nothing to run.
     fn read_text<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
         match self {
-            Extract::Parent(inner) => inner.read_text(&ctx.parent_scope()?),
+            Extract::Scoped(scope, inner) => inner.read_text(&ctx.scope(*scope)?),
             _ if self.sanitize().is_empty() => self.read_raw(ctx),
             _ => match self.read(ctx)? {
                 Value::String(s) => Some(Cow::Owned(s)),
@@ -326,9 +300,7 @@ impl Extract {
     #[inline]
     pub fn read_str<'a>(&self, ctx: &ExtractCtx<'a>) -> Option<Cow<'a, str>> {
         match self {
-            Extract::Value { key, sanitize } if sanitize.is_empty() => {
-                ctx.obj_tags.get(key.as_str()).map(|v| Cow::Borrowed(v.as_ref()))
-            }
+            Extract::Value { key, sanitize } if sanitize.is_empty() => ctx.get(key),
             _ => self.read_str_slow(ctx),
         }
     }
@@ -346,13 +318,7 @@ impl Extract {
         }
     }
 
-    /// Whether this read looks at the parent — `decision_tree`'s check for whether a branch key or
-    /// atom needs a parent at all. A variant compare, no allocation: it runs per predicate decision.
-    pub fn is_parent_scoped(&self) -> bool {
-        matches!(self, Extract::Parent(_))
-    }
-
-    /// A display name for one read: the key, `@id`, `annotations.<key>`, `parent_<name>` — and for
+    /// A display name for one read: the key, `@id`, `annotations.<name>`, `parent_<name>` — and for
     /// a candidate list, its alternatives' names joined with `|`. Not `sanitize`-aware.
     pub fn label(&self) -> String {
         match self {
@@ -364,15 +330,20 @@ impl Extract {
     /// The names this extract reads, every alternative of a candidate list in order (flattened
     /// through nested lists). Used by `categorize::linter`'s overlap grouping and the decision
     /// tree's tests (both only care about *which* keys are read, not the `sanitize` chains). A fact
-    /// reports its `@` name, an annotation `annotations.<key>`, and a parent read prefixes
-    /// `parent_`, so to these callers every read is just an opaque key.
+    /// reports its `@` name, and a scoped read prefixes `parent_` / `annotations.`, so to these
+    /// callers every read is just an opaque key.
     pub fn tag_names(&self) -> Vec<String> {
         match self {
             Extract::Value { key, .. } => vec![key.clone()],
             Extract::Candidates { alts, .. } => alts.iter().flat_map(Extract::tag_names).collect(),
             Extract::Virtual { field, .. } => vec![field.name().to_owned()],
-            Extract::Note { key, .. } => vec![format!("annotations.{key}")],
-            Extract::Parent(inner) => inner.tag_names().into_iter().map(|k| format!("parent_{k}")).collect(),
+            Extract::Scoped(scope, inner) => {
+                let prefix = match scope {
+                    Scope::Parent => "parent_",
+                    Scope::Annotations => "annotations.",
+                };
+                inner.tag_names().into_iter().map(|k| format!("{prefix}{k}")).collect()
+            }
         }
     }
 }
@@ -394,7 +365,7 @@ mod virtual_tag_tests {
 
     use super::{iso8601_utc, Extract, VirtualKey};
     use crate::lang::filter::{eval, Filter};
-    use crate::lang::producer::{Elem, ExtractCtx, Producer};
+    use crate::lang::producer::{Elem, ExtractCtx, Producer, Scope};
     use crate::lang::tags::{ElementKind, RawTags};
 
     fn extract(v: Value) -> Result<Extract, String> {
@@ -437,6 +408,7 @@ mod virtual_tag_tests {
             elem: Some(Elem { kind: ElementKind::Way, osm_id: 5, timestamp: None }),
             parent_elem: None,
             role: None,
+            layer: Default::default(),
         };
         let read = |v: Value| extract(v).unwrap().read(&ctx);
 
@@ -461,7 +433,8 @@ mod virtual_tag_tests {
         assert_eq!(extract(json!({"keys": [{"keys": ["a", "@id"]}, "b"]})).unwrap().tag_names(), ["a", "@id", "b"]);
     }
 
-    /// `Extract::Parent` — what a flattened `parent` wrapper becomes — reads the parent by itself.
+    /// `Extract::Scoped(Parent, ..)` — what a flattened `parent` wrapper becomes — reads the parent
+    /// by itself.
     #[test]
     fn parent_reads_switch_scope_themselves() {
         let tags: RawTags = [("highway".into(), "cycleway".into())].into_iter().collect();
@@ -475,9 +448,10 @@ mod virtual_tag_tests {
             elem: Some(Elem { kind: ElementKind::Way, osm_id: 5, timestamp: None }),
             parent_elem: Some(Elem { kind: ElementKind::Way, osm_id: 9, timestamp: None }),
             role: None,
+            layer: Default::default(),
         };
         let orphan = ExtractCtx { parent_tags: None, parent_elem: None, ..with_parent };
-        let p = |v: Value| extract(v).unwrap().in_parent();
+        let p = |v: Value| extract(v).unwrap().scoped(Scope::Parent);
         assert_eq!(p(json!({"key": "highway"})).read_str(&with_parent).as_deref(), Some("primary"));
         assert_eq!(p(json!({"key": "@id"})).read_str(&with_parent).as_deref(), Some("9"));
         assert_eq!(p(json!({"key": "highway"})).read_str(&orphan), None);
@@ -485,7 +459,7 @@ mod virtual_tag_tests {
         assert_eq!(p(json!({"key": "width", "sanitize": num})).read(&with_parent), Some(json!(2.0)));
         assert_eq!(super::super::filter::read_num(&p(json!({"key": "width", "sanitize": num})), &with_parent), Some(2.0));
         assert_eq!(p(json!({"keys": ["name", "@id"]})).tag_names(), ["parent_name", "parent_@id"]);
-        assert!(p(json!({"key": "highway"})).is_parent_scoped());
+
     }
 
     #[test]
@@ -513,6 +487,7 @@ mod virtual_tag_tests {
             elem: Some(Elem { kind: ElementKind::Way, osm_id: 5, timestamp: Some(0) }),
             parent_elem: Some(Elem { kind: ElementKind::Relation, osm_id: 9, timestamp: None }),
             role: Some("forward"),
+            layer: Default::default(),
         };
         let read = |k: &str| extract(json!({"key": k})).unwrap().read_str(&ctx).map(|c| c.into_owned());
         assert_eq!(read("@id").as_deref(), Some("5"));
