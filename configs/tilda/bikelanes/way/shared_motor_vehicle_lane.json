@@ -2,11 +2,11 @@
   "condition": {
     "and": [
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "cycleway"
       },
       {
-        "tag": "cycleway",
+        "key": "cycleway",
         "eq": "shared_lane"
       }
     ]

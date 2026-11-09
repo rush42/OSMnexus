@@ -21,7 +21,12 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
   - `directed` steps need `"side": "left" | "right"`; the side is no longer read from `_side`.
   - `id_type: "none"` is rejected for any topic that clones objects (before: only if a clone wrote
     `_side`).
-  - `configs/tilda` is migrated; its outputs are byte-identical.
+  - **One spelling for key reads: `key` / `keys`.** The aliases `tag` and `first_tag` are
+    removed; a config still using them fails at load with a list of every place and its
+    replacement. Producers had a separate `{"tag": .., "or": ..}` shape that silently dropped
+    `sanitize`/`annotate` when mixed in; `or` is now an optional field of the one key form,
+    combinable with `sanitize` and `annotate`.
+  - `configs/` is migrated (459 places); outputs are byte-identical.
 - **`inherit_to_member`: every kept relation is a parent**, including one that exports none of the
   declared `fields` (which are now optional) — its id is information on its own. A way topic gets
   one row per parent relation in `fan_out` mode even if that parent has no `ref`.

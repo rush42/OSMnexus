@@ -2,16 +2,16 @@
   "condition": {
     "and": [
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "service"
       },
       {
-        "tag": "service",
+        "key": "service",
         "eq": "driveway"
       },
       {
         "not": {
-          "tag": "emergency",
+          "key": "emergency",
           "in": [
             "yes",
             "designated"

@@ -6,7 +6,7 @@
 //! across a different pass's output, so that lookup needed a random-access hashmap in the join.
 //! Flipping it round removed the need (and that fallback is gone): a member way carries its
 //! relation-derived context in its *own* tag row — including the relation's id, read as
-//! `{"parent": {"tag": "@id"}}` — and every geometry join is the element's own geometry.
+//! `{"parent": {"key": "@id"}}` — and every geometry join is the element's own geometry.
 //!
 //! The timing works because the relations pass runs *before* Pass A (`osm::reader::sorted`'s module
 //! doc). Relations are classified, their exported fields captured here, and only then are ways
@@ -31,7 +31,7 @@ use crate::topic::Topic;
 ///
 /// `fields` is a `RawTags` rather than a JSON map, because that is the shape the extraction context
 /// already speaks: the member way sees it as its `ExtractCtx::parent_tags`, so a way topic reads it
-/// with the existing `{"parent": {"tag": "ref"}}` producer syntax and can match on it too. The
+/// with the existing `{"parent": {"key": "ref"}}` producer syntax and can match on it too. The
 /// relation's own facts come along for `@timestamp`/`@role` (`@id` is the map key).
 pub struct ParentRecord {
     pub fields: RawTags<'static>,
@@ -84,7 +84,7 @@ impl InheritStore {
     /// it didn't produce is simply absent), its timestamp, and each member way's role.
     ///
     /// Every kept relation is recorded, even one that exports no field at all: the parent's identity
-    /// is information in its own right — a member way reads it as `{"parent": {"tag": "@id"}}` — so
+    /// is information in its own right — a member way reads it as `{"parent": {"key": "@id"}}` — so
     /// "member of relation 7" must not collapse into "not a member" just because relation 7 had no
     /// `ref`. `fields` may be empty for a topic that only wants membership.
     pub fn capture(&self, runners: &[Topic], idx: usize, rel: &RelData<'_>, produced: &str) {

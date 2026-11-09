@@ -2,11 +2,11 @@
   "condition": {
     "and": [
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "path"
       },
       {
-        "tag": "path",
+        "key": "path",
         "in": [
           "crossing",
           "traffic_island"

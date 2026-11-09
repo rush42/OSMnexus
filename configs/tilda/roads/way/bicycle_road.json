@@ -1,6 +1,6 @@
 {
   "condition": {
-    "tag": "bicycle_road",
+    "key": "bicycle_road",
     "eq": "yes"
   },
   "defaults": {

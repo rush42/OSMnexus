@@ -11,7 +11,7 @@
     "default": 0,
     "match": [
       {
-        "when": { "not": { "tag": "tracktype", "in": ["grade1", "grade2"] } },
+        "when": { "not": { "key": "tracktype", "in": ["grade1", "grade2"] } },
         "value": 11
       }
     ]

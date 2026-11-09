@@ -59,19 +59,18 @@ pub enum Extract {
     Note { key: String, parent: bool, sanitize: Vec<Sanitizer> },
 }
 
-/// The on-disk shapes, before `@` keys are resolved. `key`/`keys` accept `Producer`'s historical
-/// field names as canonical with `Filter`'s historical names (`tag`/`first_tag`) as aliases.
+/// The on-disk shapes, before `@`/`_` keys are resolved: `key` for one key, `keys` for a
+/// first-present list. (The former aliases `tag`/`first_tag` are retired — see
+/// `topic::sources::check_retired_syntax`.)
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ExtractJson {
     Candidates {
-        #[serde(alias = "first_tag")]
         keys: Vec<String>,
         #[serde(default, deserialize_with = "crate::lang::json::deserialize_sanitize_chain")]
         sanitize: Vec<Sanitizer>,
     },
     Value {
-        #[serde(alias = "tag")]
         key: String,
         #[serde(default, deserialize_with = "crate::lang::json::deserialize_sanitize_chain")]
         sanitize: Vec<Sanitizer>,
@@ -357,15 +356,15 @@ mod virtual_tag_tests {
 
     #[test]
     fn prefixed_keys_resolve_at_load_time() {
-        assert!(matches!(extract(json!({"tag": "@id"})), Ok(Extract::Virtual { field: VirtualKey::Id, parent: false, .. })));
+        assert!(matches!(extract(json!({"key": "@id"})), Ok(Extract::Virtual { field: VirtualKey::Id, parent: false, .. })));
         assert!(matches!(extract(json!({"key": "@role"})), Ok(Extract::Virtual { field: VirtualKey::Role, .. })));
-        assert!(matches!(extract(json!({"tag": "_side"})), Ok(Extract::Note { parent: false, .. })));
-        assert!(matches!(extract(json!({"tag": "highway"})), Ok(Extract::Value { .. })));
+        assert!(matches!(extract(json!({"key": "_side"})), Ok(Extract::Note { parent: false, .. })));
+        assert!(matches!(extract(json!({"key": "highway"})), Ok(Extract::Value { .. })));
     }
 
     #[test]
     fn unknown_facts_and_mixed_candidates_are_load_errors() {
-        let err = extract(json!({"tag": "@side"})).unwrap_err();
+        let err = extract(json!({"key": "@side"})).unwrap_err();
         assert!(err.contains("unknown fact \"@side\""), "{err}");
         assert!(extract(json!({"keys": ["@id", "ref"]})).is_err());
         assert!(extract(json!({"keys": ["_side", "ref"]})).is_err());
@@ -396,7 +395,7 @@ mod virtual_tag_tests {
             parent_elem: Some(Elem { kind: ElementKind::Relation, osm_id: 9, timestamp: None }),
             role: Some("forward"),
         };
-        let read = |k: &str| extract(json!({"tag": k})).unwrap().read_str(&ctx).map(|c| c.into_owned());
+        let read = |k: &str| extract(json!({"key": k})).unwrap().read_str(&ctx).map(|c| c.into_owned());
         assert_eq!(read("@id").as_deref(), Some("5"));
         assert_eq!(read("@type").as_deref(), Some("way"));
         assert_eq!(read("@role").as_deref(), Some("forward"));
@@ -407,17 +406,17 @@ mod virtual_tag_tests {
 
         // Parent scope: the parent's identity, none of the child's annotations, no role of its own.
         let parent = |f: Value| -> bool { eval(&serde_json::from_value::<Filter>(json!({"parent": f})).unwrap(), &ctx) };
-        assert!(parent(json!({"tag": "@id", "eq": "9"})));
-        assert!(parent(json!({"tag": "@type", "eq": "relation"})));
-        assert!(!parent(json!({"tag": "@timestamp", "exists": true})));
-        assert!(!parent(json!({"tag": "_side", "exists": true})));
-        assert!(!parent(json!({"tag": "@role", "exists": true})));
+        assert!(parent(json!({"key": "@id", "eq": "9"})));
+        assert!(parent(json!({"key": "@type", "eq": "relation"})));
+        assert!(!parent(json!({"key": "@timestamp", "exists": true})));
+        assert!(!parent(json!({"key": "_side", "exists": true})));
+        assert!(!parent(json!({"key": "@role", "exists": true})));
     }
 
     /// The retired `{"annotation": "_side"}` spelling fails with a hint naming its replacement.
     #[test]
     fn annotation_spelling_is_a_load_error_with_a_hint() {
         let err = serde_json::from_value::<Filter>(json!({"annotation": "_side", "eq": "left"})).unwrap_err().to_string();
-        assert!(err.contains(r#"{"tag": "_side", "eq": "left"}"#), "{err}");
+        assert!(err.contains(r#"{"key": "_side", "eq": "left"}"#), "{err}");
     }
 }

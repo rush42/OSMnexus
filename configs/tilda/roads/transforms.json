@@ -6,11 +6,11 @@
         {
           "when": {
             "and": [
-              { "tag": "highway", "exists": true },
-              { "tag": "construction", "in": "allowed_highway" }
+              { "key": "highway", "exists": true },
+              { "key": "construction", "in": "allowed_highway" }
             ]
           },
-          "value": { "tag": "construction" }
+          "value": { "key": "construction" }
         }
       ]
     },
@@ -20,8 +20,8 @@
         {
           "when": {
             "and": [
-              { "tag": "highway", "exists": true },
-              { "tag": "construction", "in": "allowed_highway" }
+              { "key": "highway", "exists": true },
+              { "key": "construction", "in": "allowed_highway" }
             ]
           },
           "value": "construction"
@@ -31,19 +31,19 @@
             "and": [
               {
                 "or": [
-                  { "tag": "access", "eq": "no" },
-                  { "and": [ { "tag": "highway", "eq": "cycleway" }, { "tag": "bicycle", "eq": "no" } ] },
-                  { "and": [ { "tag": "highway", "eq": "footway" }, { "tag": "foot", "eq": "no" } ] }
+                  { "key": "access", "eq": "no" },
+                  { "and": [ { "key": "highway", "eq": "cycleway" }, { "key": "bicycle", "eq": "no" } ] },
+                  { "and": [ { "key": "highway", "eq": "footway" }, { "key": "foot", "eq": "no" } ] }
                 ]
               },
               {
                 "or": [
-                  { "tag": "access:reason", "contains": "construction", "case_insensitive": true },
-                  { "tag": "access:reason", "contains": "baustelle", "case_insensitive": true },
-                  { "tag": "description", "contains": "construction", "case_insensitive": true },
-                  { "tag": "description", "contains": "baustelle", "case_insensitive": true },
-                  { "tag": "note", "contains": "construction", "case_insensitive": true },
-                  { "tag": "note", "contains": "baustelle", "case_insensitive": true }
+                  { "key": "access:reason", "contains": "construction", "case_insensitive": true },
+                  { "key": "access:reason", "contains": "baustelle", "case_insensitive": true },
+                  { "key": "description", "contains": "construction", "case_insensitive": true },
+                  { "key": "description", "contains": "baustelle", "case_insensitive": true },
+                  { "key": "note", "contains": "construction", "case_insensitive": true },
+                  { "key": "note", "contains": "baustelle", "case_insensitive": true }
                 ]
               }
             ]
@@ -55,25 +55,25 @@
             "and": [
               {
                 "or": [
-                  { "tag": "access", "eq": "no" },
-                  { "and": [ { "tag": "highway", "eq": "cycleway" }, { "tag": "bicycle", "eq": "no" } ] },
-                  { "and": [ { "tag": "highway", "eq": "footway" }, { "tag": "foot", "eq": "no" } ] }
+                  { "key": "access", "eq": "no" },
+                  { "and": [ { "key": "highway", "eq": "cycleway" }, { "key": "bicycle", "eq": "no" } ] },
+                  { "and": [ { "key": "highway", "eq": "footway" }, { "key": "foot", "eq": "no" } ] }
                 ]
               },
               {
                 "or": [
-                  { "tag": "description", "contains": "sperrung", "case_insensitive": true },
-                  { "tag": "description", "contains": "gesperrt", "case_insensitive": true },
-                  { "tag": "description", "contains": "blockiert", "case_insensitive": true },
-                  { "tag": "description", "contains": "blocked", "case_insensitive": true },
-                  { "tag": "description", "contains": "closure", "case_insensitive": true },
-                  { "tag": "description", "contains": "closed", "case_insensitive": true },
-                  { "tag": "note", "contains": "sperrung", "case_insensitive": true },
-                  { "tag": "note", "contains": "gesperrt", "case_insensitive": true },
-                  { "tag": "note", "contains": "blockiert", "case_insensitive": true },
-                  { "tag": "note", "contains": "blocked", "case_insensitive": true },
-                  { "tag": "note", "contains": "closure", "case_insensitive": true },
-                  { "tag": "note", "contains": "closed", "case_insensitive": true }
+                  { "key": "description", "contains": "sperrung", "case_insensitive": true },
+                  { "key": "description", "contains": "gesperrt", "case_insensitive": true },
+                  { "key": "description", "contains": "blockiert", "case_insensitive": true },
+                  { "key": "description", "contains": "blocked", "case_insensitive": true },
+                  { "key": "description", "contains": "closure", "case_insensitive": true },
+                  { "key": "description", "contains": "closed", "case_insensitive": true },
+                  { "key": "note", "contains": "sperrung", "case_insensitive": true },
+                  { "key": "note", "contains": "gesperrt", "case_insensitive": true },
+                  { "key": "note", "contains": "blockiert", "case_insensitive": true },
+                  { "key": "note", "contains": "blocked", "case_insensitive": true },
+                  { "key": "note", "contains": "closure", "case_insensitive": true },
+                  { "key": "note", "contains": "closed", "case_insensitive": true }
                 ]
               }
             ]
@@ -85,13 +85,13 @@
     {
       "output": "construction",
       "match": [
-        { "when": { "tag": "lifecycle", "eq": "construction" }, "value": null }
+        { "when": { "key": "lifecycle", "eq": "construction" }, "value": null }
       ]
     },
     {
       "output": "access",
       "match": [
-        { "when": { "tag": "lifecycle", "in": ["construction_no_access", "blocked"] }, "value": null }
+        { "when": { "key": "lifecycle", "in": ["construction_no_access", "blocked"] }, "value": null }
       ]
     },
     {
@@ -100,8 +100,8 @@
         {
           "when": {
             "and": [
-              { "tag": "lifecycle", "in": ["construction_no_access", "blocked"] },
-              { "tag": "highway", "eq": "cycleway" }
+              { "key": "lifecycle", "in": ["construction_no_access", "blocked"] },
+              { "key": "highway", "eq": "cycleway" }
             ]
           },
           "value": null
@@ -114,8 +114,8 @@
         {
           "when": {
             "and": [
-              { "tag": "lifecycle", "in": ["construction_no_access", "blocked"] },
-              { "tag": "highway", "eq": "footway" }
+              { "key": "lifecycle", "in": ["construction_no_access", "blocked"] },
+              { "key": "highway", "eq": "footway" }
             ]
           },
           "value": null
@@ -125,7 +125,7 @@
     {
       "unnest": "cycleway",
       "meta": ["source:", "note:"],
-      "guard": { "tag": "highway", "in": "sidepath_highway" }
+      "guard": { "key": "highway", "in": "sidepath_highway" }
     },
     {
       "output": "traffic_sign",
@@ -133,13 +133,13 @@
         {
           "when": {
             "and": [
-              { "tag": "highway", "in": "sidepath_highway" },
-              { "tag": "traffic_sign", "exists": false },
-              { "tag": "oneway", "eq": "yes" },
-              { "not": { "tag": "oneway:bicycle", "eq": "no" } }
+              { "key": "highway", "in": "sidepath_highway" },
+              { "key": "traffic_sign", "exists": false },
+              { "key": "oneway", "eq": "yes" },
+              { "not": { "key": "oneway:bicycle", "eq": "no" } }
             ]
           },
-          "value": { "tag": "traffic_sign:forward", "or": "" }
+          "value": { "key": "traffic_sign:forward", "or": "" }
         }
       ]
     }

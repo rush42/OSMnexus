@@ -182,6 +182,7 @@ impl Topic {
     /// config root are skipped automatically), and any `_`-prefixed directory is skipped too, as a
     /// general hidden-directory convention. Returned in sorted name order for deterministic output.
     pub fn load_all(src: &ConfigSources, env: &Arc<CompileEnv>, tree_max_depth: usize) -> anyhow::Result<Vec<Self>> {
+        crate::topic::sources::check_retired_syntax(src)?;
         src.subdirs("")
             .iter()
             .filter(|name| !name.starts_with('_'))
@@ -194,6 +195,7 @@ impl Topic {
     /// entirely (see `build_order`) and switches this topic's category classification to the
     /// linear reference walk (`categorize_linear`) at runtime.
     pub fn load(src: &ConfigSources, env: &Arc<CompileEnv>, name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
+        crate::topic::sources::check_retired_syntax(src)?;
         crate::lang::env::with_env(env, || Self::load_in_env(src, env, name, tree_max_depth))
     }
 

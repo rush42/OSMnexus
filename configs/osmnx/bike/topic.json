@@ -19,31 +19,31 @@
   "exclude_condition": {
     "or": [
       {
-        "tag": "highway",
+        "key": "highway",
         "exists": false
       },
       {
-        "tag": "area",
+        "key": "area",
         "eq": "yes"
       },
       {
-        "tag": "access",
+        "key": "access",
         "eq": "private"
       },
       {
-        "tag": "bicycle",
+        "key": "bicycle",
         "eq": "no"
       },
       {
-        "tag": "service",
+        "key": "service",
         "eq": "private"
       },
       {
-        "tag": "highway",
+        "key": "highway",
         "contains": "motor"
       },
       {
-        "tag": "highway",
+        "key": "highway",
         "in": [
           "abandoned",
           "bus_guideway",

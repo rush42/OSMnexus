@@ -2,91 +2,91 @@
   "is_protected_bikelane_separation": {
     "or": [
       { "and": [
-        { "first_tag": ["separation:left", "separation:both", "separation"], "sanitize": "separation", "in": "physical_separation" },
-        { "not": { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["motor_vehicle"] } },
-        { "tag": "segregated", "exists": false }
+        { "keys": ["separation:left", "separation:both", "separation"], "sanitize": "separation", "in": "physical_separation" },
+        { "not": { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["motor_vehicle"] } },
+        { "key": "segregated", "exists": false }
       ] },
       { "and": [
-        { "first_tag": ["traffic_mode:left", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["parking"] },
-        { "tag": "segregated", "exists": false }
+        { "keys": ["traffic_mode:left", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["parking"] },
+        { "key": "segregated", "exists": false }
       ] },
       { "and": [
-        { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["motor_vehicle"] },
-        { "first_tag": ["separation:right", "separation:both"], "sanitize": "separation", "in": "physical_separation" }
+        { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["motor_vehicle"] },
+        { "keys": ["separation:right", "separation:both"], "sanitize": "separation", "in": "physical_separation" }
       ] }
     ]
   },
   "is_foot_and_cycleway_segregated_edge_case": {
     "and": [
-      { "tag": "highway", "eq": "cycleway" },
-      { "first_tag": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["foot"] },
-      { "not": { "first_tag": ["separation:right", "separation:both"], "sanitize": "separation", "in": "blocking_separation" } }
+      { "key": "highway", "eq": "cycleway" },
+      { "keys": ["traffic_mode:right", "traffic_mode:both"], "sanitize": "traffic_mode", "in": ["foot"] },
+      { "not": { "keys": ["separation:right", "separation:both"], "sanitize": "separation", "in": "blocking_separation" } }
     ]
   },
   "is_advisory_or_exclusive": {
     "and": [
-      { "tag": "highway", "eq": "cycleway" },
-      { "tag": "cycleway", "in": ["lane", "opposite_lane"] },
+      { "key": "highway", "eq": "cycleway" },
+      { "key": "cycleway", "in": ["lane", "opposite_lane"] },
       { "not": { "and": [
         { "macro": "has_between_lanes_conditions" },
         { "or": [
-          { "and": [ { "tag": "lanes", "contains": "|lane|" }, { "not": { "tag": "lanes", "ends_with": "|lane" } } ] },
-          { "and": [ { "parent": { "tag": "bicycle:lanes", "contains": "|designated|" } }, { "not": { "parent": { "tag": "bicycle:lanes", "ends_with": "|designated" } } } ] }
+          { "and": [ { "key": "lanes", "contains": "|lane|" }, { "not": { "key": "lanes", "ends_with": "|lane" } } ] },
+          { "and": [ { "parent": { "key": "bicycle:lanes", "contains": "|designated|" } }, { "not": { "parent": { "key": "bicycle:lanes", "ends_with": "|designated" } } } ] }
         ] }
       ] } }
     ]
   },
   "data_no": {
-    "tag": "cycleway",
+    "key": "cycleway",
     "in": ["no", "none"]
   },
   "separate_geometry": {
-    "tag": "cycleway",
+    "key": "cycleway",
     "eq": "separate"
   },
   "is_crossing_pattern": {
     "or": [
       {
         "and": [
-          { "tag": "highway", "eq": "cycleway" },
-          { "tag": "cycleway", "eq": "lane" },
-          { "tag": "lane", "eq": "crossing" }
+          { "key": "highway", "eq": "cycleway" },
+          { "key": "cycleway", "eq": "lane" },
+          { "key": "lane", "eq": "crossing" }
         ]
       },
       {
         "and": [
-          { "tag": "highway", "eq": "cycleway" },
-          { "tag": "cycleway", "in": ["crossing", "traffic_island"] }
+          { "key": "highway", "eq": "cycleway" },
+          { "key": "cycleway", "in": ["crossing", "traffic_island"] }
         ]
       },
       {
         "and": [
-          { "tag": "highway", "eq": "path" },
-          { "tag": "path", "in": ["crossing", "traffic_island"] },
-          { "tag": "bicycle", "in": ["yes", "designated"] }
+          { "key": "highway", "eq": "path" },
+          { "key": "path", "in": ["crossing", "traffic_island"] },
+          { "key": "bicycle", "in": ["yes", "designated"] }
         ]
       },
       {
         "and": [
-          { "tag": "highway", "eq": "footway" },
-          { "tag": "footway", "in": ["crossing", "traffic_island"] },
-          { "tag": "bicycle", "in": ["yes", "designated"] }
+          { "key": "highway", "eq": "footway" },
+          { "key": "footway", "in": ["crossing", "traffic_island"] },
+          { "key": "bicycle", "in": ["yes", "designated"] }
         ]
       }
     ]
   },
   "is_sidepath": {
     "and": [
-      { "not": { "tag": "is_sidepath", "eq": "no" } },
+      { "not": { "key": "is_sidepath", "eq": "no" } },
       {
         "or": [
-          { "tag": "is_sidepath", "eq": "yes" },
+          { "key": "is_sidepath", "eq": "yes" },
           { "has_parent": true },
-          { "tag": "footway", "eq": "sidewalk" },
-          { "tag": "path", "eq": "sidewalk" },
-          { "tag": "path", "eq": "sidepath" },
-          { "tag": "cycleway", "eq": "sidepath" },
-          { "tag": "steps", "eq": "sidewalk" }
+          { "key": "footway", "eq": "sidewalk" },
+          { "key": "path", "eq": "sidewalk" },
+          { "key": "path", "eq": "sidepath" },
+          { "key": "cycleway", "eq": "sidepath" },
+          { "key": "steps", "eq": "sidewalk" }
         ]
       }
     ]
@@ -94,23 +94,23 @@
   "is_footway_bicycle_yes_base": {
     "and": [
       { "not": { "macro": "is_crossing_pattern" } },
-      { "tag": "highway", "in": ["footway", "path"] },
+      { "key": "highway", "in": ["footway", "path"] },
       {
         "or": [
-          { "tag": "bicycle", "eq": "yes" },
-          { "tag": "traffic_sign", "contains": "1022-10" }
+          { "key": "bicycle", "eq": "yes" },
+          { "key": "traffic_sign", "contains": "1022-10" }
         ]
       },
       {
         "or": [
-          { "tag": "mtb:scale", "exists": false },
+          { "key": "mtb:scale", "exists": false },
           {
             "and": [
               { "key": "mtb:scale", "sanitize": "mtb_scale", "lte": 1.0 },
               {
                 "or": [
-                  { "tag": "traffic_sign", "exists": true },
-                  { "tag": "is_sidepath", "exists": true }
+                  { "key": "traffic_sign", "exists": true },
+                  { "key": "is_sidepath", "exists": true }
                 ]
               }
             ]
@@ -121,11 +121,11 @@
   },
   "has_between_lanes_conditions": {
     "and": [
-      { "not": { "tag": "_side", "eq": "self" } },
+      { "not": { "key": "_side", "eq": "self" } },
       {
         "or": [
-          { "tag": "lanes", "contains": "|lane|" },
-          { "parent": { "tag": "bicycle:lanes", "contains": "|designated|" } }
+          { "key": "lanes", "contains": "|lane|" },
+          { "parent": { "key": "bicycle:lanes", "contains": "|designated|" } }
         ]
       }
     ]
@@ -133,11 +133,11 @@
   "is_bicycle_road": {
     "or": [
       {
-        "tag": "bicycle_road",
+        "key": "bicycle_road",
         "eq": "yes"
       },
       {
-        "tag": "traffic_sign",
+        "key": "traffic_sign",
         "starts_with": "DE:244"
       }
     ]
@@ -145,11 +145,11 @@
   "sidepath_isolated": {
     "or": [
       {
-        "tag": "is_sidepath",
+        "key": "is_sidepath",
         "eq": "no"
       },
       {
-        "tag": "highway",
+        "key": "highway",
         "in": [
           "service",
           "track"
@@ -195,21 +195,21 @@
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "eq": "cycleway"
               },
               {
-                "tag": "cycleway",
+                "key": "cycleway",
                 "eq": "track"
               },
               {
                 "or": [
                   {
-                    "tag": "segregated",
+                    "key": "segregated",
                     "eq": "no"
                   },
                   {
-                    "tag": "traffic_sign",
+                    "key": "traffic_sign",
                     "contains": "240"
                   }
                 ]
@@ -219,7 +219,7 @@
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "in": [
                   "cycleway",
                   "path",
@@ -233,7 +233,7 @@
                   {
                     "and": [
                       {
-                        "tag": "segregated",
+                        "key": "segregated",
                         "eq": "no"
                       },
                       {
@@ -241,11 +241,11 @@
                           {
                             "and": [
                               {
-                                "tag": "bicycle",
+                                "key": "bicycle",
                                 "eq": "designated"
                               },
                               {
-                                "tag": "foot",
+                                "key": "foot",
                                 "eq": "designated"
                               }
                             ]
@@ -253,11 +253,11 @@
                           {
                             "and": [
                               {
-                                "tag": "bicycle",
+                                "key": "bicycle",
                                 "eq": "yes"
                               },
                               {
-                                "tag": "foot",
+                                "key": "foot",
                                 "eq": "yes"
                               }
                             ]
@@ -267,7 +267,7 @@
                     ]
                   },
                   {
-                    "tag": "traffic_sign",
+                    "key": "traffic_sign",
                     "contains": "240"
                   }
                 ]
@@ -290,21 +290,21 @@
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "eq": "cycleway"
               },
               {
-                "tag": "cycleway",
+                "key": "cycleway",
                 "eq": "track"
               },
               {
                 "or": [
                   {
-                    "tag": "segregated",
+                    "key": "segregated",
                     "eq": "yes"
                   },
                   {
-                    "tag": "traffic_sign",
+                    "key": "traffic_sign",
                     "contains": "241"
                   }
                 ]
@@ -314,7 +314,7 @@
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "in": [
                   "cycleway",
                   "path",
@@ -326,7 +326,7 @@
                   {
                     "and": [
                       {
-                        "tag": "segregated",
+                        "key": "segregated",
                         "eq": "yes"
                       },
                       {
@@ -334,11 +334,11 @@
                           {
                             "and": [
                               {
-                                "tag": "bicycle",
+                                "key": "bicycle",
                                 "eq": "designated"
                               },
                               {
-                                "tag": "foot",
+                                "key": "foot",
                                 "eq": "designated"
                               }
                             ]
@@ -346,11 +346,11 @@
                           {
                             "and": [
                               {
-                                "tag": "bicycle",
+                                "key": "bicycle",
                                 "eq": "yes"
                               },
                               {
-                                "tag": "foot",
+                                "key": "foot",
                                 "eq": "yes"
                               }
                             ]
@@ -362,12 +362,12 @@
                   {
                     "and": [
                       {
-                        "tag": "traffic_sign",
+                        "key": "traffic_sign",
                         "contains": "241"
                       },
                       {
                         "not": {
-                          "tag": "highway",
+                          "key": "highway",
                           "eq": "footway"
                         }
                       }
@@ -388,7 +388,7 @@
     "and": [
       {
         "not": {
-          "tag": "cycleway",
+          "key": "cycleway",
           "eq": "lane"
         }
       },
@@ -402,11 +402,11 @@
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "eq": "cycleway"
               },
               {
-                "tag": "cycleway",
+                "key": "cycleway",
                 "in": [
                   "track",
                   "opposite_track"
@@ -417,11 +417,11 @@
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "eq": "cycleway"
               },
               {
-                "tag": "is_sidepath",
+                "key": "is_sidepath",
                 "exists": true
               }
             ]
@@ -429,7 +429,7 @@
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "in": [
                   "living_street",
                   "pedestrian",
@@ -442,7 +442,7 @@
                 ]
               },
               {
-                "tag": "traffic_sign",
+                "key": "traffic_sign",
                 "contains": "237"
               }
             ]

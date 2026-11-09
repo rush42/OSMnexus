@@ -19,8 +19,8 @@ one `Extract` 1:1, so it's never a separate sibling field.
 
 ```
 Extract =
-  { "keys": [String, ...], "sanitize"?: String }   // aka "first_tag" (legacy alias) — first key found wins
-  | { "key": String, "sanitize"?: String }          // aka "tag" (legacy alias)
+  { "keys": [String, ...], "sanitize"?: String }   // first key found wins
+  | { "key": String, "sanitize"?: String }
 ```
 
 `sanitize`, when present, is always a name looked up in `sanitizers.json` —
@@ -31,7 +31,7 @@ error.
 ### Facts (`@` keys) and annotations (`_` keys)
 
 Two key prefixes read something other than an OSM tag. Both work everywhere a
-key does — filters, producers (`{"tag": ..}`, `"key"`), `in`, `parent`,
+key does — filters, producers, `in`, `parent`,
 `sanitize`:
 
 ```
@@ -54,7 +54,7 @@ nothing in the code gives `_side`, `_prefix` or `_infix` a meaning. Neither can
 be one of several candidate `keys`, and neither is a tag: `has_key_prefix`,
 `tags_empty` and tag passthrough never see them. The retired
 `{"annotation": "_side", "eq": ..}` spelling is a load error naming
-`{"tag": "_side", "eq": ..}`.
+`{"key": "_side", "eq": ..}`.
 
 ## sanitizers.json
 
@@ -117,8 +117,8 @@ Filter =
   | { <Extract fields>, "gte": Number }
 ```
 
-Note: `<Extract fields>` means either `"key": String` (alias `"tag"`)
-or `"keys": [String,...]` (alias `"first_tag"`) supplied inline in the same
+Note: `<Extract fields>` means either `"key": String`
+or `"keys": [String,...]` supplied inline in the same
 object.
 
 There is no `Cond`/`if-then-else` node. A conditional value is expressed as a
@@ -147,18 +147,20 @@ Producer =
       // sugar: try against obj tags; if no parent, fall back — desugars to a
       // 2-rule Match guarded by "has_parent"
 
-  | { "tag": String, "or"?: JSON }
-      // sugar for Extract{key: tag}; with "or" present, a 1-rule Match, "default": or
-
   | { "match": [Rule, ...], "default"?: JSON, "annotate"?: {String: JSON} }
       // Match: first matching rule wins; a rule that matches but yields
       // nothing does NOT stop the search. A bare Producer in the array
       // (no "when"/"value" wrapper) is shorthand for an always-true rule,
       // so a plain ordered fallback chain is just { "match": [a, b, c] }
 
-  | { <Extract fields>, "annotate"?: {String: JSON} }
+  | { <Extract fields>, "annotate"?: {String: JSON}, "or"?: JSON }
       // Extract (tried after all the above, whose fields are all optional
-      // and so would otherwise match everything first): reads + sanitizes a raw tag
+      // and so would otherwise match everything first): reads + sanitizes a raw
+      // tag. "or": the literal to produce when the key is absent (desugars to a
+      // 1-rule Match with "default": or; "annotate" stays on the read).
+      //
+      // "key"/"keys" are the only spellings. The former aliases "tag" and
+      // "first_tag" are a load error naming the replacement and the place.
 
   | JSON
       // Const (catch-all — tried last): a literal value, independent of any tag
@@ -295,7 +297,7 @@ StripPrefix, `unnest` → Unnest, `drop` → Drop, `directed` → DirectedExtrac
         "match": [
           {
             "when": { "and": [
-              { "tag": "surface", "eq": "sett" },
+              { "key": "surface", "eq": "sett" },
               { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 }
             ]},
             "value": "mosaic_sett"

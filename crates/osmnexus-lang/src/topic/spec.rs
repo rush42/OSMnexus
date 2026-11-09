@@ -239,7 +239,7 @@ impl GeometryOutputSpec {
 pub struct InheritToMember {
     /// Keys to copy out of the parent relation's `produced`. A key the parent didn't produce is
     /// simply absent from the member — not an error, since a relation's outputs are
-    /// category-dependent. May be empty: the parent's identity (`{"parent": {"tag": "@id"}}`) is
+    /// category-dependent. May be empty: the parent's identity (`{"parent": {"key": "@id"}}`) is
     /// available either way.
     #[serde(default)]
     pub fields: Vec<String>,
@@ -687,7 +687,7 @@ mod transforms_spec_tests {
           "way": [
             {
               "clone": {
-                "when": { "not": { "tag": "highway", "eq": "cycleway" } },
+                "when": { "not": { "key": "highway", "eq": "cycleway" } },
                 "annotate": { "_side": "left", "_prefix": "cycleway" },
                 "id_suffix": "cycleway/left",
                 "steps": [

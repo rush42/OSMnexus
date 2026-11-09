@@ -1,6 +1,6 @@
 {
   "condition": {
-    "tag": "highway",
+    "key": "highway",
     "eq": "track"
   },
   "excludes": [

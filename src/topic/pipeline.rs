@@ -323,7 +323,7 @@ pub fn build_topic_rows<'a>(
     };
 
     // The parent relation is handed to the base object as its `parent_tags`, so a topic reads
-    // inherited values with the ordinary `{"parent": {"tag": ..}}` producer syntax and *chooses*
+    // inherited values with the ordinary `{"parent": {"key": ..}}` producer syntax and *chooses*
     // what to output from them — rather than having them merged into `produced` behind its back.
     // Fanning out here, before categorization, is what makes that work: each row is categorized and
     // evaluated against its own parent, so a category condition can branch on the parent too.
@@ -394,7 +394,7 @@ mod skip_untagged_tests {
         r.accept_all.insert(ElementKind::Node);
         // `railway` absent → true for an untagged element, so everything untagged is excluded.
         r.exclude_condition = Some(
-            serde_json::from_value(serde_json::json!({ "not": { "tag": "railway", "exists": true } }))
+            serde_json::from_value(serde_json::json!({ "not": { "key": "railway", "exists": true } }))
                 .expect("filter parses"),
         );
         assert!(crate::topic::pipeline::probe_skip_untagged(&r).contains(&ElementKind::Node));
@@ -486,13 +486,13 @@ mod inherit_tests {
         });
         std::fs::write(topic_dir.join("topic.json"), serde_json::to_vec_pretty(&topic).unwrap()).unwrap();
         let producers = serde_json::json!({
-            "route_ref": { "parent": { "tag": "ref" } },
-            "route_id": { "parent": { "tag": "@id" } },
-            "route_edited": { "parent": { "tag": "@timestamp" } },
-            "role": { "tag": "@role" },
-            "own_id": { "tag": "@id" },
-            "own_type": { "tag": "@type" },
-            "own_edited": { "tag": "@timestamp" }
+            "route_ref": { "parent": { "key": "ref" } },
+            "route_id": { "parent": { "key": "@id" } },
+            "route_edited": { "parent": { "key": "@timestamp" } },
+            "role": { "key": "@role" },
+            "own_id": { "key": "@id" },
+            "own_type": { "key": "@type" },
+            "own_edited": { "key": "@timestamp" }
         });
         // The topic's own `producers.json` — the config-root one is only the `{"shared": ..}` table.
         std::fs::write(topic_dir.join("producers.json"), serde_json::to_vec_pretty(&producers).unwrap()).unwrap();
