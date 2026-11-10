@@ -108,6 +108,6 @@ fn walk(producer: &Producer, values: &mut BTreeSet<String>, open: &mut bool) {
             }
             _ => *open = true,
         },
-        Producer::Parent(inner) => walk(inner, values, open),
+        Producer::Parent(inner) | Producer::Annotations(inner) => walk(inner, values, open),
     }
 }

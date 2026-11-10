@@ -44,7 +44,7 @@
 
 mod build;
 mod kleene;
-mod runtime;
+pub(crate) mod runtime;
 mod walkers;
 #[cfg(test)]
 mod tests;
@@ -70,19 +70,11 @@ pub const DEFAULT_TREE_MAX_DEPTH: usize = 6;
 pub use build::build;
 pub(crate) use runtime::resolve_first;
 
-/// Sentinel branch key for `Predicate::Side`. Domain is exactly `{"self","left","right"}` — always
-/// fully known for a given object, so this branch never needs a wildcard fallback in practice.
-pub(crate) const SIDE_KEY: &str = "\0side";
 /// Sentinel branch key for `Predicate::HasParent`. Domain is exactly `{"true","false"}`.
 pub(crate) const HAS_PARENT_KEY: &str = "\0has_parent";
-/// Sentinel branch key for `Predicate::Prefix`. Like a tag: enumerated literal values + wildcard
-/// for "absent or some other prefix".
-pub(crate) const PREFIX_KEY: &str = "\0prefix";
-/// Sentinel branch key for `Predicate::Infix`. Same shape as `PREFIX_KEY`.
-pub(crate) const INFIX_KEY: &str = "\0infix";
 
-/// What a `DecisionTree::Branch` reads to decide which child to descend into: one of the four
-/// fixed-domain `ExtractCtx` sentinels, or a real tag read (`Extract::read_str`, `sanitize` and
+/// What a `DecisionTree::Branch` reads to decide which child to descend into: the fixed-domain
+/// `has_parent` sentinel, or a key read — an OSM tag, a fact or an annotation (`Extract::read_str`, `sanitize` and
 /// all — see this module's own doc).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BranchKey {
@@ -94,14 +86,9 @@ impl std::fmt::Display for BranchKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BranchKey::Sentinel(s) => write!(f, "{s}"),
-            BranchKey::Tag(Extract::Value { key, sanitize }) => {
-                write!(f, "{key}")?;
-                if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
-                Ok(())
-            }
-            BranchKey::Tag(Extract::Candidates { keys, sanitize }) => {
-                write!(f, "{}", keys.join("/"))?;
-                if !sanitize.is_empty() { write!(f, " (sanitized)")?; }
+            BranchKey::Tag(e) => {
+                write!(f, "{}", e.label().replace('|', "/"))?;
+                if !e.sanitize().is_empty() { write!(f, " (sanitized)")?; }
                 Ok(())
             }
         }

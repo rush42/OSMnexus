@@ -7,29 +7,29 @@
         }
       },
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "cycleway"
       },
       {
         "or": [
           {
-            "tag": "lane",
+            "key": "lane",
             "eq": "share_busway"
           },
           {
             "and": [
               {
-                "tag": "traffic_sign",
+                "key": "traffic_sign",
                 "starts_with": "DE:237"
               },
               {
                 "or": [
                   {
-                    "tag": "traffic_sign",
+                    "key": "traffic_sign",
                     "contains": "1024-14"
                   },
                   {
-                    "tag": "traffic_sign",
+                    "key": "traffic_sign",
                     "contains": "1026-32"
                   }
                 ]
@@ -39,15 +39,15 @@
           {
             "and": [
               {
-                "parent": { "tag": "traffic_sign", "starts_with": "DE:237" }
+                "parent": { "key": "traffic_sign", "starts_with": "DE:237" }
               },
               {
                 "or": [
                   {
-                    "parent": { "tag": "traffic_sign", "contains": "1024-14" }
+                    "parent": { "key": "traffic_sign", "contains": "1024-14" }
                   },
                   {
-                    "parent": { "tag": "traffic_sign", "contains": "1026-32" }
+                    "parent": { "key": "traffic_sign", "contains": "1026-32" }
                   }
                 ]
               }

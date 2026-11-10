@@ -13,7 +13,7 @@ use crate::lang::filter::Filter;
 use crate::lang::producer::Producer;
 use crate::lang::json::TagSet;
 use crate::lang::sanitize::{resolve_named_sanitizer, Sanitizer, StrOrVec};
-use crate::categorize::transform::{CloneStep, DirectedFrom, InputTransform, TransformStep};
+use crate::categorize::transform::{CloneStep, DirectedFrom, DirectedSide, InputTransform, TransformStep};
 
 #[derive(Debug, Deserialize)]
 pub struct TopicSpec {
@@ -239,7 +239,9 @@ impl GeometryOutputSpec {
 pub struct InheritToMember {
     /// Keys to copy out of the parent relation's `produced`. A key the parent didn't produce is
     /// simply absent from the member — not an error, since a relation's outputs are
-    /// category-dependent.
+    /// category-dependent. May be empty: the parent's identity (`{"parent": {"key": "@id"}}`) is
+    /// available either way.
+    #[serde(default)]
     pub fields: Vec<String>,
     /// What to do when a way belongs to several relations — the common case, not the exception:
     /// measured mean 3.11 parents per member way, max 85.
@@ -372,11 +374,11 @@ pub fn resolve_producer_entry(
         let r: SanitizerRepr = serde_json::from_value(value)
             .with_context(|| format!("topic producers.{output}"))?;
         let extract = Producer::Extract {
-            extract: Extract::Candidates {
-                keys: r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
-                sanitize: resolve_named_sanitizer(&r.sanitizer, sanitizers)
-                    .with_context(|| format!("topic producers.{output}"))?,
-            },
+            extract: Extract::keys(
+                r.in_keys.map(StrOrVec::into_vec).unwrap_or_else(|| vec![output.to_owned()]),
+                resolve_named_sanitizer(&r.sanitizer, sanitizers).with_context(|| format!("topic producers.{output}"))?,
+            )
+            .map_err(|e| anyhow::anyhow!("topic producers.{output}: {e}"))?,
             annotate: Map::new(),
         };
         match r.from {
@@ -387,7 +389,8 @@ pub fn resolve_producer_entry(
     } else {
         match value {
             Value::Bool(true) => Producer::Extract {
-                extract: Extract::Value { key: output.to_owned(), sanitize: Vec::new() },
+                extract: Extract::key(output.to_owned(), Vec::new())
+                    .map_err(|e| anyhow::anyhow!("topic producers.{output}: {e}"))?,
                 annotate: Map::new(),
             },
             Value::Bool(false) => anyhow::bail!("topic producers.{output}: `false` is not a valid entry"),
@@ -464,16 +467,20 @@ impl TransformsSpec {
 pub enum TransformSpec {
     /// `{ "output": ..., <producer fields> }`.
     TagRule { output: String, source: Producer },
-    /// `{ "output": ..., "directed": { "key": ..., "from"?: "obj"|"parent", "sanitize"?: ... } }` —
+    /// `{ "output": ..., "directed": { "key": ..., "side": "left"|"right", "from"?: "obj"|"parent", "sanitize"?: ... } }` —
     /// identified by its required `directed` field (checked before the generic `TagRule` catch-all,
     /// since a bare `Producer::deserialize` no longer accepts this shape). See
     /// `categorize::transform::InputTransform::DirectedExtract`.
     DirectedExtract {
         output: String,
         key: String,
+        side: DirectedSide,
         from: DirectedFrom,
         sanitize: Vec<Sanitizer>,
     },
+    /// `{ "annotate": { "<key>": "<value>", ... } }` — write literal annotations. See
+    /// `categorize::transform::InputTransform::Annotate`.
+    Annotate(std::collections::BTreeMap<String, String>),
     /// `{ "prefix": ..., "stamp_key": ..., "stamp_value": ..., "stamp_nested_under"?: [...] }` —
     /// identified by its required `stamp_key` field.
     StripPrefix {
@@ -504,7 +511,12 @@ impl<'de> Deserialize<'de> for TransformSpec {
     {
         use serde::de::Error;
         let v = Map::deserialize(deserializer)?;
-        if v.contains_key("stamp_key") {
+        if v.len() == 1 && v.contains_key("annotate") {
+            #[derive(Deserialize)]
+            struct Repr { annotate: std::collections::BTreeMap<String, String> }
+            let r: Repr = serde_json::from_value(Value::Object(v)).map_err(D::Error::custom)?;
+            Ok(TransformSpec::Annotate(r.annotate))
+        } else if v.contains_key("stamp_key") {
             #[derive(Deserialize)]
             struct Repr {
                 prefix: String,
@@ -544,6 +556,7 @@ impl<'de> Deserialize<'de> for TransformSpec {
             #[derive(Deserialize)]
             struct DirectedRepr {
                 key: String,
+                side: DirectedSide,
                 #[serde(default)]
                 from: DirectedFrom,
                 #[serde(default, deserialize_with = "crate::lang::json::deserialize_sanitize_chain")]
@@ -558,6 +571,7 @@ impl<'de> Deserialize<'de> for TransformSpec {
             Ok(TransformSpec::DirectedExtract {
                 output: r.output,
                 key: r.directed.key,
+                side: r.directed.side,
                 from: r.directed.from,
                 sanitize: r.directed.sanitize,
             })
@@ -579,8 +593,9 @@ impl TransformSpec {
     fn into_input_transform(self, left_hand_traffic: bool) -> InputTransform {
         match self {
             TransformSpec::TagRule { output, source } => InputTransform::TagRule { output, source },
-            TransformSpec::DirectedExtract { output, key, from, sanitize } =>
-                InputTransform::directed_extract(output, key, from, sanitize, left_hand_traffic),
+            TransformSpec::DirectedExtract { output, key, side, from, sanitize } =>
+                InputTransform::directed_extract(output, key, side, from, sanitize, left_hand_traffic),
+            TransformSpec::Annotate(pairs) => InputTransform::Annotate(pairs.into_iter().collect()),
             TransformSpec::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under } =>
                 InputTransform::StripPrefix { prefix, stamp_key, stamp_value, stamp_nested_under },
             TransformSpec::Unnest { prefix, infix, meta, guard, record_infix_as } => InputTransform::UnnestTags {
@@ -672,7 +687,7 @@ mod transforms_spec_tests {
           "way": [
             {
               "clone": {
-                "when": { "not": { "tag": "highway", "eq": "cycleway" } },
+                "when": { "not": { "key": "highway", "eq": "cycleway" } },
                 "annotate": { "_side": "left", "_prefix": "cycleway" },
                 "id_suffix": "cycleway/left",
                 "steps": [

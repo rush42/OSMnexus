@@ -114,3 +114,76 @@ mod tests {
         assert_eq!(s.path("bikelanes/topic.json"), PathBuf::from("/cfg/bikelanes/topic.json"));
     }
 }
+
+/// Reject config syntax that was retired, naming the replacement and where it occurs — instead of
+/// the untagged deserializers' opaque "data did not match any variant", or worse, a shape that
+/// still parses but means something else. Checked once over every JSON file before anything is
+/// compiled. `annotate` maps are skipped: their keys are free-form annotation names.
+pub fn check_retired_syntax(src: &ConfigSources) -> anyhow::Result<()> {
+    const RETIRED: [(&str, &str); 2] = [("tag", "\"key\""), ("first_tag", "\"keys\"")];
+    fn walk(v: &serde_json::Value, path: &mut Vec<String>, found: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, x) in map {
+                    if let Some((_, new)) = RETIRED.iter().find(|(old, _)| old == k) {
+                        found.push(format!("{} (\"{k}\" was renamed to {new})", path.join("/")));
+                    }
+                    if k == "annotate" {
+                        continue;
+                    }
+                    path.push(k.clone());
+                    walk(x, path, found);
+                    path.pop();
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, x) in items.iter().enumerate() {
+                    path.push(i.to_string());
+                    walk(x, path, found);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for (rel, raw) in &src.files {
+        if !rel.ends_with(".json") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else { continue }; // reported where it's parsed
+        let mut path = vec![rel.clone()];
+        walk(&v, &mut path, &mut found);
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    let shown: Vec<&str> = found.iter().take(10).map(String::as_str).collect();
+    anyhow::bail!(
+        "retired config syntax in {} place(s) under {}:\n  {}{}",
+        found.len(),
+        src.root.display(),
+        shown.join("\n  "),
+        if found.len() > shown.len() { "\n  …" } else { "" }
+    )
+}
+
+#[cfg(test)]
+mod retired_syntax_tests {
+    use super::*;
+
+    #[test]
+    fn retired_keys_are_reported_with_their_place() {
+        let mut src = ConfigSources::new("/cfg");
+        src.insert_file("t/categories.json", r#"{"a": {"condition": {"tag": "x", "eq": "y"}}}"#.into());
+        src.insert_file("t/producers.json", r#"{"p": {"first_tag": ["a", "b"], "annotate": {"tag": "kept"}}}"#.into());
+        let err = check_retired_syntax(&src).unwrap_err().to_string();
+        assert!(err.contains("2 place(s)"), "{err}");
+        assert!(err.contains(r#"t/categories.json/a/condition ("tag" was renamed to "key")"#), "{err}");
+        assert!(err.contains(r#"t/producers.json/p ("first_tag" was renamed to "keys")"#), "{err}");
+
+        let mut ok = ConfigSources::new("/cfg");
+        ok.insert_file("t/producers.json", r#"{"p": {"key": "a", "annotate": {"tag": "free-form"}}}"#.into());
+        assert!(check_retired_syntax(&ok).is_ok());
+    }
+}

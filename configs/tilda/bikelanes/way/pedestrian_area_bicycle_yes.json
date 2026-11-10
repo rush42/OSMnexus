@@ -2,11 +2,11 @@
   "condition": {
     "and": [
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "pedestrian"
       },
       {
-        "tag": "bicycle",
+        "key": "bicycle",
         "in": [
           "yes",
           "designated"

@@ -79,6 +79,10 @@ pub struct RelData<'a> {
     pub id: i64,
     pub tags: RawTags<'a>,
     pub member_ways: Vec<(i64, MemberRole)>,
+    /// Each `member_ways` entry's raw role string (`""` for none), borrowed from the block — what a
+    /// member way reads as `@role` (`topic::inherit`). Kept apart from `MemberRole`, which only
+    /// distinguishes the geometry roles.
+    pub member_role_names: Vec<&'a str>,
     pub meta: WayMeta,
 }
 

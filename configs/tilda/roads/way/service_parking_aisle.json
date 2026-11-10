@@ -2,11 +2,11 @@
   "condition": {
     "and": [
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "service"
       },
       {
-        "tag": "service",
+        "key": "service",
         "eq": "parking_isle"
       }
     ]

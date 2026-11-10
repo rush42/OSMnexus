@@ -2,37 +2,20 @@
 //! edges tables after the main run finishes (`output::geojson`'s `.geojson`/`.geojsonseq`,
 //! `output::parquet`'s `.parquet`) — see `output::stage` for the file format these read, and
 //! `output::geojson`'s own (fuller) doc for why walking these files forward, in lockstep, needs no
-//! hashmap for node/way/relation geometry or a way's own graph-fallback edges (only a relation's
-//! graph-fallback edges, which need random access by arbitrary member way id, still do).
+//! hashmap for node/way/relation geometry or a way's own graph-fallback edges. Every join here is
+//! an element's own geometry; nothing is looked up by another element's id.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::geom::coord::{Coord, Geom};
 use crate::geom::rows::{EdgeRow, GeomRow};
-use crate::output::rows::MemberRow;
 use crate::output::stage::StageReader;
 
 /// One graph-edge segment, as staged: integer coordinates, converted only by the writer (see
-/// `output::coord_fmt`) — so a way shared by many relations is decoded once here and formatted per
-/// feature, with no per-relation re-parse or re-projection.
+/// `output::coord_fmt`).
 pub struct EdgeGeom {
     pub seg_idx: usize,
     pub coordinates: Vec<Coord>,
-}
-
-/// Reads `relation_members.bin` (`relation_osm_id,way_osm_id`), keyed by `relation_osm_id`. Empty
-/// map if the file doesn't exist — no topic declared relation categories at all.
-pub fn read_relation_members(path: &Path) -> anyhow::Result<HashMap<i64, Vec<i64>>> {
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-    let mut reader = StageReader::<MemberRow>::open(path)?;
-    let mut by_relation_id: HashMap<i64, Vec<i64>> = HashMap::new();
-    while let Some(row) = reader.next_row()? {
-        by_relation_id.entry(row.relation_osm_id).or_default().push(row.way_osm_id);
-    }
-    Ok(by_relation_id)
 }
 
 /// Reads `edges.bin` into one flat sequence, in file order — which is `kept_way_order` order (see
@@ -54,22 +37,10 @@ pub fn read_edges(path: &Path) -> anyhow::Result<Vec<(i64, EdgeGeom)>> {
     Ok(out)
 }
 
-/// Groups `edges`' flat sequence by way id — for a relation's graph-fallback geometry, which needs
-/// random access by arbitrary (non-adjacent) member way id and so can't use `EdgeCursor`'s forward
-/// walk.
-pub fn group_edges_by_way(edges: &[(i64, EdgeGeom)]) -> HashMap<i64, Vec<&EdgeGeom>> {
-    let mut map: HashMap<i64, Vec<&EdgeGeom>> = HashMap::new();
-    for (id, g) in edges {
-        map.entry(*id).or_default().push(g);
-    }
-    map
-}
-
 /// Forward cursor over `edges`' flat sequence, consumed in step with `{table}.bin`'s own way rows —
-/// the graph-fallback equivalent of `OrderedGeomCursor` for the *own-way* case (a way asking for its
-/// own segments; see `group_edges_by_way`'s own doc for why the relation-member case still needs a
-/// hashmap instead). `get_all`, not `get`: unlike node/way/relation geometry (one row, or a repeat of
-/// the same one), a way can legitimately own several contiguous segments.
+/// the graph-fallback equivalent of `OrderedGeomCursor` (a way asking for its own segments).
+/// `get_all`, not `get`: unlike node/way/relation geometry (one row, or a repeat of the same one), a
+/// way can legitimately own several contiguous segments.
 pub struct EdgeCursor<'a> {
     edges: &'a [(i64, EdgeGeom)],
     pos: usize,
@@ -216,15 +187,4 @@ mod tests {
         assert!(cursor.get_all(2).is_empty());
     }
 
-    #[test]
-    fn group_edges_by_way_preserves_seg_idx_order() {
-        let edges = vec![(1, seg(0)), (1, seg(1)), (2, seg(0))];
-        let grouped = group_edges_by_way(&edges);
-        let way1 = grouped.get(&1).unwrap();
-        assert_eq!(way1.len(), 2);
-        assert_eq!(way1[0].seg_idx, 0);
-        assert_eq!(way1[1].seg_idx, 1);
-        assert_eq!(grouped.get(&2).unwrap().len(), 1);
-        assert!(grouped.get(&3).is_none());
-    }
 }

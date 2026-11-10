@@ -145,7 +145,13 @@ impl CategoriesFile {
     /// (categories ∪ macro sinks); a cycle is a contradictory priority and is a hard error.
     /// Correctness relies on the disjointness invariant (`categories_are_disjoint`): any two nodes
     /// that can co-match have an exclude edge, so first-match-in-order picks the same winner.
-    pub fn build_order(&mut self, tree_max_depth: usize) -> anyhow::Result<()> {
+    /// `domains` (`categorize::transform::annotation_domains` for this kind) only shapes the tree:
+    /// conditions are rewritten with `close_annotation_negations` before compiling it.
+    pub fn build_order(
+        &mut self,
+        tree_max_depth: usize,
+        domains: &std::collections::BTreeMap<String, Vec<String>>,
+    ) -> anyhow::Result<()> {
         use std::collections::{BTreeMap, BTreeSet};
 
         let catset: BTreeSet<&str> = self.categories.iter().map(|c| c.id.as_str()).collect();
@@ -218,6 +224,8 @@ impl CategoriesFile {
         self.tree = if tree_max_depth == 0 {
             DecisionTree::default()
         } else {
+            let conditions: Vec<Filter> =
+                conditions.iter().map(|c| crate::lang::filter::close_annotation_negations(c, domains)).collect();
             decision_tree::build(&conditions, tree_max_depth, true)
         };
         Ok(())

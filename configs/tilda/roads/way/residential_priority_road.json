@@ -2,11 +2,11 @@
   "condition": {
     "and": [
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "residential"
       },
       {
-        "tag": "priority_road",
+        "key": "priority_road",
         "in": [
           "designated",
           "yes_unposted"

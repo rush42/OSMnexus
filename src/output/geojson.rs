@@ -1,7 +1,7 @@
 //! Builds GeoJSON output per topic from the staged output `--output geojson`/`geojsonseq` write
 //! during the main run (`{table}.bin` tag rows + this topic's own `{table}_node_geom`/
-//! `{table}_way_geom`/`{table}_relation_geom` tables, plus the shared `edges.bin`/
-//! `relation_members.bin` — the pipeline's own staging format, see `output::stage`) — for local
+//! `{table}_way_geom`/`{table}_relation_geom` tables, plus the shared `edges.bin` — the pipeline's
+//! own staging format, see `output::stage`) — for local
 //! tooling (e.g. the live editor) that wants one self-contained file instead of a table pair. Both
 //! sinks share the same `for_each_feature` pass and differ only in framing: `write_geojson` wraps
 //! the features in one `{table}.geojson` `FeatureCollection`, `write_geojsonseq` writes one
@@ -17,13 +17,14 @@
 //! way/relation geometry) and `EdgeCursor` (a way's own graph-fallback segments) both walk forward in
 //! lockstep with the tag-row stream instead; `output::parquet` reuses the exact same cursors for its
 //! own `.parquet` output. `{table}.bin` itself is read streaming off disk (a `BufReader`, not loaded
-//! whole) since it can be gigabytes for a country-sized run; `edges.bin`/`relation_members.bin` are
-//! read fully into memory once — both far smaller (see this session's own benchmarking notes), and a
-//! relation's graph-fallback geometry needs random access by arbitrary member way id, which no
-//! forward cursor can serve (a relation's member ways aren't a subsequence of any single ordered
-//! pass).
+//! whole) since it can be gigabytes for a country-sized run; `edges.bin` is read into memory once.
+//!
+//! A relation is written with its own geometry (`"geometry_output": { "relation": ... }`) or not at
+//! all. It used to fall back to borrowing its member ways' graph segments, which needed random
+//! access by member way id; `inherit_to_member` replaced that by putting the relation's context on
+//! the member ways' own rows (see `topic::inherit`), where every geometry join is the element's
+//! own.
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -33,7 +34,7 @@ use crate::config::CoordPrecision;
 use crate::geom::coord::{Coord, Geom};
 use crate::output::coord_fmt::CoordFmt;
 use crate::output::cursor::{
-    group_edges_by_way, read_edges, read_relation_members, EdgeCursor, EdgeGeom, OrderedGeomCursor,
+    read_edges, EdgeCursor, EdgeGeom, OrderedGeomCursor,
 };
 use crate::output::rows::TopicRow;
 use crate::output::stage::StageReader;
@@ -196,8 +197,6 @@ fn for_each_feature<F>(
     out_dir: &Path,
     table: &str,
     edges: &[(i64, EdgeGeom)],
-    edges_by_way: &HashMap<i64, Vec<&EdgeGeom>>,
-    relation_members: &HashMap<i64, Vec<i64>>,
     mut emit: F,
 ) -> anyhow::Result<()>
 where
@@ -219,15 +218,10 @@ where
                     Some(cursor) => cursor.get(osm_id)?,
                     None => None,
                 };
+                // No geometry of its own → no feature, same as a node without a point.
                 if let Some(geom) = geom {
                     let properties = base_properties(&row);
                     emit(&Feature { geometry: FeatureGeometry::Geom(geom), properties: &properties })?;
-                } else if let Some(way_ids) = relation_members.get(&osm_id) {
-                    // Graph-shape fallback: no per-topic relation geometry table, stitch the
-                    // shared graph's edges for this relation's member ways instead.
-                    let segments: Vec<&EdgeGeom> =
-                        way_ids.iter().filter_map(|way_id| edges_by_way.get(way_id)).flatten().copied().collect();
-                    emit_graph_fallback_features(&mut emit, &segments, &base_properties(&row))?;
                 }
             }
             "N" => {
@@ -297,12 +291,10 @@ pub fn write_geojsonseq(out_dir: &Path, tables: &[String], precision: CoordPreci
     let edges = read_edges(&out_dir.join("edges.bin"))?;
     let fmt = CoordFmt::new(precision);
     let mut buf = Vec::with_capacity(4096);
-    let edges_by_way = group_edges_by_way(&edges);
-    let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 
     for table in tables {
         let mut writer = std::io::BufWriter::new(std::fs::File::create(out_dir.join(format!("{table}.geojsonseq")))?);
-        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, |feature| {
+        for_each_feature(out_dir, table, &edges, |feature| {
             buf.clear();
             feature.write(&mut buf, &fmt)?;
             buf.push(b'\n');
@@ -321,8 +313,6 @@ pub fn write_geojson(out_dir: &Path, tables: &[String], precision: CoordPrecisio
     let edges = read_edges(&out_dir.join("edges.bin"))?;
     let fmt = CoordFmt::new(precision);
     let mut buf = Vec::with_capacity(4096);
-    let edges_by_way = group_edges_by_way(&edges);
-    let relation_members = read_relation_members(&out_dir.join("relation_members.bin"))?;
 
     for table in tables {
         let mut writer = std::io::BufWriter::new(std::fs::File::create(out_dir.join(format!("{table}.geojson")))?);
@@ -333,7 +323,7 @@ pub fn write_geojson(out_dir: &Path, tables: &[String], precision: CoordPrecisio
         // serialized its keys sorted, i.e. `features` before `type`.
         writer.write_all(br#"{"features":["#)?;
         let mut first = true;
-        for_each_feature(out_dir, table, &edges, &edges_by_way, &relation_members, |feature| {
+        for_each_feature(out_dir, table, &edges, |feature| {
             buf.clear();
             if !first {
                 buf.push(b',');

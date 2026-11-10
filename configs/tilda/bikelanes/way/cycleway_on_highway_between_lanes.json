@@ -2,17 +2,19 @@
   "condition": {
     "and": [
       {
-        "annotation": "_side",
-        "eq": "self"
+        "annotations": {
+          "key": "_side",
+          "eq": "self"
+        }
       },
       {
         "or": [
           {
-            "tag": "cycleway:lanes",
+            "key": "cycleway:lanes",
             "contains": "|lane|"
           },
           {
-            "tag": "bicycle:lanes",
+            "key": "bicycle:lanes",
             "contains": "|designated|"
           }
         ]

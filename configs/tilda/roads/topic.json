@@ -38,7 +38,7 @@
       {
         "and": [
           {
-            "tag": "access",
+            "key": "access",
             "in": [
               "private",
               "no",
@@ -55,7 +55,7 @@
             "macro": "effective_highway_eq_footway"
           },
           {
-            "tag": "foot",
+            "key": "foot",
             "in": [
               "private",
               "no",
@@ -72,7 +72,7 @@
             "macro": "effective_highway_eq_cycleway"
           },
           {
-            "tag": "bicycle",
+            "key": "bicycle",
             "in": [
               "private",
               "no",
@@ -90,13 +90,13 @@
           },
           {
             "not": {
-              "tag": "bicycle",
+              "key": "bicycle",
               "eq": "designated"
             }
           },
           {
             "not": {
-              "first_tag": [
+              "keys": [
                 "bicycle:left",
                 "bicycle:right",
                 "bicycle:both"
@@ -105,12 +105,12 @@
             }
           },
           {
-            "tag": "service",
+            "key": "service",
             "exists": true
           },
           {
             "not": {
-              "tag": "service",
+              "key": "service",
               "eq": "alley"
             }
           }

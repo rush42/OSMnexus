@@ -96,17 +96,6 @@ fn check_term_consistency(term: &[Literal]) -> (bool, Vec<String>) {
         }
     }
 
-    // 3. Side checks (self, left, right) + infix — a term can't fix two different ones
-    let mut sides = HashSet::new();
-    let mut infixes = HashSet::new();
-    for lit in term {
-        if let Literal::Pos(Predicate::Side(s)) = lit { sides.insert(s); }
-        if let Literal::Pos(Predicate::Infix(i)) = lit { infixes.insert(i); }
-    }
-    if sides.len() > 1 || infixes.len() > 1 {
-        return (false, vec![]);
-    }
-
     (true, warnings)
 }
 

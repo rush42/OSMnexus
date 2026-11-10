@@ -8,7 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::kleene::{decide_value, decide_wildcard, keep_for, simplify, K};
 use super::walkers::{collect_atom_candidates, collect_branch_keys, collect_eq_values};
-use super::{BranchKey, DecisionTree, HAS_PARENT_KEY, SIDE_KEY};
+use super::{BranchKey, DecisionTree, HAS_PARENT_KEY};
 use crate::lang::expr::{filter_to_expr, to_nnf, Expr, Literal, Predicate};
 use crate::lang::filter::Filter;
 
@@ -386,11 +386,10 @@ fn best_single_branch(
     best.map(|b| (b, best_worst))
 }
 
-/// All exact-eq values of `key` across the candidate conditions. For the `side`/`has_parent`
-/// sentinels the domain is fixed and known up front (no need to scan conditions for it).
+/// All exact-eq values of `key` across the candidate conditions. For the `has_parent` sentinel the
+/// domain is fixed and known up front (no need to scan conditions for it).
 pub(super) fn eligible_values(candidates: &[Candidate], key: &BranchKey) -> Vec<String> {
     match key {
-        BranchKey::Sentinel(SIDE_KEY) => return vec!["left".to_string(), "right".to_string(), "self".to_string()],
         BranchKey::Sentinel(HAS_PARENT_KEY) => return vec!["false".to_string(), "true".to_string()],
         _ => {}
     }

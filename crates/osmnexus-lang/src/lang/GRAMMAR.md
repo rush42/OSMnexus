@@ -19,14 +19,78 @@ one `Extract` 1:1, so it's never a separate sibling field.
 
 ```
 Extract =
-  { "keys": [String, ...], "sanitize"?: String }   // aka "first_tag" (legacy alias) — first key found wins
-  | { "key": String, "sanitize"?: String }          // aka "tag" (legacy alias)
+  { "keys": [Alt, ...], "sanitize"?: String }   // first entry that yields a value wins
+  | { "key": String, "sanitize"?: String }
+
+Alt = String          // a key: { "key": String }
+    | Extract         // any read, with its own sanitize — lists nest
+```
+
+A `keys` list is a list of reads. Each entry runs through its *own*
+`sanitize` first; an entry whose sanitizer drops the value counts as absent,
+and the next one is tried. The outer `sanitize` then runs on whichever entry
+won (on its text: a string as-is, a number in its JSON spelling). Without an
+outer `sanitize`, the winning entry's value is produced as is, numbers
+included.
+
+```
+{ "keys": [{ "key": "oneway", "sanitize": "yes_only" }, "oneway:bicycle"] }
+    // oneway=no is dropped by yes_only, so oneway:bicycle is read instead
+{ "keys": ["ref", "@id"] }               // a fact as the fallback
+{ "keys": [{ "keys": ["name", "ref"] }, "@id"], "sanitize": "trim" }
 ```
 
 `sanitize`, when present, is always a name looked up in `sanitizers.json` —
 there is no inline-chain form, and every sanitizer has exactly one
 definition. A `sanitize:` field that isn't a bare string is a load-time
 error.
+
+### Facts (`@` keys)
+
+`@` keys read a fact about the element instead of an OSM tag. They work
+everywhere a key does — filters, producers, `in`, `parent`, `annotations`,
+`sanitize`:
+
+```
+"@id"         // the element's OSM id. Under "parent": the parent's id (a member
+              // way's relation, or a side object's base way)
+"@type"       // "node" | "way" | "relation"
+"@role"       // a member way's role in its parent relation (inherit_to_member);
+              // "" for an empty role, absent without a parent relation
+"@timestamp"  // the element's last edit, "YYYY-MM-DDTHH:MM:SSZ"; under
+              // "parent", the parent's. Absent without file metadata
+```
+
+An unknown `@` key is a load error (also inside a nested `keys` entry).
+Facts mix freely with tags in `keys`: either may be absent. No other key name
+is special.
+
+### Annotations (`{"annotations": ..}`)
+
+Annotations are what the topic's own transforms wrote onto an object
+(`annotate`, a clone's `annotate`, `record_infix_as`). Their names and values
+are the config's — tilda happens to write `_side` and `_infix`; nothing in the
+code gives any name a meaning.
+
+`{"annotations": X}` is a scope switch like `parent`: `X` is any filter (or
+producer) and reads the annotations instead of the tags. The two are
+independent: `parent` switches *which element* is read, `annotations` switches
+*which of its key→value maps*. Inside `annotations`:
+
+- `key`/`keys` read annotation names (absent if nothing wrote them);
+- `has_key_prefix` / `tags_empty` range over the annotation names;
+- facts (`@id`, …) stay facts;
+- a nested `parent` looks at the parent's annotations — it has none.
+
+```
+{ "annotations": { "key": "_side", "eq": "left" } }
+{ "not": { "annotations": { "key": "_side", "eq": "self" } } }
+{ "annotations": { "key": "_infix" } }                     // as a producer
+```
+
+It is resolved at load, so it costs nothing at run time. The retired
+`{"annotation": "_side", "eq": ..}` spelling is a load error naming
+`{"annotations": {"key": "_side", "eq": ..}}`.
 
 ## sanitizers.json
 
@@ -80,7 +144,7 @@ Filter =
   | { <Extract fields>, "exists": Boolean }
   | { <Extract fields>, "eq": String }              // catch-all comparison
   | { "parent": Filter }                            // re-run filter against parent tags
-  | { "annotation": String, "eq": String }          // annotations[annotation] == eq (e.g. "_side"/"_prefix"/"_infix")
+  | { "annotations": Filter }                       // read annotations instead of tags
   | { "has_key_prefix": String }
   | { "has_parent": Boolean }
   | { "tags_empty": Boolean }
@@ -90,8 +154,8 @@ Filter =
   | { <Extract fields>, "gte": Number }
 ```
 
-Note: `<Extract fields>` means either `"key": String` (alias `"tag"`)
-or `"keys": [String,...]` (alias `"first_tag"`) supplied inline in the same
+Note: `<Extract fields>` means either `"key": String`
+or `"keys": [Alt,...]` supplied inline in the same
 object.
 
 There is no `Cond`/`if-then-else` node. A conditional value is expressed as a
@@ -116,12 +180,12 @@ Producer =
   { "parent": Producer }
       // re-evaluate the nested producer against parent tags
 
+  | { "annotations": Producer }
+      // read annotations instead of tags (see "Annotations" above)
+
   | { "parent_or_obj": Producer }
       // sugar: try against obj tags; if no parent, fall back — desugars to a
       // 2-rule Match guarded by "has_parent"
-
-  | { "tag": String, "or"?: JSON }
-      // sugar for Extract{key: tag}; with "or" present, a 1-rule Match, "default": or
 
   | { "match": [Rule, ...], "default"?: JSON, "annotate"?: {String: JSON} }
       // Match: first matching rule wins; a rule that matches but yields
@@ -129,9 +193,14 @@ Producer =
       // (no "when"/"value" wrapper) is shorthand for an always-true rule,
       // so a plain ordered fallback chain is just { "match": [a, b, c] }
 
-  | { <Extract fields>, "annotate"?: {String: JSON} }
+  | { <Extract fields>, "annotate"?: {String: JSON}, "or"?: JSON }
       // Extract (tried after all the above, whose fields are all optional
-      // and so would otherwise match everything first): reads + sanitizes a raw tag
+      // and so would otherwise match everything first): reads + sanitizes a raw
+      // tag. "or": the literal to produce when the key is absent (desugars to a
+      // 1-rule Match with "default": or; "annotate" stays on the read).
+      //
+      // "key"/"keys" are the only spellings. The former aliases "tag" and
+      // "first_tag" are a load error naming the replacement and the place.
 
   | JSON
       // Const (catch-all — tried last): a literal value, independent of any tag
@@ -219,7 +288,11 @@ Clone = {
 }
 
 TransformStep =
-  { "prefix": String, "stamp_key": String, "stamp_value": String, "stamp_nested_under"?: [String,...] }
+  { "annotate": {String: String, ...} }
+      // Annotate: write literal annotations onto the current object (e.g.
+      // { "_side": "self" } on the base object, next to its clones' left/right)
+
+  | { "prefix": String, "stamp_key": String, "stamp_value": String, "stamp_nested_under"?: [String,...] }
       // StripPrefix: strip a tag prefix, stamping stamp_key=stamp_value on
       // the resulting object (and optionally on nested-prefix children too)
 
@@ -229,8 +302,11 @@ TransformStep =
   | { "drop": Filter }
       // Drop: discard the current object when Filter matches
 
-  | { "output": String, "directed": { "key": String, "from"?: "obj" | "parent", "sanitize"?: String } }
-      // DirectedExtract: side-aware tag read (used with left/right split ways).
+  | { "output": String, "directed": { "key": String, "side": "left" | "right", "from"?: "obj" | "parent", "sanitize"?: String } }
+      // DirectedExtract: read `key` as seen from one side of the way —
+      // `key:backward` for the left side, `key:forward` for the right under
+      // right-hand traffic (swapped for left-hand). "side" is declared on the
+      // step (it sits inside that side's clone), never read from an annotation.
       // "from" is the narrower Obj/Parent vocabulary, not the general TagSet —
       // identified by its required "directed" field, checked before TagRule
 
@@ -238,7 +314,8 @@ TransformStep =
       // TagRule (catch-all): compute "output" via the embedded Producer
 ```
 
-Disambiguation is by which distinguishing key is present: `stamp_key` →
+Disambiguation is by which distinguishing key is present: a lone `annotate` →
+Annotate, `stamp_key` →
 StripPrefix, `unnest` → Unnest, `drop` → Drop, `directed` → DirectedExtract
 (checked before the generic catch-all), else (requires `output`) → TagRule.
 `PipelineStep` is `clone` vs. everything else (delegated to `TransformStep`).
@@ -260,7 +337,7 @@ StripPrefix, `unnest` → Unnest, `drop` → Drop, `directed` → DirectedExtrac
         "match": [
           {
             "when": { "and": [
-              { "tag": "surface", "eq": "sett" },
+              { "key": "surface", "eq": "sett" },
               { "num": "sett:length", "sanitize": "parse_length", "lte": 0.08 }
             ]},
             "value": "mosaic_sett"

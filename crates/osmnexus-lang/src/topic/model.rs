@@ -105,15 +105,6 @@ pub struct Topic {
     /// the safe default, meaning "never skip an untagged element of a handled kind" — and the shell
     /// fills it in via `set_skip_untagged` (`config_dir::Config` does so for every topic it loads).
     skip_untagged: std::collections::HashSet<ElementKind>,
-    /// Kinds whose transform pipeline side-splits — i.e. contains a `Clone` that annotates
-    /// `_side`. Those kinds stamp `_side: "self"` on the base object too, so every row of such a
-    /// topic carries the key and a consumer can read it without a coalesce.
-    ///
-    /// Elsewhere the base object deliberately carries no `_side` at all (see
-    /// `topic::pipeline::base_annotations`): for a topic that never splits, the key would be a
-    /// constant on every row saying nothing. Matching is unaffected either way — readers treat an
-    /// absent `_side` as "self" (`lang::producer::side_of`).
-    pub(crate) stamps_side: std::collections::HashSet<ElementKind>,
 }
 
 /// Resolve one topic's or category's raw `producers` map (already merged by key, category winning)
@@ -191,6 +182,7 @@ impl Topic {
     /// config root are skipped automatically), and any `_`-prefixed directory is skipped too, as a
     /// general hidden-directory convention. Returned in sorted name order for deterministic output.
     pub fn load_all(src: &ConfigSources, env: &Arc<CompileEnv>, tree_max_depth: usize) -> anyhow::Result<Vec<Self>> {
+        crate::topic::sources::check_retired_syntax(src)?;
         src.subdirs("")
             .iter()
             .filter(|name| !name.starts_with('_'))
@@ -203,6 +195,7 @@ impl Topic {
     /// entirely (see `build_order`) and switches this topic's category classification to the
     /// linear reference walk (`categorize_linear`) at runtime.
     pub fn load(src: &ConfigSources, env: &Arc<CompileEnv>, name: &str, tree_max_depth: usize) -> anyhow::Result<Self> {
+        crate::topic::sources::check_retired_syntax(src)?;
         crate::lang::env::with_env(env, || Self::load_in_env(src, env, name, tree_max_depth))
     }
 
@@ -274,6 +267,13 @@ impl Topic {
             HashMap::new()
         };
 
+        // `transforms.json`, if the topic has one, is the whole per-kind pipeline set (already
+        // resolved by `load_topic_transforms`); a topic with none simply has no pipelines (see
+        // `TransformsSpec`'s own doc).
+        let pipelines = load_topic_transforms(src, name, &resolved_macros, &sanitizers)?
+            .map(|t| t.into_pipelines(env.left_hand_traffic))
+            .unwrap_or_default();
+
         // Load per-kind category sets from topics/<name>/{node,way,relation}/, each already fully
         // macro/sanitizer-resolved by `load_topic_categories`, then compile the exclude relation
         // into a priority order + discrimination tree via `build_order`.
@@ -281,7 +281,11 @@ impl Topic {
             .with_context(|| format!("loading topics/{name}/ categories"))?;
         let mut categories: HashMap<ElementKind, CategoriesFile> = HashMap::new();
         for (kind, mut cats) in categories_loaded {
-            cats.build_order(tree_max_depth)
+            let domains = pipelines
+                .get(&kind)
+                .map(|steps| crate::categorize::transform::annotation_domains(steps))
+                .unwrap_or_default();
+            cats.build_order(tree_max_depth, &domains)
                 .with_context(|| format!("building category order for topics/{name}"))?;
             categories.insert(kind, cats);
         }
@@ -299,12 +303,6 @@ impl Topic {
             );
         }
 
-        // `transforms.json`, if the topic has one, is the whole per-kind pipeline set (already
-        // resolved by `load_topic_transforms`); a topic with none simply has no pipelines (see
-        // `TransformsSpec`'s own doc).
-        let pipelines = load_topic_transforms(src, name, &resolved_macros, &sanitizers)?
-            .map(|t| t.into_pipelines(env.left_hand_traffic))
-            .unwrap_or_default();
 
         // `true` here means "pass every tag through verbatim" (see `ProducersSpec`) — read before
         // `spec.producers` is consumed into a plain fields map below, since it isn't itself a `Field`
@@ -378,7 +376,7 @@ impl Topic {
             default_producers.iter_mut().chain(category_producers.iter_mut().flatten()).collect();
         fields.par_iter_mut().for_each(|field| field.source.compile_trees(tree_max_depth));
 
-        let mut runner = Self {
+        let runner = Self {
             spec,
             categories,
             pipelines,
@@ -390,31 +388,24 @@ impl Topic {
             accept_all,
             passthrough_producers,
             skip_untagged: std::collections::HashSet::new(),
-            stamps_side: std::collections::HashSet::new(),
         };
 
-        runner.stamps_side = runner
+        // A cloned object's id is `"{parent_id}/{id_suffix}"` — not derivable from `osm_type`/
+        // `osm_id`, since several rows share one `osm_id`. Dropping the column there would lose the
+        // only thing distinguishing them, so reject the combination at load time rather than
+        // silently emit colliding rows.
+        let cloning: Vec<ElementKind> = runner
             .pipelines
             .iter()
-            .filter(|(_, steps)| {
-                steps.iter().any(|step| match step {
-                    TransformStep::Clone(c) => c.annotate.iter().any(|(k, _)| k == "_side"),
-                    TransformStep::Transform(_) => false,
-                })
-            })
+            .filter(|(_, steps)| steps.iter().any(|step| matches!(step, TransformStep::Clone(_))))
             .map(|(&kind, _)| kind)
             .collect();
-
-        // A side object's id is `"{parent_id}/{id_suffix}"` — not derivable from `osm_type`/`osm_id`,
-        // since several rows share one `osm_id`. Dropping the column there would lose the only thing
-        // distinguishing them, so reject the combination at load time rather than silently emit
-        // colliding rows.
         anyhow::ensure!(
-            runner.spec.id_type.emits_column() || runner.stamps_side.is_empty(),
-            "topic '{}' sets \"id_type\": \"none\" but side-splits ({:?}): a side object's id carries \
-             an id_suffix, so without the column its rows are indistinguishable",
+            runner.spec.id_type.emits_column() || cloning.is_empty(),
+            "topic '{}' sets \"id_type\": \"none\" but clones objects ({:?}): a clone's id carries an \
+             id_suffix, so without the column its rows are indistinguishable",
             runner.spec.table,
-            runner.stamps_side,
+            cloning,
         );
 
         Ok(runner)
@@ -440,11 +431,6 @@ impl Topic {
     /// how this surfaced).
     pub fn has_kind(&self, kind: ElementKind) -> bool {
         self.categories.contains_key(&kind) || self.accept_all.contains(&kind)
-    }
-
-    /// Whether `kind`'s base objects should carry `_side: "self"` — see `stamps_side`.
-    pub fn stamps_side(&self, kind: ElementKind) -> bool {
-        self.stamps_side.contains(&kind)
     }
 
     /// Record which kinds may skip untagged elements. Only pass kinds verified to produce no rows
@@ -534,7 +520,7 @@ mod producer_tree_tests {
                     find_compiled_matches(&r.value, out);
                 }
             }
-            Producer::Parent(inner) => find_compiled_matches(inner, out),
+            Producer::Parent(inner) | Producer::Annotations(inner) => find_compiled_matches(inner, out),
             Producer::Extract { .. } | Producer::Const { .. } => {}
         }
     }
@@ -602,6 +588,10 @@ mod producer_tree_tests {
                         parent_tags: parent_tags.as_ref(),
                         id: "",
                         annotations: &annotations,
+                        elem: None,
+                        parent_elem: None,
+                        role: None,
+                        layer: Default::default(),
                     };
                     let a = field.source.eval(&ctx).map(|p| (p.value, p.annotate));
                     let b = linear.eval(&ctx).map(|p| (p.value, p.annotate));

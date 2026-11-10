@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use crate::categorize::categories::{categorize, categorize_linear};
 use crate::lang::filter::eval_filter;
-use crate::lang::producer::ExtractCtx;
+use crate::lang::producer::{Elem, ExtractCtx};
 use crate::categorize::transform::{run_transform_steps, TransformStep};
 use crate::topic::Topic;
 use crate::topic::spec::{Field, IdType};
@@ -46,28 +46,13 @@ fn eval_fields(
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// The base object's annotations, shared rather than rebuilt per element.
-///
-/// `{"_side": "self"}` only for a kind that actually side-splits (`Topic::stamps_side`), so
-/// that such a topic's rows uniformly carry the key and a consumer can read it without a coalesce.
-/// For every other kind it's empty: stamping a constant `"self"` on every row of a topic that never
-/// splits stored 22 bytes/row of nothing (9.5 GB on a 434M-row import) and cloned a one-entry map
-/// per emitted row to do it.
-///
-/// Either way matching is unaffected — readers treat an absent `_side` as "self"
-/// (`lang::producer::side_of`).
-fn base_annotations(stamps_side: bool) -> &'static Map<String, Value> {
-    static SELF: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+/// The base object's annotations before its transforms run: none. Anything a topic wants on its
+/// base objects (e.g. `_side: "self"` next to its side objects' `left`/`right`) it writes itself
+/// with an `annotate` step, so an empty shared map is all every element starts from — cloned into an
+/// owned one only when a transform pipeline needs to write to it.
+fn base_annotations() -> &'static Map<String, Value> {
     static EMPTY: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
-    if stamps_side {
-        SELF.get_or_init(|| {
-            let mut m = Map::new();
-            m.insert("_side".to_owned(), Value::String("self".to_owned()));
-            m
-        })
-    } else {
-        EMPTY.get_or_init(Map::new)
-    }
+    EMPTY.get_or_init(Map::new)
 }
 
 /// A stack-allocated `"{prefix}/{osm_id}"`. Longest possible content is `relation/` plus a 20-char
@@ -136,7 +121,7 @@ pub fn process<'a>(
     osm_id: i64,
     raw_tags: &'a RawTags<'a>,
     meta: &WayMeta,
-    parents: &[(i64, crate::topic::inherit::ExportedFields)],
+    parents: &[crate::topic::inherit::Parent],
 ) -> Vec<TopicRow> {
     if !topic.has_kind(kind) {
         return Vec::new();
@@ -150,10 +135,9 @@ pub fn build_topic_rows<'a>(
     osm_id: i64,
     raw_tags: &'a RawTags<'a>,
     meta: &WayMeta,
-    // Parent relations this element inherits from, already filtered to those that exported
-    // something (`topic::inherit`). Empty for every kind but ways, and for every topic that
-    // declares no `inherit_to_member`.
-    parents: &[(i64, crate::topic::inherit::ExportedFields)],
+    // Parent relations this element inherits from — every one this topic kept (`topic::inherit`).
+    // Empty for every kind but ways, and for every topic that declares no `inherit_to_member`.
+    parents: &[crate::topic::inherit::Parent],
 ) -> Vec<TopicRow> {
     // The category set for this element kind. Absent → either this kind is flagged `accept_all`
     // (every element passes straight through, no category match — see `TopicSpec::accept_all`) or
@@ -198,10 +182,10 @@ pub fn build_topic_rows<'a>(
         Cow::Owned(raw_tags.clone())
     };
 
-    // A pipeline stamps `_prefix`/`_infix` into the base annotations, so that case (and only that
-    // case) needs an owned map up front; everything else keeps borrowing the shared static.
+    // A pipeline may write annotations, so that case (and only that case) needs an owned map up
+    // front; everything else keeps borrowing the shared empty map.
     let mut base_annotations: Cow<'static, Map<String, Value>> =
-        Cow::Borrowed(base_annotations(runner.stamps_side(kind)));
+        Cow::Borrowed(base_annotations());
     if !pipeline.is_empty() {
         if !run_transform_steps(
             tags.to_mut(),
@@ -221,8 +205,22 @@ pub fn build_topic_rows<'a>(
     // producers carry no `annotate` provenance at all (e.g. `roads`). `ectx` only ever borrows
     // `base_annotations` for the category-match + `eval_fields` calls below, so by the time this
     // closure reaches the merge step that borrow has already ended and moving is fine.
-    let mut emit = |obj_tags: &RawTags, parent_tags: Option<&RawTags>, id: &str, base_annotations: Cow<'_, Map<String, Value>>| {
-        let ectx = ExtractCtx { obj_tags, parent_tags, id, annotations: &base_annotations };
+    let this_elem = Elem { kind, osm_id, timestamp: meta.timestamp };
+    let mut emit = |obj_tags: &RawTags,
+                    parent: Option<(&RawTags, Elem)>,
+                    role: Option<&str>,
+                    id: &str,
+                    base_annotations: Cow<'_, Map<String, Value>>| {
+        let ectx = ExtractCtx {
+            obj_tags,
+            parent_tags: parent.map(|(t, _)| t),
+            id,
+            annotations: &base_annotations,
+            elem: Some(this_elem),
+            parent_elem: parent.map(|(_, e)| e),
+            role,
+            layer: Default::default(),
+        };
 
         // `accept_all` kinds (`categories` is `None`) skip category matching entirely — every
         // element is kept, with no `category` value and `default_producers` as its producers.
@@ -326,27 +324,32 @@ pub fn build_topic_rows<'a>(
     };
 
     // The parent relation is handed to the base object as its `parent_tags`, so a topic reads
-    // inherited values with the ordinary `{"parent": {"tag": ..}}` producer syntax and *chooses*
+    // inherited values with the ordinary `{"parent": {"key": ..}}` producer syntax and *chooses*
     // what to output from them — rather than having them merged into `produced` behind its back.
     // Fanning out here, before categorization, is what makes that work: each row is categorized and
     // evaluated against its own parent, so a category condition can branch on the parent too.
     match (parents.is_empty(), runner.spec.inherit_to_member.as_ref().map(|s| s.mode)) {
         (false, Some(crate::topic::spec::InheritMode::FanOut)) => {
-            for (rel_id, fields) in parents {
-                let id = format!("{default_id}/relation/{rel_id}");
-                emit(&*tags, Some(fields), &id, base_annotations.clone());
+            for p in parents {
+                let id = format!("{default_id}/relation/{}", p.rel_id);
+                let parent = Elem { kind: ElementKind::Relation, osm_id: p.rel_id, timestamp: p.record.timestamp };
+                emit(&*tags, Some((&p.record.fields, parent)), p.role.as_deref(), &id, base_annotations.clone());
             }
         }
         (false, Some(crate::topic::spec::InheritMode::Merge)) => {
+            // Merged fields resolve "later parent wins"; the parent's facts (`@id`, `@timestamp`,
+            // this way's `@role`) follow the same rule, so they describe the parent whose values won.
             let merged = crate::topic::inherit::merge_parents(parents);
-            emit(&*tags, Some(&merged), default_id, base_annotations);
+            let last = parents.last().expect("non-empty parents");
+            let parent = Elem { kind: ElementKind::Relation, osm_id: last.rel_id, timestamp: last.record.timestamp };
+            emit(&*tags, Some((&merged, parent)), last.role.as_deref(), default_id, base_annotations);
         }
-        _ => emit(&*tags, None, default_id, base_annotations),
+        _ => emit(&*tags, None, None, default_id, base_annotations),
     }
-    // Side objects keep the base object's tags as their parent, as they always have — a topic that
-    // both side-splits and inherits is not supported, and no config does both.
+    // Side objects keep the base object as their parent, as they always have — a topic that both
+    // side-splits and inherits is not supported, and no config does both.
     for (clone_tags, clone_annotations, id) in clones {
-        emit(&clone_tags, Some(&*tags), &id, Cow::Owned(clone_annotations));
+        emit(&clone_tags, Some((&*tags, this_elem)), None, &id, Cow::Owned(clone_annotations));
     }
 
     rows
@@ -392,7 +395,7 @@ mod skip_untagged_tests {
         r.accept_all.insert(ElementKind::Node);
         // `railway` absent → true for an untagged element, so everything untagged is excluded.
         r.exclude_condition = Some(
-            serde_json::from_value(serde_json::json!({ "not": { "tag": "railway", "exists": true } }))
+            serde_json::from_value(serde_json::json!({ "not": { "key": "railway", "exists": true } }))
                 .expect("filter parses"),
         );
         assert!(crate::topic::pipeline::probe_skip_untagged(&r).contains(&ElementKind::Node));
@@ -445,7 +448,7 @@ mod skip_untagged_tests {
 /// (`config_dir::Config`) every real run uses.
 #[cfg(test)]
 mod inherit_tests {
-    use crate::osm::types::{ElementKind, RawTags, WayMeta};
+    use crate::osm::types::{ElementKind, RawTags, RelData, WayMeta};
     use crate::output::rows::TopicRow;
     use crate::topic::inherit::InheritStore;
     use crate::topic::Topic;
@@ -475,53 +478,109 @@ mod inherit_tests {
             "passthrough_tags": ["ref"],
             // A topic-level producer is a *string* reference into `producers.json`. `true` would not
             // be: it means "pass the tag of this name through", i.e. read a `route_ref` tag.
-            "producers": { "route_ref": "route_ref" },
+            "producers": {
+                "route_ref": "route_ref", "route_id": "route_id", "route_edited": "route_edited",
+                "role": "role", "own_id": "own_id", "own_type": "own_type", "own_edited": "own_edited"
+            },
             "inherit_to_member": { "fields": ["ref"], "mode": mode },
             "meta": false
         });
         std::fs::write(topic_dir.join("topic.json"), serde_json::to_vec_pretty(&topic).unwrap()).unwrap();
-        let producers = serde_json::json!({ "route_ref": { "parent": { "tag": "ref" } } });
+        let producers = serde_json::json!({
+            "route_ref": { "parent": { "key": "ref" } },
+            "route_id": { "parent": { "key": "@id" } },
+            "route_edited": { "parent": { "key": "@timestamp" } },
+            "role": { "key": "@role" },
+            "own_id": { "key": "@id" },
+            "own_type": { "key": "@type" },
+            "own_edited": { "key": "@timestamp" }
+        });
         // The topic's own `producers.json` — the config-root one is only the `{"shared": ..}` table.
         std::fs::write(topic_dir.join("producers.json"), serde_json::to_vec_pretty(&producers).unwrap()).unwrap();
         let topics = crate::config_dir::Config::read(dir.path(), false).and_then(|c| c.load_all(6)).expect("loading scratch topic");
         (dir, topics)
     }
 
-    /// Classify relations `rels` (`(osm_id, ref)`) and capture them, then classify one member way.
-    fn member_way_rows(topics: &[Topic], rels: &[(i64, &'static str)]) -> Vec<TopicRow> {
+    /// A relation `id` with tags `rel_tags`, listing way 100 (role `role`) and way 200, edited at
+    /// `id * 1000` seconds.
+    fn rel<'a>(id: i64, rel_tags: &RawTags<'a>, role: &'a str) -> RelData<'a> {
+        use crate::osm::types::MemberRole;
+        RelData {
+            id,
+            tags: rel_tags.clone(),
+            member_ways: vec![(200, MemberRole::Unknown), (100, MemberRole::Unknown)],
+            member_role_names: vec!["backward", role],
+            meta: WayMeta { timestamp: Some(id * 1000), user: None, changeset: None },
+        }
+    }
+
+    /// Classify relations `rels` (`(osm_id, ref, way 100's role)`) and capture them, then classify
+    /// way 100 (edited at 0 s).
+    fn member_way_rows(topics: &[Topic], rels: &[(i64, &'static str, &'static str)]) -> Vec<TopicRow> {
         let store = InheritStore::new(topics);
         assert!(store.any());
-        for &(id, r) in rels {
-            let rows = super::build_topic_rows(&topics[0], ElementKind::Relation, id, &tags(&[("type", "route"), ("ref", r)]), &meta(), &[]);
+        for &(id, r, role) in rels {
+            let rel_tags = tags(&[("type", "route"), ("ref", r)]);
+            let rows = super::build_topic_rows(&topics[0], ElementKind::Relation, id, &rel_tags, &meta(), &[]);
             assert_eq!(rows.len(), 1, "the relation itself is kept");
-            store.capture(topics, 0, id, &rows[0].produced);
+            store.capture(topics, 0, &rel(id, &rel_tags, role), &rows[0].produced);
         }
-        let ids: Vec<i64> = rels.iter().map(|&(id, _)| id).collect();
-        let parents = store.parents_for(0, &ids);
-        assert_eq!(parents.len(), rels.len(), "every parent exported its ref");
-        super::build_topic_rows(&topics[0], ElementKind::Way, 100, &tags(&[("highway", "service"), ("ref", "W")]), &meta(), &parents)
+        let ids: Vec<i64> = rels.iter().map(|&(id, _, _)| id).collect();
+        let parents = store.parents_for(0, 100, &ids);
+        assert_eq!(parents.len(), rels.len(), "every kept relation is a parent");
+        let way_meta = WayMeta { timestamp: Some(0), user: None, changeset: None };
+        super::build_topic_rows(&topics[0], ElementKind::Way, 100, &tags(&[("highway", "service"), ("ref", "W")]), &way_meta, &parents)
     }
 
     #[test]
     fn member_way_reads_parent_value_fan_out() {
         let (_dir, topics) = routes_topic("fan_out");
-        let rows = member_way_rows(&topics, &[(7, "S1"), (9, "S2")]);
+        let rows = member_way_rows(&topics, &[(7, "S1", "forward"), (9, "S2", "")]);
         assert_eq!(rows.len(), 2, "one row per parent");
-        for (row, (rel, r)) in rows.iter().zip([(7, "S1"), (9, "S2")]) {
+        for (row, (rel, r, role)) in rows.iter().zip([(7, "S1", "forward"), (9, "S2", "")]) {
             let p = produced(row);
             assert_eq!(p.get("route_ref").and_then(|v| v.as_str()), Some(r), "{:?}", row.produced);
             assert_eq!(p.get("ref").and_then(|v| v.as_str()), Some("W"), "own tag stays the way's own");
             assert!(row.id.as_deref().unwrap().ends_with(&format!("/relation/{rel}")), "{:?}", row.id);
+            // The parent's identity, as a value rather than buried in the id string.
+            assert_eq!(p.get("route_id").and_then(|v| v.as_str()), Some(rel.to_string().as_str()));
+            assert_eq!(p.get("own_id").and_then(|v| v.as_str()), Some("100"));
+            assert_eq!(p.get("own_type").and_then(|v| v.as_str()), Some("way"));
+            // Its role in *this* parent (not way 200's), and both elements' own edit times.
+            assert_eq!(p.get("role").and_then(|v| v.as_str()), Some(role));
+            assert_eq!(p.get("own_edited").and_then(|v| v.as_str()), Some("1970-01-01T00:00:00Z"));
+            let edited = crate::lang::extract::iso8601_utc(rel * 1000);
+            assert_eq!(p.get("route_edited").and_then(|v| v.as_str()), Some(edited.as_str()));
         }
+    }
+
+    /// A relation that exports none of the declared fields is still a parent: its id is
+    /// information on its own.
+    #[test]
+    fn parent_without_exported_fields_still_fans_out_with_its_id() {
+        let (_dir, topics) = routes_topic("fan_out");
+        let store = InheritStore::new(&topics);
+        let rel_tags = tags(&[("type", "route")]);
+        let rows = super::build_topic_rows(&topics[0], ElementKind::Relation, 7, &rel_tags, &meta(), &[]);
+        store.capture(&topics, 0, &rel(7, &rel_tags, "forward"), &rows[0].produced);
+        let parents = store.parents_for(0, 100, &[7]);
+        let rows = super::build_topic_rows(&topics[0], ElementKind::Way, 100, &tags(&[("highway", "service")]), &meta(), &parents);
+        assert_eq!(rows.len(), 1);
+        let p = produced(&rows[0]);
+        assert_eq!(p.get("route_id").and_then(|v| v.as_str()), Some("7"));
+        assert!(p.get("route_ref").is_none());
     }
 
     #[test]
     fn member_way_reads_parent_value_merge() {
         let (_dir, topics) = routes_topic("merge");
-        let rows = member_way_rows(&topics, &[(7, "S1"), (9, "S2")]);
+        let rows = member_way_rows(&topics, &[(7, "S1", "forward"), (9, "S2", "platform")]);
         assert_eq!(rows.len(), 1, "one row, parents merged");
-        // Later parent wins on collision (parents are in sorted-id order).
-        assert_eq!(produced(&rows[0]).get("route_ref").and_then(|v| v.as_str()), Some("S2"), "{:?}", rows[0].produced);
+        // Later parent wins on collision (parents are in sorted-id order) — its facts included.
+        let p = produced(&rows[0]);
+        assert_eq!(p.get("route_ref").and_then(|v| v.as_str()), Some("S2"), "{:?}", rows[0].produced);
+        assert_eq!(p.get("route_id").and_then(|v| v.as_str()), Some("9"));
+        assert_eq!(p.get("role").and_then(|v| v.as_str()), Some("platform"));
     }
 
     /// Without a parent, `{"parent": ..}` produces nothing, and the way is emitted once as usual.
@@ -530,6 +589,11 @@ mod inherit_tests {
         let (_dir, topics) = routes_topic("fan_out");
         let rows = super::build_topic_rows(&topics[0], ElementKind::Way, 100, &tags(&[("highway", "service")]), &meta(), &[]);
         assert_eq!(rows.len(), 1);
-        assert!(produced(&rows[0]).get("route_ref").is_none(), "{:?}", rows[0].produced);
+        let p = produced(&rows[0]);
+        assert!(p.get("route_ref").is_none(), "{:?}", rows[0].produced);
+        assert!(p.get("route_id").is_none(), "no parent, no parent id");
+        assert!(p.get("role").is_none(), "no parent, no role");
+        assert!(p.get("own_edited").is_none(), "no metadata, no timestamp");
+        assert_eq!(p.get("own_id").and_then(|v| v.as_str()), Some("100"));
     }
 }

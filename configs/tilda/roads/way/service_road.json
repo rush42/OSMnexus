@@ -2,12 +2,12 @@
   "condition": {
     "and": [
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "service"
       },
       {
         "not": {
-          "tag": "service",
+          "key": "service",
           "exists": true
         }
       }

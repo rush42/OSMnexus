@@ -1,8 +1,8 @@
 {
   "condition": {
     "and": [
-      { "tag": "type", "eq": "route" },
-      { "tag": "route", "in": ["tram", "subway", "light_rail", "train", "bus", "trolleybus", "funicular", "monorail"] }
+      { "key": "type", "eq": "route" },
+      { "key": "route", "in": ["tram", "subway", "light_rail", "train", "bus", "trolleybus", "funicular", "monorail"] }
     ]
   }
 }

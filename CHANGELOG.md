@@ -4,6 +4,63 @@ Notable changes to this repo, kept for future-me/future-agent context. Newest fi
 
 ## Unreleased
 
+- **`keys` is a list of reads, not of key names.** An entry is a key string or any read
+  (`{"key": .., "sanitize": ..}`, a nested `{"keys": [..]}`), with its own `sanitize`; an entry
+  whose sanitizer drops the value counts as absent, so the next one is tried. Facts can now be
+  candidates (`{"keys": ["ref", "@id"]}`). Existing configs mean the same; every shipped config's
+  pipeline output is byte-identical.
+- **Internal: `parent` and `annotations` are the same kind of context switch.** The context has
+  two independent axes — which element (`parent` switches it) and which layer, tags or
+  annotations (`annotations` switches it) — and every key read, `has_key_prefix` and `tags_empty`
+  reads whatever the context points at. This replaces the load-time rewrite of annotation reads
+  into separate variants (`Extract::Note`, `Filter::AnnotationKeyPrefix`/`AnnotationsEmpty`, the
+  `Predicate` twins, `into_annotations` on `Filter`/`Producer`/`Extract`). `Extract` is now a key,
+  a fact or a candidate list, plus one internal `Scoped(Scope, ..)` node that only the decision
+  tree's flattened form uses — replacing the `parent_` key-name prefix and the `parent: bool`
+  flag. Editor labels read `annotations(_side == "left")` instead of `annotations._side == "left"`.
+- **Fixed: a negation under `parent` in the decision tree.** The flattened form the tree evaluates
+  answered `{"parent": {"not": ..}}` as `true` for an object without a parent; direct evaluation
+  (correctly) says `false`. It now adds a `has_parent` guard where the inner filter can be true
+  with all its reads absent. No shipped config hit this (the tree is unchanged by the guard); the
+  bikelanes way tree comes out in a different, equally valid shape (948 instead of 970 nodes)
+  because branch-key ties break differently. Pipeline output is byte-identical.
+
+- **Facts: `@id`, `@type`, `@role`, `@timestamp`.** A key starting with `@` reads a fact about the
+  element instead of an OSM tag, everywhere a key is allowed (filters, producers, `in`, `parent`).
+  Under `parent` they describe the parent: a member way reads its relation's id as
+  `{"parent": {"key": "@id"}}` and its own role in that relation as `@role`. Resolved at load time;
+  an unknown `@` key is a load error. See `GRAMMAR.md`.
+- **`{"annotations": ..}` reads annotations**, a scope switch like `parent`: everything inside —
+  any operator, `keys`, `has_key_prefix`, `tags_empty`, `match` producers — reads what the topic's
+  transforms wrote instead of the tags. Annotation names and values are entirely the config's: the
+  code no longer gives `_side`, `_prefix` or `_infix` any meaning, and no key prefix but `@` is
+  special.
+- **Breaking (config):**
+  - `{"annotation": "_side", "eq": ..}` is removed; write `{"annotations": {"key": "_side", "eq": ..}}`. The old
+    spelling fails at load with that hint. (It could only express `eq` on three keys, and any
+    other key crashed the decision-tree build.)
+  - Base objects no longer get `_side: "self"` automatically. A topic that wants it adds an
+    `{ "annotate": { "_side": "self" } }` step (new; also usable inside a clone).
+  - `directed` steps need `"side": "left" | "right"`; the side is no longer read from `_side`.
+  - `id_type: "none"` is rejected for any topic that clones objects (before: only if a clone wrote
+    `_side`).
+  - **One spelling for key reads: `key` / `keys`.** The aliases `tag` and `first_tag` are
+    removed; a config still using them fails at load with a list of every place and its
+    replacement. Producers had a separate `{"tag": .., "or": ..}` shape that silently dropped
+    `sanitize`/`annotate` when mixed in; `or` is now an optional field of the one key form,
+    combinable with `sanitize` and `annotate`.
+  - `configs/` is migrated (459 places); outputs are byte-identical.
+- **`inherit_to_member`: every kept relation is a parent**, including one that exports none of the
+  declared `fields` (which are now optional) — its id is information on its own. A way topic gets
+  one row per parent relation in `fan_out` mode even if that parent has no `ref`.
+- **Removed the relation graph-fallback from the file outputs.** A relation without geometry of its
+  own used to borrow its member ways' graph segments; it now has no feature in GeoJSON and a
+  null-geometry row in Parquet, like a node without a point. Use
+  `"geometry_output": { "relation": "line" }` for the relation as one shape, or `inherit_to_member`
+  for its member ways carrying the relation's context. No shipped config reached this path (it
+  needed a `"graph"` topic); every shipped config's output is byte-identical.
+  `relation_members.bin` is no longer staged; Postgres and CSV still write `relation_members`.
+
 - **Geometry stays in the PBF's integer coordinates until the writer — file output change.** The
   pipeline used to project every coordinate to Web Mercator while building geometry and stage it as
   EWKB, so `--output geojson`/`geojsonseq`/`parquet` had to decode it, invert the projection point by

@@ -20,47 +20,47 @@
   "exclude_condition": {
     "or": [
       {
-        "tag": "highway",
+        "key": "highway",
         "exists": false
       },
       {
-        "tag": "area",
+        "key": "area",
         "eq": "yes"
       },
       {
-        "tag": "access",
+        "key": "access",
         "eq": "private"
       },
       {
-        "tag": "foot",
+        "key": "foot",
         "eq": "no"
       },
       {
-        "tag": "service",
+        "key": "service",
         "eq": "private"
       },
       {
-        "tag": "sidewalk",
+        "key": "sidewalk",
         "eq": "separate"
       },
       {
-        "tag": "sidewalk:both",
+        "key": "sidewalk:both",
         "eq": "separate"
       },
       {
-        "tag": "sidewalk:left",
+        "key": "sidewalk:left",
         "eq": "separate"
       },
       {
-        "tag": "sidewalk:right",
+        "key": "sidewalk:right",
         "eq": "separate"
       },
       {
-        "tag": "highway",
+        "key": "highway",
         "contains": "motor"
       },
       {
-        "tag": "highway",
+        "key": "highway",
         "in": [
           "abandoned",
           "bus_guideway",

@@ -1,12 +1,12 @@
 {
-  "is_allowed_highway": { "tag": "highway", "in": "allowed_highway" },
+  "is_allowed_highway": { "key": "highway", "in": "allowed_highway" },
   "standard_exclude": {
     "or": [
       { "not": { "macro": "is_allowed_highway" } },
-      { "tag": "area",     "eq": "yes" },
-      { "tag": "man_made", "eq": "pier" },
-      { "tag": "leisure",  "eq": "track" },
-      { "tag": "indoor",   "eq": "yes" }
+      { "key": "area",     "eq": "yes" },
+      { "key": "man_made", "eq": "pier" },
+      { "key": "leisure",  "eq": "track" },
+      { "key": "indoor",   "eq": "yes" }
     ]
   }
 }

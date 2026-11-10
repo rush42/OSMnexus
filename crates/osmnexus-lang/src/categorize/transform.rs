@@ -71,12 +71,14 @@ pub enum InputTransform {
         key: String,
         from: DirectedFrom,
         sanitize: Vec<Sanitizer>,
-        /// `key` + the `:forward`/`:backward` suffix for a `left` / `right` side object, fixed at
-        /// load time from the traffic side (see [`InputTransform::directed_extract`]), so the hot
-        /// path neither reads the traffic global nor `format!`s a key per element.
-        left_key: String,
-        right_key: String,
+        /// `key` + the `:forward`/`:backward` suffix for the step's declared `side`, fixed at load
+        /// time from that side and the traffic side (see [`InputTransform::directed_extract`]), so
+        /// the hot path neither reads anything about the object's side nor `format!`s a key.
+        directed_key: String,
     },
+    /// Write literal annotations onto the object (`{ "annotate": { "_side": "self" } }`) — the
+    /// top-level counterpart of a `Clone`'s own `annotate`. Names and values are the config's.
+    Annotate(Vec<(String, String)>),
     /// Remove this object from the active set when `when` holds — `apply`'s only variant that
     /// returns `false`. Every other variant is a pure tag mutation and always keeps the object;
     /// `Drop` carries no mutation of its own. A freshly-cloned object starts empty, so
@@ -95,6 +97,15 @@ pub enum InputTransform {
 /// general case, a directed read has nothing distinct to commit to — a `ParentOrObj` here could
 /// only ever mean "try that, then plain `Obj`," which nobody's asked for; keeping it out of the
 /// type means it can't be spelled by accident and silently behave like `Obj`.
+/// Which side of the way a directed read is for — declared on the step itself (it sits inside the
+/// left or the right side object's `Clone`), never looked up from an annotation.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectedSide {
+    Left,
+    Right,
+}
+
 #[derive(Debug, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DirectedFrom {
@@ -104,20 +115,20 @@ pub enum DirectedFrom {
 }
 
 impl InputTransform {
-    /// Build a `DirectedExtract`, resolving which directed key each side reads for the given
-    /// traffic side. Left side → `:backward` under right-hand traffic, `:forward` under
-    /// left-hand traffic; right side the other way round.
+    /// Build a `DirectedExtract`, resolving the directed key for `side` under the given traffic
+    /// side. Left side → `:backward` under right-hand traffic, `:forward` under left-hand traffic;
+    /// right side the other way round.
     pub fn directed_extract(
         output: String,
         key: String,
+        side: DirectedSide,
         from: DirectedFrom,
         sanitize: Vec<Sanitizer>,
         left_hand_traffic: bool,
     ) -> Self {
-        let (left, right) = if left_hand_traffic { (":forward", ":backward") } else { (":backward", ":forward") };
-        let left_key = format!("{key}{left}");
-        let right_key = format!("{key}{right}");
-        InputTransform::DirectedExtract { output, key, from, sanitize, left_key, right_key }
+        let backward = (side == DirectedSide::Left) != left_hand_traffic;
+        let directed_key = format!("{key}{}", if backward { ":backward" } else { ":forward" });
+        InputTransform::DirectedExtract { output, key, from, sanitize, directed_key }
     }
 }
 
@@ -132,7 +143,7 @@ impl InputTransform {
     ) -> bool {
         match self {
             InputTransform::TagRule { output, source } => {
-                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations, elem: None, parent_elem: None, role: None, layer: Default::default() };
                 if let Some(p) = source.eval(&ctx) {
                     match p.value {
                         Value::Null => { tags.remove(output.as_str()); }
@@ -146,7 +157,7 @@ impl InputTransform {
             }
             InputTransform::UnnestTags { prefix, infix, meta_prefixes, guard, record_infix_as } => {
                 if let Some(guard) = guard {
-                    let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                    let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations, elem: None, parent_elem: None, role: None, layer: Default::default() };
                     if !eval(guard, &ctx) {
                         return true;
                     }
@@ -177,8 +188,14 @@ impl InputTransform {
                 }
                 true
             }
-            InputTransform::DirectedExtract { output, key, from, sanitize, left_key, right_key } => {
-                if let Some(raw) = read_directed(tags, parent_tags, annotations, key, left_key, right_key, *from) {
+            InputTransform::Annotate(pairs) => {
+                for (k, v) in pairs {
+                    annotations.insert(k.clone(), Value::String(v.clone()));
+                }
+                true
+            }
+            InputTransform::DirectedExtract { output, key, from, sanitize, directed_key } => {
+                if let Some(raw) = read_directed(tags, parent_tags, key, directed_key, *from) {
                     match eval_sanitize(sanitize, raw) {
                         None | Some(Value::Null) => {}
                         Some(Value::String(s)) => { tags.insert(output.clone().into(), s.into()); }
@@ -194,11 +211,66 @@ impl InputTransform {
                 true
             }
             InputTransform::Drop { when } => {
-                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations };
+                let ctx = ExtractCtx { obj_tags: tags, parent_tags, id: "", annotations, elem: None, parent_elem: None, role: None, layer: Default::default() };
                 !eval(when, &ctx)
             }
         }
     }
+}
+
+// ── Annotation domains ──────────────────────────────────────────────────────────
+
+/// For one kind's pipeline: every annotation key that **every** object of that kind carries (the
+/// base object and each clone), with the complete set of values it can take.
+///
+/// This is a fact about the config, derived at load time — annotations are only ever written as
+/// literals (`annotate`, a clone's `annotate`, `record_infix_as`'s infix), so their value sets are
+/// closed. The decision-tree builder uses it to treat `{"not": {"key": "_side", "eq": "self"}}` as
+/// "`_side` is one of the other values", which it can branch on (see
+/// `lang::filter::close_annotation_negations`); nothing else reads it, and no key name is special.
+///
+/// A key qualifies only if the base object writes it unconditionally (a top-level `annotate` step)
+/// and every clone does too (its own `annotate`, or an `annotate` step); a conditional write
+/// (`record_infix_as`, which fires only when the unnest matched) still contributes its values but
+/// can't make a key always-present on its own.
+pub fn annotation_domains(steps: &[TransformStep]) -> std::collections::BTreeMap<String, Vec<String>> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut values: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut base_always: BTreeSet<String> = BTreeSet::new();
+    let mut clones_always: Vec<BTreeSet<String>> = Vec::new();
+    let record = |values: &mut BTreeMap<String, BTreeSet<String>>, it: &InputTransform, always: &mut BTreeSet<String>| match it {
+        InputTransform::Annotate(pairs) => {
+            for (k, v) in pairs {
+                values.entry(k.clone()).or_default().insert(v.clone());
+                always.insert(k.clone());
+            }
+        }
+        InputTransform::UnnestTags { infix, record_infix_as: Some(key), .. } => {
+            values.entry((*key).to_owned()).or_default().insert((*infix).to_owned());
+        }
+        _ => {}
+    };
+    for step in steps {
+        match step {
+            TransformStep::Transform(it) => record(&mut values, it, &mut base_always),
+            TransformStep::Clone(c) => {
+                let mut always = BTreeSet::new();
+                for (k, v) in &c.annotate {
+                    values.entry(k.clone()).or_default().insert(v.clone());
+                    always.insert(k.clone());
+                }
+                for it in &c.steps {
+                    record(&mut values, it, &mut always);
+                }
+                clones_always.push(always);
+            }
+        }
+    }
+    values
+        .into_iter()
+        .filter(|(k, _)| base_always.contains(k) && clones_always.iter().all(|c| c.contains(k)))
+        .map(|(k, vs)| (k, vs.into_iter().collect()))
+        .collect()
 }
 
 // ── TransformStep / CloneStep ───────────────────────────────────────────────────
@@ -257,7 +329,7 @@ pub fn run_transform_steps<'a>(
             }
             TransformStep::Clone(spec) => {
                 if let Some(when) = &spec.when {
-                    let ctx = ExtractCtx { obj_tags: tags, parent_tags: None, id: "", annotations };
+                    let ctx = ExtractCtx { obj_tags: tags, parent_tags: None, id: "", annotations, elem: None, parent_elem: None, role: None, layer: Default::default() };
                     if !eval(when, &ctx) {
                         continue;
                     }
@@ -290,20 +362,13 @@ pub fn run_transform_steps<'a>(
 fn read_directed<'a>(
     tags: &'a RawTags<'a>,
     parent_tags: Option<&'a RawTags<'a>>,
-    annotations: &Map<String, Value>,
     key: &str,
-    left_key: &str,
-    right_key: &str,
+    directed_key: &str,
     from: DirectedFrom,
 ) -> Option<&'a str> {
     if tags.contains_key(key) {
         return None; // already set (e.g. by an earlier unnest) — don't override it
     }
-    let directed_key = match annotations.get("_side").and_then(Value::as_str).unwrap_or("self") {
-        "left" => left_key,
-        "right" => right_key,
-        _ => return None, // "self": no direction to resolve
-    };
     match from {
         DirectedFrom::Parent => {
             let parent = parent_tags?;
@@ -544,8 +609,8 @@ mod directed_extract_tests {
         m
     }
 
-    fn step(key: &str, from: DirectedFrom) -> InputTransform {
-        InputTransform::directed_extract(key.to_owned(), key.to_owned(), from, Vec::new(), false)
+    fn step(key: &str, side: DirectedSide, from: DirectedFrom) -> InputTransform {
+        InputTransform::directed_extract(key.to_owned(), key.to_owned(), side, from, Vec::new(), false)
     }
 
     #[test]
@@ -553,7 +618,7 @@ mod directed_extract_tests {
         let mut obj = tags(&[("cycleway:lanes", "existing")]);
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let mut annotations = side_annotations("right");
-        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
+        step("cycleway:lanes", DirectedSide::Right, DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
         assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("existing"));
     }
 
@@ -562,12 +627,12 @@ mod directed_extract_tests {
         let mut obj = RawTags::default();
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
         let mut annotations = side_annotations("right");
-        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
+        step("cycleway:lanes", DirectedSide::Right, DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
         assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("lane"));
 
         let mut obj = RawTags::default();
         let parent = RawTags::default();
-        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
+        step("cycleway:lanes", DirectedSide::Right, DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
         assert!(!obj.contains_key("cycleway:lanes"));
     }
 
@@ -575,46 +640,41 @@ mod directed_extract_tests {
     fn self_source_reads_from_obj_own_directed_key() {
         let mut obj = tags(&[("traffic_sign:forward", "DE:1022-10")]);
         let mut annotations = side_annotations("right");
-        step("traffic_sign", DirectedFrom::Obj).apply(&mut obj, &mut annotations, None);
+        step("traffic_sign", DirectedSide::Right, DirectedFrom::Obj).apply(&mut obj, &mut annotations, None);
         assert_eq!(obj.get("traffic_sign").map(|v| v.as_ref()), Some("DE:1022-10"));
     }
 
+    /// The directed read ignores annotations entirely: the side comes from the step, so a stray
+    /// `_side` (or none at all) changes nothing.
     #[test]
-    fn noop_for_self_side() {
-        let mut obj = RawTags::default();
+    fn side_comes_from_the_step_not_an_annotation() {
         let parent = tags(&[("cycleway:lanes:forward", "lane")]);
-        let mut annotations = side_annotations("self");
-        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut annotations, Some(&parent));
-        assert!(!obj.contains_key("cycleway:lanes"));
+        for ann in [side_annotations("left"), side_annotations("self"), Map::new()] {
+            let mut obj = RawTags::default();
+            let mut ann = ann;
+            step("cycleway:lanes", DirectedSide::Right, DirectedFrom::Parent).apply(&mut obj, &mut ann, Some(&parent));
+            assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("lane"));
+        }
     }
 
     #[test]
     fn handedness_flips_suffix() {
         let parent = tags(&[("cycleway:lanes:backward", "lane")]);
-
-        // Right-hand traffic: Side::Right reads `:forward`, not
-        // `:backward` — so this should NOT match.
-        let mut obj = RawTags::default();
-        let mut right = side_annotations("right");
-        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut right, Some(&parent));
-        assert!(!obj.contains_key("cycleway:lanes"));
-
-        let mut obj = RawTags::default();
-        let mut left = side_annotations("left");
-        step("cycleway:lanes", DirectedFrom::Parent).apply(&mut obj, &mut left, Some(&parent));
-        assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("lane"));
-
-        // Left-hand traffic swaps it: Side::Right now reads `:backward`, Side::Left `:forward`.
-        let lht = |key: &str| InputTransform::directed_extract(key.to_owned(), key.to_owned(), DirectedFrom::Parent, Vec::new(), true);
-        let mut obj = RawTags::default();
-        let mut right = side_annotations("right");
-        lht("cycleway:lanes").apply(&mut obj, &mut right, Some(&parent));
-        assert_eq!(obj.get("cycleway:lanes").map(|v| v.as_ref()), Some("lane"));
-
-        let mut obj = RawTags::default();
-        let mut left = side_annotations("left");
-        lht("cycleway:lanes").apply(&mut obj, &mut left, Some(&parent));
-        assert!(!obj.contains_key("cycleway:lanes"));
+        let mut ann = Map::new();
+        let read = |side, lht| {
+            let mut obj = RawTags::default();
+            let mut ann = Map::new();
+            InputTransform::directed_extract("cycleway:lanes".into(), "cycleway:lanes".into(), side, DirectedFrom::Parent, Vec::new(), lht)
+                .apply(&mut obj, &mut ann, Some(&parent));
+            obj.get("cycleway:lanes").map(|v| v.to_string())
+        };
+        let _ = &mut ann;
+        // Right-hand traffic: the right side reads `:forward`, the left side `:backward`.
+        assert_eq!(read(DirectedSide::Right, false), None);
+        assert_eq!(read(DirectedSide::Left, false).as_deref(), Some("lane"));
+        // Left-hand traffic swaps it.
+        assert_eq!(read(DirectedSide::Right, true).as_deref(), Some("lane"));
+        assert_eq!(read(DirectedSide::Left, true), None);
     }
 }
 
@@ -776,5 +836,71 @@ mod run_transform_steps_tests {
         let kept = run_transform_steps(&mut tags, &mut annotations, &steps, "way/1", &mut clones);
         assert!(!kept);
         assert!(clones.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod annotation_domain_tests {
+    use super::*;
+
+    fn annotate(pairs: &[(&str, &str)]) -> InputTransform {
+        InputTransform::Annotate(pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect())
+    }
+
+    fn clone_with(pairs: &[(&str, &str)], steps: Vec<InputTransform>) -> TransformStep {
+        TransformStep::Clone(CloneStep {
+            when: None,
+            annotate: pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+            id_suffix: "x".into(),
+            steps,
+        })
+    }
+
+    fn unnest_recording(infix: &'static str) -> InputTransform {
+        InputTransform::UnnestTags { prefix: "cycleway", infix, meta_prefixes: &[], guard: None, record_infix_as: Some("_infix") }
+    }
+
+    #[test]
+    fn a_key_every_object_carries_gets_its_full_value_set() {
+        let steps = vec![
+            TransformStep::Transform(annotate(&[("_side", "self")])),
+            clone_with(&[("_side", "left")], vec![unnest_recording("left")]),
+            clone_with(&[("_side", "right")], vec![unnest_recording("right")]),
+        ];
+        let d = annotation_domains(&steps);
+        assert_eq!(d.get("_side").map(Vec::as_slice), Some(&["left".to_owned(), "right".to_owned(), "self".to_owned()][..]));
+        // Only written when an unnest matched: not always present, so no closed domain.
+        assert!(!d.contains_key("_infix"));
+    }
+
+    #[test]
+    fn a_key_some_object_lacks_has_no_domain() {
+        let missing_on_base = vec![clone_with(&[("_side", "left")], vec![])];
+        assert!(annotation_domains(&missing_on_base).is_empty());
+        let missing_on_a_clone = vec![
+            TransformStep::Transform(annotate(&[("_side", "self")])),
+            clone_with(&[("_side", "left")], vec![]),
+            clone_with(&[], vec![]),
+        ];
+        assert!(annotation_domains(&missing_on_a_clone).is_empty());
+    }
+
+    #[test]
+    fn negation_becomes_membership_in_the_rest_of_the_domain() {
+        use crate::lang::filter::{close_annotation_negations, eval};
+        let mut domains = std::collections::BTreeMap::new();
+        domains.insert("_side".to_owned(), vec!["left".to_owned(), "right".to_owned(), "self".to_owned()]);
+        let f: Filter = serde_json::from_value(serde_json::json!({"not": {"annotations": {"key": "_side", "eq": "self"}}})).unwrap();
+        let closed = close_annotation_negations(&f, &domains);
+        assert!(matches!(&closed, Filter::Annotations { annotations }
+            if matches!(annotations.as_ref(), Filter::In { r#in, .. } if r#in.values() == ["left", "right"])));
+        // Same answer for every object the config can produce.
+        let tags = RawTags::default();
+        for side in ["left", "right", "self"] {
+            let mut ann = Map::new();
+            ann.insert("_side".into(), Value::String(side.into()));
+            let ctx = ExtractCtx { obj_tags: &tags, parent_tags: None, id: "", annotations: &ann, elem: None, parent_elem: None, role: None, layer: Default::default() };
+            assert_eq!(eval(&f, &ctx), eval(&closed, &ctx), "{side}");
+        }
     }
 }

@@ -58,7 +58,7 @@ reason about) and compiled into a decision tree for evaluation:
 ```json
 // configs/tilda/roads/way/bicycle_road.json
 {
-  "condition": { "tag": "bicycle_road", "eq": "yes" },
+  "condition": { "key": "bicycle_road", "eq": "yes" },
   "defaults": { "minzoom": 11 }
 }
 ```
@@ -114,12 +114,12 @@ real tool pointed at `bikelanes` → field `oneway`:
 {
   "oneway": {
     "match": [
-      { "when": { "tag": "oneway:bicycle", "eq": "yes" }, "value": "yes" },
-      { "when": { "and": [{ "tag": "oneway:bicycle", "eq": "no" }, { "tag": "oneway", "eq": "yes" }] },
+      { "when": { "key": "oneway:bicycle", "eq": "yes" }, "value": "yes" },
+      { "when": { "and": [{ "key": "oneway:bicycle", "eq": "no" }, { "key": "oneway", "eq": "yes" }] },
         "value": "car_not_bike" },
-      { "when": { "tag": "oneway:bicycle", "eq": "no" }, "value": "no" },
-      { "when": { "tag": "oneway", "in": ["yes", "no"] }, "value": { "tag": "oneway" } },
-      { "when": { "tag": "highway", "in": ["service", "track"] }, "value": "assumed_no" }
+      { "when": { "key": "oneway:bicycle", "eq": "no" }, "value": "no" },
+      { "when": { "key": "oneway", "in": ["yes", "no"] }, "value": { "key": "oneway" } },
+      { "when": { "key": "highway", "in": ["service", "track"] }, "value": "assumed_no" }
     ]
   }
 }

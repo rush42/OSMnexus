@@ -4,11 +4,11 @@
       {
         "and": [
           {
-            "tag": "highway",
+            "key": "highway",
             "eq": "footway"
           },
           {
-            "tag": "footway",
+            "key": "footway",
             "eq": "sidewalk"
           }
         ]
@@ -16,11 +16,11 @@
       {
         "and": [
           {
-            "tag": "highway",
+            "key": "highway",
             "eq": "path"
           },
           {
-            "tag": "is_sidepath",
+            "key": "is_sidepath",
             "eq": "yes"
           }
         ]
@@ -28,11 +28,11 @@
       {
         "and": [
           {
-            "tag": "highway",
+            "key": "highway",
             "eq": "path"
           },
           {
-            "tag": "path",
+            "key": "path",
             "in": [
               "sidewalk",
               "sidepath"

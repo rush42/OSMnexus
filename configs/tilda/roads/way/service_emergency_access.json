@@ -2,23 +2,23 @@
   "condition": {
     "and": [
       {
-        "tag": "highway",
+        "key": "highway",
         "eq": "service"
       },
       {
         "or": [
           {
-            "tag": "service",
+            "key": "service",
             "eq": "emergency_access"
           },
           {
             "and": [
               {
-                "tag": "service",
+                "key": "service",
                 "eq": "driveway"
               },
               {
-                "tag": "emergency",
+                "key": "emergency",
                 "in": [
                   "yes",
                   "designated"

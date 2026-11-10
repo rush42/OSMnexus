@@ -41,14 +41,14 @@
     {
       "name": "advisory",
       "condition": {
-        "tag": "lane",
+        "key": "lane",
         "eq": "advisory"
       }
     },
     {
       "name": "exclusive",
       "condition": {
-        "tag": "lane",
+        "key": "lane",
         "eq": "exclusive"
       },
       "excludes": [

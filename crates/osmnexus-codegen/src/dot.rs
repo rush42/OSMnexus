@@ -81,8 +81,10 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
         }
         Producer::Extract { extract, annotate } => {
             let mut label = match extract {
-                Extract::Value { key, .. } => format!("extract\nkey: {key}"),
-                Extract::Candidates { keys, .. } => format!("extract\nkeys: {keys:?}"),
+                Extract::Candidates { alts, .. } => {
+                    format!("extract\nkeys: {:?}", alts.iter().map(Extract::label).collect::<Vec<_>>())
+                }
+                _ => format!("extract\nkey: {}", extract.label()),
             };
             if !annotate.is_empty() {
                 let _ = write!(label, "\nannotate: {}", truncate(&format!("{annotate:?}"), 40));
@@ -102,8 +104,9 @@ fn render_producer(g: &mut Graph, p: &Producer) -> String {
             }
             g.node(&label, "box", "#d9e8fb")
         }
-        Producer::Parent(inner) => {
-            let node = g.node("parent", "diamond", "#fff2cc");
+        Producer::Parent(inner) | Producer::Annotations(inner) => {
+            let label = if matches!(p, Producer::Parent(_)) { "parent" } else { "annotations" };
+            let node = g.node(label, "diamond", "#fff2cc");
             let child = render_producer(g, inner);
             g.edge(&node, &child, "");
             node

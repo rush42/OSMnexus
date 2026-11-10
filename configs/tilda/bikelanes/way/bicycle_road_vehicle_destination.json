@@ -7,30 +7,30 @@
       {
         "or": [
           {
-            "tag": "traffic_sign",
+            "key": "traffic_sign",
             "contains": "1020-30"
           },
           {
-            "tag": "traffic_sign",
+            "key": "traffic_sign",
             "contains": "Kraftfahrzeuge-frei"
           },
           {
-            "tag": "traffic_sign",
+            "key": "traffic_sign",
             "contains": "Kfz-Verkehr frei"
           },
           {
-            "tag": "traffic_sign",
+            "key": "traffic_sign",
             "contains": "KFZ frei"
           },
           {
-            "tag": "vehicle",
+            "key": "vehicle",
             "in": [
               "destination",
               "yes"
             ]
           },
           {
-            "tag": "motor_vehicle",
+            "key": "motor_vehicle",
             "in": [
               "destination",
               "yes"

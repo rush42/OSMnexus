@@ -11,13 +11,13 @@
       },
       {
         "not": {
-          "tag": "lane",
+          "key": "lane",
           "eq": "advisory"
         }
       },
       {
         "not": {
-          "tag": "cycleway",
+          "key": "cycleway",
           "in": [
             "share_busway",
             "opposite_share_busway"

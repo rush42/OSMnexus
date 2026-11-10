@@ -24,27 +24,27 @@
   "exclude_condition": {
     "or": [
       {
-        "tag": "highway",
+        "key": "highway",
         "exists": false
       },
       {
-        "tag": "area",
+        "key": "area",
         "eq": "yes"
       },
       {
-        "tag": "access",
+        "key": "access",
         "eq": "private"
       },
       {
-        "tag": "motor_vehicle",
+        "key": "motor_vehicle",
         "eq": "no"
       },
       {
-        "tag": "motorcar",
+        "key": "motorcar",
         "eq": "no"
       },
       {
-        "tag": "highway",
+        "key": "highway",
         "in": [
           "abandoned",
           "bridleway",
@@ -71,7 +71,7 @@
         ]
       },
       {
-        "tag": "service",
+        "key": "service",
         "in": [
           "alley",
           "driveway",

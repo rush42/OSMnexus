@@ -70,9 +70,9 @@ pub fn parent_or_obj(p: Producer) -> Producer {
 /// `Producer` shape to scope it to the parent way's tags, `ParentOrObj`'s `parent_or_obj` sugar
 /// (folded into an equivalent `Match` in `Deserialize` below, so a `Producer` value is never
 /// observably one), and
-/// `Tag`'s `{"tag": ..., "or"?: ...}` shorthand (folds into a plain `Extract`, or — when `or` is
-/// present — a `Match` using its own `default` for the "or" branch; neither ever exists as its own
-/// runtime variant); a bare literal needs no sugar here at all, since `Const`'s a real variant that
+/// `Extract`'s `{"key"|"keys": ..., "sanitize"?, "annotate"?, "or"?}` (one form for every key read;
+/// `or` folds into a `Match` using its own `default`, so it never exists as its own runtime
+/// variant); a bare literal needs no sugar here at all, since `Const`'s a real variant that
 /// deserializes straight from a bare JSON value. Untagged, tried in this order
 /// (more-specific/required-field shapes before `Extract`, whose fields are all optional and so
 /// would otherwise match everything first, and before `Const`, the bare-JSON catch-all).
@@ -93,16 +93,11 @@ pub fn parent_or_obj(p: Producer) -> Producer {
 enum ProducerJson {
     /// Scope the wrapped producer to the parent way's tags — see `Producer::Parent`.
     Parent { parent: Box<Producer> },
+    /// Read the annotations instead of the tags — see `Producer::Annotations`.
+    Annotations { annotations: Box<Producer> },
     /// Scope to the parent's tags, falling back to the object's own when there's no parent — see
     /// `parent_or_obj` for the `Match`+`Parent` equivalence this desugars to.
     ParentOrObj { parent_or_obj: Box<Producer> },
-    /// Copy a tag's own value (e.g. fall back to the raw `highway` value), or — when `or` is
-    /// present — that literal instead if the tag is absent.
-    Tag {
-        tag: String,
-        #[serde(default)]
-        or: Option<Value>,
-    },
     Match {
         #[serde(rename = "match")]
         rules: Vec<Rule>,
@@ -111,9 +106,11 @@ enum ProducerJson {
     },
     Extract {
         #[serde(default)] key: Option<String>,
-        #[serde(default)] keys: Option<Vec<String>>,
+        #[serde(default)] keys: Option<Vec<crate::lang::extract::Alt>>,
         #[serde(default, deserialize_with = "deserialize_sanitize_chain")] sanitize: Vec<Sanitizer>,
         #[serde(default)] annotate: Map<String, Value>,
+        /// A literal to produce instead when the key is absent (or its sanitized value dropped).
+        #[serde(default)] or: Option<Value>,
     },
     /// A literal value, independent of any tag.
     Const(Value),
@@ -126,30 +123,31 @@ impl<'de> Deserialize<'de> for Producer {
     {
         Ok(match ProducerJson::deserialize(deserializer)? {
             ProducerJson::Parent { parent } => Producer::Parent(parent),
+            ProducerJson::Annotations { annotations } => Producer::Annotations(annotations),
             ProducerJson::ParentOrObj { parent_or_obj: inner } => parent_or_obj(*inner),
-            ProducerJson::Tag { tag, or: None } => {
-                Producer::Extract { extract: Extract::Value { key: tag, sanitize: Vec::new() }, annotate: Map::new() }
-            }
-            ProducerJson::Tag { tag, or: Some(or) } => Producer::Match {
-                rules: vec![Rule {
-                    when: Filter::Bool(true),
-                    value: Producer::Extract { extract: Extract::Value { key: tag, sanitize: Vec::new() }, annotate: Map::new() },
-                }],
-                default: Some(or),
-                annotate: Map::new(),
-                tree: None,
-            },
             ProducerJson::Match { rules, default, annotate } => {
                 Producer::Match { rules, default, annotate, tree: None }
             }
-            ProducerJson::Extract { key, keys, sanitize, annotate } => {
+            ProducerJson::Extract { key, keys, sanitize, annotate, or } => {
                 let extract = match (key, keys) {
-                    (Some(key), None) => Extract::Value { key, sanitize },
-                    (None, Some(keys)) => Extract::Candidates { keys, sanitize },
+                    (Some(key), None) => Extract::key(key, sanitize).map_err(serde::de::Error::custom)?,
+                    (None, Some(keys)) => Extract::from_alts(keys, sanitize).map_err(serde::de::Error::custom)?,
                     (None, None) => return Err(serde::de::Error::custom("Extract needs `key` or `keys`")),
                     (Some(_), Some(_)) => return Err(serde::de::Error::custom("Extract: set only one of `key`/`keys`, not both")),
                 };
-                Producer::Extract { extract, annotate }
+                let read = Producer::Extract { extract, annotate };
+                match or {
+                    None => read,
+                    // `or` is a one-rule `Match` whose default is the literal; the read's own
+                    // `annotate` stays on the read (it describes a tag-sourced value), not on the
+                    // fallback.
+                    Some(or) => Producer::Match {
+                        rules: vec![Rule { when: Filter::Bool(true), value: read }],
+                        default: Some(or),
+                        annotate: Map::new(),
+                        tree: None,
+                    },
+                }
             }
             ProducerJson::Const(value) => Producer::Const { value, annotate: Map::new() },
         })
@@ -301,9 +299,7 @@ impl<'de> Deserialize<'de> for Sanitizer {
 
 // ── Filter ───────────────────────────────────────────────────────────────────
 
-/// The JSON shapes `Filter` accepts: every real variant verbatim, including `Filter::AnnotationEq`
-/// spelled directly as `{"annotation": <key>, "eq": <value>}` — see `Filter::AnnotationEq`'s own
-/// doc. Untagged, tried in this order (more-specific/required-field shapes before `Eq`, whose
+/// The JSON shapes `Filter` accepts: every real variant verbatim. Untagged, tried in this order (more-specific/required-field shapes before `Eq`, whose
 /// `#[serde(flatten)] extract` field is optional-shaped enough to otherwise match too broadly).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -318,6 +314,10 @@ enum FilterJson {
     EndsWith { #[serde(flatten)] extract: Extract, ends_with: String },
     Exists { #[serde(flatten)] extract: Extract, exists: bool },
     Parent { parent: Box<Filter> },
+    /// Read the annotations instead of the tags — see `Filter::Annotations`.
+    Annotations { annotations: Box<Filter> },
+    /// The retired `{"annotation": "_side", "eq": ..}` spelling — accepted only to fail with a
+    /// migration hint instead of an opaque "no variant matched".
     Annotation { annotation: String, eq: String },
     HasKeyPrefix { has_key_prefix: String },
     HasParent { has_parent: bool },
@@ -361,7 +361,13 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::Exists { extract, exists } => Filter::Exists { extract, exists },
             FilterJson::Eq { extract, eq } => Filter::Eq { extract, eq },
             FilterJson::Parent { parent } => Filter::Parent { parent },
-            FilterJson::Annotation { annotation, eq } => Filter::AnnotationEq { key: annotation, eq },
+            FilterJson::Annotations { annotations } => Filter::Annotations { annotations },
+            FilterJson::Annotation { annotation, eq } => {
+                return Err(serde::de::Error::custom(format!(
+                    "{{\"annotation\": {annotation:?}, \"eq\": {eq:?}}} is no longer supported; \
+                     write {{\"annotations\": {{\"key\": {annotation:?}, \"eq\": {eq:?}}}}}"
+                )));
+            }
             FilterJson::HasKeyPrefix { has_key_prefix } => Filter::HasKeyPrefix { has_key_prefix },
             FilterJson::HasParent { has_parent } => Filter::HasParent { has_parent },
             FilterJson::TagsEmpty { tags_empty } => Filter::TagsEmpty { tags_empty },
@@ -374,5 +380,44 @@ impl<'de> Deserialize<'de> for Filter {
             FilterJson::NumGte { extract, gte } =>
                 Filter::NumRange { extract, min: Bound::Included(gte), max: Bound::Unbounded },
         })
+    }
+}
+
+#[cfg(test)]
+mod key_form_tests {
+    use serde_json::json;
+
+    use crate::lang::producer::{empty_annotations, ExtractCtx, Producer};
+    use crate::lang::tags::RawTags;
+
+    fn eval(p: serde_json::Value, tags: &[(&'static str, &'static str)]) -> Option<serde_json::Value> {
+        let p: Producer = serde_json::from_value(p).unwrap();
+        let tags: RawTags = tags.iter().map(|&(k, v)| (k.into(), v.into())).collect();
+        let ctx = ExtractCtx {
+            obj_tags: &tags,
+            parent_tags: None,
+            id: "",
+            annotations: empty_annotations(),
+            elem: None,
+            parent_elem: None,
+            role: None,
+            layer: Default::default(),
+        };
+        p.eval(&ctx).map(|r| r.value)
+    }
+
+    /// One form for every key read: `or` sits next to `sanitize`/`annotate` instead of needing a
+    /// separate shape that silently dropped them.
+    #[test]
+    fn or_combines_with_the_other_fields() {
+        assert_eq!(eval(json!({"key": "lit", "or": "no"}), &[]), Some(json!("no")));
+        assert_eq!(eval(json!({"key": "lit", "or": "no"}), &[("lit", "yes")]), Some(json!("yes")));
+        assert_eq!(eval(json!({"keys": ["a", "b"], "or": 0}), &[("b", "2")]), Some(json!("2")));
+    }
+
+    #[test]
+    fn retired_aliases_no_longer_parse_as_keys() {
+        assert!(serde_json::from_value::<crate::lang::extract::Extract>(json!({"tag": "x"})).is_err());
+        assert!(serde_json::from_value::<crate::lang::extract::Extract>(json!({"first_tag": ["x"]})).is_err());
     }
 }

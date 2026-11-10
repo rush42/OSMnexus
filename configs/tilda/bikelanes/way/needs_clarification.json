@@ -8,38 +8,38 @@
       },
       {
         "not": {
-          "tag": "cycleway",
+          "key": "cycleway",
           "eq": "shared"
         }
       },
       {
         "or": [
           {
-            "tag": "highway",
+            "key": "highway",
             "eq": "cycleway"
           },
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "eq": "path"
               },
               {
-                "tag": "bicycle",
+                "key": "bicycle",
                 "eq": "designated"
               },
               {
                 "or": [
                   {
                     "not": {
-                      "tag": "foot",
+                      "key": "foot",
                       "eq": "no"
                     }
                   },
                   {
                     "and": [
                       {
-                        "tag": "foot",
+                        "key": "foot",
                         "eq": "no"
                       },
                       {
@@ -49,13 +49,13 @@
                       },
                       {
                         "not": {
-                          "tag": "mtb",
+                          "key": "mtb",
                           "eq": "yes"
                         }
                       },
                       {
                         "not": {
-                          "tag": "surface",
+                          "key": "surface",
                           "in": [
                             "ground",
                             "dirt",
@@ -75,11 +75,11 @@
           {
             "and": [
               {
-                "tag": "highway",
+                "key": "highway",
                 "eq": "footway"
               },
               {
-                "tag": "bicycle",
+                "key": "bicycle",
                 "eq": "designated"
               }
             ]

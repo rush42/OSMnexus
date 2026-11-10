@@ -3,7 +3,7 @@
 //! `TagSet`) and result (`Produced`) types it evaluates over. Two branch shapes (`Match`, `Parent`)
 //! and two leaf/read shapes (`Extract` — a plain key/candidate-list tag read — and `Const`) —
 //! everything else is JSON-only sugar, folded into one of these by `parser`'s hand-written `Deserialize` impl
-//! (`parent_or_obj`, the `{"tag": ..., "or"?: ...}` shorthand, `Rule`'s bare-`Producer` shorthand
+//! (`parent_or_obj`, the `{"key": ..., "or"?: ...}` shorthand, `Rule`'s bare-`Producer` shorthand
 //! for an always-true rule) so it never exists as a `Producer` value here, not even transiently
 //! (see `parser`'s own doc for why that folding lives in its own module rather than inline in this
 //! one). A named reference — a macro,
@@ -13,6 +13,7 @@
 //! `Producer` JSON is deserialized, so `sanitize:` fields below deserialize straight into
 //! `Option<Sanitizer>` and `eval` never does a registry lookup of any kind.
 
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
@@ -91,36 +92,134 @@ pub struct Produced {
 /// Which tags (`obj_tags`, `parent_tags`), `id` — the row id for this object, defaulted to the
 /// element's own id and overwritten for a side object (e.g.
 /// `"way/123/cycleway/left"`) — and `annotations`, a read-only view of whatever engine bookkeeping
-/// (see `output::rows::TopicRow::annotations`) has been attached to this object so far, so a
-/// `Filter` (`Side`/`Prefix`/`Infix`/`TagsEmpty`/…) can branch on it just like it can on
-/// `obj_tags`. There is no dedicated side-split-context field: `_side`/`_prefix`/`_infix` are
-/// ordinary `annotations` entries, stamped by whatever built this context (see `categorize::transform::run_transform_steps`) — `Filter::AnnotationEq`
-/// reads `annotations["_side"]` the same way `Filter::Eq` reads a tag. `Copy` so a producer can
+/// (see `output::rows::TopicRow::annotations`) has been attached to this object so far, readable
+/// through `{"annotations": ..}` (`Layer::Annotations`) just like tags. Nothing in the code gives any annotation
+/// a meaning: `_side`/`_prefix`/`_infix` are whatever the topic's own transforms wrote (see
+/// `categorize::transform::run_transform_steps`). `Copy` so a producer can
 /// cheaply build a variant (e.g. swapping `obj_tags` to the parent) when re-running itself against
 /// a different tagset — `annotations` stays a shared reference for that reason, never `&mut`;
 /// whatever step is actively writing to it (see `InputTransform::apply`) holds its own `&mut`
 /// separately and only ever hands `eval`/`Producer::eval` a reborrowed `&Map`.
+///
+/// `elem`/`parent_elem` say *which* element `obj_tags`/`parent_tags` belong to — what the `@id`/
+/// `@type` virtual tags read (see `lang::extract::VirtualKey`). `None` where a context has no element
+/// to name (a transform step's scratch context, a test helper).
 #[derive(Clone, Copy)]
 pub struct ExtractCtx<'a> {
     pub obj_tags: &'a RawTags<'a>,
     pub parent_tags: Option<&'a RawTags<'a>>,
     pub id: &'a str,
     pub annotations: &'a Map<String, Value>,
+    pub elem: Option<Elem>,
+    pub parent_elem: Option<Elem>,
+    /// This element's role in its parent relation (`@role`) — set only for a member way read
+    /// against a parent relation (`inherit_to_member`).
+    pub role: Option<&'a str>,
+    /// Which of the element's two key→value maps a key read looks at: its tags, or its
+    /// annotations (`{"annotations": ..}`, see `ExtractCtx::scope`).
+    pub layer: Layer,
 }
 
-/// The object's side: `_side` when a `split_sides` `Clone` stamped one, `"self"` otherwise.
-///
-/// The base object deliberately carries *no* `_side` annotation — it used to be stamped
-/// unconditionally, which meant every emitted row stored (and cloned) a constant
-/// `{"_side": "self"}` saying nothing. Absence is now the encoding for "self", so every reader has
-/// to apply that default rather than compare the raw lookup.
-pub fn side_of<'a>(ctx: &ExtractCtx<'a>) -> &'a str {
-    ctx.annotations.get("_side").and_then(Value::as_str).unwrap_or("self")
+/// The key→value map a key read (and `has_key_prefix`/`tags_empty`) looks at. Independent of
+/// *which element* is read: `parent` switches the element and keeps the layer, `annotations`
+/// switches the layer and keeps the element. Facts (`@id`, …) describe the element, so they ignore
+/// the layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Layer {
+    #[default]
+    Tags,
+    Annotations,
 }
+
+/// A context switch: what `{"parent": ..}` and `{"annotations": ..}` do to everything inside them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Scope {
+    Parent,
+    Annotations,
+}
+
+/// An OSM element's identity: what the `@id`/`@type`/`@timestamp` facts read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Elem {
+    pub kind: crate::lang::tags::ElementKind,
+    pub osm_id: i64,
+    /// Unix seconds of the element's last edit, when the file carries metadata.
+    pub timestamp: Option<i64>,
+}
+
+impl<'a> ExtractCtx<'a> {
+    /// The context a parent-scoped read (`{"parent": ..}`) evaluates in: the parent's tags and
+    /// identity, and *no* annotations or role — those were written for, or describe, the element
+    /// being classified, not its parent. `None` without a parent.
+    pub fn parent_scope(&self) -> Option<ExtractCtx<'a>> {
+        let parent_tags = self.parent_tags?;
+        Some(ExtractCtx {
+            obj_tags: parent_tags,
+            parent_tags: self.parent_tags,
+            id: self.id,
+            annotations: empty_annotations(),
+            elem: self.parent_elem,
+            parent_elem: None,
+            role: None,
+            layer: self.layer,
+        })
+    }
+
+    /// This context with `scope` applied: `None` for `Parent` without a parent (everything inside
+    /// a `parent` is false/absent then); the annotations layer always exists.
+    #[inline]
+    pub fn scope(&self, scope: Scope) -> Option<ExtractCtx<'a>> {
+        match scope {
+            Scope::Parent => self.parent_scope(),
+            Scope::Annotations => Some(ExtractCtx { layer: Layer::Annotations, ..*self }),
+        }
+    }
+
+    /// `scope` applied outermost-first — the flattened form of nested wrappers.
+    pub fn scopes(&self, scopes: &[Scope]) -> Option<ExtractCtx<'a>> {
+        scopes.iter().try_fold(*self, |ctx, s| ctx.scope(*s))
+    }
+
+    /// The value under `key` in the current layer, as text: a tag as-is; an annotation as-is if a
+    /// string, else in its JSON spelling (a number or bool a transform recorded); `null` is absent.
+    #[inline]
+    pub fn get(&self, key: &str) -> Option<Cow<'a, str>> {
+        match self.layer {
+            Layer::Tags => self.obj_tags.get(key).map(|v| Cow::Borrowed(v.as_ref())),
+            Layer::Annotations => self.annotation(key),
+        }
+    }
+
+    #[inline(never)]
+    fn annotation(&self, key: &str) -> Option<Cow<'a, str>> {
+        match self.annotations.get(key)? {
+            Value::String(s) => Some(Cow::Borrowed(s.as_str())),
+            Value::Null => None,
+            other => Some(Cow::Owned(other.to_string())),
+        }
+    }
+
+    /// Whether some key in the current layer starts with `prefix` (`has_key_prefix`).
+    pub fn has_key_prefix(&self, prefix: &str) -> bool {
+        match self.layer {
+            Layer::Tags => self.obj_tags.keys().any(|k| k.starts_with(prefix)),
+            Layer::Annotations => self.annotations.keys().any(|k| k.starts_with(prefix)),
+        }
+    }
+
+    /// Whether the current layer is empty (`tags_empty`).
+    pub fn is_empty(&self) -> bool {
+        match self.layer {
+            Layer::Tags => self.obj_tags.is_empty(),
+            Layer::Annotations => self.annotations.is_empty(),
+        }
+    }
+}
+
 
 /// A shared, empty annotations map — for a context that has none to offer (a neutral
 /// `eval_filter` check, or a test helper) but still needs a `&Map` to satisfy `ExtractCtx`.
-pub(crate) fn empty_annotations() -> &'static Map<String, Value> {
+pub fn empty_annotations() -> &'static Map<String, Value> {
     static EMPTY: OnceLock<Map<String, Value>> = OnceLock::new();
     EMPTY.get_or_init(Map::new)
 }
@@ -198,6 +297,9 @@ pub enum Producer {
     /// it commits to the parent tagset whenever one exists, even if `p` then finds nothing there,
     /// where the naive fallback would also retry against the object's own tags in that case.
     Parent(Box<Producer>),
+    /// `{"annotations": p}`: `p` reads the element's annotations instead of its tags — the same
+    /// kind of context switch as `Parent` (`ExtractCtx::scope`), never absent.
+    Annotations(Box<Producer>),
 }
 
 /// Below this many rules, a `Match`'s linear scan is already cheap enough that a compiled tree
@@ -226,7 +328,7 @@ impl Producer {
                     *tree = Some(decision_tree::build(&conditions, max_depth, false));
                 }
             }
-            Producer::Parent(inner) => inner.compile_trees(max_depth),
+            Producer::Parent(inner) | Producer::Annotations(inner) => inner.compile_trees(max_depth),
             Producer::Extract { .. } | Producer::Const { .. } => {}
         }
     }
@@ -243,7 +345,7 @@ impl Producer {
                     rule.value.clear_trees();
                 }
             }
-            Producer::Parent(inner) => inner.clear_trees(),
+            Producer::Parent(inner) | Producer::Annotations(inner) => inner.clear_trees(),
             Producer::Extract { .. } | Producer::Const { .. } => {}
         }
     }
@@ -262,10 +364,8 @@ impl Producer {
 
             Producer::Const { value, annotate } => Some(Produced { value: value.clone(), annotate: annotate.clone() }),
 
-            Producer::Parent(inner) => match ctx.parent_tags {
-                None => None,
-                Some(parent_tags) => inner.eval(&ExtractCtx { obj_tags: parent_tags, ..*ctx }),
-            },
+            Producer::Parent(inner) => inner.eval(&ctx.parent_scope()?),
+            Producer::Annotations(inner) => inner.eval(&ctx.scope(Scope::Annotations)?),
         }
     }
 }
@@ -277,7 +377,7 @@ mod classify_bool_tests {
     use crate::lang::json::TagSet;
 
     fn ctx<'a>(obj: &'a RawTags<'a>, parent: Option<&'a RawTags<'a>>) -> ExtractCtx<'a> {
-        ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations() }
+        ExtractCtx { obj_tags: obj, parent_tags: parent, id: "", annotations: empty_annotations(), elem: None, parent_elem: None, role: None, layer: Default::default() }
     }
 
     /// A `Match` producer with one rule and a `default`, mirroring the old `FilterMatch` shape.
